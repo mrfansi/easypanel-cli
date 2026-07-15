@@ -5,3 +5,6 @@
 .omc/
 .superpowers/
 .phpunit.result.cache
+
+# Rust
+/target
