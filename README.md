@@ -1,41 +1,61 @@
-<p align="center">
-    <img title="Laravel Zero" height="100" src="https://raw.githubusercontent.com/laravel-zero/docs/master/images/logo/laravel-zero-readme.png" alt="Laravel Zero Logo" />
-</p>
+# easypanel
 
-<p align="center">
-  <a href="https://github.com/laravel-zero/framework/actions"><img src="https://github.com/laravel-zero/laravel-zero/actions/workflows/tests.yml/badge.svg" alt="Build Status" /></a>
-  <a href="https://packagist.org/packages/laravel-zero/framework"><img src="https://img.shields.io/packagist/dt/laravel-zero/framework.svg" alt="Total Downloads" /></a>
-  <a href="https://packagist.org/packages/laravel-zero/framework"><img src="https://img.shields.io/packagist/v/laravel-zero/framework.svg?label=stable" alt="Latest Stable Version" /></a>
-  <a href="https://packagist.org/packages/laravel-zero/framework"><img src="https://img.shields.io/packagist/l/laravel-zero/framework.svg" alt="License" /></a>
-</p>
+CLI untuk mengelola **banyak host EasyPanel** — projects, services, monitoring/logs, dan node cluster. Ditulis dalam Rust.
 
-Laravel Zero was created by [Nuno Maduro](https://github.com/nunomaduro) and [Owen Voke](https://github.com/owenvoke), and is a micro-framework that provides an elegant starting point for your console application. It is an **unofficial** and customized version of Laravel optimized for building command-line applications.
+## Build
 
-- Built on top of the [Laravel](https://laravel.com) components.
-- Optional installation of Laravel [Eloquent](https://laravel-zero.com/docs/database/), Laravel [Logging](https://laravel-zero.com/docs/logging/) and many others.
-- Supports interactive [menus](https://laravel-zero.com/docs/build-interactive-menus/) and [desktop notifications](https://laravel-zero.com/docs/send-desktop-notifications/) on Linux, Windows & MacOS.
-- Ships with a [Scheduler](https://laravel-zero.com/docs/task-scheduling/) and  a [Standalone Compiler](https://laravel-zero.com/docs/build-a-standalone-application/).
-- Integration with [Collision](https://github.com/nunomaduro/collision) - Beautiful error reporting
-- Follow the creator Nuno Maduro:
-    - YouTube: **[youtube.com/@nunomaduro](https://www.youtube.com/@nunomaduro)** — Videos every weekday
-    - Twitch: **[twitch.tv/enunomaduro](https://www.twitch.tv/enunomaduro)** — Streams (almost) every weekday
-    - Twitter / X: **[x.com/enunomaduro](https://x.com/enunomaduro)**
-    - LinkedIn: **[linkedin.com/in/nunomaduro](https://www.linkedin.com/in/nunomaduro)**
-    - Instagram: **[instagram.com/enunomaduro](https://www.instagram.com/enunomaduro)**
-    - Tiktok: **[tiktok.com/@enunomaduro](https://www.tiktok.com/@enunomaduro)**
+```bash
+cargo build --release
+# binary: target/release/easypanel
+```
 
-------
+## Konfigurasi server
 
-## Documentation
+Kredensial disimpan di `~/.config/easypanel/servers.json` (perms `0600`), dikelola lewat command:
 
-For full documentation, visit [laravel-zero.com](https://laravel-zero.com/).
+```bash
+easypanel server add prod --url https://panel.example.com --token <TOKEN>
+easypanel server add prod            # interaktif (prompt url + token)
+easypanel server list
+easypanel server use prod            # jadikan default
+easypanel server remove prod
+```
 
-## Support the development
-**Do you like this project? Support it by donating**
+Server pertama otomatis jadi default. Command lain memakai server default, atau `--server <nama>` untuk menargetkan host tertentu.
 
-- PayPal: [Donate](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=66BYDWAT92N6L)
-- Patreon: [Donate](https://www.patreon.com/nunomaduro)
+## Command
 
-## License
+```bash
+easypanel project list
+easypanel project create <nama>
+easypanel project inspect <nama>
 
-Laravel Zero is an open-source software licensed under the MIT license.
+easypanel service deploy  <project> <service> [--type app] [--force]
+easypanel service restart <project> <service> [--type app]
+easypanel service start   <project> <service> [--type app]
+easypanel service stop    <project> <service> [--type app]
+easypanel service logs    <project> <service> [--limit 100]
+
+easypanel stats                      # CPU/mem/disk/uptime
+easypanel node list                  # node swarm cluster
+```
+
+`--type` default `app`; tipe lain (mysql, postgres, redis, mongo, …) sesuai service EasyPanel.
+
+## Menu interaktif
+
+Jalankan tanpa argumen (atau `easypanel menu`) untuk flow bertingkat: pilih server → kategori → project → service → aksi. Aksi yang memengaruhi service nyata (deploy/restart/stop) meminta konfirmasi.
+
+```bash
+easypanel
+```
+
+## Test
+
+```bash
+cargo test
+```
+
+## API
+
+EasyPanel memakai gaya tRPC: `POST {url}/api/rpc/{group}/{op}`, header `Authorization: Bearer <token>`, body `{"json": <input>}`, respons `{"json": <data>}`. Spesifikasi lengkap ada di `easypanel-api.json`. Command baru cukup memanggil `EasypanelClient::call(group, op, input)` — 374 endpoint tersedia.
