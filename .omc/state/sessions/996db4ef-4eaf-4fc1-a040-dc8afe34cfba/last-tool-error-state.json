@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd /Users/mrfansi/Github/easypanel-cli\\nSP=\\\"/private/tmp/claude-501/-Users-mrfansi-Github-easypanel-cli/996db4ef-4eaf-4fc1-a040-dc8afe34cfba/scratchpad\\\"\\ncat > \\\"$SP/drive2.exp\\\" <<'EXP'...",
-  "error": "Exit code 143\nCommand timed out after 2m 0s",
-  "timestamp": "2026-07-15T14:54:53.205Z",
-  "retry_count": 1
-}
