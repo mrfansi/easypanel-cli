@@ -579,8 +579,8 @@ git commit -m "feat: add server management commands"
 - Produces `App\Commands\BaseServerCommand extends LaravelZero\Framework\Commands\Command`:
   - adds `--server=` option to every subclass
   - `protected function client(): EasypanelClient` — resolve dari `--server=` atau default; throw `EasypanelException` bila tak ada.
-  - `public function handle(): int` — panggil abstract `runCommand(): int` dalam try/catch `EasypanelException` (cetak `error()`, return `FAILURE`).
-  - `abstract protected function runCommand(): int;`
+  - `public function handle(): int` — panggil abstract `runServerCommand(): int` dalam try/catch `EasypanelException` (cetak `error()`, return `FAILURE`).
+  - `abstract protected function runServerCommand(): int;`
 
 - [ ] **Step 1: Write BaseServerCommand**
 
@@ -606,7 +606,7 @@ abstract class BaseServerCommand extends Command
     public function handle(): int
     {
         try {
-            return $this->runCommand();
+            return $this->runServerCommand();
         } catch (EasypanelException $e) {
             $this->error($e->getMessage());
 
@@ -614,7 +614,7 @@ abstract class BaseServerCommand extends Command
         }
     }
 
-    abstract protected function runCommand(): int;
+    abstract protected function runServerCommand(): int;
 
     protected function client(): EasypanelClient
     {
@@ -673,7 +673,7 @@ class ProjectListCommand extends BaseServerCommand
 
     protected $description = 'Daftar project di server';
 
-    protected function runCommand(): int
+    protected function runServerCommand(): int
     {
         $projects = $this->client()->call('projects', 'listProjects') ?: [];
 
@@ -712,7 +712,7 @@ class ProjectCreateCommand extends BaseServerCommand
 
     protected $description = 'Buat project baru';
 
-    protected function runCommand(): int
+    protected function runServerCommand(): int
     {
         $name = $this->argument('name');
 
@@ -745,7 +745,7 @@ class ProjectInspectCommand extends BaseServerCommand
 
     protected $description = 'Lihat detail project dan service-nya';
 
-    protected function runCommand(): int
+    protected function runServerCommand(): int
     {
         $data = $this->client()->call('projects', 'inspectProject', ['projectName' => $this->argument('name')]);
 
@@ -821,7 +821,7 @@ class ServiceDeployCommand extends BaseServerCommand
 
     protected $description = 'Deploy sebuah service';
 
-    protected function runCommand(): int
+    protected function runServerCommand(): int
     {
         $type = $this->option('type');
         $this->client()->call("services/{$type}", 'deployService', [
@@ -852,7 +852,7 @@ class ServiceRestartCommand extends BaseServerCommand
 
     protected $description = 'Restart sebuah service';
 
-    protected function runCommand(): int
+    protected function runServerCommand(): int
     {
         $type = $this->option('type');
         $this->client()->call("services/{$type}", 'restartService', [
@@ -882,7 +882,7 @@ class ServiceStartCommand extends BaseServerCommand
 
     protected $description = 'Start sebuah service';
 
-    protected function runCommand(): int
+    protected function runServerCommand(): int
     {
         $type = $this->option('type');
         $this->client()->call("services/{$type}", 'startService', [
@@ -912,7 +912,7 @@ class ServiceStopCommand extends BaseServerCommand
 
     protected $description = 'Stop sebuah service';
 
-    protected function runCommand(): int
+    protected function runServerCommand(): int
     {
         $type = $this->option('type');
         $this->client()->call("services/{$type}", 'stopService', [
@@ -942,7 +942,7 @@ class ServiceLogsCommand extends BaseServerCommand
 
     protected $description = 'Tampilkan log service';
 
-    protected function runCommand(): int
+    protected function runServerCommand(): int
     {
         $lines = $this->client()->call('logs', 'queryServiceLogs', [
             'projectName' => $this->argument('project'),
@@ -1005,7 +1005,7 @@ class StatsCommand extends BaseServerCommand
 
     protected $description = 'System stats host (CPU, memori, disk, uptime)';
 
-    protected function runCommand(): int
+    protected function runServerCommand(): int
     {
         $s = $this->client()->call('monitorOld', 'getSystemStats') ?: [];
 
@@ -1043,7 +1043,7 @@ class NodeListCommand extends BaseServerCommand
 
     protected $description = 'Daftar node cluster host';
 
-    protected function runCommand(): int
+    protected function runServerCommand(): int
     {
         $nodes = $this->client()->call('cluster', 'listNodes') ?: [];
 
@@ -1103,6 +1103,6 @@ git commit -m "feat: add stats and node:list commands"
 
 **Placeholder scan:** Tidak ada TBD/TODO; semua step berisi kode lengkap. Verifikasi command memakai host asli sebagai langkah manual (bukan automated test), sesuai scope spec.
 
-**Type consistency:** `client()` / `call($group,$op,$input)` / `ServerConfig` method names konsisten di seluruh task. Service commands memakai group `services/{type}` seragam. `runCommand()` diimplementasikan tiap command konkret; `handle()` hanya di base.
+**Type consistency:** `client()` / `call($group,$op,$input)` / `ServerConfig` method names konsisten di seluruh task. Service commands memakai group `services/{type}` seragam. `runServerCommand()` diimplementasikan tiap command konkret; `handle()` hanya di base.
 
 **Catatan dependency:** Komponen `illuminate/http` di-install lewat `php easypanel app:install http` (sudah dilakukan & di-commit terpisah) agar facade `Http` + `Http::fake()` tersedia — sesuai spec.
