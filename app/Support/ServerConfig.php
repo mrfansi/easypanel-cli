@@ -47,13 +47,16 @@ class ServerConfig
 
     public function add(string $name, string $url, string $token): void
     {
+        $wasDefault = $this->get($name)['default'] ?? false;
         $servers = array_values(array_filter($this->all(), fn ($s) => $s['name'] !== $name));
 
         $servers[] = [
             'name' => $name,
             'url' => $url,
             'token' => $token,
-            'default' => $servers === [],
+            // Default bila: server pertama, ATAU server ini yang tadinya default
+            // (mis. rotasi token), ATAU tak ada server lain yang bertanda default.
+            'default' => $servers === [] || $wasDefault || ! $this->hasDefault($servers),
         ];
 
         $this->save($servers);

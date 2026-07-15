@@ -29,6 +29,17 @@ it('keeps the first server default when adding more', function () {
     expect($config->all())->toHaveCount(2);
 });
 
+it('keeps the default flag when re-adding the current default server (token rotation)', function () {
+    $config = new ServerConfig($this->path);
+    $config->add('prod', 'https://prod.test', 'tok-prod');
+    $config->add('staging', 'https://staging.test', 'tok-staging');
+    $config->add('prod', 'https://prod.test', 'tok-NEW');
+
+    expect($config->default()['name'])->toBe('prod');
+    expect($config->get('prod')['token'])->toBe('tok-NEW');
+    expect($config->all())->toHaveCount(2);
+});
+
 it('moves the default flag with setDefault', function () {
     $config = new ServerConfig($this->path);
     $config->add('prod', 'https://prod.test', 'tok-prod');

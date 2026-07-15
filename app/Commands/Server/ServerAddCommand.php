@@ -24,7 +24,7 @@ class ServerAddCommand extends Command
         }
 
         $config->add($name, rtrim($url, '/'), $token);
-        $this->info("Server '{$name}' ditambahkan.".($config->default()['name'] === $name ? ' (default)' : ''));
+        $this->info("Server '{$name}' ditambahkan.".(($config->default()['name'] ?? null) === $name ? ' (default)' : ''));
 
         return self::SUCCESS;
     }
