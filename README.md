@@ -60,10 +60,34 @@ easypanel service domains <project> <service>       # list (dengan id)
 easypanel domain delete       <id>
 easypanel domain set-primary  <id>
 
+# Databases & backups
+easypanel service databases      <project> <service>   # db dalam service database
+easypanel service backups        <project> <service>   # jadwal backup database
+easypanel service volume-backups <project> <service>   # jadwal backup volume
+easypanel backup db-run       <id>    # jalankan backup db sekarang
+easypanel backup db-delete    <id>
+easypanel backup volume-run   <id>
+easypanel backup volume-delete <id>
+
+# Certificates & notifications
+easypanel certificate list
+easypanel certificate remove <domain>
+easypanel notification list
+easypanel notification delete <id>
+
 # Monitoring & cluster
 easypanel stats                      # CPU/mem/disk/uptime
 easypanel node list                  # node swarm cluster
 ```
+
+## Install
+
+```bash
+./install.sh                 # build release + pasang ke /usr/local/bin
+PREFIX=~/.local/bin ./install.sh
+```
+
+Rilis biner (macOS/Linux) dibuat otomatis oleh GitHub Actions saat push tag `v*`.
 
 `--type` default `app`; tipe lain (mysql, postgres, redis, mongo, mariadb, wordpress, compose, …) sesuai service EasyPanel. Ports, mounts, dan domains dipanggil per project+service (tanpa `--type`).
 

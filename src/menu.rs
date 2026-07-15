@@ -1,5 +1,5 @@
 use anyhow::Result;
-use dialoguer::{Confirm, Select};
+use dialoguer::{Confirm, Input, Select};
 use serde_json::{json, Value};
 
 use crate::client::EasypanelClient;
@@ -106,9 +106,19 @@ fn projects_menu(client: &EasypanelClient) -> Result<()> {
             .filter_map(|p| p.get("name").and_then(Value::as_str).map(str::to_string))
             .collect();
 
-        let Some(i) = select("Pilih project", &names, "Kembali")? else {
+        let mut labels = names.clone();
+        labels.push("＋ Buat project baru".to_string());
+
+        let Some(i) = select("Pilih project", &labels, "Kembali")? else {
             return Ok(());
         };
+        if i == names.len() {
+            let name: String = Input::new()
+                .with_prompt("Nama project baru")
+                .interact_text()?;
+            guard(commands::project_create(client, &name));
+            continue;
+        }
         guard(services_menu(client, &names[i]));
     }
 }
@@ -145,25 +155,41 @@ fn services_menu(client: &EasypanelClient, project: &str) -> Result<()> {
                 )
             })
             .collect();
-        let labels: Vec<String> = pairs.iter().map(|(n, t)| format!("{n} ({t})")).collect();
+        let mut labels: Vec<String> = pairs.iter().map(|(n, t)| format!("{n} ({t})")).collect();
+        labels.push("＋ Buat service baru (app)".to_string());
 
         let Some(i) = select(&format!("Project: {project}"), &labels, "Kembali")? else {
             return Ok(());
         };
+        if i == pairs.len() {
+            let name: String = Input::new()
+                .with_prompt("Nama service baru")
+                .interact_text()?;
+            guard(commands::service_create(client, project, &name, "app"));
+            continue;
+        }
         let (service, stype) = pairs[i].clone();
         guard(action_menu(client, project, &service, &stype));
     }
 }
 
 fn action_menu(client: &EasypanelClient, project: &str, service: &str, stype: &str) -> Result<()> {
-    let items = vec![
-        "Deploy".to_string(),
-        "Restart".to_string(),
-        "Start".to_string(),
-        "Stop".to_string(),
-        "Lihat logs (100 baris)".to_string(),
-    ];
-    let actions = ["deploy", "restart", "start", "stop", "logs"];
+    let items: Vec<String> = [
+        "Deploy",
+        "Restart",
+        "Start",
+        "Stop",
+        "Lihat logs (100 baris)",
+        "Lihat env",
+        "Ports",
+        "Mounts",
+        "Domains",
+        "Database backups",
+        "Hapus service",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
 
     loop {
         let Some(i) = select(
@@ -174,7 +200,26 @@ fn action_menu(client: &EasypanelClient, project: &str, service: &str, stype: &s
         else {
             return Ok(());
         };
-        guard(run_action(client, project, service, stype, actions[i]));
+        match i {
+            0 => guard(run_action(client, project, service, stype, "deploy")),
+            1 => guard(run_action(client, project, service, stype, "restart")),
+            2 => guard(run_action(client, project, service, stype, "start")),
+            3 => guard(run_action(client, project, service, stype, "stop")),
+            4 => guard(commands::service_logs(client, project, service, 100)),
+            5 => guard(commands::service_env(client, project, service, stype)),
+            6 => guard(commands::ports_list(client, project, service)),
+            7 => guard(commands::mounts_list(client, project, service)),
+            8 => guard(commands::domains_list(client, project, service)),
+            9 => guard(commands::db_backup_list(client, project, service)),
+            10 => {
+                guard(commands::service_destroy(
+                    client, project, service, stype, false,
+                ));
+                // Service kemungkinan sudah terhapus; kembali ke daftar service.
+                return Ok(());
+            }
+            _ => {}
+        }
     }
 }
 

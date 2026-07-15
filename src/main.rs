@@ -41,6 +41,15 @@ enum Command {
     /// Kelola domain (by id)
     #[command(subcommand)]
     Domain(DomainCmd),
+    /// Kelola SSL certificates
+    #[command(subcommand)]
+    Certificate(CertificateCmd),
+    /// Kelola notification channels
+    #[command(subcommand)]
+    Notification(NotificationCmd),
+    /// Jalankan/hapus backup (by id)
+    #[command(subcommand)]
+    Backup(BackupCmd),
     /// Menu interaktif
     Menu,
 }
@@ -180,6 +189,12 @@ enum ServiceCmd {
     },
     /// Daftar domain service
     Domains { project: String, service: String },
+    /// Daftar database dalam service database
+    Databases { project: String, service: String },
+    /// Daftar jadwal backup database service
+    Backups { project: String, service: String },
+    /// Daftar jadwal backup volume service
+    VolumeBackups { project: String, service: String },
     /// Buat service kosong (konfigurasi source menyusul)
     Create {
         project: String,
@@ -210,6 +225,34 @@ enum DomainCmd {
     Delete { id: String },
     /// Jadikan domain sebagai primary
     SetPrimary { id: String },
+}
+
+#[derive(Subcommand)]
+enum CertificateCmd {
+    /// Daftar certificate
+    List,
+    /// Hapus certificate berdasarkan domain
+    Remove { domain: String },
+}
+
+#[derive(Subcommand)]
+enum NotificationCmd {
+    /// Daftar notification channel
+    List,
+    /// Hapus notification channel berdasarkan id
+    Delete { id: String },
+}
+
+#[derive(Subcommand)]
+enum BackupCmd {
+    /// Jalankan backup database sekarang (by id)
+    DbRun { id: String },
+    /// Hapus jadwal backup database (by id)
+    DbDelete { id: String },
+    /// Jalankan backup volume sekarang (by id)
+    VolumeRun { id: String },
+    /// Hapus jadwal backup volume (by id)
+    VolumeDelete { id: String },
 }
 
 fn main() {
@@ -353,6 +396,15 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                 ServiceCmd::Domains { project, service } => {
                     commands::domains_list(&client, &project, &service)
                 }
+                ServiceCmd::Databases { project, service } => {
+                    commands::service_databases(&client, &project, &service)
+                }
+                ServiceCmd::Backups { project, service } => {
+                    commands::db_backup_list(&client, &project, &service)
+                }
+                ServiceCmd::VolumeBackups { project, service } => {
+                    commands::volume_backup_list(&client, &project, &service)
+                }
                 ServiceCmd::Create {
                     project,
                     service,
@@ -384,6 +436,32 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
             match c {
                 DomainCmd::Delete { id } => commands::domain_delete(&client, &id),
                 DomainCmd::SetPrimary { id } => commands::domain_set_primary(&client, &id),
+            }
+        }
+
+        Some(Command::Certificate(c)) => {
+            let client = resolve_client(cfg, &cli.server)?;
+            match c {
+                CertificateCmd::List => commands::certificate_list(&client),
+                CertificateCmd::Remove { domain } => commands::certificate_remove(&client, &domain),
+            }
+        }
+
+        Some(Command::Notification(c)) => {
+            let client = resolve_client(cfg, &cli.server)?;
+            match c {
+                NotificationCmd::List => commands::notification_list(&client),
+                NotificationCmd::Delete { id } => commands::notification_delete(&client, &id),
+            }
+        }
+
+        Some(Command::Backup(c)) => {
+            let client = resolve_client(cfg, &cli.server)?;
+            match c {
+                BackupCmd::DbRun { id } => commands::db_backup_run(&client, &id),
+                BackupCmd::DbDelete { id } => commands::db_backup_delete(&client, &id),
+                BackupCmd::VolumeRun { id } => commands::volume_backup_run(&client, &id),
+                BackupCmd::VolumeDelete { id } => commands::volume_backup_delete(&client, &id),
             }
         }
     }

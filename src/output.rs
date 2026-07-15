@@ -22,3 +22,16 @@ pub fn field(value: &Value, pointer: &str) -> String {
         _ => "-".to_string(),
     }
 }
+
+/// Boolean di pointer JSON sebagai "ya"/"tidak".
+pub fn yes_no(value: &Value, pointer: &str) -> String {
+    if value
+        .pointer(pointer)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "ya".to_string()
+    } else {
+        "tidak".to_string()
+    }
+}
