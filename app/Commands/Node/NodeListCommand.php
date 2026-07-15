@@ -21,10 +21,14 @@ class NodeListCommand extends BaseServerCommand
         }
 
         $this->table(
-            ['Node', 'Detail'],
-            array_map(fn ($n) => is_array($n)
-                ? [$n['name'] ?? $n['hostname'] ?? '-', json_encode($n)]
-                : [$n, ''], $nodes),
+            ['Hostname', 'Role', 'State', 'Availability', 'Addr'],
+            array_map(fn ($n) => [
+                data_get($n, 'Description.Hostname', '-'),
+                data_get($n, 'Spec.Role', '-'),
+                data_get($n, 'Status.State', '-'),
+                data_get($n, 'Spec.Availability', '-'),
+                data_get($n, 'Status.Addr', '-'),
+            ], $nodes),
         );
 
         return self::SUCCESS;
