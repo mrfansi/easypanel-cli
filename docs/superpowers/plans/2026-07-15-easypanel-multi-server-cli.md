@@ -6,13 +6,13 @@
 
 **Architecture:** Tiga lapis: (1) `ServerConfig` menyimpan daftar host+token di `~/.config/easypanel/servers.json`; (2) `EasypanelClient` membungkus Guzzle untuk memanggil endpoint tRPC `POST {url}/api/rpc/{group}/{op}` dengan body `{"json": input}` dan unwrap `.json`; (3) command Laravel Zero yang me-resolve server aktif (default atau `--server=`) lalu memakai client.
 
-**Tech Stack:** PHP 8.4, Laravel Zero (`laravel-zero/framework` ^12), GuzzleHttp (sudah terinstal), Pest 3/4.
+**Tech Stack:** PHP 8.4, Laravel Zero (`laravel-zero/framework` ^12), `illuminate/http` (facade `Http`, sudah di-install via `app:install http`), Pest 3/4.
 
 ## Global Constraints
 
 - Semua request API: `POST {url}/api/rpc/{group}/{op}`, header `Authorization: Bearer <token>`, `Content-Type: application/json`, body **selalu** `{"json": <input>}` (input `null` bila tanpa parameter — body kosong ditolak 400).
 - Response sukses envelope: `{"json": <data>, "meta": [...]}` → nilai yang dipakai adalah `.json`.
-- Guzzle dipakai langsung (facade `Http` TIDAK tersedia di Laravel Zero ini). `EasypanelClient` menerima `GuzzleHttp\Client` opsional agar bisa di-mock (`MockHandler`) di test.
+- Memakai facade `Http` (illuminate/http). Test memakai `Http::fake()` + `Http::assertSent()` — tidak perlu inject client apa pun.
 - Config file permission `0600`. Nama project/service tervalidasi pola `^[a-z0-9-_]+$`.
 - Command auto-registered dari `app/Commands` (lihat `config/commands.php`). Namespace `App\`.
 - Bahasa pesan CLI: Indonesia.
@@ -29,8 +29,8 @@
 
 **Interfaces:**
 - Produces:
-  - `App\Support\EasypanelException extends \RuntimeException` dengan static `fromGuzzle(\GuzzleHttp\Exception\RequestException $e): self`.
-  - `App\Support\EasypanelClient` — `__construct(string $url, string $token, ?\GuzzleHttp\Client $http = null)`; `call(string $group, string $op, mixed $input = null): mixed`.
+  - `App\Support\EasypanelException extends \RuntimeException` dengan static `fromResponse(\Illuminate\Http\Client\Response $r): self`.
+  - `App\Support\EasypanelClient` — `__construct(string $url, string $token)`; `call(string $group, string $op, mixed $input = null): mixed`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -39,68 +39,42 @@
 // tests/Unit/EasypanelClientTest.php
 use App\Support\EasypanelClient;
 use App\Support\EasypanelException;
-use GuzzleHttp\Client;
-use GuzzleHttp\Handler\MockHandler;
-use GuzzleHttp\HandlerStack;
-use GuzzleHttp\Middleware;
-use GuzzleHttp\Psr7\Response;
-
-function fakeClient(array $queue, array &$history): EasypanelClient
-{
-    $mock = new MockHandler($queue);
-    $stack = HandlerStack::create($mock);
-    $stack->push(Middleware::history($history));
-    $guzzle = new Client(['handler' => $stack]);
-
-    return new EasypanelClient('https://panel.test/', 'tok123', $guzzle);
-}
+use Illuminate\Support\Facades\Http;
 
 it('posts to the rpc path with bearer auth and json envelope, unwrapping .json', function () {
-    $history = [];
-    $client = fakeClient([
-        new Response(200, [], json_encode(['json' => [['name' => 'proj-a']], 'meta' => []])),
-    ], $history);
+    Http::fake([
+        '*' => Http::response(['json' => [['name' => 'proj-a']], 'meta' => []]),
+    ]);
 
-    $result = $client->call('projects', 'listProjects');
+    $result = (new EasypanelClient('https://panel.test/', 'tok123'))->call('projects', 'listProjects');
 
     expect($result)->toBe([['name' => 'proj-a']]);
 
-    $req = $history[0]['request'];
-    expect((string) $req->getUri())->toBe('https://panel.test/api/rpc/projects/listProjects');
-    expect($req->getMethod())->toBe('POST');
-    expect($req->getHeaderLine('Authorization'))->toBe('Bearer tok123');
-    expect((string) $req->getBody())->toBe(json_encode(['json' => null]));
+    Http::assertSent(fn ($req) => $req->url() === 'https://panel.test/api/rpc/projects/listProjects'
+        && $req->method() === 'POST'
+        && $req->hasHeader('Authorization', 'Bearer tok123')
+        && $req->data() === ['json' => null]);
 });
 
 it('sends the given input wrapped in json', function () {
-    $history = [];
-    $client = fakeClient([
-        new Response(200, [], json_encode(['json' => ['ok' => true]])),
-    ], $history);
+    Http::fake(['*' => Http::response(['json' => ['ok' => true]])]);
 
-    $client->call('projects', 'createProject', ['name' => 'proj-a']);
+    (new EasypanelClient('https://panel.test', 'tok123'))->call('projects', 'createProject', ['name' => 'proj-a']);
 
-    expect((string) $history[0]['request']->getBody())
-        ->toBe(json_encode(['json' => ['name' => 'proj-a']]));
+    Http::assertSent(fn ($req) => $req->data() === ['json' => ['name' => 'proj-a']]);
 });
 
 it('throws EasypanelException with a friendly message on 401', function () {
-    $history = [];
-    $client = fakeClient([
-        new Response(401, [], json_encode(['message' => 'Unauthorized'])),
-    ], $history);
+    Http::fake(['*' => Http::response(['message' => 'Unauthorized'], 401)]);
 
-    expect(fn () => $client->call('projects', 'listProjects'))
+    expect(fn () => (new EasypanelClient('https://panel.test', 'tok123'))->call('projects', 'listProjects'))
         ->toThrow(EasypanelException::class, 'Token tidak valid');
 });
 
 it('throws EasypanelException surfacing the api message on other errors', function () {
-    $history = [];
-    $client = fakeClient([
-        new Response(500, [], json_encode(['message' => 'Boom'])),
-    ], $history);
+    Http::fake(['*' => Http::response(['message' => 'Boom'], 500)]);
 
-    expect(fn () => $client->call('projects', 'listProjects'))
+    expect(fn () => (new EasypanelClient('https://panel.test', 'tok123'))->call('projects', 'listProjects'))
         ->toThrow(EasypanelException::class, 'Boom');
 });
 ```
@@ -117,22 +91,15 @@ Expected: FAIL — `Class "App\Support\EasypanelClient" not found`.
 // app/Support/EasypanelException.php
 namespace App\Support;
 
-use GuzzleHttp\Exception\RequestException;
+use Illuminate\Http\Client\Response;
 use RuntimeException;
 
 class EasypanelException extends RuntimeException
 {
-    public static function fromGuzzle(RequestException $e): self
+    public static function fromResponse(Response $response): self
     {
-        $response = $e->getResponse();
-
-        if ($response === null) {
-            return new self($e->getMessage());
-        }
-
-        $status = $response->getStatusCode();
-        $body = json_decode((string) $response->getBody(), true) ?: [];
-        $message = $body['message'] ?? $body['error'] ?? $response->getReasonPhrase();
+        $status = $response->status();
+        $message = $response->json('message') ?? $response->json('error') ?? $response->reason();
 
         if ($status === 401) {
             $message = 'Token tidak valid atau kadaluarsa (401).';
@@ -150,18 +117,14 @@ class EasypanelException extends RuntimeException
 // app/Support/EasypanelClient.php
 namespace App\Support;
 
-use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
+use Illuminate\Support\Facades\Http;
 
 class EasypanelClient
 {
     public function __construct(
         private string $url,
         private string $token,
-        private ?Client $http = null,
-    ) {
-        $this->http ??= new Client;
-    }
+    ) {}
 
     /**
      * Panggil endpoint tRPC EasyPanel dan kembalikan payload `.json`.
@@ -170,18 +133,15 @@ class EasypanelClient
     {
         $base = rtrim($this->url, '/');
 
-        try {
-            $response = $this->http->post("{$base}/api/rpc/{$group}/{$op}", [
-                'headers' => ['Authorization' => "Bearer {$this->token}"],
-                'json' => ['json' => $input],
-            ]);
-        } catch (RequestException $e) {
-            throw EasypanelException::fromGuzzle($e);
+        $response = Http::withToken($this->token)
+            ->acceptJson()
+            ->post("{$base}/api/rpc/{$group}/{$op}", ['json' => $input]);
+
+        if ($response->failed()) {
+            throw EasypanelException::fromResponse($response);
         }
 
-        $body = json_decode((string) $response->getBody(), true);
-
-        return $body['json'] ?? null;
+        return $response->json('json');
     }
 }
 ```
@@ -195,7 +155,7 @@ Expected: PASS (4 passed).
 
 ```bash
 git add app/Support/EasypanelClient.php app/Support/EasypanelException.php tests/Unit/EasypanelClientTest.php
-git commit -m "feat: add EasypanelClient tRPC wrapper over Guzzle"
+git commit -m "feat: add EasypanelClient tRPC wrapper over Http facade"
 ```
 
 ---
@@ -1145,4 +1105,4 @@ git commit -m "feat: add stats and node:list commands"
 
 **Type consistency:** `client()` / `call($group,$op,$input)` / `ServerConfig` method names konsisten di seluruh task. Service commands memakai group `services/{type}` seragam. `runCommand()` diimplementasikan tiap command konkret; `handle()` hanya di base.
 
-**Penyesuaian dari spec:** Spec menyebut "Laravel `Http` facade"; saat planning ditemukan facade `Http` tidak tersedia di Laravel Zero ini, jadi memakai GuzzleHttp langsung (sudah terinstal). Contract & testabilitas tetap sama.
+**Catatan dependency:** Komponen `illuminate/http` di-install lewat `php easypanel app:install http` (sudah dilakukan & di-commit terpisah) agar facade `Http` + `Http::fake()` tersedia — sesuai spec.
