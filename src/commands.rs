@@ -5,7 +5,7 @@ use std::io::Read;
 
 use crate::client::EasypanelClient;
 use crate::config::ServerConfig;
-use crate::output::{field, table};
+use crate::output::{field, table, yes_no};
 use crate::{logs, menu};
 
 /// Resolve klien untuk server aktif (dari --server atau default).
@@ -577,6 +577,162 @@ fn confirm(prompt: &str, yes: bool) -> Result<bool> {
         .with_prompt(prompt)
         .default(false)
         .interact()?)
+}
+
+// ---------- Certificates ----------
+
+pub fn certificate_list(client: &EasypanelClient) -> Result<()> {
+    let certs = client.call("certificates", "listCertificates", Value::Null)?;
+    let arr = certs.as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        println!("Tidak ada certificate.");
+        return Ok(());
+    }
+    let rows = arr.iter().map(|c| vec![field(c, "/domain/main")]).collect();
+    table(&["Domain"], rows);
+    Ok(())
+}
+
+pub fn certificate_remove(client: &EasypanelClient, domain: &str) -> Result<()> {
+    client.call(
+        "certificates",
+        "removeCertificate",
+        json!({ "domain": domain }),
+    )?;
+    println!("Certificate untuk {domain} dihapus.");
+    Ok(())
+}
+
+// ---------- Notifications ----------
+
+pub fn notification_list(client: &EasypanelClient) -> Result<()> {
+    let res = client.call("notifications", "listNotificationChannels", Value::Null)?;
+    let arr = res
+        .get("notificationChannels")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if arr.is_empty() {
+        println!("Tidak ada notification channel.");
+        return Ok(());
+    }
+    let rows = arr
+        .iter()
+        .map(|c| vec![field(c, "/id"), field(c, "/name")])
+        .collect();
+    table(&["ID", "Nama"], rows);
+    Ok(())
+}
+
+pub fn notification_delete(client: &EasypanelClient, id: &str) -> Result<()> {
+    client.call(
+        "notifications",
+        "destroyNotificationChannel",
+        json!({ "id": id }),
+    )?;
+    println!("Notification channel {id} dihapus.");
+    Ok(())
+}
+
+// ---------- Databases & Backups ----------
+
+pub fn service_databases(client: &EasypanelClient, project: &str, service: &str) -> Result<()> {
+    let dbs = client.call(
+        "databaseBackups",
+        "getServiceDatabases",
+        json!({ "projectName": project, "serviceName": service }),
+    )?;
+    let arr = dbs.as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        println!("Tidak ada database.");
+        return Ok(());
+    }
+    for db in arr {
+        if let Some(name) = db.as_str() {
+            println!("{name}");
+        }
+    }
+    Ok(())
+}
+
+pub fn db_backup_list(client: &EasypanelClient, project: &str, service: &str) -> Result<()> {
+    let res = client.call(
+        "databaseBackups",
+        "listDatabaseBackups",
+        json!({ "projectName": project, "serviceName": service }),
+    )?;
+    let arr = res.as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        println!("Tidak ada database backup.");
+        return Ok(());
+    }
+    let rows = arr
+        .iter()
+        .map(|b| {
+            vec![
+                field(b, "/id"),
+                field(b, "/databaseName"),
+                field(b, "/schedule"),
+                yes_no(b, "/enabled"),
+            ]
+        })
+        .collect();
+    table(&["ID", "Database", "Schedule", "Aktif"], rows);
+    Ok(())
+}
+
+pub fn db_backup_run(client: &EasypanelClient, id: &str) -> Result<()> {
+    client.call("databaseBackups", "runDatabaseBackup", json!({ "id": id }))?;
+    println!("Backup database {id} dijalankan.");
+    Ok(())
+}
+
+pub fn db_backup_delete(client: &EasypanelClient, id: &str) -> Result<()> {
+    client.call(
+        "databaseBackups",
+        "deleteDatabaseBackup",
+        json!({ "id": id }),
+    )?;
+    println!("Backup database {id} dihapus.");
+    Ok(())
+}
+
+pub fn volume_backup_list(client: &EasypanelClient, project: &str, service: &str) -> Result<()> {
+    let res = client.call(
+        "volumeBackups",
+        "listVolumeBackups",
+        json!({ "projectName": project, "serviceName": service }),
+    )?;
+    let arr = res.as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        println!("Tidak ada volume backup.");
+        return Ok(());
+    }
+    let rows = arr
+        .iter()
+        .map(|b| {
+            vec![
+                field(b, "/id"),
+                field(b, "/volumeName"),
+                field(b, "/schedule"),
+                yes_no(b, "/enabled"),
+            ]
+        })
+        .collect();
+    table(&["ID", "Volume", "Schedule", "Aktif"], rows);
+    Ok(())
+}
+
+pub fn volume_backup_run(client: &EasypanelClient, id: &str) -> Result<()> {
+    client.call("volumeBackups", "runVolumeBackup", json!({ "id": id }))?;
+    println!("Volume backup {id} dijalankan.");
+    Ok(())
+}
+
+pub fn volume_backup_delete(client: &EasypanelClient, id: &str) -> Result<()> {
+    client.call("volumeBackups", "destroyVolumeBackup", json!({ "id": id }))?;
+    println!("Volume backup {id} dihapus.");
+    Ok(())
 }
 
 // ---------- Menu (delegasi) ----------

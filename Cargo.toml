@@ -21,3 +21,8 @@ anyhow = "1"
 [dev-dependencies]
 httpmock = "0.7"
 tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
