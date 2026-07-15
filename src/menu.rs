@@ -14,7 +14,9 @@ pub fn run(cfg: &ServerConfig) -> Result<()> {
     }
 
     loop {
-        let Some(server) = pick_server(cfg)? else { break };
+        let Some(server) = pick_server(cfg)? else {
+            break;
+        };
         let client = EasypanelClient::new(&server.url, &server.token);
         let multi = cfg.all().len() > 1;
         server_menu(&client, &server.name, multi)?;
@@ -113,7 +115,11 @@ fn projects_menu(client: &EasypanelClient) -> Result<()> {
 
 fn services_menu(client: &EasypanelClient, project: &str) -> Result<()> {
     loop {
-        let data = client.call("projects", "inspectProject", json!({ "projectName": project }))?;
+        let data = client.call(
+            "projects",
+            "inspectProject",
+            json!({ "projectName": project }),
+        )?;
         let services = data
             .get("services")
             .and_then(Value::as_array)
@@ -128,8 +134,14 @@ fn services_menu(client: &EasypanelClient, project: &str) -> Result<()> {
             .iter()
             .map(|s| {
                 (
-                    s.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
-                    s.get("type").and_then(Value::as_str).unwrap_or("app").to_string(),
+                    s.get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    s.get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("app")
+                        .to_string(),
                 )
             })
             .collect();
@@ -154,7 +166,12 @@ fn action_menu(client: &EasypanelClient, project: &str, service: &str, stype: &s
     let actions = ["deploy", "restart", "start", "stop", "logs"];
 
     loop {
-        let Some(i) = select(&format!("{project} / {service} ({stype})"), &items, "Kembali")? else {
+        let Some(i) = select(
+            &format!("{project} / {service} ({stype})"),
+            &items,
+            "Kembali",
+        )?
+        else {
             return Ok(());
         };
         guard(run_action(client, project, service, stype, actions[i]));

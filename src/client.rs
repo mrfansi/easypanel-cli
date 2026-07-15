@@ -65,7 +65,9 @@ mod tests {
         });
 
         let client = EasypanelClient::new(&server.base_url(), "tok123");
-        let result = client.call("projects", "listProjects", Value::Null).unwrap();
+        let result = client
+            .call("projects", "listProjects", Value::Null)
+            .unwrap();
 
         mock.assert();
         assert_eq!(result, json!([{ "name": "proj-a" }]));
@@ -78,7 +80,8 @@ mod tests {
             when.method(POST)
                 .path("/api/rpc/projects/createProject")
                 .json_body(json!({ "json": { "name": "proj-a" } }));
-            then.status(200).json_body(json!({ "json": { "ok": true } }));
+            then.status(200)
+                .json_body(json!({ "json": { "ok": true } }));
         });
 
         let client = EasypanelClient::new(&server.base_url(), "tok123");
@@ -94,7 +97,8 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST);
-            then.status(401).json_body(json!({ "message": "Unauthorized" }));
+            then.status(401)
+                .json_body(json!({ "message": "Unauthorized" }));
         });
 
         let client = EasypanelClient::new(&server.base_url(), "tok123");

@@ -10,9 +10,12 @@ use crate::{logs, menu};
 /// Resolve klien untuk server aktif (dari --server atau default).
 pub fn resolve_client(cfg: &ServerConfig, server: &Option<String>) -> Result<EasypanelClient> {
     let s = match server {
-        Some(name) => cfg
-            .get(name)
-            .ok_or_else(|| anyhow!("Server '{}' tidak ditemukan. Lihat: easypanel server list", name))?,
+        Some(name) => cfg.get(name).ok_or_else(|| {
+            anyhow!(
+                "Server '{}' tidak ditemukan. Lihat: easypanel server list",
+                name
+            )
+        })?,
         None => cfg
             .default()
             .ok_or_else(|| anyhow!("Belum ada server default. Jalankan: easypanel server add"))?,
@@ -202,7 +205,11 @@ pub fn service_action(
     if action == "deploy" {
         input["forceRebuild"] = json!(force);
     }
-    client.call(&format!("services/{stype}"), &format!("{action}Service"), input)?;
+    client.call(
+        &format!("services/{stype}"),
+        &format!("{action}Service"),
+        input,
+    )?;
     println!("{} dipicu untuk {}/{}.", ucfirst(action), project, service);
     Ok(())
 }
