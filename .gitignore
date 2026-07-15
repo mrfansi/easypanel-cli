@@ -2,4 +2,6 @@
 /.idea
 /.vscode
 /.vagrant
+.omc/
+.superpowers/
 .phpunit.result.cache
