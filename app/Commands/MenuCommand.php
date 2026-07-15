@@ -53,7 +53,7 @@ class MenuCommand extends Command
             $options[$s['name']] = $s['name'].(($s['default'] ?? false) ? ' (default)' : '').' — '.$s['url'];
         }
 
-        $name = $this->menu('Pilih server', $options)->setExitButtonText('Keluar')->open();
+        $name = $this->styledMenu('Pilih server', $options)->setExitButtonText('Keluar')->open();
 
         return $name === null ? null : $this->config->get($name);
     }
@@ -64,7 +64,7 @@ class MenuCommand extends Command
 
         while (true) {
             $exitLabel = count($this->config->all()) > 1 ? 'Ganti server' : 'Keluar';
-            $choice = $this->menu("Server: {$server['name']}", [
+            $choice = $this->styledMenu("Server: {$server['name']}", [
                 'projects' => 'Projects',
                 'stats' => 'Monitoring (system stats)',
                 'nodes' => 'Node cluster',
@@ -99,7 +99,7 @@ class MenuCommand extends Command
                 $options[$p['name']] = $p['name'];
             }
 
-            $name = $this->menu('Pilih project', $options)->setExitButtonText('Kembali')->open();
+            $name = $this->styledMenu('Pilih project', $options)->setExitButtonText('Kembali')->open();
 
             if ($name === null) {
                 return;
@@ -128,7 +128,7 @@ class MenuCommand extends Command
                 $options[$s['name'].'|'.$type] = $s['name'].' ('.$type.')';
             }
 
-            $choice = $this->menu("Project: {$project}", $options)->setExitButtonText('Kembali')->open();
+            $choice = $this->styledMenu("Project: {$project}", $options)->setExitButtonText('Kembali')->open();
 
             if ($choice === null) {
                 return;
@@ -142,7 +142,7 @@ class MenuCommand extends Command
     private function serviceActionMenu(EasypanelClient $client, string $project, string $service, string $type): void
     {
         while (true) {
-            $action = $this->menu("{$project} / {$service} ({$type})", [
+            $action = $this->styledMenu("{$project} / {$service} ({$type})", [
                 'deploy' => 'Deploy',
                 'restart' => 'Restart',
                 'start' => 'Start',
@@ -223,6 +223,14 @@ class MenuCommand extends Command
                 data_get($n, 'Status.Addr', '-'),
             ], $nodes),
         );
+    }
+
+    /** Bangun menu dengan skema warna kontras-tinggi (latar hitam, teks putih) untuk tema terminal gelap. */
+    private function styledMenu(string $title, array $options = [])
+    {
+        return $this->menu($title, $options)
+            ->setBackgroundColour('black')
+            ->setForegroundColour('white');
     }
 
     /** Jalankan aksi menu; tampilkan error API dengan rapi tanpa keluar dari menu. */
