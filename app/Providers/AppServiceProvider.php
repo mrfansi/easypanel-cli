@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Support\ServerConfig;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -19,6 +20,6 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(ServerConfig::class, fn () => new ServerConfig(ServerConfig::defaultPath()));
     }
 }
