@@ -43,10 +43,13 @@ impl EasypanelClient {
                 bail!("Token tidak valid atau kadaluarsa (401).");
             }
             let body: Value = resp.json().unwrap_or(Value::Null);
-            let msg = body
-                .get("message")
-                .and_then(Value::as_str)
-                .or_else(|| body.get("error").and_then(Value::as_str))
+            // EasyPanel menaruh pesan error DI DALAM "json", sama seperti respons
+            // sukses: {"json":{"code":"BAD_REQUEST","message":"Branch not found"}}.
+            // Membaca "message" di level teratas saja membuat semua pesan server
+            // terbuang dan tergantikan nama status generik ("Bad Request").
+            let msg = ["/json/message", "/message", "/json/error", "/error"]
+                .iter()
+                .find_map(|p| body.pointer(p).and_then(Value::as_str))
                 .unwrap_or_else(|| status.canonical_reason().unwrap_or("error"));
             bail!("[{}] {}", status.as_u16(), msg);
         }
@@ -130,5 +133,26 @@ mod tests {
             .call("projects", "listProjects", Value::Null)
             .unwrap_err();
         assert!(err.to_string().contains("Boom"));
+    }
+
+    #[test]
+    fn surfaces_message_nested_under_json() {
+        // Bentuk error EasyPanel yang sebenarnya (terverifikasi di server):
+        // pesannya di dalam "json", bukan di level teratas. Mock lama memakai
+        // bentuk level-teratas, jadi test lolos sementara pesan asli terbuang
+        // dan user cuma melihat "[400] Bad Request".
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST);
+            then.status(400).json_body(json!({
+                "json": { "code": "BAD_REQUEST", "status": 400, "message": "Branch not found" }
+            }));
+        });
+
+        let client = EasypanelClient::new(&server.base_url(), "tok123");
+        let err = client
+            .call("services/app", "updateSourceGithub", Value::Null)
+            .unwrap_err();
+        assert!(err.to_string().contains("Branch not found"), "{err}");
     }
 }

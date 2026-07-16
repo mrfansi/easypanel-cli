@@ -279,6 +279,10 @@ enum Req {
         service: String,
         build: bool,
     },
+    /// Info server untuk tab Maintenance (versi Docker, IP, ketersediaan update).
+    MaintInfo,
+    /// Pembersihan Docker: systemPrune / cleanupDockerImages / cleanupDockerBuilder.
+    MaintAction(&'static str),
     /// Branch sebuah repo untuk dropdown "Branch" (dipicu setelah repo dipilih).
     Branches {
         owner: String,
@@ -337,6 +341,7 @@ enum Resp {
         repos: Vec<String>,
     },
     Branches(Vec<String>),
+    MaintInfo(Vec<(String, String)>),
     /// Hasil satu host di layar Hosts; tiap host tiba sendiri-sendiri supaya
     /// host lambat/mati tak menahan yang lain.
     HostStat {
@@ -486,6 +491,24 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
+        Req::MaintInfo => {
+            // Tiap baris berdiri sendiri: satu endpoint gagal tak boleh
+            // mengosongkan seluruh tab.
+            let one = |op: &str| match client.call("settings", op, Value::Null) {
+                Ok(v) => field(&v, ""),
+                Err(e) => format!("error: {e}"),
+            };
+            Resp::MaintInfo(vec![
+                ("Docker".into(), one("getDockerVersion")),
+                ("IP server".into(), one("getServerIp")),
+                ("Update tersedia".into(), one("checkForUpdates")),
+                ("Bersih-bersih harian".into(), one("getDailyDockerCleanup")),
+            ])
+        }
+        Req::MaintAction(op) => match client.call("settings", op, Value::Null) {
+            Ok(_) => Resp::Done(format!("{op} selesai"), Refresh::None),
+            Err(e) => Resp::Err(e.to_string()),
+        },
         Req::Branches { owner, repo } => {
             match client.call(
                 "github",
@@ -1194,6 +1217,8 @@ enum Screen {
     Dashboard,
     /// Semua host sekaligus — satu-satunya layar yang tak bisa digantikan panel web.
     Hosts,
+    /// Info & pembersihan Docker pada server aktif.
+    Maintenance,
     Actions,
     Monitor,
     Domains,
@@ -1201,9 +1226,10 @@ enum Screen {
     Viewer,
 }
 
-const TABS: [&str; 7] = [
+const TABS: [&str; 8] = [
     "Dashboard",
     "Hosts",
+    "Maintenance",
     "Actions",
     "Monitor",
     "Domains",
@@ -1216,17 +1242,19 @@ impl Screen {
         match self {
             Screen::Dashboard => 0,
             Screen::Hosts => 1,
-            Screen::Actions => 2,
-            Screen::Monitor => 3,
-            Screen::Domains => 4,
-            Screen::Projects => 5,
-            Screen::Viewer => 6,
+            Screen::Maintenance => 2,
+            Screen::Actions => 3,
+            Screen::Monitor => 4,
+            Screen::Domains => 5,
+            Screen::Projects => 6,
+            Screen::Viewer => 7,
         }
     }
     fn next(self) -> Self {
         match self {
             Screen::Dashboard => Screen::Hosts,
-            Screen::Hosts => Screen::Actions,
+            Screen::Hosts => Screen::Maintenance,
+            Screen::Maintenance => Screen::Actions,
             Screen::Actions => Screen::Monitor,
             Screen::Monitor => Screen::Domains,
             Screen::Domains => Screen::Projects,
@@ -1599,6 +1627,8 @@ struct App {
     viewer_scroll: u16,
     viewer_ctx: Option<(View, String, String, String)>,
 
+    /// Baris info tab Maintenance: (label, nilai).
+    maint: Vec<(String, String)>,
     hosts: Vec<HostRow>,
     hosts_state: TableState,
     /// Diset saat layar Hosts perlu data; fan-out-nya dijalankan event_loop.
@@ -1642,6 +1672,7 @@ impl App {
             viewer_lines: Vec::new(),
             viewer_scroll: 0,
             viewer_ctx: None,
+            maint: Vec::new(),
             hosts: Vec::new(),
             hosts_state: TableState::default(),
             load_hosts: false,
@@ -1752,6 +1783,7 @@ impl App {
                 }
                 select_first(&mut self.hosts_state, self.hosts.len());
             }
+            Resp::MaintInfo(rows) => self.maint = rows,
             Resp::Branches(names) => {
                 if let Some(form) = self.form.as_mut() {
                     if let Some(f) = form.fields.iter_mut().find(|f| f.label == "Branch") {
@@ -1811,11 +1843,12 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('1') => self.screen = Screen::Dashboard,
             KeyCode::Char('2') => self.goto(Screen::Hosts, req),
-            KeyCode::Char('3') => self.goto(Screen::Actions, req),
-            KeyCode::Char('4') => self.goto(Screen::Monitor, req),
-            KeyCode::Char('5') => self.goto(Screen::Domains, req),
-            KeyCode::Char('6') => self.goto(Screen::Projects, req),
-            KeyCode::Char('7') => self.screen = Screen::Viewer,
+            KeyCode::Char('3') => self.goto(Screen::Maintenance, req),
+            KeyCode::Char('4') => self.goto(Screen::Actions, req),
+            KeyCode::Char('5') => self.goto(Screen::Monitor, req),
+            KeyCode::Char('6') => self.goto(Screen::Domains, req),
+            KeyCode::Char('7') => self.goto(Screen::Projects, req),
+            KeyCode::Char('8') => self.screen = Screen::Viewer,
             KeyCode::Tab => self.goto(self.screen.next(), req),
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('r') => self.refresh(req),
@@ -1826,6 +1859,7 @@ impl App {
                 Screen::Domains => self.domains_key(code, req),
                 Screen::Monitor => self.monitor_key(code, req),
                 Screen::Hosts => move_table(&mut self.hosts_state, code, self.hosts.len()),
+                Screen::Maintenance => self.maint_key(code),
                 Screen::Dashboard => {}
             },
         }
@@ -1859,8 +1893,38 @@ impl App {
                 }
             }
             Screen::Hosts if self.hosts.is_empty() => self.load_hosts = true,
+            Screen::Maintenance if self.maint.is_empty() => {
+                let _ = req.send(Req::MaintInfo);
+            }
             _ => {}
         }
+    }
+
+    /// Pembersihan Docker itu destruktif dan tak bisa dibatalkan, jadi tiap aksi
+    /// lewat konfirmasi — sama seperti deploy/destroy.
+    fn maint_key(&mut self, code: KeyCode) {
+        let (op, label) = match code {
+            KeyCode::Char('p') => (
+                "systemPrune",
+                "Prune sistem Docker? Container, network, image, dan build cache yang tak terpakai akan dihapus.",
+            ),
+            KeyCode::Char('i') => (
+                "cleanupDockerImages",
+                "Hapus image Docker yang tak terpakai?",
+            ),
+            KeyCode::Char('c') => (
+                "cleanupDockerBuilder",
+                "Hapus build cache Docker?",
+            ),
+            _ => return,
+        };
+        self.confirm = Some(Confirm {
+            action: format!("maint:{op}"),
+            project: String::new(),
+            service: String::new(),
+            stype: String::new(),
+            label: label.into(),
+        });
     }
 
     fn monitor_key(&mut self, code: KeyCode, req: &Sender<Req>) {
@@ -2275,6 +2339,9 @@ impl App {
         let _ = match c.action.as_str() {
             "destroy-project" => req.send(Req::ProjectDestroy(c.project.clone())),
             "domain-delete" => req.send(Req::DomainDelete(c.project.clone())),
+            "maint:systemPrune" => req.send(Req::MaintAction("systemPrune")),
+            "maint:cleanupDockerImages" => req.send(Req::MaintAction("cleanupDockerImages")),
+            "maint:cleanupDockerBuilder" => req.send(Req::MaintAction("cleanupDockerBuilder")),
             action => req.send(Req::Action {
                 project: c.project,
                 service: c.service,
@@ -2514,6 +2581,9 @@ impl App {
                 let _ = req.send(Req::Storage);
             }
             Screen::Hosts => self.load_hosts = true,
+            Screen::Maintenance => {
+                let _ = req.send(Req::MaintInfo);
+            }
             Screen::Dashboard => {}
         }
         self.status = "Refresh...".into();
@@ -2540,6 +2610,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     match app.screen {
         Screen::Dashboard => render_dashboard(f, chunks[1], app),
         Screen::Hosts => render_hosts(f, chunks[1], app),
+        Screen::Maintenance => render_maintenance(f, chunks[1], app),
         Screen::Actions => render_actions(f, chunks[1], app),
         Screen::Monitor => render_monitor(f, chunks[1], app),
         Screen::Domains => render_domains(f, chunks[1], app),
@@ -2716,6 +2787,41 @@ fn render_table(
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("› ");
     f.render_stateful_widget(table, area, state);
+}
+
+/// Info server + pembersihan Docker. Aksinya destruktif dan tak bisa dibatalkan,
+/// jadi tombolnya ditulis apa adanya beserta akibatnya, bukan disamarkan.
+fn render_maintenance(f: &mut Frame, area: Rect, app: &App) {
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            format!(" Server aktif: {}", app.server_name),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    if app.maint.is_empty() {
+        lines.push(Line::from("  memuat…"));
+    }
+    for (k, v) in &app.maint {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {k:<24}"), Style::default().fg(Color::DarkGray)),
+            Span::raw(v.clone()),
+        ]));
+    }
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Pembersihan (tak bisa dibatalkan, minta konfirmasi dulu)",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("    [p] prune sistem — container, network, image, build cache tak terpakai"),
+        Line::from("    [i] hapus image Docker tak terpakai"),
+        Line::from("    [c] hapus build cache Docker"),
+    ]);
+    f.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(" Maintenance ")),
+        area,
+    );
 }
 
 /// Semua host sekaligus. Baris diwarnai per status karena inti layar ini adalah
@@ -2987,6 +3093,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
     let keys = match app.screen {
         Screen::Dashboard => "1-7/Tab tab · s server · r refresh · q keluar",
         Screen::Hosts => "semua host · ↑↓ pilih · s ganti server aktif · r refresh · q keluar",
+        Screen::Maintenance => "p prune sistem · i hapus image · c hapus build cache · r refresh · q keluar",
         Screen::Actions => "↑↓ pilih · PgUp/PgDn · r refresh · 1-7 tab · q keluar",
         Screen::Monitor => "v Services/Storage · ↑↓ pilih · r refresh · 1-7 tab · q keluar",
         Screen::Domains => "n baru · e edit · x hapus · P primary · ↑↓ pilih · r refresh · q keluar",
@@ -3087,9 +3194,17 @@ fn render_chooser(f: &mut Frame, ch: &mut Chooser) {
 fn render_confirm(f: &mut Frame, c: &Confirm) {
     let area = centered(52, 22, f.area());
     f.render_widget(Clear, area);
+    // Sebutkan target sebenarnya. Kalimat "Memengaruhi service nyata" dulu
+    // dipasang untuk semua konfirmasi — keliru untuk aksi maintenance, yang
+    // justru mengenai seluruh host, bukan satu service.
+    let target = match (c.project.as_str(), c.service.as_str()) {
+        ("", _) => "Memengaruhi SELURUH host.".to_string(),
+        (p, "") => format!("Target: {p}"),
+        (p, s) => format!("Target: {p}/{s}"),
+    };
     f.render_widget(
         Paragraph::new(format!(
-            "\n{}\n\nMemengaruhi service nyata.\n\n[y] Ya      [n] Batal",
+            "\n{}\n\n{target}\n\n[y] Ya      [n] Batal",
             c.label
         ))
         .alignment(Alignment::Center)

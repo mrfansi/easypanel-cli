@@ -56,8 +56,34 @@ enum Command {
     /// Monitoring per-service dan storage
     #[command(subcommand)]
     Monitor(MonitorCmd),
+    /// Info server & pembersihan Docker
+    Maintenance {
+        #[command(subcommand)]
+        cmd: MaintenanceCmd,
+    },
     /// Menu interaktif
     Menu,
+}
+
+#[derive(Subcommand)]
+enum MaintenanceCmd {
+    /// Versi Docker, IP server, ketersediaan update
+    Info,
+    /// Hapus container/network/image/build cache yang tak terpakai
+    Prune {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Hapus image Docker yang tak terpakai
+    CleanupImages {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Hapus build cache Docker
+    CleanupBuilder {
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -287,6 +313,27 @@ enum BackupCmd {
     VolumeRun { id: String },
     /// Hapus jadwal backup volume (by id)
     VolumeDelete { id: String },
+    /// Storage provider terdaftar (id-nya dibutuhkan db-restore)
+    Providers,
+    /// Restore database dari sebuah file backup (MENIMPA isi database)
+    DbRestore {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        service: String,
+        /// Nama database tujuan
+        #[arg(long)]
+        database: String,
+        /// Path file backup di storage provider. Wajib: API EasyPanel tak punya
+        /// endpoint untuk mendaftar file backup yang ada.
+        #[arg(long)]
+        path: String,
+        /// Id storage provider (opsional bila cuma ada satu)
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 fn main() {
@@ -530,6 +577,45 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                 BackupCmd::DbDelete { id } => commands::db_backup_delete(&client, &id),
                 BackupCmd::VolumeRun { id } => commands::volume_backup_run(&client, &id),
                 BackupCmd::VolumeDelete { id } => commands::volume_backup_delete(&client, &id),
+                BackupCmd::Providers => commands::storage_providers(&client),
+                BackupCmd::DbRestore {
+                    project,
+                    service,
+                    database,
+                    path,
+                    provider,
+                    yes,
+                } => commands::backup_db_restore(
+                    &client,
+                    &project,
+                    &service,
+                    &database,
+                    &path,
+                    provider.as_deref(),
+                    yes,
+                ),
+            }
+        }
+
+        Some(Command::Maintenance { cmd }) => {
+            let client = resolve_client(cfg, &cli.server)?;
+            match cmd {
+                MaintenanceCmd::Info => commands::maintenance_info(&client),
+                MaintenanceCmd::Prune { yes } => {
+                    commands::maintenance_clean(&client, "systemPrune", "Prune sistem Docker", yes)
+                }
+                MaintenanceCmd::CleanupImages { yes } => commands::maintenance_clean(
+                    &client,
+                    "cleanupDockerImages",
+                    "Hapus image tak terpakai",
+                    yes,
+                ),
+                MaintenanceCmd::CleanupBuilder { yes } => commands::maintenance_clean(
+                    &client,
+                    "cleanupDockerBuilder",
+                    "Hapus build cache",
+                    yes,
+                ),
             }
         }
     }

@@ -996,6 +996,118 @@ pub fn domain_list_all(client: &EasypanelClient) -> Result<()> {
     Ok(())
 }
 
+/// Info server untuk `maintenance info`.
+pub fn maintenance_info(client: &EasypanelClient) -> Result<()> {
+    let one = |op: &str| match client.call("settings", op, Value::Null) {
+        Ok(v) => field(&v, ""),
+        Err(e) => format!("error: {e}"),
+    };
+    table(
+        &["Item", "Nilai"],
+        vec![
+            vec!["Docker".into(), one("getDockerVersion")],
+            vec!["IP server".into(), one("getServerIp")],
+            vec!["Update tersedia".into(), one("checkForUpdates")],
+            vec!["Bersih-bersih harian".into(), one("getDailyDockerCleanup")],
+        ],
+    );
+    Ok(())
+}
+
+/// Pembersihan Docker; `op` sudah dibatasi enum CLI.
+pub fn maintenance_clean(client: &EasypanelClient, op: &str, label: &str, yes: bool) -> Result<()> {
+    if !confirm(
+        &format!("{label} pada seluruh host? Tidak bisa dibatalkan."),
+        yes,
+    )? {
+        return Ok(());
+    }
+    client.call("settings", op, Value::Null)?;
+    println!("{label}: selesai.");
+    Ok(())
+}
+
+/// Storage provider yang terdaftar (id-nya dibutuhkan untuk restore).
+pub fn storage_providers(client: &EasypanelClient) -> Result<()> {
+    let v = client.call("storageProviders/common", "list", Value::Null)?;
+    let rows = v
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|p| {
+                    vec![
+                        field(p, "/id"),
+                        field(p, "/name"),
+                        field(p, "/type"),
+                        field(p, "/path"),
+                    ]
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    table(&["ID", "Nama", "Tipe", "Path"], rows);
+    Ok(())
+}
+
+/// Restore database dari sebuah file backup.
+///
+/// `path` harus diketahui sendiri: API EasyPanel tidak punya endpoint untuk
+/// mendaftar file backup yang ada (cek `easypanel-api.json` — hanya jadwal yang
+/// bisa didaftar, bukan isinya). Karena itu path diminta eksplisit, bukan
+/// ditebak-tebak.
+#[allow(clippy::too_many_arguments)]
+pub fn backup_db_restore(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    database: &str,
+    path: &str,
+    provider: Option<&str>,
+    yes: bool,
+) -> Result<()> {
+    // Provider boleh dikosongkan hanya bila memang cuma ada satu — menebak
+    // salah satu dari beberapa provider bukan urusan CLI.
+    let provider_id = match provider {
+        Some(p) => p.to_string(),
+        None => {
+            let v = client.call("storageProviders/common", "list", Value::Null)?;
+            let all = v.as_array().cloned().unwrap_or_default();
+            match all.len() {
+                1 => field(&all[0], "/id"),
+                0 => anyhow::bail!("Tidak ada storage provider terkonfigurasi."),
+                n => anyhow::bail!(
+                    "Ada {n} storage provider; pilih salah satu dengan --provider \
+                     (lihat: easypanel backup providers)."
+                ),
+            }
+        }
+    };
+
+    if !confirm(
+        &format!(
+            "Restore '{database}' pada {project}/{service} dari '{path}'? \
+             Isi database sekarang akan DITIMPA dan tidak bisa dikembalikan."
+        ),
+        yes,
+    )? {
+        return Ok(());
+    }
+
+    client.call(
+        "databaseBackups",
+        "restoreDatabaseBackup",
+        json!({
+            "projectName": project,
+            "serviceName": service,
+            "databaseName": database,
+            "path": path,
+            "storageProviderId": provider_id,
+        }),
+    )?;
+    println!("Restore '{database}' dijalankan.");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -71,6 +71,8 @@ easypanel backup db-run       <id>    # jalankan backup db sekarang
 easypanel backup db-delete    <id>
 easypanel backup volume-run   <id>
 easypanel backup volume-delete <id>
+easypanel backup providers            # storage provider (id-nya dibutuhkan restore)
+easypanel backup db-restore --project P --service S --database D --path <path> [--provider <id>] [--yes]
 
 # Certificates & notifications
 easypanel certificate list
@@ -81,6 +83,12 @@ easypanel notification delete <id>
 # Actions (riwayat deploy/destroy/login)
 easypanel action list [--limit 25] [--project P] [--service S] [--type deployment]
 easypanel action kill <id>
+
+# Maintenance (server aktif)
+easypanel maintenance info                    # versi Docker, IP server, update
+easypanel maintenance prune [--yes]           # container/network/image/cache tak terpakai
+easypanel maintenance cleanup-images [--yes]
+easypanel maintenance cleanup-builder [--yes]
 
 # Monitoring & cluster
 easypanel stats                      # CPU/mem/disk/load
@@ -111,6 +119,7 @@ easypanel --server prod   # host tertentu
 
 - **Dashboard** — gauge CPU/Memory/Disk, sparkline CPU history (auto-refresh ~2 detik), load average, dan tabel node cluster. Server aktif saja.
 - **Hosts** — **semua** server dari `servers.json` sekaligus: CPU, memori, disk, dan load per host. Tiap host diambil di thread sendiri, jadi host lambat atau mati tak menahan yang lain; host yang gagal tampil merah beserta alasannya (unreachable, token kadaluarsa) alih-alih menggagalkan seluruh tabel. Inilah satu-satunya layar yang tak bisa digantikan panel web.
+- **Maintenance** — versi Docker, IP server, ketersediaan update, plus pembersihan Docker (`p` prune sistem, `i` hapus image, `c` hapus build cache). Semuanya destruktif dan lewat konfirmasi yang menyebut targetnya: seluruh host, bukan satu service.
 - **Actions** — riwayat action (deploy/destroy/login) dengan status, target, durasi, dan umur.
 - **Monitor** — lima tile metrik berhistori (CPU, Memory, Disk, Net In, Net Out) + sub-tab **Services** (CPU/memori/network per project & service) dan **Storage** (`v` untuk berganti).
 - **Domains** — semua domain host: source → destination (service internal atau server custom beserta bobotnya). Form edit mencakup **SSL resolver** (`certificateResolver`) dan **wildcard**. Nama resolver ditentukan konfigurasi Traefik server (mis. `google`); server menolak nama yang tak terdaftar.
@@ -121,7 +130,7 @@ Keybindings:
 
 | Tombol | Aksi |
 |---|---|
-| `1`–`7`, `Tab` | pindah tab (`2` = Hosts, semua server sekaligus) |
+| `1`–`8`, `Tab` | pindah tab (`2` = Hosts, `3` = Maintenance) |
 | `n` · `x` | buat · hapus (Projects: project/service sesuai panel yang difokus; Domains: domain) |
 | `e` · `P` | Domains: edit · jadikan primary |
 | `E` | Projects: edit env service di `$EDITOR` |
@@ -145,6 +154,8 @@ Network berjalan di worker thread terpisah, jadi UI tidak pernah membeku saat re
 Metrik memakai grup **`metrics`** (Prometheus), bukan `monitorOld`: ~0,3 detik vs ~2,3 detik, dan sudah menyediakan laju network, load average, serta byte used/total. Satu panggilan `metrics/getSystemStats` memberi nilai terkini **dan** historinya, jadi sparkline datang dari server.
 
 Catatan: sub-tab **Docker Events** milik panel tidak tersedia — itu live stream, bukan bagian dari REST API yang terdokumentasi (`easypanel-api.json`).
+
+**Restore database** hanya tersedia lewat CLI (`easypanel backup db-restore`), bukan TUI, dan itu disengaja: `restoreDatabaseBackup` butuh `path` file backup, sementara API EasyPanel **tak punya endpoint untuk mendaftar file backup yang ada** — hanya jadwalnya yang bisa didaftar. Form TUI dengan kolom path yang harus ditebak, untuk operasi yang menimpa database hidup, adalah jebakan. Di CLI kamu memasok path yang memang kamu ketahui, dan operasinya minta konfirmasi eksplisit.
 
 **Middlewares** (grup `middlewares`: 14 tipe bergaya Traefik — basicAuth, rateLimit, redirectScheme, …) belum bisa diedit dari TUI, tapi **selalu dilestarikan** saat mengedit domain, jadi tak ada yang hilang. Editornya belum dibuat karena belum ada kebutuhan nyata yang bisa diuji; kalau kamu mulai memakai middleware, ini yang berikutnya.
 
