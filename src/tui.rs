@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use crate::client::EasypanelClient;
 use crate::commands;
 use crate::config::ServerConfig;
-use crate::output::{field, format_bytes, format_rate, num, series_last, series_tail};
+use crate::output::{field, format_bytes, format_rate, num, series_last, series_spark};
 
 const REFRESH: Duration = Duration::from_secs(2);
 
@@ -994,7 +994,7 @@ fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
     let spark = Sparkline::default()
         .block(Block::bordered().title(" CPU History (%) "))
-        .data(series_tail(&stats, "cpu", 120))
+        .data(series_spark(&stats, "cpu", 120))
         .max(100)
         .style(Style::default().fg(Color::Cyan));
     f.render_widget(spark, top[1]);
@@ -1111,7 +1111,11 @@ fn render_table(
 }
 
 fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
-    let rows: Vec<Vec<String>> = app.actions.iter().map(commands::action_row).collect();
+    let rows: Vec<Vec<String>> = app
+        .actions
+        .iter()
+        .map(|a| commands::action_row(a, commands::ACTION_DESC_TUI))
+        .collect();
     render_table(
         f,
         area,
@@ -1119,7 +1123,7 @@ fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
         &commands::ACTION_HEADERS,
         &[
             Constraint::Length(8),
-            Constraint::Length(24),
+            Constraint::Length(28),
             Constraint::Min(20),
             Constraint::Length(10),
             Constraint::Length(14),
@@ -1209,35 +1213,35 @@ fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
                 field(&s, "/cpuCores"),
                 commands::load_avg(&s)
             ),
-            series_tail(&s, "cpu", 60),
+            series_spark(&s, "cpu", 60),
             Color::Yellow,
         ),
         (
             "Memory",
             format!("{:.1}%", series_last(&s, "memory")),
             pair("/memoryUsedBytes", "/memoryTotalBytes"),
-            series_tail(&s, "memory", 60),
+            series_spark(&s, "memory", 60),
             Color::Blue,
         ),
         (
             "Disk",
             format!("{:.1}%", series_last(&s, "disk")),
             pair("/diskUsedBytes", "/diskTotalBytes"),
-            series_tail(&s, "disk", 60),
+            series_spark(&s, "disk", 60),
             Color::Green,
         ),
         (
             "Network In",
             format_rate(series_last(&s, "networkIn")),
             String::new(),
-            series_tail(&s, "networkIn", 60),
+            series_spark(&s, "networkIn", 60),
             Color::Cyan,
         ),
         (
             "Network Out",
             format_rate(series_last(&s, "networkOut")),
             String::new(),
-            series_tail(&s, "networkOut", 60),
+            series_spark(&s, "networkOut", 60),
             Color::Magenta,
         ),
     ];
@@ -1262,6 +1266,7 @@ fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(
             Sparkline::default()
                 .data(data)
+                .max(100)
                 .style(Style::default().fg(color)),
             inner[2],
         );

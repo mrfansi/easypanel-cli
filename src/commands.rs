@@ -798,8 +798,15 @@ pub fn actions_input(
     input
 }
 
-/// Baris tabel untuk satu action (dipakai CLI dan TUI).
-pub fn action_row(a: &Value) -> Vec<String> {
+/// Batas deskripsi untuk tabel CLI: comfy-table melebarkan kolom sepanjang
+/// isinya, jadi baris panjang harus dipotong di sini.
+pub const ACTION_DESC_CLI: usize = 60;
+/// TUI memakai batas longgar karena widget tabelnya meng-clip sendiri sesuai
+/// lebar kolom — memotong lebih awal justru menyisakan ruang kosong.
+pub const ACTION_DESC_TUI: usize = 200;
+
+/// Baris tabel untuk satu action; deskripsi dipotong pada `desc_max`.
+pub fn action_row(a: &Value, desc_max: usize) -> Vec<String> {
     let target = match (
         field(a, "/projectName").as_str(),
         field(a, "/serviceName").as_str(),
@@ -811,7 +818,7 @@ pub fn action_row(a: &Value) -> Vec<String> {
     vec![
         field(a, "/status"),
         target,
-        first_line(&field(a, "/description"), 60),
+        first_line(&field(a, "/description"), desc_max),
         duration_between(&field(a, "/createdAt"), &field(a, "/updatedAt")),
         age_of(&field(a, "/createdAt")),
     ]
@@ -833,7 +840,10 @@ pub fn action_list(
         println!("Tidak ada action.");
         return Ok(());
     }
-    table(&ACTION_HEADERS, arr.iter().map(action_row).collect());
+    table(
+        &ACTION_HEADERS,
+        arr.iter().map(|a| action_row(a, ACTION_DESC_CLI)).collect(),
+    );
     Ok(())
 }
 
@@ -1073,7 +1083,7 @@ mod tests {
             "description": "Deploy service: baris pertama\nbaris kedua diabaikan",
             "createdAt": "2026-07-16 05:55:15", "updatedAt": "2026-07-16 06:03:14"
         });
-        let row = action_row(&a);
+        let row = action_row(&a, ACTION_DESC_CLI);
         assert_eq!(row[0], "done");
         assert_eq!(row[1], "proj/api");
         assert_eq!(row[2], "Deploy service: baris pertama");
@@ -1086,8 +1096,8 @@ mod tests {
             "status": "done", "description": "User masuk",
             "createdAt": "2026-07-16 05:55:15", "updatedAt": "2026-07-16 05:55:15"
         });
-        assert_eq!(action_row(&login)[1], "-");
-        assert_eq!(action_row(&login)[3], "0 detik");
+        assert_eq!(action_row(&login, ACTION_DESC_CLI)[1], "-");
+        assert_eq!(action_row(&login, ACTION_DESC_CLI)[3], "0 detik");
     }
 
     #[test]
