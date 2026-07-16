@@ -234,6 +234,8 @@ enum Req {
         stype: String,
         action: String,
     },
+    /// Muat service sebuah project untuk dropdown di form (bukan panel Projects).
+    ServicesFor(String),
     ProjectCreate(String),
     ProjectDestroy(String),
     ServiceCreate {
@@ -264,6 +266,7 @@ enum Resp {
     Storage(Vec<Value>),
     Domains(Vec<Value>),
     Services(String, Vec<(String, String)>),
+    ServicesFor(String, Vec<String>),
     Viewer(String, Vec<String>),
     /// Mutasi berhasil: pesan status + data mana yang perlu dimuat ulang.
     Done(String, Refresh),
@@ -350,6 +353,19 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
             Ok(v) => Resp::Domains(v.as_array().cloned().unwrap_or_default()),
             Err(e) => Resp::Err(e.to_string()),
         },
+        Req::ServicesFor(project) => {
+            match client.call(
+                "projects",
+                "inspectProject",
+                json!({ "projectName": project }),
+            ) {
+                Ok(v) => Resp::ServicesFor(
+                    project,
+                    parse_services(&v).into_iter().map(|(n, _)| n).collect(),
+                ),
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
         Req::Services(project) => {
             match client.call(
                 "projects",
@@ -574,31 +590,64 @@ fn fetch_view(
     })
 }
 
+const SERVICE_TYPES: &[&str] = &[
+    "app",
+    "mysql",
+    "mariadb",
+    "postgres",
+    "mongo",
+    "redis",
+    "wordpress",
+    "compose",
+];
+const DEST_KINDS: &[&str] = &["service", "custom"];
+const PROTOCOLS: &[&str] = &["http", "https"];
+
 /// Field form domain; `existing` mengisi nilai awal saat mode edit.
-fn domain_fields(existing: Option<&Value>) -> Vec<Field> {
-    let get = |ptr: &str, default: &str| match existing {
-        Some(d) => {
-            let v = field(d, ptr);
-            if v == "-" {
-                default.to_string()
-            } else {
-                v
-            }
-        }
-        None => default.to_string(),
+///
+/// Field service dan custom ditampilkan sekaligus; yang dipakai ditentukan
+/// "Tujuan". Ini mengikuti dialog panel, yang juga punya Protocol dan destination
+/// custom (URL + weight) — keduanya tak boleh hilang saat mengedit.
+fn domain_fields(existing: Option<&Value>, projects: &[String]) -> Vec<Field> {
+    let get = |ptr: &str, default: &str| match existing.map(|d| field(d, ptr)) {
+        Some(v) if v != "-" => v,
+        _ => default.to_string(),
     };
     let https = existing
         .and_then(|d| d.get("https"))
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let server = existing.and_then(|d| d.pointer("/customDestination/servers/0"));
+    let service = get("/serviceDestination/serviceName", "");
 
     vec![
         Field::text("Host", &get("/host", "")),
         Field::text("Path", &get("/path", "/")),
-        Field::text("Project", &get("/serviceDestination/projectName", "")),
-        Field::text("Service", &get("/serviceDestination/serviceName", "")),
-        Field::text("Port", &get("/serviceDestination/port", "80")),
         Field::boolean("HTTPS", https),
+        Field::choice("Tujuan", DEST_KINDS, &get("/destinationType", "service")),
+        Field::choice_owned(
+            "Project",
+            projects.to_vec(),
+            &get("/serviceDestination/projectName", ""),
+        ),
+        // Diisi setelah service project tsb dimuat; nilai lama dipertahankan
+        // supaya mode edit tidak kehilangan pilihannya sebelum data tiba.
+        Field::choice_owned("Service", vec![service.clone()], &service),
+        Field::choice(
+            "Protocol",
+            PROTOCOLS,
+            &get("/serviceDestination/protocol", "http"),
+        ),
+        Field::text("Port", &get("/serviceDestination/port", "80")),
+        Field::text("Path tujuan", &get("/serviceDestination/path", "/")),
+        Field::text(
+            "Server URL",
+            &server.map(|s| field(s, "/url")).unwrap_or_default(),
+        ),
+        Field::text(
+            "Weight",
+            &server.map(|s| field(s, "/weight")).unwrap_or("1".into()),
+        ),
     ]
 }
 
@@ -706,11 +755,20 @@ struct Confirm {
 
 // ---------- Form (ratatui tak punya widget input, jadi dibuat sendiri) ----------
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone)]
 enum FieldKind {
     Text,
     Secret,
     Bool,
+    /// Pilihan dari data nyata (project/service/protocol), digilir dgn spasi/←/→.
+    /// Dinamis supaya isinya bisa datang dari API, bukan diketik manual.
+    Choice(Vec<String>),
+}
+
+impl FieldKind {
+    fn is_typed(&self) -> bool {
+        matches!(self, FieldKind::Text | FieldKind::Secret)
+    }
 }
 
 struct Field {
@@ -741,6 +799,52 @@ impl Field {
             kind: FieldKind::Bool,
         }
     }
+    fn choice(label: &'static str, options: &[&str], value: &str) -> Self {
+        Self::choice_owned(
+            label,
+            options.iter().map(|o| o.to_string()).collect(),
+            value,
+        )
+    }
+    fn choice_owned(label: &'static str, options: Vec<String>, value: &str) -> Self {
+        let value = if options.iter().any(|o| o == value) {
+            value.to_string()
+        } else {
+            options.first().cloned().unwrap_or_default()
+        };
+        Self {
+            label,
+            value,
+            kind: FieldKind::Choice(options),
+        }
+    }
+    /// Ganti daftar pilihan (mis. service terisi setelah project dipilih).
+    fn set_options(&mut self, options: Vec<String>) {
+        if !options.contains(&self.value) {
+            self.value = options.first().cloned().unwrap_or_default();
+        }
+        self.kind = FieldKind::Choice(options);
+    }
+    /// Gilir ke pilihan berikutnya (Bool diperlakukan sebagai ya/tidak).
+    fn cycle(&mut self) {
+        match self.kind {
+            FieldKind::Bool => {
+                self.value = if self.is_on() {
+                    "tidak".into()
+                } else {
+                    "ya".into()
+                }
+            }
+            FieldKind::Choice(ref opts) => {
+                if opts.is_empty() {
+                    return;
+                }
+                let i = opts.iter().position(|o| *o == self.value).unwrap_or(0);
+                self.value = opts[(i + 1) % opts.len()].clone();
+            }
+            _ => {}
+        }
+    }
     fn is_on(&self) -> bool {
         self.value == "ya"
     }
@@ -767,6 +871,9 @@ struct Form {
     title: String,
     fields: Vec<Field>,
     focus: usize,
+    /// JSON asli saat mode edit. Submit berangkat dari sini supaya field yang
+    /// tak ada di form (middlewares, certificateResolver, wildcard) ikut utuh.
+    original: Option<Value>,
 }
 
 impl Form {
@@ -776,10 +883,29 @@ impl Form {
             title: title.into(),
             fields,
             focus: 0,
+            original: None,
         }
+    }
+    fn with_original(mut self, original: Value) -> Self {
+        self.original = Some(original);
+        self
     }
     fn val(&self, i: usize) -> String {
         self.fields[i].value.trim().to_string()
+    }
+    fn by_label(&self, label: &str) -> String {
+        self.fields
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.value.trim().to_string())
+            .unwrap_or_default()
+    }
+    fn is_on_label(&self, label: &str) -> bool {
+        self.fields
+            .iter()
+            .find(|f| f.label == label)
+            .map(Field::is_on)
+            .unwrap_or(false)
     }
 }
 
@@ -928,6 +1054,15 @@ impl App {
                     });
                 }
             }
+            Resp::ServicesFor(project, names) => {
+                if let Some(form) = self.form.as_mut() {
+                    if form.by_label("Project") == project {
+                        if let Some(f) = form.fields.iter_mut().find(|f| f.label == "Service") {
+                            f.set_options(names);
+                        }
+                    }
+                }
+            }
             Resp::Viewer(title, lines) => {
                 self.viewer_title = title;
                 self.viewer_lines = lines;
@@ -1074,7 +1209,7 @@ impl App {
                     format!(" Service baru di {project} "),
                     vec![
                         Field::text("Nama", ""),
-                        Field::text("Tipe (app/mysql/postgres/redis/mongo/...)", "app"),
+                        Field::choice("Tipe", SERVICE_TYPES, "app"),
                     ],
                 )
             }
@@ -1126,21 +1261,23 @@ impl App {
 
         match code {
             KeyCode::Char('n') => {
-                self.form = Some(Form::new(
-                    FormKind::DomainCreate,
-                    " Domain baru ",
-                    domain_fields(None),
-                ))
+                let fields = domain_fields(None, &self.projects);
+                self.form = Some(Form::new(FormKind::DomainCreate, " Domain baru ", fields));
+                self.load_form_services(req);
             }
             KeyCode::Char('e') => {
                 if let Some(d) = selected {
-                    self.form = Some(Form::new(
-                        FormKind::DomainEdit {
-                            id: field(&d, "/id"),
-                        },
-                        format!(" Edit domain: {} ", field(&d, "/host")),
-                        domain_fields(Some(&d)),
-                    ));
+                    self.form = Some(
+                        Form::new(
+                            FormKind::DomainEdit {
+                                id: field(&d, "/id"),
+                            },
+                            format!(" Edit domain: {} ", field(&d, "/host")),
+                            domain_fields(Some(&d), &self.projects),
+                        )
+                        .with_original(d),
+                    );
+                    self.load_form_services(req);
                 }
             }
             KeyCode::Char('x') => {
@@ -1163,11 +1300,22 @@ impl App {
         }
     }
 
+    /// Muat daftar service untuk project yang sedang dipilih di form, supaya
+    /// field Service jadi pilihan nyata dan bukan ketikan bebas.
+    fn load_form_services(&mut self, req: &Sender<Req>) {
+        if let Some(form) = self.form.as_ref() {
+            let project = form.by_label("Project");
+            if !project.is_empty() {
+                let _ = req.send(Req::ServicesFor(project));
+            }
+        }
+    }
+
     fn form_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        let bool_field = form.fields[form.focus].kind == FieldKind::Bool;
+        let typed = form.fields[form.focus].kind.is_typed();
 
         match code {
             KeyCode::Esc => {
@@ -1178,21 +1326,85 @@ impl App {
             KeyCode::BackTab | KeyCode::Up => {
                 form.focus = (form.focus + form.fields.len() - 1) % form.fields.len()
             }
-            KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right if bool_field => {
-                let f = &mut form.fields[form.focus];
-                f.value = if f.is_on() {
-                    "tidak".into()
-                } else {
-                    "ya".into()
-                };
+            KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right if !typed => {
+                form.fields[form.focus].cycle();
+                // Ganti project -> daftar service ikut berganti (dropdown berantai).
+                if form.fields[form.focus].label == "Project" {
+                    self.load_form_services(req);
+                }
             }
-            KeyCode::Backspace if !bool_field => {
+            KeyCode::Backspace if typed => {
                 form.fields[form.focus].value.pop();
             }
-            KeyCode::Char(c) if !bool_field => form.fields[form.focus].value.push(c),
+            KeyCode::Char(c) if typed => form.fields[form.focus].value.push(c),
             KeyCode::Enter => self.submit_form(req),
             _ => {}
         }
+    }
+
+    /// Body createDomain/updateDomain dari form.
+    ///
+    /// Saat edit, berangkat dari JSON domain aslinya sehingga field yang tak ada
+    /// di form (middlewares, certificateResolver, wildcard) tetap utuh — bukan
+    /// ditimpa nilai default.
+    fn domain_body(&self, form: &Form) -> std::result::Result<Value, String> {
+        let host = form.by_label("Host");
+        if host.is_empty() {
+            return Err("Host wajib diisi".into());
+        }
+
+        let mut body = form.original.clone().unwrap_or_else(
+            || json!({ "wildcard": false, "certificateResolver": "", "middlewares": [] }),
+        );
+        body["host"] = json!(host);
+        body["path"] = json!(match form.by_label("Path").as_str() {
+            "" => "/".to_string(),
+            p => p.to_string(),
+        });
+        body["https"] = json!(form.is_on_label("HTTPS"));
+
+        let obj = body.as_object_mut().ok_or("bentuk domain tak dikenal")?;
+        if form.by_label("Tujuan") == "custom" {
+            let url = form.by_label("Server URL");
+            if url.is_empty() {
+                return Err("Server URL wajib diisi untuk tujuan custom".into());
+            }
+            let weight: u32 = form
+                .by_label("Weight")
+                .parse()
+                .map_err(|_| "Weight harus angka")?;
+            obj.remove("serviceDestination");
+            obj.insert("destinationType".into(), json!("custom"));
+            obj.insert(
+                "customDestination".into(),
+                json!({ "servers": [{ "url": url, "weight": weight }] }),
+            );
+        } else {
+            let (project, service) = (form.by_label("Project"), form.by_label("Service"));
+            if project.is_empty() || service.is_empty() {
+                return Err("Project dan service wajib diisi".into());
+            }
+            let port: u32 = form
+                .by_label("Port")
+                .parse()
+                .map_err(|_| "Port harus angka")?;
+            obj.remove("customDestination");
+            obj.insert("destinationType".into(), json!("service"));
+            obj.insert(
+                "serviceDestination".into(),
+                json!({
+                    "projectName": project,
+                    "serviceName": service,
+                    "port": port,
+                    "protocol": form.by_label("Protocol"),
+                    "path": match form.by_label("Path tujuan").as_str() {
+                        "" => "/".to_string(),
+                        p => p.to_string(),
+                    }
+                }),
+            );
+        }
+        Ok(body)
     }
 
     fn submit_form(&mut self, req: &Sender<Req>) {
@@ -1201,7 +1413,6 @@ impl App {
         };
 
         // Validasi minimal di sini; sisanya biar server yang menolak.
-        let required_empty = |i: usize| form.val(i).is_empty();
         match &form.kind {
             FormKind::ServerAdd | FormKind::ServerEdit { .. } => {
                 let (name, url, token) = match &form.kind {
@@ -1243,37 +1454,19 @@ impl App {
                     stype,
                 });
             }
-            FormKind::DomainCreate | FormKind::DomainEdit { .. } => {
-                if required_empty(0) || required_empty(2) || required_empty(3) {
-                    self.status = "Host, project, dan service wajib diisi".into();
+            FormKind::DomainCreate | FormKind::DomainEdit { .. } => match self.domain_body(form) {
+                Ok(body) => {
+                    let id = match &form.kind {
+                        FormKind::DomainEdit { id } => Some(id.clone()),
+                        _ => None,
+                    };
+                    let _ = req.send(Req::DomainSave { id, body });
+                }
+                Err(msg) => {
+                    self.status = msg;
                     return;
                 }
-                let Ok(port) = form.val(4).parse::<u32>() else {
-                    self.status = "Port harus angka".into();
-                    return;
-                };
-                let body = json!({
-                    "host": form.val(0),
-                    "path": if form.val(1).is_empty() { "/".into() } else { form.val(1) },
-                    "https": form.fields[5].is_on(),
-                    "wildcard": false,
-                    "certificateResolver": "",
-                    "middlewares": [],
-                    "destinationType": "service",
-                    "serviceDestination": {
-                        "projectName": form.val(2),
-                        "serviceName": form.val(3),
-                        "port": port,
-                        "protocol": "http",
-                        "path": "/"
-                    }
-                });
-                let id = match &form.kind {
-                    FormKind::DomainEdit { id } => Some(id.clone()),
-                    _ => None,
-                };
-                let _ = req.send(Req::DomainSave { id, body });
-            }
+            },
         }
         self.form = None;
         self.status = "Mengirim...".into();
@@ -1928,7 +2121,7 @@ fn render_form(f: &mut Frame, form: &Form) {
 
     for (i, field) in form.fields.iter().enumerate() {
         let focused = i == form.focus;
-        let hint = if focused && field.kind == FieldKind::Bool {
+        let hint = if focused && !field.kind.is_typed() {
             "  (spasi untuk ubah)"
         } else {
             ""
