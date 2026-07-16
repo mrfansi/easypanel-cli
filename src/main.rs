@@ -2,8 +2,8 @@ mod client;
 mod commands;
 mod config;
 mod logs;
-mod menu;
 mod output;
+mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -267,7 +267,19 @@ fn main() {
 
 fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
     match cli.command {
-        None | Some(Command::Menu) => commands::run_menu(cfg),
+        None | Some(Command::Menu) => {
+            if cfg.all().is_empty() {
+                println!("Belum ada server. Jalankan: easypanel server add");
+                return Ok(());
+            }
+            let name = cli
+                .server
+                .clone()
+                .or_else(|| cfg.default().map(|s| s.name))
+                .unwrap_or_default();
+            let client = resolve_client(cfg, &cli.server)?;
+            tui::run(cfg, client, name)
+        }
 
         Some(Command::Server(c)) => match c {
             ServerCmd::Add { name, url, token } => commands::server_add(cfg, name, url, token),

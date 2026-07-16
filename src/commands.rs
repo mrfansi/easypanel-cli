@@ -5,8 +5,8 @@ use std::io::Read;
 
 use crate::client::EasypanelClient;
 use crate::config::ServerConfig;
+use crate::logs;
 use crate::output::{field, table, yes_no};
-use crate::{logs, menu};
 
 /// Resolve klien untuk server aktif (dari --server atau default).
 pub fn resolve_client(cfg: &ServerConfig, server: &Option<String>) -> Result<EasypanelClient> {
@@ -733,10 +733,4 @@ pub fn volume_backup_delete(client: &EasypanelClient, id: &str) -> Result<()> {
     client.call("volumeBackups", "destroyVolumeBackup", json!({ "id": id }))?;
     println!("Volume backup {id} dihapus.");
     Ok(())
-}
-
-// ---------- Menu (delegasi) ----------
-
-pub fn run_menu(cfg: &ServerConfig) -> Result<()> {
-    menu::run(cfg)
 }
