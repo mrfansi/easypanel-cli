@@ -123,7 +123,7 @@ easypanel --server prod   # host tertentu
 - **Actions** — riwayat action (deploy/destroy/login) dengan status, target, durasi, dan umur.
 - **Monitor** — lima tile metrik berhistori (CPU, Memory, Disk, Net In, Net Out) + sub-tab **Services** (CPU/memori/network per project & service) dan **Storage** (`v` untuk berganti).
 - **Domains** — semua domain host: source → destination (service internal atau server custom beserta bobotnya). Form edit mencakup **SSL resolver** (`certificateResolver`) dan **wildcard**. Nama resolver ditentukan konfigurasi Traefik server (mis. `google`); server menolak nama yang tak terdaftar.
-- **Projects** — panel Projects ↔ Services; buat project/service baru, atur source & build, buka view, atau jalankan aksi (deploy/restart/stop/start) dengan konfirmasi.
+- **Projects** — **daftar datar semua service lintas project** (bukan drill-down): Project, Service, Tipe, Status, dan Source (`owner/repo#branch` atau image) dalam satu tabel yang bisa dicari dengan `/`. Hirarki project → service memaksa membuka project satu per satu dan tak bisa dicari — itu runtuh di ratusan service. Semua aksi bekerja pada baris yang disorot; `n` service baru (project dipilih dari dropdown), `N` project baru, `X` hapus project.
 - **Viewer** — pane scrollable untuk logs, env, ports, mounts, domains, database backups, dan source & build.
 
 Keybindings:
@@ -131,17 +131,23 @@ Keybindings:
 | Tombol | Aksi |
 |---|---|
 | `1`–`8`, `Tab` | pindah tab (`2` = Hosts, `3` = Maintenance) |
-| `n` · `x` | buat · hapus (Projects: project/service sesuai panel yang difokus; Domains: domain) |
+| `/` | cari/filter (Projects, Domains, Actions, Monitor) · `Esc` hapus filter |
+| `n` · `x` | buat · hapus service (Domains: domain) |
+| `N` · `X` | buat · hapus project |
 | `e` · `P` | Domains: edit · jadikan primary |
 | `E` | Projects: edit env service di `$EDITOR` |
 | `U` · `B` | Projects: atur source · build (service app) |
 | `v` | Monitor: ganti Services ↔ Storage |
-| `↑↓` / `jk` | navigasi · `←→` pindah panel |
-| `Enter` | buka project → services; pada service → logs |
+| `↑↓` / `jk` | navigasi |
+| `Enter` | pada service: logs |
 | `e` `p` `m` `o` `b` `u` | view env · ports · mounts · domains · backups · source & build |
 | `d` `R` `S` `T` | deploy · restart · stop · start (dengan konfirmasi) |
 | `s` | daftar server: `Enter` pilih · `n` tambah · `e` edit (token kosong = tak diubah) · `x` hapus |
-| `r` | refresh · `q` keluar |
+| `r` · `q` | refresh · keluar (`Esc` **tidak** keluar — ia hanya membatalkan) |
+
+Filter dicocokkan ke teks yang **ditampilkan**, jadi mencari `mysql` menemukannya lewat nama service, nama project, tipe, maupun source. Judul tabel menunjukkan `(tersaring/total)` beserta teks filternya, dan filter dibuang saat pindah tab — filter tersembunyi membuat baris yang hilang dikira memang tak ada.
+
+`E` membuka env di editor: `$VISUAL`, lalu `$EDITOR`, lalu `vi`/`nano`. Editor yang ditunjuk tapi tak terpasang akan dilewati, bukan menggagalkan aksi.
 
 Di dalam form: `Tab` pindah field, `Esc` batal, `Enter` simpan. Field pilihan (project, service, repo, branch, tipe, protocol) membuka dropdown yang bisa dicari dengan mengetik — bukan diketik bebas, supaya tidak ada salah ketik yang mengarahkan domain ke service yang tak ada.
 

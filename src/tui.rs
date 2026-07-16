@@ -7,7 +7,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers
 use ratatui::prelude::*;
 use ratatui::widgets::{
     Block, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Sparkline, Table, TableState,
-    Tabs, Wrap,
+    Tabs,
 };
 use serde_json::{json, Value};
 
@@ -204,16 +204,58 @@ fn edit_env_in_editor(
     std::fs::write(&path, &current)?;
 
     ratatui::restore();
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    let status = std::process::Command::new(&editor).arg(&path).status();
+    let opened = open_in_editor(&path);
     *terminal = ratatui::init();
     terminal.clear()?;
-    status?;
+    opened?;
 
     let edited = std::fs::read_to_string(&path)?;
     let _ = std::fs::remove_file(&path);
 
     Ok((edited.trim_end() != current.trim_end()).then_some(edited))
+}
+
+/// Kandidat editor: pilihan user dulu, lalu cadangan yang pasti ada di Unix.
+///
+/// Tiap entri dipecah jadi program + argumen, supaya `EDITOR="code -w"` bekerja
+/// dan tidak dicari sebagai satu biner bernama "code -w".
+fn editor_candidates() -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .map(|v| v.split_whitespace().map(String::from).collect::<Vec<_>>())
+        .filter(|v| !v.is_empty())
+        .collect();
+    out.push(vec!["vi".into()]);
+    out.push(vec!["nano".into()]);
+    out
+}
+
+/// Buka file di editor pertama yang benar-benar ada.
+///
+/// $EDITOR yang menunjuk editor tak terpasang (mis. `nvim` yang belum dipasang)
+/// dulu gagal dengan "No such file or directory (os error 2)" — pesan yang
+/// terbaca seolah file env-nya yang hilang, bukan editornya. Sekarang kandidat
+/// yang hilang dilewati, dan kalau semuanya hilang pesannya menyebut nama-namanya.
+fn open_in_editor(path: &std::path::Path) -> Result<()> {
+    let mut missing = Vec::new();
+    for cand in editor_candidates() {
+        let (prog, args) = cand.split_first().expect("kandidat tak pernah kosong");
+        match std::process::Command::new(prog)
+            .args(args)
+            .arg(path)
+            .status()
+        {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => anyhow::bail!("editor '{prog}' keluar dengan {status}"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(prog.clone()),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    anyhow::bail!(
+        "tak ada editor yang bisa dipakai (dicoba: {}). Set $EDITOR ke editor yang terpasang.",
+        missing.join(", ")
+    )
 }
 
 fn send_initial(req_tx: &Sender<Req>) {
@@ -257,7 +299,6 @@ enum Req {
     MonitorData,
     Storage,
     Domains,
-    Services(String),
     Fetch {
         view: View,
         project: String,
@@ -270,6 +311,8 @@ enum Req {
         stype: String,
         action: String,
     },
+    /// Semua service lintas project dalam satu panggilan.
+    AllServices,
     /// Muat service sebuah project untuk dropdown di form (bukan panel Projects).
     ServicesFor(String),
     /// Buka form source/build: butuh inspectService (nilai sekarang) dan —
@@ -330,7 +373,11 @@ enum Resp {
     MonitorData(Vec<Value>),
     Storage(Vec<Value>),
     Domains(Vec<Value>),
-    Services(String, Vec<(String, String)>),
+    /// Semua service lintas project + nama project untuk dropdown form.
+    AllServices {
+        projects: Vec<String>,
+        services: Vec<Value>,
+    },
     ServicesFor(String, Vec<String>),
     /// Data untuk membuka form source/build: hasil inspectService + daftar repo.
     ConfigForm {
@@ -358,7 +405,6 @@ enum Resp {
 /// Data yang perlu di-refresh setelah sebuah mutasi.
 enum Refresh {
     Projects,
-    Services(String),
     Domains,
     None,
 }
@@ -442,6 +488,21 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
             Ok(v) => Resp::Domains(v.as_array().cloned().unwrap_or_default()),
             Err(e) => Resp::Err(e.to_string()),
         },
+        Req::AllServices => match client.call("projects", "listProjectsAndServices", Value::Null) {
+            Ok(v) => Resp::AllServices {
+                projects: v
+                    .get("projects")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().map(|p| field(p, "/name")).collect())
+                    .unwrap_or_default(),
+                services: v
+                    .get("services")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            },
+            Err(e) => Resp::Err(e.to_string()),
+        },
         Req::ServicesFor(project) => {
             match client.call(
                 "projects",
@@ -452,16 +513,6 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                     project,
                     parse_services(&v).into_iter().map(|(n, _)| n).collect(),
                 ),
-                Err(e) => Resp::Err(e.to_string()),
-            }
-        }
-        Req::Services(project) => {
-            match client.call(
-                "projects",
-                "inspectProject",
-                json!({ "projectName": project }),
-            ) {
-                Ok(v) => Resp::Services(project, parse_services(&v)),
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
@@ -595,7 +646,7 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
         ) {
             Ok(_) => Resp::Done(
                 format!("Service '{service}' ({stype}) dibuat"),
-                Refresh::Services(project),
+                Refresh::Projects,
             ),
             Err(e) => Resp::Err(e.to_string()),
         },
@@ -666,28 +717,6 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
             }
         }
     }
-}
-
-fn parse_services(v: &Value) -> Vec<(String, String)> {
-    v.get("services")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .map(|s| {
-                    (
-                        s.get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string(),
-                        s.get("type")
-                            .and_then(Value::as_str)
-                            .unwrap_or("app")
-                            .to_string(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn fetch_view(
@@ -1173,6 +1202,54 @@ fn domain_body(form: &Form) -> std::result::Result<Value, String> {
     Ok(body)
 }
 
+/// Nama+tipe service dari inspectProject, untuk dropdown Service di form domain.
+fn parse_services(v: &Value) -> Vec<(String, String)> {
+    v.get("services")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|s| {
+                    (
+                        field(s, "/name"),
+                        s.get("type")
+                            .and_then(Value::as_str)
+                            .unwrap_or("app")
+                            .to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+const SERVICE_HEADERS: [&str; 5] = ["Project", "Service", "Tipe", "Status", "Source"];
+
+/// Satu baris tabel service datar.
+///
+/// `source` diringkas dari inspectService-nya listProjectsAndServices, jadi repo
+/// dan branch terlihat tanpa membuka apa pun.
+fn service_row(s: &Value) -> Vec<String> {
+    let source = match field(s, "/source/type").as_str() {
+        "github" => format!(
+            "{}/{}#{}",
+            field(s, "/source/owner"),
+            field(s, "/source/repo"),
+            field(s, "/source/ref")
+        ),
+        "git" => format!("{}#{}", field(s, "/source/repo"), field(s, "/source/ref")),
+        "image" => field(s, "/source/image"),
+        _ => "-".to_string(),
+    };
+    let enabled = s.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    vec![
+        field(s, "/projectName"),
+        field(s, "/name"),
+        field(s, "/type"),
+        if enabled { "aktif" } else { "mati" }.to_string(),
+        source,
+    ]
+}
+
 /// Apakah sebuah baris lolos filter.
 ///
 /// Dicocokkan ke teks yang DITAMPILKAN, bukan ke JSON mentahnya: yang dicari user
@@ -1238,7 +1315,10 @@ enum Screen {
     Viewer,
 }
 
-const TABS: [&str; 8] = [
+/// Viewer sengaja TIDAK ada di sini: ia hasil dari membuka sesuatu pada sebuah
+/// service, bukan tujuan tersendiri. Sebagai tab ia hanya kotak kosong sampai
+/// user datang dari Projects.
+const TABS: [&str; 7] = [
     "Dashboard",
     "Hosts",
     "Maintenance",
@@ -1246,7 +1326,6 @@ const TABS: [&str; 8] = [
     "Monitor",
     "Domains",
     "Projects",
-    "Viewer",
 ];
 
 impl Screen {
@@ -1259,7 +1338,9 @@ impl Screen {
             Screen::Monitor => 4,
             Screen::Domains => 5,
             Screen::Projects => 6,
-            Screen::Viewer => 7,
+            // Viewer selalu dibuka dari Projects, jadi tab itu yang tetap
+            // tersorot — Viewer sendiri tak punya tab.
+            Screen::Viewer => 6,
         }
     }
     fn next(self) -> Self {
@@ -1270,7 +1351,7 @@ impl Screen {
             Screen::Actions => Screen::Monitor,
             Screen::Monitor => Screen::Domains,
             Screen::Domains => Screen::Projects,
-            Screen::Projects => Screen::Viewer,
+            Screen::Projects => Screen::Dashboard,
             Screen::Viewer => Screen::Dashboard,
         }
     }
@@ -1295,12 +1376,6 @@ enum HostState {
 enum MonitorView {
     Services,
     Storage,
-}
-
-#[derive(PartialEq, Clone, Copy)]
-enum Focus {
-    Projects,
-    Services,
 }
 
 struct Confirm {
@@ -1443,13 +1518,25 @@ impl Field {
 /// Apa yang dilakukan form saat disubmit.
 enum FormKind {
     ServerAdd,
-    ServerEdit { name: String },
+    ServerEdit {
+        name: String,
+    },
     ProjectCreate,
-    ServiceCreate { project: String },
+    /// Project ikut jadi field form: daftar datar tak punya "project yang
+    /// sedang dibuka" untuk diwarisi.
+    ServiceCreate,
     DomainCreate,
-    DomainEdit { id: String },
-    SourceEdit { project: String, service: String },
-    BuildEdit { project: String, service: String },
+    DomainEdit {
+        id: String,
+    },
+    SourceEdit {
+        project: String,
+        service: String,
+    },
+    BuildEdit {
+        project: String,
+        service: String,
+    },
 }
 
 struct Form {
@@ -1628,11 +1715,10 @@ struct App {
     domains_state: TableState,
 
     projects: Vec<String>,
-    projects_state: ListState,
-    services: Vec<(String, String)>,
-    services_state: ListState,
-    current_project: Option<String>,
-    focus: Focus,
+    /// Semua service lintas project. Daftar datar menggantikan hirarki
+    /// project -> service: drill-down tak bisa dicari dan runtuh di ratusan service.
+    all_services: Vec<Value>,
+    services_table: TableState,
 
     viewer_title: String,
     viewer_lines: Vec<String>,
@@ -1679,11 +1765,8 @@ impl App {
             domains: Vec::new(),
             domains_state: TableState::default(),
             projects: Vec::new(),
-            projects_state: ListState::default(),
-            services: Vec::new(),
-            services_state: ListState::default(),
-            current_project: None,
-            focus: Focus::Projects,
+            all_services: Vec::new(),
+            services_table: TableState::default(),
             viewer_title: "Viewer".into(),
             viewer_lines: Vec::new(),
             viewer_scroll: 0,
@@ -1712,11 +1795,8 @@ impl App {
         self.domains.clear();
         self.domains_state = TableState::default();
         self.projects.clear();
-        self.projects_state = ListState::default();
-        self.services.clear();
-        self.services_state = ListState::default();
-        self.current_project = None;
-        self.focus = Focus::Projects;
+        self.all_services.clear();
+        self.services_table = TableState::default();
         self.viewer_lines.clear();
         self.viewer_ctx = None;
     }
@@ -1738,21 +1818,12 @@ impl App {
                 self.domains = d;
                 select_first(&mut self.domains_state, self.domains.len());
             }
-            Resp::Projects(p) => {
-                self.projects = p;
-                if self.projects_state.selected().is_none() && !self.projects.is_empty() {
-                    self.projects_state.select(Some(0));
-                }
-            }
-            Resp::Services(project, s) => {
-                if self.current_project.as_deref() == Some(project.as_str()) {
-                    self.services = s;
-                    self.services_state.select(if self.services.is_empty() {
-                        None
-                    } else {
-                        Some(0)
-                    });
-                }
+            Resp::Projects(p) => self.projects = p,
+            Resp::AllServices { projects, services } => {
+                self.projects = projects;
+                self.all_services = services;
+                let n = self.visible_services().len();
+                select_first(&mut self.services_table, n);
             }
             Resp::ServicesFor(project, names) => {
                 if let Some(form) = self.form.as_mut() {
@@ -1820,13 +1891,7 @@ impl App {
                 self.status = msg;
                 match what {
                     Refresh::Projects => {
-                        self.projects.clear();
-                        let _ = req.send(Req::Projects);
-                    }
-                    Refresh::Services(p) => {
-                        if self.current_project.as_deref() == Some(p.as_str()) {
-                            let _ = req.send(Req::Services(p));
-                        }
+                        let _ = req.send(Req::AllServices);
                     }
                     Refresh::Domains => {
                         let _ = req.send(Req::Domains);
@@ -1862,11 +1927,13 @@ impl App {
         }
 
         match code {
-            // Esc menghapus filter yang aktif dulu; harus di ATAS arm keluar,
-            // kalau tidak Esc justru menutup aplikasi saat user cuma ingin
-            // membatalkan pencarian.
             KeyCode::Esc if !self.filter.is_empty() => self.clear_filter(),
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            // Esc TIDAK menutup aplikasi. Esc berarti "batal": ia menutup form,
+            // dropdown, konfirmasi, atau filter — dan bila tak ada yang perlu
+            // dibatalkan, ia tak melakukan apa-apa. Menutup TUI karena satu
+            // ketukan Esc refleks adalah kehilangan konteks tanpa peringatan.
+            // Keluar: 'q' atau Ctrl-C.
+            KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('1') => self.screen = Screen::Dashboard,
             KeyCode::Char('2') => self.goto(Screen::Hosts, req),
             KeyCode::Char('3') => self.goto(Screen::Maintenance, req),
@@ -1874,7 +1941,6 @@ impl App {
             KeyCode::Char('5') => self.goto(Screen::Monitor, req),
             KeyCode::Char('6') => self.goto(Screen::Domains, req),
             KeyCode::Char('7') => self.goto(Screen::Projects, req),
-            KeyCode::Char('8') => self.screen = Screen::Viewer,
             KeyCode::Tab => self.goto(self.screen.next(), req),
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('r') => self.refresh(req),
@@ -1883,7 +1949,7 @@ impl App {
                 self.filter.clear();
             }
             _ => match self.screen {
-                Screen::Projects => self.projects_key(code, req),
+                Screen::Projects => self.services_key(code, req),
                 Screen::Viewer => self.viewer_key(code),
                 Screen::Actions => move_table(&mut self.actions_state, code, self.actions.len()),
                 Screen::Domains => self.domains_key(code, req),
@@ -1898,7 +1964,7 @@ impl App {
     fn filterable(&self) -> bool {
         matches!(
             self.screen,
-            Screen::Domains | Screen::Actions | Screen::Monitor
+            Screen::Domains | Screen::Actions | Screen::Monitor | Screen::Projects
         )
     }
 
@@ -1914,12 +1980,14 @@ impl App {
             Screen::Domains => self.visible_domains().len(),
             Screen::Actions => self.visible_actions().len(),
             Screen::Monitor => self.visible_monitor_rows().len(),
+            Screen::Projects => self.visible_services().len(),
             _ => return,
         };
         let state = match self.screen {
             Screen::Domains => &mut self.domains_state,
             Screen::Actions => &mut self.actions_state,
             Screen::Monitor => &mut self.monitor_state,
+            Screen::Projects => &mut self.services_table,
             _ => return,
         };
         match len {
@@ -1978,10 +2046,8 @@ impl App {
         self.filter_input = false;
         self.screen = screen;
         match screen {
-            Screen::Projects => {
-                if self.projects.is_empty() {
-                    let _ = req.send(Req::Projects);
-                }
+            Screen::Projects if self.all_services.is_empty() => {
+                let _ = req.send(Req::AllServices);
             }
             Screen::Actions => {
                 if self.actions.is_empty() {
@@ -2066,68 +2132,32 @@ impl App {
             .and_then(|i| self.all_servers.get(i).cloned())
     }
 
-    /// 'n' di layar Projects: buat project (fokus kiri) atau service (fokus kanan).
-    fn new_from_projects(&mut self) {
-        self.form = Some(match self.focus {
-            Focus::Projects => Form::new(
-                FormKind::ProjectCreate,
-                " Project baru ",
-                vec![Field::text("Nama", "")],
-            ),
-            Focus::Services => {
-                let Some(project) = self.current_project.clone() else {
-                    self.status = "Pilih project dulu".into();
-                    return;
-                };
-                Form::new(
-                    FormKind::ServiceCreate {
-                        project: project.clone(),
-                    },
-                    format!(" Service baru di {project} "),
-                    vec![
-                        Field::text("Nama", ""),
-                        Field::choice("Tipe", SERVICE_TYPES, "app"),
-                    ],
-                )
-            }
-        });
-    }
-
-    /// 'x' di layar Projects: hapus project atau service yang sedang dipilih.
-    fn destroy_from_projects(&mut self, _req: &Sender<Req>) {
-        match self.focus {
-            Focus::Projects => {
-                if let Some(p) = self
-                    .projects_state
-                    .selected()
-                    .and_then(|i| self.projects.get(i).cloned())
-                {
-                    self.confirm = Some(Confirm {
-                        action: "destroy-project".into(),
-                        project: p.clone(),
-                        service: String::new(),
-                        stype: String::new(),
-                        label: format!("Hapus project '{p}' beserta semua service-nya?"),
-                    });
-                }
-            }
-            Focus::Services => self.ask_action("destroy"),
-        }
-    }
-
     fn start_env_edit(&mut self) {
-        if self.focus != Focus::Services {
-            self.status = "Fokus panel Services dulu (→)".into();
-            return;
-        }
-        if let (Some(p), Some((s, t))) = (
-            self.current_project.clone(),
-            self.services_state
-                .selected()
-                .and_then(|i| self.services.get(i).cloned()),
-        ) {
+        if let Some((p, s, t)) = self.selected_row() {
             self.edit_env = Some((p, s, t));
         }
+    }
+
+    /// Service yang lolos filter.
+    ///
+    /// Render DAN aksi wajib lewat sini: kalau render difilter sementara aksi
+    /// memakai indeks daftar penuh, `x` akan menghapus service yang salah.
+    fn visible_services(&self) -> Vec<&Value> {
+        self.all_services
+            .iter()
+            .filter(|s| keep(&service_row(s), &self.filter))
+            .collect()
+    }
+
+    /// (project, service, tipe) dari baris yang disorot di daftar datar.
+    fn selected_row(&self) -> Option<(String, String, String)> {
+        let vis = self.visible_services();
+        let s = self.services_table.selected().and_then(|i| vis.get(i))?;
+        Some((
+            field(s, "/projectName"),
+            field(s, "/name"),
+            field(s, "/type"),
+        ))
     }
 
     /// Domain yang lolos filter.
@@ -2207,14 +2237,7 @@ impl App {
     /// Formnya baru terbuka setelah inspectService tiba (lihat Resp::ConfigForm),
     /// karena nilai sekarang harus jadi isi awalnya.
     fn open_config_form(&mut self, build: bool, req: &Sender<Req>) {
-        if self.focus != Focus::Services {
-            self.status = "Fokus panel Services dulu (→)".into();
-            return;
-        }
-        let (Some(project), Some((service, stype))) = (
-            self.current_project.clone(),
-            self.selected_service().cloned(),
-        ) else {
+        let Some((project, service, stype)) = self.selected_row() else {
             return;
         };
         // Source/build hanya ada di service tipe app; tipe lain tak punya konsep ini.
@@ -2390,14 +2413,14 @@ impl App {
                 }
                 let _ = req.send(Req::ProjectCreate(name));
             }
-            FormKind::ServiceCreate { project } => {
-                let (service, stype) = (form.val(0), form.val(1));
-                if !commands::valid_name(&service) || stype.is_empty() {
+            FormKind::ServiceCreate => {
+                let (project, service, stype) = (form.val(0), form.val(1), form.val(2));
+                if !commands::valid_name(&service) || project.is_empty() {
                     self.status = "Nama service hanya boleh a-z, 0-9, -, _".into();
                     return;
                 }
                 let _ = req.send(Req::ServiceCreate {
-                    project: project.clone(),
+                    project,
                     service,
                     stype,
                 });
@@ -2462,6 +2485,12 @@ impl App {
         let _ = match c.action.as_str() {
             "destroy-project" => req.send(Req::ProjectDestroy(c.project.clone())),
             "domain-delete" => req.send(Req::DomainDelete(c.project.clone())),
+            // Hapus server: perubahan config, bukan panggilan API.
+            "server-remove" => {
+                self.server_action = Some(ServerAction::Remove(c.project));
+                self.status = "Menghapus server...".into();
+                return;
+            }
             "maint:systemPrune" => req.send(Req::MaintAction("systemPrune")),
             "maint:cleanupDockerImages" => req.send(Req::MaintAction("cleanupDockerImages")),
             "maint:cleanupDockerBuilder" => req.send(Req::MaintAction("cleanupDockerBuilder")),
@@ -2525,9 +2554,21 @@ impl App {
                 }
             }
             KeyCode::Char('x') => {
-                if let Some((name, _)) = self.picker_selected() {
+                // Menghapus server ikut membuang tokennya, dan token tak bisa
+                // dibaca balik dari mana pun — sekali salah tekan, kredensialnya
+                // hilang. Setiap aksi destruktif lain di sini minta konfirmasi;
+                // yang ini dulu tidak.
+                if let Some((name, url)) = self.picker_selected() {
                     self.picker = None;
-                    self.server_action = Some(ServerAction::Remove(name));
+                    self.confirm = Some(Confirm {
+                        action: "server-remove".into(),
+                        project: name.clone(),
+                        service: String::new(),
+                        stype: String::new(),
+                        label: format!(
+                            "Hapus server '{name}' ({url})? Tokennya ikut hilang dan tak bisa dikembalikan."
+                        ),
+                    });
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -2554,17 +2595,9 @@ impl App {
         }
     }
 
-    fn projects_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+    fn services_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
-            KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Projects,
-            KeyCode::Right | KeyCode::Char('l') => {
-                if self.current_project.is_some() {
-                    self.focus = Focus::Services;
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
-            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
-            KeyCode::Enter => self.on_enter(req),
+            KeyCode::Enter => self.open_view(View::Logs, req),
             KeyCode::Char('e') => self.open_view(View::Env, req),
             KeyCode::Char('p') => self.open_view(View::Ports, req),
             KeyCode::Char('m') => self.open_view(View::Mounts, req),
@@ -2573,19 +2606,66 @@ impl App {
             KeyCode::Char('u') => self.open_view(View::Source, req),
             KeyCode::Char('U') => self.open_config_form(false, req),
             KeyCode::Char('B') => self.open_config_form(true, req),
-            KeyCode::Char('n') => self.new_from_projects(),
-            KeyCode::Char('x') => self.destroy_from_projects(req),
             KeyCode::Char('E') => self.start_env_edit(),
+            KeyCode::Char('n') => self.new_service_form(),
+            KeyCode::Char('x') => self.ask_action("destroy"),
+            // Panel Projects sudah tak ada, tapi project tetap harus bisa
+            // dibuat/dihapus dari TUI.
+            KeyCode::Char('N') => {
+                self.form = Some(Form::new(
+                    FormKind::ProjectCreate,
+                    " Project baru ",
+                    vec![Field::text("Nama", "")],
+                ));
+            }
+            KeyCode::Char('X') => {
+                if let Some((p, _, _)) = self.selected_row() {
+                    self.confirm = Some(Confirm {
+                        action: "destroy-project".into(),
+                        project: p.clone(),
+                        service: String::new(),
+                        stype: String::new(),
+                        label: format!("Hapus project '{p}' BESERTA SEMUA service di dalamnya?"),
+                    });
+                }
+            }
             KeyCode::Char('d') => self.ask_action("deploy"),
             KeyCode::Char('R') => self.ask_action("restart"),
             KeyCode::Char('S') => self.ask_action("stop"),
             KeyCode::Char('T') => self.ask_action("start"),
-            _ => {}
+            _ => {
+                let n = self.visible_services().len();
+                move_table(&mut self.services_table, code, n)
+            }
         }
+    }
+
+    /// Form service baru. Project dipilih dari dropdown: daftar datar tak punya
+    /// "project yang sedang dibuka", jadi ia harus disebut eksplisit.
+    fn new_service_form(&mut self) {
+        if self.projects.is_empty() {
+            self.status = "Daftar project belum termuat".into();
+            return;
+        }
+        let project = self
+            .selected_row()
+            .map(|(p, _, _)| p)
+            .unwrap_or_else(|| self.projects[0].clone());
+        self.form = Some(Form::new(
+            FormKind::ServiceCreate,
+            " Service baru ",
+            vec![
+                Field::choice_owned("Project", self.projects.clone(), &project),
+                Field::text("Nama", ""),
+                Field::choice("Tipe", SERVICE_TYPES, "app"),
+            ],
+        ));
     }
 
     fn viewer_key(&mut self, code: KeyCode) {
         match code {
+            // Viewer dimasuki dari sebuah service, jadi Esc mengembalikan ke sana.
+            KeyCode::Esc => self.screen = Screen::Projects,
             KeyCode::Down | KeyCode::Char('j') => {
                 self.viewer_scroll = self.viewer_scroll.saturating_add(1)
             }
@@ -2598,49 +2678,8 @@ impl App {
         }
     }
 
-    fn move_selection(&mut self, delta: isize) {
-        let (state, len) = match self.focus {
-            Focus::Projects => (&mut self.projects_state, self.projects.len()),
-            Focus::Services => (&mut self.services_state, self.services.len()),
-        };
-        if len == 0 {
-            return;
-        }
-        let cur = state.selected().unwrap_or(0) as isize;
-        let next = (cur + delta).clamp(0, len as isize - 1) as usize;
-        state.select(Some(next));
-    }
-
-    fn on_enter(&mut self, req: &Sender<Req>) {
-        match self.focus {
-            Focus::Projects => {
-                if let Some(p) = self
-                    .projects_state
-                    .selected()
-                    .and_then(|i| self.projects.get(i).cloned())
-                {
-                    self.current_project = Some(p.clone());
-                    self.services.clear();
-                    self.services_state.select(None);
-                    self.focus = Focus::Services;
-                    let _ = req.send(Req::Services(p));
-                }
-            }
-            Focus::Services => self.open_view(View::Logs, req),
-        }
-    }
-
     fn open_view(&mut self, view: View, req: &Sender<Req>) {
-        if self.focus != Focus::Services {
-            self.status = "Fokus panel Services dulu (→)".into();
-            return;
-        }
-        if let (Some(p), Some((s, t))) = (
-            self.current_project.clone(),
-            self.services_state
-                .selected()
-                .and_then(|i| self.services.get(i).cloned()),
-        ) {
+        if let Some((p, s, t)) = self.selected_row() {
             self.viewer_ctx = Some((view, p.clone(), s.clone(), t.clone()));
             self.status = format!("Memuat {}...", view.title());
             let _ = req.send(Req::Fetch {
@@ -2653,16 +2692,7 @@ impl App {
     }
 
     fn ask_action(&mut self, action: &str) {
-        if self.focus != Focus::Services {
-            self.status = "Fokus panel Services dulu (→) untuk aksi".into();
-            return;
-        }
-        if let (Some(p), Some((s, t))) = (
-            self.current_project.clone(),
-            self.services_state
-                .selected()
-                .and_then(|i| self.services.get(i).cloned()),
-        ) {
+        if let Some((p, s, t)) = self.selected_row() {
             self.confirm = Some(Confirm {
                 action: action.to_string(),
                 project: p,
@@ -2678,10 +2708,7 @@ impl App {
         let _ = req.send(Req::Nodes);
         match self.screen {
             Screen::Projects => {
-                let _ = req.send(Req::Projects);
-                if let Some(p) = self.current_project.clone() {
-                    let _ = req.send(Req::Services(p));
-                }
+                let _ = req.send(Req::AllServices);
             }
             Screen::Viewer => {
                 if let Some((view, p, s, t)) = self.viewer_ctx.clone() {
@@ -2710,12 +2737,6 @@ impl App {
             Screen::Dashboard => {}
         }
         self.status = "Refresh...".into();
-    }
-
-    fn selected_service(&self) -> Option<&(String, String)> {
-        self.services_state
-            .selected()
-            .and_then(|i| self.services.get(i))
     }
 }
 
@@ -2841,54 +2862,29 @@ fn render_nodes(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
-    let cols = Layout::horizontal([
-        Constraint::Percentage(28),
-        Constraint::Percentage(34),
-        Constraint::Percentage(38),
-    ])
-    .split(area);
-
-    let p_items: Vec<ListItem> = app
-        .projects
+    let rows: Vec<Vec<String>> = app
+        .visible_services()
         .iter()
-        .map(|p| ListItem::new(p.clone()))
+        .map(|s| service_row(s))
         .collect();
-    let p_list = List::new(p_items)
-        .block(focus_block(" Projects ", app.focus == Focus::Projects))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("› ");
-    f.render_stateful_widget(p_list, cols[0], &mut app.projects_state);
-
-    let title = match &app.current_project {
-        Some(p) => format!(" Services · {p} "),
-        None => " Services ".to_string(),
-    };
-    let s_items: Vec<ListItem> = app
-        .services
-        .iter()
-        .map(|(n, t)| ListItem::new(format!("{n}  ({t})")))
-        .collect();
-    let s_list = List::new(s_items)
-        .block(focus_block(&title, app.focus == Focus::Services))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("› ");
-    f.render_stateful_widget(s_list, cols[1], &mut app.services_state);
-
-    let detail = match app.selected_service() {
-        Some((s, t)) => format!(
-            "Service : {s}\nTipe    : {t}\n\nView (fokus Services):\n  [Enter] Logs   [e] Env\n  [p] Ports      [m] Mounts\n  [o] Domains    [b] Backups\n\nAksi:\n  [d] Deploy  [R] Restart\n  [S] Stop    [T] Start",
-        ),
-        None => "Enter pada project untuk memuat service.\n→ untuk fokus panel Services.".to_string(),
-    };
-    f.render_widget(
-        Paragraph::new(detail)
-            .block(Block::bordered().title(" Detail "))
-            .wrap(Wrap { trim: false }),
-        cols[2],
+    let title = count_title("Services", rows.len(), app.all_services.len(), app);
+    render_table(
+        f,
+        area,
+        title,
+        &SERVICE_HEADERS,
+        &[
+            Constraint::Length(18),
+            Constraint::Length(24),
+            Constraint::Length(9),
+            Constraint::Length(7),
+            Constraint::Min(20),
+        ],
+        rows,
+        &mut app.services_table,
     );
 }
 
-/// Tabel dengan state + highlight baris terpilih.
 fn render_table(
     f: &mut Frame,
     area: Rect,
@@ -3251,18 +3247,18 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     let keys = match app.screen {
-        Screen::Dashboard => "1-8/Tab tab · s server · r refresh · q keluar",
+        Screen::Dashboard => "1-7/Tab tab · s server · r refresh · q keluar",
         Screen::Hosts => "semua host · ↑↓ pilih · s ganti server aktif · r refresh · q keluar",
         Screen::Maintenance => "p prune sistem · i hapus image · c hapus build cache · r refresh · q keluar",
-        Screen::Actions => "/ cari · ↑↓ pilih · PgUp/PgDn · r refresh · 1-8 tab · q keluar",
-        Screen::Monitor => "/ cari · v Services/Storage · ↑↓ pilih · r refresh · 1-8 tab · q keluar",
+        Screen::Actions => "/ cari · ↑↓ pilih · PgUp/PgDn · r refresh · 1-7 tab · q keluar",
+        Screen::Monitor => "/ cari · v Services/Storage · ↑↓ pilih · r refresh · 1-7 tab · q keluar",
         Screen::Domains => {
             "/ cari · n baru · e edit · x hapus · P primary · ↑↓ pilih · r refresh · q keluar"
         }
         Screen::Projects => {
-            "n baru · x hapus · E env · U source · B build · e/p/m/o/b/u view · d/R/S/T aksi · q keluar"
+            "/ cari · n service · N project · x/X hapus · E env · U source · B build · e/p/m/o/b/u view · d/R/S/T aksi"
         }
-        Screen::Viewer => "↑↓ scroll · PgUp/PgDn · r refresh · 1-6 tab · q keluar",
+        Screen::Viewer => "↑↓ scroll · PgUp/PgDn · Esc kembali ke Services · r refresh · q keluar",
     };
     // Warna bernama (Color::Blue) ditafsirkan tema terminal dan bisa jadi biru
     // terang, sehingga teks putih di atasnya nyaris tak terbaca. Indeks palet
@@ -3413,19 +3409,6 @@ fn render_picker(f: &mut Frame, app: &mut App) {
 
 // ---------- Helpers ----------
 
-fn focus_block(title: &str, focused: bool) -> Block<'_> {
-    let block = Block::bordered().title(title.to_string());
-    if focused {
-        block.border_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        block
-    }
-}
-
 fn gauge_color(pct: f64) -> Color {
     if pct < 70.0 {
         Color::Green
@@ -3558,6 +3541,71 @@ mod tests {
         let body = domain_body(&f).unwrap();
         assert_eq!(body["certificateResolver"], json!("letsencrypt"));
         assert_eq!(body["wildcard"], json!(true));
+    }
+
+    fn svc(project: &str, name: &str, t: &str) -> Value {
+        json!({ "projectName": project, "name": name, "type": t, "enabled": true })
+    }
+
+    #[test]
+    fn service_row_summarises_source_without_opening_anything() {
+        let github = json!({
+            "projectName": "p", "name": "api", "type": "app", "enabled": true,
+            "source": { "type": "github", "owner": "acme", "repo": "web", "ref": "dev" }
+        });
+        assert_eq!(service_row(&github)[4], "acme/web#dev");
+
+        let image = json!({
+            "projectName": "p", "name": "cache", "type": "redis", "enabled": false,
+            "source": { "type": "image", "image": "redis:7" }
+        });
+        let row = service_row(&image);
+        assert_eq!(row[4], "redis:7");
+        assert_eq!(row[3], "mati");
+
+        // Service tanpa source (baru dibuat) tak boleh bikin panik.
+        assert_eq!(service_row(&svc("p", "kosong", "app"))[4], "-");
+    }
+
+    #[test]
+    fn flat_list_filters_across_projects() {
+        // Inti daftar datar: cari "mysql" menemukannya di project mana pun,
+        // tanpa perlu tahu ia ada di project yang mana.
+        let mut app = App::new("s".into(), vec![]);
+        app.all_services = vec![
+            svc("harisenin-net", "api", "app"),
+            svc("harisenin-net-db", "mysql", "mysql"),
+            svc("edukasistudio-db", "mysql-r1", "mysql"),
+            svc("edukasistudio", "web", "app"),
+        ];
+        assert_eq!(app.visible_services().len(), 4);
+
+        app.filter = "mysql".into();
+        let vis = app.visible_services();
+        assert_eq!(vis.len(), 2);
+        assert_eq!(field(vis[0], "/projectName"), "harisenin-net-db");
+        assert_eq!(field(vis[1], "/projectName"), "edukasistudio-db");
+
+        // Nama project juga ikut dicocokkan, bukan cuma nama service.
+        app.filter = "edukasistudio".into();
+        assert_eq!(app.visible_services().len(), 2);
+    }
+
+    #[test]
+    fn selected_row_follows_the_filtered_list() {
+        // Kalau aksi memakai indeks daftar penuh, 'x' akan menghapus service lain.
+        let mut app = App::new("s".into(), vec![]);
+        app.all_services = vec![
+            svc("p1", "satu", "app"),
+            svc("p2", "dua", "app"),
+            svc("p3", "tiga", "app"),
+        ];
+        app.filter = "tiga".into();
+        app.services_table.select(Some(0));
+        assert_eq!(
+            app.selected_row(),
+            Some(("p3".into(), "tiga".into(), "app".into()))
+        );
     }
 
     #[test]
