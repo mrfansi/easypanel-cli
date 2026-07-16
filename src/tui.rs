@@ -629,25 +629,29 @@ fn domain_fields(existing: Option<&Value>, projects: &[String]) -> Vec<Field> {
             "Project",
             projects.to_vec(),
             &get("/serviceDestination/projectName", ""),
-        ),
+        )
+        .when("service"),
         // Diisi setelah service project tsb dimuat; nilai lama dipertahankan
         // supaya mode edit tidak kehilangan pilihannya sebelum data tiba.
-        Field::choice_owned("Service", vec![service.clone()], &service),
+        Field::choice_owned("Service", vec![service.clone()], &service).when("service"),
         Field::choice(
             "Protocol",
             PROTOCOLS,
             &get("/serviceDestination/protocol", "http"),
-        ),
-        Field::text("Port", &get("/serviceDestination/port", "80")),
-        Field::text("Path tujuan", &get("/serviceDestination/path", "/")),
+        )
+        .when("service"),
+        Field::text("Port", &get("/serviceDestination/port", "80")).when("service"),
+        Field::text("Path tujuan", &get("/serviceDestination/path", "/")).when("service"),
         Field::text(
             "Server URL",
             &server.map(|s| field(s, "/url")).unwrap_or_default(),
-        ),
+        )
+        .when("custom"),
         Field::text(
             "Weight",
             &server.map(|s| field(s, "/weight")).unwrap_or("1".into()),
-        ),
+        )
+        .when("custom"),
     ]
 }
 
@@ -775,6 +779,10 @@ struct Field {
     label: &'static str,
     value: String,
     kind: FieldKind,
+    /// Bila diisi, field hanya tampil saat field "Tujuan" bernilai sama.
+    /// Panel juga begini: memilih Service/Custom mengganti field di bawahnya,
+    /// bukan menampilkan keduanya sekaligus.
+    only_for: Option<&'static str>,
 }
 
 impl Field {
@@ -783,13 +791,20 @@ impl Field {
             label,
             value: value.into(),
             kind: FieldKind::Text,
+            only_for: None,
         }
+    }
+    /// Tampilkan field ini hanya saat Tujuan bernilai `dest`.
+    fn when(mut self, dest: &'static str) -> Self {
+        self.only_for = Some(dest);
+        self
     }
     fn secret(label: &'static str) -> Self {
         Self {
             label,
             value: String::new(),
             kind: FieldKind::Secret,
+            only_for: None,
         }
     }
     fn boolean(label: &'static str, on: bool) -> Self {
@@ -797,6 +812,7 @@ impl Field {
             label,
             value: if on { "ya".into() } else { "tidak".into() },
             kind: FieldKind::Bool,
+            only_for: None,
         }
     }
     fn choice(label: &'static str, options: &[&str], value: &str) -> Self {
@@ -816,6 +832,7 @@ impl Field {
             label,
             value,
             kind: FieldKind::Choice(options),
+            only_for: None,
         }
     }
     /// Ganti daftar pilihan (mis. service terisi setelah project dipilih).
@@ -890,6 +907,39 @@ impl Form {
         self.original = Some(original);
         self
     }
+    /// Indeks field yang tampil untuk Tujuan yang sedang dipilih.
+    fn visible(&self) -> Vec<usize> {
+        let dest = self.by_label("Tujuan");
+        self.fields
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| match f.only_for {
+                None => true,
+                Some(d) => d == dest,
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Pindah fokus `delta` langkah di antara field yang tampil saja.
+    fn move_focus(&mut self, delta: isize) {
+        let vis = self.visible();
+        if vis.is_empty() {
+            return;
+        }
+        let at = vis.iter().position(|i| *i == self.focus).unwrap_or(0) as isize;
+        let next = (at + delta).rem_euclid(vis.len() as isize) as usize;
+        self.focus = vis[next];
+    }
+
+    /// Setelah Tujuan berganti, fokus bisa tertinggal di field yang kini tersembunyi.
+    fn clamp_focus(&mut self) {
+        let vis = self.visible();
+        if !vis.contains(&self.focus) {
+            self.focus = vis.first().copied().unwrap_or(0);
+        }
+    }
+
     fn val(&self, i: usize) -> String {
         self.fields[i].value.trim().to_string()
     }
@@ -1412,6 +1462,8 @@ impl App {
                 self.chooser = None;
                 if let (Some(value), Some(form)) = (picked, self.form.as_mut()) {
                     form.fields[idx].value = value;
+                    // Ganti Tujuan -> set field service/custom yang tampil.
+                    form.clamp_focus();
                     // Ganti project -> daftar service ikut dimuat ulang.
                     if label == "Project" {
                         self.load_form_services(req);
@@ -1433,14 +1485,13 @@ impl App {
                 self.form = None;
                 self.status = "Dibatalkan".into();
             }
-            KeyCode::Tab | KeyCode::Down => form.focus = (form.focus + 1) % form.fields.len(),
-            KeyCode::BackTab | KeyCode::Up => {
-                form.focus = (form.focus + form.fields.len() - 1) % form.fields.len()
-            }
+            KeyCode::Tab | KeyCode::Down => form.move_focus(1),
+            KeyCode::BackTab | KeyCode::Up => form.move_focus(-1),
             // Bool cukup di-toggle; Choice membuka dropdown yang bisa dicari.
             KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Left | KeyCode::Right if !typed => {
                 if form.fields[form.focus].kind == FieldKind::Bool {
                     form.fields[form.focus].cycle();
+                    form.clamp_focus();
                 } else {
                     self.open_chooser();
                 }
@@ -2225,15 +2276,24 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
         }
         Screen::Viewer => "↑↓ scroll · PgUp/PgDn · r refresh · 1-6 tab · q keluar",
     };
+    // Warna bernama (Color::Blue) ditafsirkan tema terminal dan bisa jadi biru
+    // terang, sehingga teks putih di atasnya nyaris tak terbaca. Indeks palet
+    // memberi abu-abu gelap yang pasti, dengan status di-bold agar menonjol.
+    let bar = Style::default().bg(Color::Indexed(238)).fg(Color::White);
     f.render_widget(
-        Paragraph::new(format!(" {keys}   |   {}", app.status))
-            .style(Style::default().bg(Color::Blue).fg(Color::White)),
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!(" {keys} "), bar.fg(Color::Indexed(252))),
+            Span::styled("│ ", bar.fg(Color::Indexed(244))),
+            Span::styled(app.status.clone(), bar.add_modifier(Modifier::BOLD)),
+        ]))
+        .style(bar),
         area,
     );
 }
 
 fn render_form(f: &mut Frame, form: &Form) {
-    let height = (form.fields.len() as u16 * 2 + 5).min(f.area().height);
+    let visible = form.visible();
+    let height = (visible.len() as u16 + 5).min(f.area().height);
     let area = centered_abs(64, height, f.area());
     f.render_widget(Clear, area);
     f.render_widget(
@@ -2244,12 +2304,13 @@ fn render_form(f: &mut Frame, form: &Form) {
     );
 
     let inner = area.inner(Margin::new(2, 1));
-    let mut rows = vec![Constraint::Length(1); form.fields.len()];
+    let mut rows = vec![Constraint::Length(1); visible.len()];
     rows.push(Constraint::Min(1));
     let slots = Layout::vertical(rows).split(inner);
 
-    for (i, field) in form.fields.iter().enumerate() {
-        let focused = i == form.focus;
+    for (slot, &idx) in visible.iter().enumerate() {
+        let field = &form.fields[idx];
+        let focused = idx == form.focus;
         let hint = if focused && !field.kind.is_typed() {
             "  ⌄ Enter untuk pilih"
         } else {
@@ -2272,13 +2333,13 @@ fn render_form(f: &mut Frame, form: &Form) {
             ),
             Span::styled(hint, Style::default().fg(Color::DarkGray)),
         ]);
-        f.render_widget(Paragraph::new(line), slots[i]);
+        f.render_widget(Paragraph::new(line), slots[slot]);
     }
 
     f.render_widget(
         Paragraph::new("[Enter] pilih/simpan   [Tab] pindah field   [Esc] batal")
             .style(Style::default().fg(Color::DarkGray)),
-        slots[form.fields.len()],
+        slots[visible.len()],
     );
 }
 
