@@ -91,13 +91,20 @@ Rilis biner (macOS/Linux) dibuat otomatis oleh GitHub Actions saat push tag `v*`
 
 `--type` default `app`; tipe lain (mysql, postgres, redis, mongo, mariadb, wordpress, compose, …) sesuai service EasyPanel. Ports, mounts, dan domains dipanggil per project+service (tanpa `--type`).
 
-## Menu interaktif
+## TUI (dashboard interaktif)
 
-Jalankan tanpa argumen (atau `easypanel menu`) untuk flow bertingkat: pilih server → kategori → project → service → aksi. Aksi yang memengaruhi service nyata (deploy/restart/stop) meminta konfirmasi.
+Jalankan tanpa argumen (atau `easypanel menu`) untuk membuka TUI full-screen (ratatui):
 
 ```bash
-easypanel
+easypanel                 # server default
+easypanel --server prod   # host tertentu
 ```
+
+- **Dashboard** — gauge CPU/Memory/Disk, sparkline CPU history (auto-refresh ~2 detik), uptime, dan tabel node cluster.
+- **Projects** — panel Projects ↔ Services; buka logs atau jalankan aksi (deploy/restart/stop/start) dengan konfirmasi.
+- **Logs** — viewer log service yang bisa di-scroll.
+
+Keybindings: `1/2/3` atau `Tab` pindah tab · `↑↓`/`jk` navigasi · `←→` pindah panel · `Enter` buka · `d/R/S/T` deploy/restart/stop/start · `r` refresh · `q` keluar.
 
 ## Test
 
