@@ -81,7 +81,7 @@ easypanel action list [--limit 25] [--project P] [--service S] [--type deploymen
 easypanel action kill <id>
 
 # Monitoring & cluster
-easypanel stats                      # CPU/mem/disk/uptime
+easypanel stats                      # CPU/mem/disk/load
 easypanel monitor services           # CPU/memori/network per project & service
 easypanel monitor storage            # pemakaian disk per service
 easypanel node list                  # node swarm cluster
@@ -107,7 +107,8 @@ easypanel                 # server default
 easypanel --server prod   # host tertentu
 ```
 
-- **Dashboard** — gauge CPU/Memory/Disk, sparkline CPU history (auto-refresh ~2 detik), uptime, dan tabel node cluster.
+- **Dashboard** — gauge CPU/Memory/Disk, sparkline CPU history (auto-refresh ~2 detik), load average, dan tabel node cluster. Server aktif saja.
+- **Hosts** — **semua** server dari `servers.json` sekaligus: CPU, memori, disk, dan load per host. Tiap host diambil di thread sendiri, jadi host lambat atau mati tak menahan yang lain; host yang gagal tampil merah beserta alasannya (unreachable, token kadaluarsa) alih-alih menggagalkan seluruh tabel. Inilah satu-satunya layar yang tak bisa digantikan panel web.
 - **Actions** — riwayat action (deploy/destroy/login) dengan status, target, durasi, dan umur.
 - **Monitor** — lima tile metrik berhistori (CPU, Memory, Disk, Net In, Net Out) + sub-tab **Services** (CPU/memori/network per project & service) dan **Storage** (`v` untuk berganti).
 - **Domains** — semua domain host: source → destination (service internal atau server custom beserta bobotnya).
@@ -118,7 +119,7 @@ Keybindings:
 
 | Tombol | Aksi |
 |---|---|
-| `1`–`6`, `Tab` | pindah tab |
+| `1`–`7`, `Tab` | pindah tab (`2` = Hosts, semua server sekaligus) |
 | `n` · `x` | buat · hapus (Projects: project/service sesuai panel yang difokus; Domains: domain) |
 | `e` · `P` | Domains: edit · jadikan primary |
 | `E` | Projects: edit env service di `$EDITOR` |

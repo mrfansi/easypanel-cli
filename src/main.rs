@@ -33,7 +33,7 @@ enum Command {
     /// Kelola service (--type default: app)
     #[command(subcommand)]
     Service(ServiceCmd),
-    /// System stats host (CPU/mem/disk/uptime)
+    /// System stats host (CPU/mem/disk/load)
     Stats,
     /// Kelola node cluster
     #[command(subcommand)]

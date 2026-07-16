@@ -195,6 +195,16 @@ mod tests {
     }
 
     #[test]
+    fn series_last_returns_zero_for_flat_arrays() {
+        // Jebakan: `loadAvg` dari metrics BUKAN deret [ts, nilai] seperti cpu —
+        // isinya tiga string rata-rata 1/5/15 menit. series_last() mencari p[1]
+        // di tiap titik dan mengembalikan 0.0, yang terbaca sebagai "load nol"
+        // padahal load sebenarnya 0.58. Pakai commands::load_avg() untuk ini.
+        let v = json!({ "loadAvg": ["0.58", "0.62", "0.7"] });
+        assert_eq!(series_last(&v, "loadAvg"), 0.0);
+    }
+
+    #[test]
     fn bytes_and_rates_are_human_readable() {
         assert_eq!(format_bytes(512.0), "512 B");
         assert_eq!(format_bytes(1024.0), "1.0 KB");

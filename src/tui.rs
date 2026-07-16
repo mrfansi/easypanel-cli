@@ -76,6 +76,31 @@ fn event_loop(
             }
         }
 
+        // Layar Hosts: satu thread per server. Fan-out ada di sini karena hanya
+        // event_loop yang memegang ServerConfig (url + token tiap host).
+        if app.load_hosts {
+            app.load_hosts = false;
+            app.hosts = cfg
+                .all()
+                .into_iter()
+                .map(|s| HostRow {
+                    name: s.name,
+                    url: s.url,
+                    state: HostState::Loading,
+                })
+                .collect();
+            for s in cfg.all() {
+                let tx = w.resp_tx.clone();
+                thread::spawn(move || {
+                    let client = EasypanelClient::new(&s.url, &s.token);
+                    let data = client
+                        .call("metrics", "getSystemStats", json!({}))
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(Resp::HostStat { name: s.name, data });
+                });
+            }
+        }
+
         // Perubahan daftar server perlu ServerConfig, yang hanya ada di sini.
         if let Some(action) = app.server_action.take() {
             app.status = match apply_server_action(cfg, action) {
@@ -303,6 +328,12 @@ enum Resp {
         repos: Vec<String>,
     },
     Branches(Vec<String>),
+    /// Hasil satu host di layar Hosts; tiap host tiba sendiri-sendiri supaya
+    /// host lambat/mati tak menahan yang lain.
+    HostStat {
+        name: String,
+        data: std::result::Result<Value, String>,
+    },
     Viewer(String, Vec<String>),
     /// Mutasi berhasil: pesan status + data mana yang perlu dimuat ulang.
     Done(String, Refresh),
@@ -342,13 +373,21 @@ struct Workers {
     user: Sender<Req>,
     poll: Sender<Req>,
     resp: Receiver<Resp>,
+    /// Untuk fan-out layar Hosts: tiap host dapat thread sendiri, jadi hasilnya
+    /// tak lewat lajur user/poll yang terikat satu client.
+    resp_tx: Sender<Resp>,
 }
 
 fn spawn_workers(client: EasypanelClient) -> Workers {
     let (resp_tx, resp) = mpsc::channel::<Resp>();
     let user = spawn_worker(client.clone(), resp_tx.clone());
-    let poll = spawn_worker(client, resp_tx);
-    Workers { user, poll, resp }
+    let poll = spawn_worker(client, resp_tx.clone());
+    Workers {
+        user,
+        poll,
+        resp,
+        resp_tx,
+    }
 }
 
 fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
@@ -1054,6 +1093,8 @@ fn list_or_empty(v: &Value, empty: &str, f: impl Fn(usize, &Value) -> String) ->
 #[derive(PartialEq, Clone, Copy)]
 enum Screen {
     Dashboard,
+    /// Semua host sekaligus — satu-satunya layar yang tak bisa digantikan panel web.
+    Hosts,
     Actions,
     Monitor,
     Domains,
@@ -1061,8 +1102,9 @@ enum Screen {
     Viewer,
 }
 
-const TABS: [&str; 6] = [
+const TABS: [&str; 7] = [
     "Dashboard",
+    "Hosts",
     "Actions",
     "Monitor",
     "Domains",
@@ -1074,16 +1116,18 @@ impl Screen {
     fn index(self) -> usize {
         match self {
             Screen::Dashboard => 0,
-            Screen::Actions => 1,
-            Screen::Monitor => 2,
-            Screen::Domains => 3,
-            Screen::Projects => 4,
-            Screen::Viewer => 5,
+            Screen::Hosts => 1,
+            Screen::Actions => 2,
+            Screen::Monitor => 3,
+            Screen::Domains => 4,
+            Screen::Projects => 5,
+            Screen::Viewer => 6,
         }
     }
     fn next(self) -> Self {
         match self {
-            Screen::Dashboard => Screen::Actions,
+            Screen::Dashboard => Screen::Hosts,
+            Screen::Hosts => Screen::Actions,
             Screen::Actions => Screen::Monitor,
             Screen::Monitor => Screen::Domains,
             Screen::Domains => Screen::Projects,
@@ -1091,6 +1135,20 @@ impl Screen {
             Screen::Viewer => Screen::Dashboard,
         }
     }
+}
+
+/// Satu baris di layar Hosts. Host yang mati harus tampil sebagai baris error,
+/// bukan menggagalkan seluruh tabel.
+struct HostRow {
+    name: String,
+    url: String,
+    state: HostState,
+}
+
+enum HostState {
+    Loading,
+    Ok(Box<Value>),
+    Err(String),
 }
 
 /// Sub-tab pada layar Monitor (mengikuti panel).
@@ -1438,6 +1496,11 @@ struct App {
     viewer_scroll: u16,
     viewer_ctx: Option<(View, String, String, String)>,
 
+    hosts: Vec<HostRow>,
+    hosts_state: TableState,
+    /// Diset saat layar Hosts perlu data; fan-out-nya dijalankan event_loop.
+    load_hosts: bool,
+
     confirm: Option<Confirm>,
 }
 
@@ -1476,6 +1539,9 @@ impl App {
             viewer_lines: Vec::new(),
             viewer_scroll: 0,
             viewer_ctx: None,
+            hosts: Vec::new(),
+            hosts_state: TableState::default(),
+            load_hosts: false,
             confirm: None,
         }
     }
@@ -1574,6 +1640,15 @@ impl App {
                 self.status = "Enter simpan · Esc batal".into();
                 self.load_form_branches(req);
             }
+            Resp::HostStat { name, data } => {
+                if let Some(h) = self.hosts.iter_mut().find(|h| h.name == name) {
+                    h.state = match data {
+                        Ok(v) => HostState::Ok(Box::new(v)),
+                        Err(e) => HostState::Err(e),
+                    };
+                }
+                select_first(&mut self.hosts_state, self.hosts.len());
+            }
             Resp::Branches(names) => {
                 if let Some(form) = self.form.as_mut() {
                     if let Some(f) = form.fields.iter_mut().find(|f| f.label == "Branch") {
@@ -1632,11 +1707,12 @@ impl App {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('1') => self.screen = Screen::Dashboard,
-            KeyCode::Char('2') => self.goto(Screen::Actions, req),
-            KeyCode::Char('3') => self.goto(Screen::Monitor, req),
-            KeyCode::Char('4') => self.goto(Screen::Domains, req),
-            KeyCode::Char('5') => self.goto(Screen::Projects, req),
-            KeyCode::Char('6') => self.screen = Screen::Viewer,
+            KeyCode::Char('2') => self.goto(Screen::Hosts, req),
+            KeyCode::Char('3') => self.goto(Screen::Actions, req),
+            KeyCode::Char('4') => self.goto(Screen::Monitor, req),
+            KeyCode::Char('5') => self.goto(Screen::Domains, req),
+            KeyCode::Char('6') => self.goto(Screen::Projects, req),
+            KeyCode::Char('7') => self.screen = Screen::Viewer,
             KeyCode::Tab => self.goto(self.screen.next(), req),
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('r') => self.refresh(req),
@@ -1646,6 +1722,7 @@ impl App {
                 Screen::Actions => move_table(&mut self.actions_state, code, self.actions.len()),
                 Screen::Domains => self.domains_key(code, req),
                 Screen::Monitor => self.monitor_key(code, req),
+                Screen::Hosts => move_table(&mut self.hosts_state, code, self.hosts.len()),
                 Screen::Dashboard => {}
             },
         }
@@ -1678,6 +1755,7 @@ impl App {
                     let _ = req.send(Req::Storage);
                 }
             }
+            Screen::Hosts if self.hosts.is_empty() => self.load_hosts = true,
             _ => {}
         }
     }
@@ -2391,6 +2469,7 @@ impl App {
                 let _ = req.send(Req::MonitorData);
                 let _ = req.send(Req::Storage);
             }
+            Screen::Hosts => self.load_hosts = true,
             Screen::Dashboard => {}
         }
         self.status = "Refresh...".into();
@@ -2416,6 +2495,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     render_tabs(f, chunks[0], app);
     match app.screen {
         Screen::Dashboard => render_dashboard(f, chunks[1], app),
+        Screen::Hosts => render_hosts(f, chunks[1], app),
         Screen::Actions => render_actions(f, chunks[1], app),
         Screen::Monitor => render_monitor(f, chunks[1], app),
         Screen::Domains => render_domains(f, chunks[1], app),
@@ -2594,6 +2674,99 @@ fn render_table(
     f.render_stateful_widget(table, area, state);
 }
 
+/// Semua host sekaligus. Baris diwarnai per status karena inti layar ini adalah
+/// menemukan host bermasalah sekilas — error yang tampil sewarna teks biasa
+/// justru terlewat.
+fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
+    let rows: Vec<Row> = app
+        .hosts
+        .iter()
+        .map(|h| {
+            let (cells, style) = match &h.state {
+                HostState::Loading => (
+                    vec![
+                        h.name.clone(),
+                        "memuat…".into(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        h.url.clone(),
+                    ],
+                    Style::default().fg(Color::DarkGray),
+                ),
+                HostState::Err(e) => (
+                    vec![
+                        h.name.clone(),
+                        format!("MATI — {}", crate::output::first_line(e, 40)),
+                        "-".into(),
+                        "-".into(),
+                        "-".into(),
+                        "-".into(),
+                        h.url.clone(),
+                    ],
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                HostState::Ok(v) => {
+                    let pair = |used: &str, total: &str| {
+                        format!(
+                            "{} / {}",
+                            format_bytes(num(v, used)),
+                            format_bytes(num(v, total))
+                        )
+                    };
+                    let cpu = series_last(v, "cpu");
+                    (
+                        vec![
+                            h.name.clone(),
+                            "ok".into(),
+                            format!("{cpu:.1}%"),
+                            pair("/memoryUsedBytes", "/memoryTotalBytes"),
+                            pair("/diskUsedBytes", "/diskTotalBytes"),
+                            // loadAvg bukan deret berstempel-waktu seperti cpu/memory:
+                            // isinya tiga string rata-rata 1/5/15 menit. series_last()
+                            // mencari p[1] di tiap titik, tak menemukannya, lalu
+                            // mengembalikan 0.00 — angka salah yang tampak meyakinkan.
+                            commands::load_avg(v),
+                            h.url.clone(),
+                        ],
+                        // Host sehat tak perlu menarik perhatian.
+                        Style::default(),
+                    )
+                }
+            };
+            Row::new(cells).style(style)
+        })
+        .collect();
+
+    let header = Row::new(vec![
+        "Server", "Status", "CPU", "Memory", "Disk", "Load", "URL",
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    );
+    let table = Table::new(
+        rows,
+        vec![
+            Constraint::Length(14),
+            Constraint::Min(16),
+            Constraint::Length(7),
+            Constraint::Length(19),
+            Constraint::Length(19),
+            Constraint::Length(18),
+            Constraint::Length(30),
+        ],
+    )
+    .header(header)
+    .block(Block::bordered().title(format!(" Hosts ({}) ", app.hosts.len())))
+    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+    .highlight_symbol("› ");
+    f.render_stateful_widget(table, area, &mut app.hosts_state);
+}
+
 fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
     let rows: Vec<Vec<String>> = app
         .actions
@@ -2768,9 +2941,10 @@ fn render_viewer(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_status(f: &mut Frame, area: Rect, app: &App) {
     let keys = match app.screen {
-        Screen::Dashboard => "1-6/Tab tab · s server · r refresh · q keluar",
-        Screen::Actions => "↑↓ pilih · PgUp/PgDn · r refresh · 1-6 tab · q keluar",
-        Screen::Monitor => "v Services/Storage · ↑↓ pilih · r refresh · 1-6 tab · q keluar",
+        Screen::Dashboard => "1-7/Tab tab · s server · r refresh · q keluar",
+        Screen::Hosts => "semua host · ↑↓ pilih · s ganti server aktif · r refresh · q keluar",
+        Screen::Actions => "↑↓ pilih · PgUp/PgDn · r refresh · 1-7 tab · q keluar",
+        Screen::Monitor => "v Services/Storage · ↑↓ pilih · r refresh · 1-7 tab · q keluar",
         Screen::Domains => "n baru · e edit · x hapus · P primary · ↑↓ pilih · r refresh · q keluar",
         Screen::Projects => {
             "n baru · x hapus · E env · U source · B build · e/p/m/o/b/u view · d/R/S/T aksi · q keluar"
