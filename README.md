@@ -111,8 +111,8 @@ easypanel --server prod   # host tertentu
 - **Actions** — riwayat action (deploy/destroy/login) dengan status, target, durasi, dan umur.
 - **Monitor** — lima tile metrik berhistori (CPU, Memory, Disk, Net In, Net Out) + sub-tab **Services** (CPU/memori/network per project & service) dan **Storage** (`v` untuk berganti).
 - **Domains** — semua domain host: source → destination (service internal atau server custom beserta bobotnya).
-- **Projects** — panel Projects ↔ Services; buat project/service baru, buka view, atau jalankan aksi (deploy/restart/stop/start) dengan konfirmasi.
-- **Viewer** — pane scrollable untuk logs, env, ports, mounts, domains, dan database backups.
+- **Projects** — panel Projects ↔ Services; buat project/service baru, atur source & build, buka view, atau jalankan aksi (deploy/restart/stop/start) dengan konfirmasi.
+- **Viewer** — pane scrollable untuk logs, env, ports, mounts, domains, database backups, dan source & build.
 
 Keybindings:
 
@@ -122,15 +122,20 @@ Keybindings:
 | `n` · `x` | buat · hapus (Projects: project/service sesuai panel yang difokus; Domains: domain) |
 | `e` · `P` | Domains: edit · jadikan primary |
 | `E` | Projects: edit env service di `$EDITOR` |
+| `U` · `B` | Projects: atur source · build (service app) |
 | `v` | Monitor: ganti Services ↔ Storage |
 | `↑↓` / `jk` | navigasi · `←→` pindah panel |
 | `Enter` | buka project → services; pada service → logs |
-| `e` `p` `m` `o` `b` | view env · ports · mounts · domains · backups |
+| `e` `p` `m` `o` `b` `u` | view env · ports · mounts · domains · backups · source & build |
 | `d` `R` `S` `T` | deploy · restart · stop · start (dengan konfirmasi) |
 | `s` | daftar server: pilih · `n` tambah · `e` edit · `x` hapus |
 | `r` | refresh · `q` keluar |
 
-Di dalam form: `Tab` pindah field, `Esc` batal, `Enter` simpan. Field pilihan (project, service, tipe, protocol) membuka dropdown yang bisa dicari dengan mengetik — bukan diketik bebas, supaya tidak ada salah ketik yang mengarahkan domain ke service yang tak ada.
+Di dalam form: `Tab` pindah field, `Esc` batal, `Enter` simpan. Field pilihan (project, service, repo, branch, tipe, protocol) membuka dropdown yang bisa dicari dengan mengetik — bukan diketik bebas, supaya tidak ada salah ketik yang mengarahkan domain ke service yang tak ada.
+
+Form **source** (`U`) mengikuti tipe yang dipilih: `github` memberi dropdown repo (dari `github/searchRepos`) dan branch (`github/searchBranches`, dimuat ulang tiap repo berganti), `git` memakai URL + ref bebas, `image` memakai image + kredensial registry. Form **build** (`B`) sama polanya untuk nixpacks/railpack/dockerfile/buildpacks.
+
+Catatan penting: `updateSourceGithub` **selalu mereset `autoDeploy` jadi false** di sisi server. Karena itu form punya toggle **Auto deploy** dan CLI memasang ulang nilainya lewat `enableGithubDeploy`/`disableGithubDeploy` setelah update — tanpa ini, sekadar mengganti branch akan mematikan auto-deploy diam-diam.
 
 Network berjalan di worker thread terpisah, jadi UI tidak pernah membeku saat request lambat. Ada dua lajur worker: aksi user dan polling metrik, supaya polling tak pernah menahan aksi user.
 

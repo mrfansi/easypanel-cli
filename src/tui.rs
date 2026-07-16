@@ -198,6 +198,7 @@ enum View {
     Mounts,
     Domains,
     Backups,
+    Source,
 }
 
 impl View {
@@ -209,6 +210,7 @@ impl View {
             View::Mounts => "Mounts",
             View::Domains => "Domains",
             View::Backups => "Database backups",
+            View::Source => "Source & build",
         }
     }
 }
@@ -236,6 +238,31 @@ enum Req {
     },
     /// Muat service sebuah project untuk dropdown di form (bukan panel Projects).
     ServicesFor(String),
+    /// Buka form source/build: butuh inspectService (nilai sekarang) dan —
+    /// untuk source — daftar repo GitHub buat dropdown-nya.
+    ConfigForm {
+        project: String,
+        service: String,
+        build: bool,
+    },
+    /// Branch sebuah repo untuk dropdown "Branch" (dipicu setelah repo dipilih).
+    Branches {
+        owner: String,
+        repo: String,
+    },
+    /// `op` menentukan endpoint: updateSourceGithub/Git/Image, atau updateBuild.
+    ///
+    /// `auto_deploy` menyusul lewat enable/disableGithubDeploy: updateSourceGithub
+    /// selalu mereset autoDeploy jadi false (terverifikasi di server), jadi nilainya
+    /// harus dipasang ulang setelah update — kalau tidak, mengubah branch akan
+    /// mematikan auto-deploy diam-diam.
+    ConfigSave {
+        project: String,
+        service: String,
+        op: &'static str,
+        body: Value,
+        auto_deploy: Option<bool>,
+    },
     ProjectCreate(String),
     ProjectDestroy(String),
     ServiceCreate {
@@ -267,6 +294,15 @@ enum Resp {
     Domains(Vec<Value>),
     Services(String, Vec<(String, String)>),
     ServicesFor(String, Vec<String>),
+    /// Data untuk membuka form source/build: hasil inspectService + daftar repo.
+    ConfigForm {
+        project: String,
+        service: String,
+        build: bool,
+        data: Value,
+        repos: Vec<String>,
+    },
+    Branches(Vec<String>),
     Viewer(String, Vec<String>),
     /// Mutasi berhasil: pesan status + data mana yang perlu dimuat ulang.
     Done(String, Refresh),
@@ -373,6 +409,83 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                 json!({ "projectName": project }),
             ) {
                 Ok(v) => Resp::Services(project, parse_services(&v)),
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::ConfigForm {
+            project,
+            service,
+            build,
+        } => {
+            let ps = json!({ "projectName": project, "serviceName": service });
+            match client.call("services/app", "inspectService", ps) {
+                // Repo hanya perlu untuk form source. Kegagalan searchRepos tidak
+                // menggagalkan form: field "Repo" jatuh ke input teks biasa.
+                Ok(data) => {
+                    let repos = if build {
+                        Vec::new()
+                    } else {
+                        github_repos(client)
+                    };
+                    Resp::ConfigForm {
+                        project,
+                        service,
+                        build,
+                        data,
+                        repos,
+                    }
+                }
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::Branches { owner, repo } => {
+            match client.call(
+                "github",
+                "searchBranches",
+                json!({ "owner": owner, "repo": repo, "search": "" }),
+            ) {
+                // searchBranches mengembalikan array string datar (bukan {items:[...]}).
+                Ok(v) => Resp::Branches(
+                    v.as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(String::from)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                ),
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::ConfigSave {
+            project,
+            service,
+            op,
+            body,
+            auto_deploy,
+        } => {
+            let ps = json!({ "projectName": project, "serviceName": service });
+            let mut input = body;
+            input["projectName"] = json!(project);
+            input["serviceName"] = json!(service);
+            match client.call("services/app", op, input) {
+                Ok(_) => match auto_deploy {
+                    Some(on) => {
+                        let ep = if on {
+                            "enableGithubDeploy"
+                        } else {
+                            "disableGithubDeploy"
+                        };
+                        match client.call("services/app", ep, ps) {
+                            Ok(_) => Resp::Done("Tersimpan".into(), Refresh::None),
+                            Err(e) => {
+                                Resp::Err(format!("source tersimpan, auto deploy gagal: {e}"))
+                            }
+                        }
+                    }
+                    None => Resp::Done("Tersimpan".into(), Refresh::None),
+                },
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
@@ -566,6 +679,30 @@ fn fetch_view(
                 )
             })
         }
+        View::Source => {
+            let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
+            let mut out = Vec::new();
+            // Sengaja tidak menampilkan `token` (deploy token) dan `env`:
+            // keduanya kredensial, dan env sudah punya view sendiri.
+            for (title, key) in [
+                ("Source", "source"),
+                ("Build", "build"),
+                ("Deploy", "deploy"),
+                ("Resources", "resources"),
+            ] {
+                out.push(format!("── {title}"));
+                match v.get(key) {
+                    // pointer "" = akar nilai itu sendiri, jadi string tampil tanpa kutip.
+                    Some(Value::Object(o)) if !o.is_empty() => out.extend(
+                        o.iter()
+                            .map(|(k, val)| format!("  {k}: {}", field(val, ""))),
+                    ),
+                    _ => out.push("  (belum diatur)".into()),
+                }
+                out.push(String::new());
+            }
+            out
+        }
         View::Backups => {
             let v = client.call("databaseBackups", "listDatabaseBackups", ps)?;
             list_or_empty(&v, "Tidak ada database backup", |_, b| {
@@ -590,6 +727,30 @@ fn fetch_view(
     })
 }
 
+/// Daftar repo GitHub sebagai "owner/repo" untuk dropdown.
+///
+/// GitHub belum tentu tersambung di sebuah host, dan itu bukan alasan untuk
+/// menggagalkan form: daftar kosong membuat "Repo" jadi input teks biasa.
+fn github_repos(client: &EasypanelClient) -> Vec<String> {
+    let Ok(v) = client.call("github", "searchRepos", Value::Null) else {
+        return Vec::new();
+    };
+    v.get("items")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| {
+                    Some(format!(
+                        "{}/{}",
+                        r.get("owner")?.as_str()?,
+                        r.get("repo")?.as_str()?
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 const SERVICE_TYPES: &[&str] = &[
     "app",
     "mysql",
@@ -602,6 +763,93 @@ const SERVICE_TYPES: &[&str] = &[
 ];
 const DEST_KINDS: &[&str] = &["service", "custom"];
 const PROTOCOLS: &[&str] = &["http", "https"];
+const SOURCE_TYPES: &[&str] = &["github", "git", "image"];
+const BUILD_TYPES: &[&str] = &[
+    "nixpacks",
+    "railpack",
+    "dockerfile",
+    "buildpacks",
+    "heroku-buildpacks",
+    "paketo-buildpacks",
+];
+
+/// Field form source; `source` adalah objek `source` dari inspectService.
+///
+/// `repos` kosong (GitHub tak tersambung / gagal) membuat "Repo" jadi input teks.
+fn source_fields(source: Option<&Value>, repos: Vec<String>) -> Vec<Field> {
+    let get = |ptr: &str, default: &str| match source.map(|s| field(s, ptr)) {
+        Some(v) if v != "-" => v,
+        _ => default.to_string(),
+    };
+    let stype = get("/type", "github");
+    let (owner, repo) = (get("/owner", ""), get("/repo", ""));
+    let current = if owner.is_empty() {
+        String::new()
+    } else {
+        format!("{owner}/{repo}")
+    };
+    let branch = get("/ref", "");
+
+    let mut repos = repos;
+    if current.is_empty() {
+        // Service baru belum punya source. Tanpa pilihan kosong, choice_owned
+        // memilih repo pertama daftar — Enter tanpa sadar akan menunjuk source
+        // ke repo acak, bukan gagal dengan jelas.
+        repos.insert(0, String::new());
+    } else if !repos.contains(&current) {
+        // Repo yang sedang dipakai wajib ada di daftar. Kalau tidak, choice_owned
+        // akan diam-diam memilih repo pertama — mengganti source service saat user
+        // cuma bermaksud mengubah branch.
+        repos.insert(0, current.clone());
+    }
+    let repo_field = if repos.is_empty() {
+        Field::text("Repo", &current)
+    } else {
+        Field::choice_owned("Repo", repos, &current)
+    };
+
+    let auto_deploy = source
+        .and_then(|s| s.get("autoDeploy"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    vec![
+        Field::choice("Tipe", SOURCE_TYPES, &stype),
+        repo_field.when("github"),
+        // Diisi setelah branch repo tsb dimuat; nilai lama dipertahankan supaya
+        // mode edit tak kehilangan pilihannya sebelum data tiba.
+        Field::choice_owned("Branch", vec![branch.clone()], &branch).when("github"),
+        Field::boolean("Auto deploy", auto_deploy).when("github"),
+        Field::text("Git URL", if stype == "git" { &repo } else { "" }).when("git"),
+        Field::text("Ref", &branch).when("git"),
+        Field::text("Path", &get("/path", "/")).when("github,git"),
+        Field::text("Image", &get("/image", "")).when("image"),
+        Field::text("Username", &get("/username", "")).when("image"),
+        Field::secret_val("Password", &get("/password", "")).when("image"),
+    ]
+}
+
+/// Field form build; `build` adalah objek `build` dari inspectService.
+///
+/// nixpacks dan railpack berbagi label perintah yang sama — aman karena hanya
+/// satu tipe yang tampil sekaligus, dan `by_label` membaca field yang tampil itu.
+fn build_fields(build: Option<&Value>) -> Vec<Field> {
+    let get = |ptr: &str, default: &str| match build.map(|b| field(b, ptr)) {
+        Some(v) if v != "-" => v,
+        _ => default.to_string(),
+    };
+    vec![
+        Field::choice("Tipe", BUILD_TYPES, &get("/type", "nixpacks")),
+        Field::text("Install command", &get("/installCommand", "")).when("nixpacks,railpack"),
+        Field::text("Build command", &get("/buildCommand", "")).when("nixpacks,railpack"),
+        Field::text("Start command", &get("/startCommand", "")).when("nixpacks,railpack"),
+        Field::text("Nix packages", &get("/nixPackages", "")).when("nixpacks"),
+        Field::text("Apt packages", &get("/aptPackages", "")).when("nixpacks"),
+        Field::text("Mise packages", &get("/misePackages", "")).when("railpack"),
+        Field::text("Dockerfile", &get("/file", "Dockerfile")).when("dockerfile"),
+        Field::text("Builder", &get("/buildpacksBuilder", "heroku/builder:24")).when("buildpacks"),
+    ]
+}
 
 /// Field form domain; `existing` mengisi nilai awal saat mode edit.
 ///
@@ -653,6 +901,115 @@ fn domain_fields(existing: Option<&Value>, projects: &[String]) -> Vec<Field> {
         )
         .when("custom"),
     ]
+}
+
+/// Endpoint + body updateSource* dari form.
+///
+/// Tiap tipe source punya endpoint sendiri dengan field yang persis ditentukan
+/// skema, jadi body dibangun dari nol — tak ada field tak termodel yang perlu
+/// dilestarikan seperti pada domain.
+/// `auto_deploy` hanya relevan untuk source github (endpoint lain tak punya konsep ini).
+fn source_body(form: &Form) -> std::result::Result<(&'static str, Value, Option<bool>), String> {
+    let path = match form.by_label("Path").as_str() {
+        "" => "/".to_string(),
+        p => p.to_string(),
+    };
+    if !path.starts_with('/') {
+        return Err("Path harus diawali /".into());
+    }
+
+    match form.by_label("Tipe").as_str() {
+        "github" => {
+            let full = form.by_label("Repo");
+            if full.is_empty() {
+                return Err("Repo wajib dipilih".into());
+            }
+            let (owner, repo) = full
+                .split_once('/')
+                .ok_or("Repo harus berbentuk owner/repo")?;
+            let branch = form.by_label("Branch");
+            if owner.is_empty() || repo.is_empty() || branch.is_empty() {
+                return Err("Repo dan Branch wajib diisi".into());
+            }
+            Ok((
+                "updateSourceGithub",
+                json!({ "owner": owner, "repo": repo, "ref": branch, "path": path }),
+                Some(form.is_on_label("Auto deploy")),
+            ))
+        }
+        "git" => {
+            let (repo, git_ref) = (form.by_label("Git URL"), form.by_label("Ref"));
+            if repo.is_empty() || git_ref.is_empty() {
+                return Err("Git URL dan Ref wajib diisi".into());
+            }
+            Ok((
+                "updateSourceGit",
+                json!({ "repo": repo, "ref": git_ref, "path": path }),
+                None,
+            ))
+        }
+        _ => {
+            let image = form.by_label("Image");
+            if image.is_empty() {
+                return Err("Image wajib diisi".into());
+            }
+            let mut body = json!({ "image": image });
+            // username/password opsional: kosong = tak dikirim, bukan dikirim "".
+            for (label, key) in [("Username", "username"), ("Password", "password")] {
+                let v = form.by_label(label);
+                if !v.is_empty() {
+                    body[key] = json!(v);
+                }
+            }
+            Ok(("updateSourceImage", body, None))
+        }
+    }
+}
+
+/// Body updateBuild dari form.
+///
+/// Berangkat dari build asli hanya bila tipenya tak berubah, supaya field yang
+/// tak ada di form (nixpacksVersion, railpackVersion) tetap utuh. Saat tipe
+/// diganti, field tipe lama justru tak boleh ikut terbawa.
+fn build_body(form: &Form) -> std::result::Result<Value, String> {
+    let t = form.by_label("Tipe");
+    let same_type =
+        form.original.as_ref().map(|o| field(o, "/type")).as_deref() == Some(t.as_str());
+
+    let mut build = match form.original.clone() {
+        Some(o) if same_type && o.is_object() => o,
+        _ => json!({}),
+    };
+    build["type"] = json!(t);
+
+    let keys: &[(&str, &str)] = match t.as_str() {
+        "nixpacks" => &[
+            ("Install command", "installCommand"),
+            ("Build command", "buildCommand"),
+            ("Start command", "startCommand"),
+            ("Nix packages", "nixPackages"),
+            ("Apt packages", "aptPackages"),
+        ],
+        "railpack" => &[
+            ("Install command", "installCommand"),
+            ("Build command", "buildCommand"),
+            ("Start command", "startCommand"),
+            ("Mise packages", "misePackages"),
+        ],
+        "dockerfile" => &[("Dockerfile", "file")],
+        "buildpacks" => &[("Builder", "buildpacksBuilder")],
+        // heroku-buildpacks / paketo-buildpacks cuma butuh `type`.
+        _ => &[],
+    };
+
+    let obj = build.as_object_mut().ok_or("bentuk build tak dikenal")?;
+    for (label, key) in keys {
+        match form.by_label(label) {
+            v if v.is_empty() => obj.remove(*key),
+            v => obj.insert((*key).to_string(), json!(v)),
+        };
+    }
+    Ok(json!({ "build": build }))
 }
 
 /// Pilih baris pertama bila daftar terisi dan belum ada yang dipilih.
@@ -779,7 +1136,8 @@ struct Field {
     label: &'static str,
     value: String,
     kind: FieldKind,
-    /// Bila diisi, field hanya tampil saat field "Tujuan" bernilai sama.
+    /// Bila diisi, field hanya tampil saat field switch form bernilai salah satu
+    /// dari daftar ini (dipisah koma, mis. "github,git").
     /// Panel juga begini: memilih Service/Custom mengganti field di bawahnya,
     /// bukan menampilkan keduanya sekaligus.
     only_for: Option<&'static str>,
@@ -794,15 +1152,19 @@ impl Field {
             only_for: None,
         }
     }
-    /// Tampilkan field ini hanya saat Tujuan bernilai `dest`.
+    /// Tampilkan field ini hanya saat switch form bernilai `dest`
+    /// (boleh beberapa nilai dipisah koma, mis. "github,git").
     fn when(mut self, dest: &'static str) -> Self {
         self.only_for = Some(dest);
         self
     }
     fn secret(label: &'static str) -> Self {
+        Self::secret_val(label, "")
+    }
+    fn secret_val(label: &'static str, value: &str) -> Self {
         Self {
             label,
-            value: String::new(),
+            value: value.into(),
             kind: FieldKind::Secret,
             only_for: None,
         }
@@ -836,7 +1198,15 @@ impl Field {
         }
     }
     /// Ganti daftar pilihan (mis. service terisi setelah project dipilih).
-    fn set_options(&mut self, options: Vec<String>) {
+    ///
+    /// Nilai yang sedang dipakai selalu dipertahankan, meski tak ada di daftar
+    /// baru: melompat diam-diam ke pilihan pertama akan mengubah konfigurasi yang
+    /// tak diminta user — mis. `ref` yang berupa tag akan berganti jadi branch
+    /// pertama sesuai abjad, lalu ikut ter-deploy.
+    fn set_options(&mut self, mut options: Vec<String>) {
+        if !self.value.is_empty() && !options.contains(&self.value) {
+            options.insert(0, self.value.clone());
+        }
         if !options.contains(&self.value) {
             self.value = options.first().cloned().unwrap_or_default();
         }
@@ -881,6 +1251,8 @@ enum FormKind {
     ServiceCreate { project: String },
     DomainCreate,
     DomainEdit { id: String },
+    SourceEdit { project: String, service: String },
+    BuildEdit { project: String, service: String },
 }
 
 struct Form {
@@ -888,6 +1260,9 @@ struct Form {
     title: String,
     fields: Vec<Field>,
     focus: usize,
+    /// Label field yang menentukan field lain mana yang tampil ("Tujuan" di form
+    /// domain, "Tipe" di form source/build).
+    switch: &'static str,
     /// JSON asli saat mode edit. Submit berangkat dari sini supaya field yang
     /// tak ada di form (middlewares, certificateResolver, wildcard) ikut utuh.
     original: Option<Value>,
@@ -900,22 +1275,28 @@ impl Form {
             title: title.into(),
             fields,
             focus: 0,
+            switch: "Tujuan",
             original: None,
         }
+    }
+    /// Ganti field penentu visibilitas (default "Tujuan").
+    fn switch(mut self, label: &'static str) -> Self {
+        self.switch = label;
+        self
     }
     fn with_original(mut self, original: Value) -> Self {
         self.original = Some(original);
         self
     }
-    /// Indeks field yang tampil untuk Tujuan yang sedang dipilih.
+    /// Indeks field yang tampil untuk nilai switch yang sedang dipilih.
     fn visible(&self) -> Vec<usize> {
-        let dest = self.by_label("Tujuan");
+        let cur = self.by_label(self.switch);
         self.fields
             .iter()
             .enumerate()
             .filter(|(_, f)| match f.only_for {
                 None => true,
-                Some(d) => d == dest,
+                Some(d) => d.split(',').any(|t| t == cur),
             })
             .map(|(i, _)| i)
             .collect()
@@ -1161,6 +1542,42 @@ impl App {
                         if let Some(f) = form.fields.iter_mut().find(|f| f.label == "Service") {
                             f.set_options(names);
                         }
+                    }
+                }
+            }
+            Resp::ConfigForm {
+                project,
+                service,
+                build,
+                data,
+                repos,
+            } => {
+                let title = format!(
+                    "{} · {project}/{service}",
+                    if build { "Build" } else { "Source" }
+                );
+                let form = if build {
+                    Form::new(
+                        FormKind::BuildEdit { project, service },
+                        title,
+                        build_fields(data.get("build")),
+                    )
+                    .with_original(data.get("build").cloned().unwrap_or(Value::Null))
+                } else {
+                    Form::new(
+                        FormKind::SourceEdit { project, service },
+                        title,
+                        source_fields(data.get("source"), repos),
+                    )
+                };
+                self.form = Some(form.switch("Tipe"));
+                self.status = "Enter simpan · Esc batal".into();
+                self.load_form_branches(req);
+            }
+            Resp::Branches(names) => {
+                if let Some(form) = self.form.as_mut() {
+                    if let Some(f) = form.fields.iter_mut().find(|f| f.label == "Branch") {
+                        f.set_options(names);
                     }
                 }
             }
@@ -1416,6 +1833,48 @@ impl App {
         }
     }
 
+    /// Minta data untuk form source/build service yang sedang dipilih.
+    ///
+    /// Formnya baru terbuka setelah inspectService tiba (lihat Resp::ConfigForm),
+    /// karena nilai sekarang harus jadi isi awalnya.
+    fn open_config_form(&mut self, build: bool, req: &Sender<Req>) {
+        if self.focus != Focus::Services {
+            self.status = "Fokus panel Services dulu (→)".into();
+            return;
+        }
+        let (Some(project), Some((service, stype))) = (
+            self.current_project.clone(),
+            self.selected_service().cloned(),
+        ) else {
+            return;
+        };
+        // Source/build hanya ada di service tipe app; tipe lain tak punya konsep ini.
+        if stype != "app" {
+            self.status = format!("Source & build hanya untuk service app (ini {stype})");
+            return;
+        }
+        let _ = req.send(Req::ConfigForm {
+            project,
+            service,
+            build,
+        });
+        self.status = "Memuat...".into();
+    }
+
+    /// Muat branch repo yang sedang dipilih ke dropdown "Branch".
+    fn load_form_branches(&mut self, req: &Sender<Req>) {
+        let Some(form) = self.form.as_ref() else {
+            return;
+        };
+        let repo = form.by_label("Repo");
+        if let Some((owner, repo)) = repo.split_once('/') {
+            let _ = req.send(Req::Branches {
+                owner: owner.into(),
+                repo: repo.into(),
+            });
+        }
+    }
+
     /// Buka dropdown untuk field Choice yang sedang difokus.
     fn open_chooser(&mut self) {
         let Some(form) = self.form.as_ref() else {
@@ -1462,11 +1921,20 @@ impl App {
                 self.chooser = None;
                 if let (Some(value), Some(form)) = (picked, self.form.as_mut()) {
                     form.fields[idx].value = value;
-                    // Ganti Tujuan -> set field service/custom yang tampil.
+                    // Ganti Tujuan/Tipe -> set field yang tampil ikut berubah.
                     form.clamp_focus();
-                    // Ganti project -> daftar service ikut dimuat ulang.
-                    if label == "Project" {
-                        self.load_form_services(req);
+                    // Ganti project/repo -> daftar turunannya ikut dimuat ulang.
+                    match label {
+                        "Project" => self.load_form_services(req),
+                        // Branch lama milik repo lain: kosongkan supaya
+                        // set_options tidak mempertahankannya.
+                        "Repo" => {
+                            if let Some(f) = form.fields.iter_mut().find(|f| f.label == "Branch") {
+                                f.value.clear();
+                            }
+                            self.load_form_branches(req);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1631,6 +2099,36 @@ impl App {
                     stype,
                 });
             }
+            FormKind::SourceEdit { project, service } => match source_body(form) {
+                Ok((op, body, auto_deploy)) => {
+                    let _ = req.send(Req::ConfigSave {
+                        project: project.clone(),
+                        service: service.clone(),
+                        op,
+                        body,
+                        auto_deploy,
+                    });
+                }
+                Err(msg) => {
+                    self.status = msg;
+                    return;
+                }
+            },
+            FormKind::BuildEdit { project, service } => match build_body(form) {
+                Ok(body) => {
+                    let _ = req.send(Req::ConfigSave {
+                        project: project.clone(),
+                        service: service.clone(),
+                        op: "updateBuild",
+                        body,
+                        auto_deploy: None,
+                    });
+                }
+                Err(msg) => {
+                    self.status = msg;
+                    return;
+                }
+            },
             FormKind::DomainCreate | FormKind::DomainEdit { .. } => match self.domain_body(form) {
                 Ok(body) => {
                     let id = match &form.kind {
@@ -1760,6 +2258,9 @@ impl App {
             KeyCode::Char('m') => self.open_view(View::Mounts, req),
             KeyCode::Char('o') => self.open_view(View::Domains, req),
             KeyCode::Char('b') => self.open_view(View::Backups, req),
+            KeyCode::Char('u') => self.open_view(View::Source, req),
+            KeyCode::Char('U') => self.open_config_form(false, req),
+            KeyCode::Char('B') => self.open_config_form(true, req),
             KeyCode::Char('n') => self.new_from_projects(),
             KeyCode::Char('x') => self.destroy_from_projects(req),
             KeyCode::Char('E') => self.start_env_edit(),
@@ -2272,7 +2773,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
         Screen::Monitor => "v Services/Storage · ↑↓ pilih · r refresh · 1-6 tab · q keluar",
         Screen::Domains => "n baru · e edit · x hapus · P primary · ↑↓ pilih · r refresh · q keluar",
         Screen::Projects => {
-            "n baru · x hapus · E edit env · Enter logs · e/p/m/o/b view · d/R/S/T aksi · s server · q keluar"
+            "n baru · x hapus · E env · U source · B build · e/p/m/o/b/u view · d/R/S/T aksi · q keluar"
         }
         Screen::Viewer => "↑↓ scroll · PgUp/PgDn · r refresh · 1-6 tab · q keluar",
     };
@@ -2473,4 +2974,176 @@ fn centered(pct_x: u16, pct_y: u16, r: Rect) -> Rect {
         Constraint::Percentage((100 - pct_x) / 2),
     ])
     .split(v[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn form(fields: Vec<Field>) -> Form {
+        Form::new(FormKind::ProjectCreate, "t", fields).switch("Tipe")
+    }
+
+    fn f_val(f: &Form, label: &str) -> String {
+        f.by_label(label)
+    }
+
+    #[test]
+    fn source_without_config_does_not_default_to_first_repo() {
+        // Service baru: Enter tanpa sadar tak boleh menunjuk source ke repo acak.
+        // inspectService mengembalikan `source: null`, bukan field yang absen.
+        let f = form(source_fields(
+            Some(&Value::Null),
+            vec!["caesario/Kuze".into(), "acme/web".into()],
+        ));
+        assert_eq!(f_val(&f, "Repo"), "");
+        assert_eq!(source_body(&f).unwrap_err(), "Repo wajib dipilih");
+    }
+
+    #[test]
+    fn source_github_sends_owner_and_repo_split() {
+        let f = form(source_fields(
+            Some(&json!({
+                "type": "github", "owner": "acme", "repo": "web", "ref": "dev", "path": "/",
+                "autoDeploy": true
+            })),
+            vec!["acme/web".into()],
+        ));
+        let (op, body, auto) = source_body(&f).unwrap();
+        assert_eq!(op, "updateSourceGithub");
+        assert_eq!(
+            body,
+            json!({ "owner": "acme", "repo": "web", "ref": "dev", "path": "/" })
+        );
+        // updateSourceGithub mereset autoDeploy jadi false di server; nilainya
+        // harus ikut supaya bisa dipasang ulang setelahnya.
+        assert_eq!(auto, Some(true));
+    }
+
+    #[test]
+    fn source_git_and_image_have_no_auto_deploy() {
+        // Hanya source github yang punya konsep auto deploy.
+        let f = form(source_fields(
+            Some(&json!({ "type": "image", "image": "nginx" })),
+            vec![],
+        ));
+        assert_eq!(source_body(&f).unwrap().2, None);
+    }
+
+    #[test]
+    fn source_rejects_path_without_leading_slash() {
+        let mut f = form(source_fields(Some(&json!({ "type": "github" })), vec![]));
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == "Path")
+            .unwrap()
+            .value = "sub".into();
+        assert!(source_body(&f).is_err());
+    }
+
+    #[test]
+    fn source_image_omits_empty_credentials() {
+        let f = form(source_fields(
+            Some(&json!({ "type": "image", "image": "nginx:latest" })),
+            vec![],
+        ));
+        let (op, body, _) = source_body(&f).unwrap();
+        assert_eq!(op, "updateSourceImage");
+        // Kirim "" akan menimpa kredensial registry jadi kosong.
+        assert_eq!(body, json!({ "image": "nginx:latest" }));
+    }
+
+    #[test]
+    fn build_keeps_unmodelled_version_on_same_type() {
+        let original = json!({
+            "type": "nixpacks", "installCommand": "npm ci", "nixpacksVersion": "1.41.0"
+        });
+        let mut f = form(build_fields(Some(&original)));
+        f.original = Some(original);
+        let body = build_body(&f).unwrap();
+        // nixpacksVersion tak ada di form; hilang = build berubah diam-diam.
+        assert_eq!(body["build"]["nixpacksVersion"], json!("1.41.0"));
+        assert_eq!(body["build"]["installCommand"], json!("npm ci"));
+    }
+
+    #[test]
+    fn build_drops_old_fields_when_type_changes() {
+        let original = json!({
+            "type": "nixpacks", "installCommand": "npm ci", "nixpacksVersion": "1.41.0"
+        });
+        let mut f = form(build_fields(Some(&original)));
+        f.original = Some(original);
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == "Tipe")
+            .unwrap()
+            .value = "dockerfile".into();
+        let body = build_body(&f).unwrap();
+        assert_eq!(body["build"]["type"], json!("dockerfile"));
+        assert_eq!(body["build"]["file"], json!("Dockerfile"));
+        assert!(body["build"].get("nixpacksVersion").is_none());
+        assert!(body["build"].get("installCommand").is_none());
+    }
+
+    #[test]
+    fn build_removes_field_emptied_by_user() {
+        let original = json!({ "type": "nixpacks", "installCommand": "npm ci" });
+        let mut f = form(build_fields(Some(&original)));
+        f.original = Some(original);
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == "Install command")
+            .unwrap()
+            .value
+            .clear();
+        let body = build_body(&f).unwrap();
+        assert!(body["build"].get("installCommand").is_none());
+    }
+
+    #[test]
+    fn set_options_keeps_current_value_missing_from_list() {
+        // `ref` bisa berupa tag; searchBranches tak memuatnya. Melompat ke branch
+        // pertama akan mengganti apa yang ter-deploy.
+        let mut f = Field::choice_owned("Branch", vec!["v1.2.0".into()], "v1.2.0");
+        f.set_options(vec!["main".into(), "dev".into()]);
+        assert_eq!(f.value, "v1.2.0");
+        match &f.kind {
+            FieldKind::Choice(o) => assert_eq!(o[0], "v1.2.0"),
+            _ => panic!("harus tetap Choice"),
+        }
+    }
+
+    #[test]
+    fn source_fields_keep_repo_absent_from_list() {
+        // Repo yang dipakai tak ada di searchRepos (mis. hilang akses) -> jangan
+        // diam-diam pindah ke repo pertama.
+        let f = source_fields(
+            Some(&json!({ "type": "github", "owner": "acme", "repo": "old", "ref": "dev" })),
+            vec!["other/new".into()],
+        );
+        assert_eq!(
+            f.iter().find(|x| x.label == "Repo").unwrap().value,
+            "acme/old"
+        );
+    }
+
+    #[test]
+    fn visible_follows_switch_and_multi_tag() {
+        let f = form(source_fields(Some(&json!({ "type": "github" })), vec![]));
+        let shown =
+            |f: &Form| -> Vec<&str> { f.visible().iter().map(|i| f.fields[*i].label).collect() };
+        assert!(shown(&f).contains(&"Branch"));
+        assert!(shown(&f).contains(&"Path")); // when("github,git")
+        assert!(!shown(&f).contains(&"Image"));
+
+        let mut f = f;
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == "Tipe")
+            .unwrap()
+            .value = "image".into();
+        assert!(shown(&f).contains(&"Image"));
+        assert!(!shown(&f).contains(&"Path"));
+        assert!(!shown(&f).contains(&"Branch"));
+    }
 }
