@@ -126,7 +126,9 @@ easypanel --server prod   # host tertentu
 - **Projects** — **daftar datar semua service lintas project** (bukan drill-down): Project, Service, Tipe, Status, Source (`owner/repo#branch` atau image), plus **CPU/Memory/Net In/Net Out per service** — semuanya dalam satu tabel yang bisa dicari dengan `/`. Metriknya live (~2 detik) selama layar ini terbuka. Hirarki project → service memaksa membuka project satu per satu dan tak bisa dicari — itu runtuh di ratusan service. Semua aksi bekerja pada baris yang disorot; `n` service baru (project dipilih dari dropdown), `N` project baru, `X` hapus project.
 - **Viewer** — pane scrollable untuk logs, env, ports, mounts, domains, database backups, dan source & build.
 
-Keybindings:
+Tekan **`?`** kapan saja untuk daftar lengkap shortcut layar yang sedang dibuka — baris status hanya memuat beberapa yang pertama. Keduanya diturunkan dari satu tabel di kode, jadi tak bisa saling menyimpang.
+
+Keybindings utama:
 
 | Tombol | Aksi |
 |---|---|

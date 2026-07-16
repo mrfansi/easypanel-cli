@@ -1344,7 +1344,9 @@ const TABS: [&str; 7] = [
     "Actions",
     "Monitor",
     "Domains",
-    "Projects",
+    // Layar ini mendaftar SERVICE lintas project, bukan project. Namanya masih
+    // Screen::Projects di kode (sisa panel lama), tapi labelnya harus jujur.
+    "Services",
 ];
 
 impl Screen {
@@ -1748,6 +1750,8 @@ struct App {
     filter: String,
     /// Sedang mengetik filter (tombol masuk ke filter, bukan ke layar).
     filter_input: bool,
+    /// Overlay bantuan sedang terbuka.
+    help: bool,
     /// Baris info tab Maintenance: (label, nilai).
     maint: Vec<(String, String)>,
     hosts: Vec<HostRow>,
@@ -1792,6 +1796,7 @@ impl App {
             viewer_ctx: None,
             filter: String::new(),
             filter_input: false,
+            help: false,
             maint: Vec::new(),
             hosts: Vec::new(),
             hosts_state: TableState::default(),
@@ -1924,6 +1929,12 @@ impl App {
     }
 
     fn on_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        // Bantuan menutup dengan tombol apa pun: user membukanya untuk membaca,
+        // bukan untuk menghafal cara keluar.
+        if self.help {
+            self.help = false;
+            return;
+        }
         if self.filter_input {
             self.filter_key(code);
             return;
@@ -1961,6 +1972,7 @@ impl App {
             KeyCode::Char('6') => self.goto(Screen::Domains, req),
             KeyCode::Char('7') => self.goto(Screen::Projects, req),
             KeyCode::Tab => self.goto(self.screen.next(), req),
+            KeyCode::Char('?') => self.help = true,
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('r') => self.refresh(req),
             KeyCode::Char('/') if self.filterable() => {
@@ -2785,6 +2797,91 @@ impl App {
     }
 }
 
+// ---------- Keybinding (satu sumber untuk baris status dan overlay bantuan) ----------
+
+/// Satu keybinding: tombol + artinya.
+struct Key(&'static str, &'static str);
+
+/// Tombol yang berlaku di layar mana pun.
+const GLOBAL_KEYS: &[Key] = &[
+    Key("1-7 / Tab", "pindah tab"),
+    Key("?", "bantuan ini"),
+    Key("s", "daftar server (pilih/tambah/edit/hapus)"),
+    Key("r", "refresh"),
+    Key("Esc", "batal: tutup form/dropdown/konfirmasi/filter"),
+    Key("q / Ctrl-C", "keluar"),
+];
+
+/// Tombol khusus sebuah layar.
+///
+/// Baris status memakai beberapa entri PERTAMA dari daftar yang sama, jadi ia
+/// tak bisa menyimpang dari bantuan: dua daftar terpisah pasti akan berbeda
+/// seiring waktu, dan bantuan yang berbohong lebih buruk daripada tak ada.
+fn screen_keys(screen: Screen) -> &'static [Key] {
+    match screen {
+        Screen::Dashboard => &[],
+        Screen::Hosts => &[Key("↑↓", "pilih host")],
+        Screen::Maintenance => &[
+            Key("p", "prune sistem Docker"),
+            Key("i", "hapus image tak terpakai"),
+            Key("c", "hapus build cache"),
+        ],
+        Screen::Actions => &[
+            Key("/", "cari"),
+            Key("↑↓", "pilih"),
+            Key("PgUp/PgDn", "lompat"),
+        ],
+        Screen::Monitor => &[
+            Key("/", "cari"),
+            Key("v", "ganti Services / Storage"),
+            Key("↑↓", "pilih"),
+        ],
+        Screen::Domains => &[
+            Key("/", "cari"),
+            Key("n", "domain baru"),
+            Key("e", "edit domain"),
+            Key("x", "hapus domain"),
+            Key("P", "jadikan primary"),
+            Key("↑↓", "pilih"),
+        ],
+        Screen::Projects => &[
+            Key("/", "cari service"),
+            Key("Enter", "logs"),
+            Key("n", "service baru"),
+            Key("x", "hapus service"),
+            Key("d", "deploy"),
+            Key("R", "restart"),
+            Key("S", "stop"),
+            Key("T", "start"),
+            Key("e", "lihat env"),
+            Key("p", "lihat ports"),
+            Key("m", "lihat mounts"),
+            Key("o", "lihat domains"),
+            Key("b", "lihat backups"),
+            Key("u", "lihat source & build"),
+            Key("E", "edit env di $EDITOR"),
+            Key("U", "atur source (service app)"),
+            Key("B", "atur build (service app)"),
+            Key("N", "project baru"),
+            Key("X", "hapus project"),
+        ],
+        Screen::Viewer => &[
+            Key("↑↓", "scroll"),
+            Key("PgUp/PgDn", "lompat"),
+            Key("Esc", "kembali ke Services"),
+        ],
+    }
+}
+
+/// Tombol di dalam overlay; berlaku di form dan dropdown mana pun.
+const OVERLAY_KEYS: &[Key] = &[
+    Key("Tab / ↑↓", "pindah field"),
+    Key("Enter", "simpan, atau buka dropdown pada field pilihan"),
+    Key("Spasi", "toggle field ya/tidak"),
+    Key("ketik", "saring isi dropdown"),
+    Key("Esc", "batal"),
+];
+
 // ---------- Render ----------
 
 fn ui(f: &mut Frame, app: &mut App) {
@@ -2820,6 +2917,60 @@ fn ui(f: &mut Frame, app: &mut App) {
     if let Some(ch) = app.chooser.as_mut() {
         render_chooser(f, ch);
     }
+    if app.help {
+        render_help(f, app);
+    }
+}
+
+/// Overlay bantuan: tombol global, tombol layar aktif, dan tombol di dalam form.
+fn render_help(f: &mut Frame, app: &App) {
+    let rows = screen_keys(app.screen);
+    let area = centered(66, 92, f.area());
+    f.render_widget(Clear, area);
+
+    let head = |t: &str| {
+        Line::from(Span::styled(
+            format!(" {t}"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ))
+    };
+    let row = |Key(k, d): &Key| {
+        Line::from(vec![
+            Span::styled(
+                format!("   {k:<12}"),
+                Style::default().fg(Color::Indexed(252)),
+            ),
+            Span::styled((*d).to_string(), Style::default().fg(Color::Gray)),
+        ])
+    };
+
+    let mut lines = vec![head(&format!("{} — layar ini", TABS[app.screen.index()]))];
+    if rows.is_empty() {
+        lines.push(Line::from("   (tak ada tombol khusus)"));
+    }
+    lines.extend(rows.iter().map(row));
+    lines.push(Line::from(""));
+    lines.push(head("Di mana saja"));
+    lines.extend(GLOBAL_KEYS.iter().map(row));
+    lines.push(Line::from(""));
+    lines.push(head("Di dalam form & dropdown"));
+    lines.extend(OVERLAY_KEYS.iter().map(row));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "   tekan tombol apa saja untuk menutup",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .title(" Bantuan ")
+                .border_style(Style::default().fg(Color::Yellow)),
+        ),
+        area,
+    );
 }
 
 fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
@@ -3295,20 +3446,18 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
         );
         return;
     }
-    let keys = match app.screen {
-        Screen::Dashboard => "1-7/Tab tab · s server · r refresh · q keluar",
-        Screen::Hosts => "semua host · ↑↓ pilih · s ganti server aktif · r refresh · q keluar",
-        Screen::Maintenance => "p prune sistem · i hapus image · c hapus build cache · r refresh · q keluar",
-        Screen::Actions => "/ cari · ↑↓ pilih · PgUp/PgDn · r refresh · 1-7 tab · q keluar",
-        Screen::Monitor => "/ cari · v Services/Storage · ↑↓ pilih · r refresh · 1-7 tab · q keluar",
-        Screen::Domains => {
-            "/ cari · n baru · e edit · x hapus · P primary · ↑↓ pilih · r refresh · q keluar"
-        }
-        Screen::Projects => {
-            "/ cari · n service · N project · x/X hapus · E env · U source · B build · e/p/m/o/b/u view · d/R/S/T aksi"
-        }
-        Screen::Viewer => "↑↓ scroll · PgUp/PgDn · Esc kembali ke Services · r refresh · q keluar",
-    };
+    // Baris status = beberapa tombol pertama layar ini + "? bantuan" untuk
+    // selebihnya. Diambil dari tabel yang sama dengan overlay bantuan.
+    let mut parts: Vec<String> = screen_keys(app.screen)
+        .iter()
+        .take(6)
+        .map(|Key(k, d)| format!("{k} {d}"))
+        .collect();
+    parts.push("? bantuan".into());
+    parts.push("q keluar".into());
+    let keys = parts.join(" · ");
+    let keys = keys.as_str();
+
     // Warna bernama (Color::Blue) ditafsirkan tema terminal dan bisa jadi biru
     // terang, sehingga teks putih di atasnya nyaris tak terbaca. Indeks palet
     // memberi abu-abu gelap yang pasti, dengan status di-bold agar menonjol.
@@ -3691,6 +3840,58 @@ mod tests {
             app.selected_row(),
             Some(("p3".into(), "tiga".into(), "app".into()))
         );
+    }
+
+    /// Tiap layar yang punya tombol harus mendaftarkannya; layar yang lupa
+    /// mendaftar akan tampil kosong di bantuan tanpa ada yang menyadarinya.
+    #[test]
+    fn every_interactive_screen_documents_its_keys() {
+        for sc in [
+            Screen::Hosts,
+            Screen::Maintenance,
+            Screen::Actions,
+            Screen::Monitor,
+            Screen::Domains,
+            Screen::Projects,
+            Screen::Viewer,
+        ] {
+            assert!(
+                !screen_keys(sc).is_empty(),
+                "{:?} tak punya keybinding terdaftar",
+                TABS[sc.index()]
+            );
+        }
+    }
+
+    #[test]
+    fn help_lists_the_destructive_keys_that_exist() {
+        // Tombol destruktif paling perlu ditemukan sebelum ditekan, bukan sesudah.
+        let projects: Vec<&str> = screen_keys(Screen::Projects).iter().map(|k| k.0).collect();
+        for k in ["x", "X", "d", "R", "S", "T"] {
+            assert!(
+                projects.contains(&k),
+                "'{k}' tak terdokumentasi di Services"
+            );
+        }
+        let maint: Vec<&str> = screen_keys(Screen::Maintenance)
+            .iter()
+            .map(|k| k.0)
+            .collect();
+        for k in ["p", "i", "c"] {
+            assert!(
+                maint.contains(&k),
+                "'{k}' tak terdokumentasi di Maintenance"
+            );
+        }
+    }
+
+    #[test]
+    fn help_key_and_quit_key_are_documented_globally() {
+        let g: Vec<&str> = GLOBAL_KEYS.iter().map(|k| k.0).collect();
+        assert!(g.contains(&"?"));
+        assert!(g.contains(&"q / Ctrl-C"));
+        // Esc membatalkan, dan itu harus tertulis: sebelumnya Esc menutup TUI.
+        assert!(g.contains(&"Esc"));
     }
 
     #[test]
