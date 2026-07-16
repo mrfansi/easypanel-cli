@@ -7,7 +7,8 @@ use crate::client::EasypanelClient;
 use crate::config::ServerConfig;
 use crate::logs;
 use crate::output::{
-    age_of, duration_between, field, first_line, format_bytes, num, table, yes_no,
+    age_of, duration_between, field, first_line, format_bytes, format_rate, num, series_last,
+    table, yes_no,
 };
 
 /// Resolve klien untuk server aktif (dari --server atau default).
@@ -242,21 +243,59 @@ pub fn service_logs(
 
 // ---------- Monitoring & Cluster ----------
 
+/// Rangkuman metrik host dari grup `metrics` (Prometheus): ~0,3 detik dan sudah
+/// berisi laju network + total/used byte, tak seperti `monitorOld` (~2,3 detik).
 pub fn stats(client: &EasypanelClient) -> Result<()> {
-    let s = client.call("monitorOld", "getSystemStats", Value::Null)?;
-    table(
-        &["Metrik", "Nilai"],
-        vec![
-            vec!["CPU cores".into(), field(&s, "/cpuInfo/count")],
-            vec!["CPU used %".into(), field(&s, "/cpuInfo/usedPercentage")],
-            vec!["Mem used %".into(), field(&s, "/memInfo/usedMemPercentage")],
-            vec!["Mem used MB".into(), field(&s, "/memInfo/usedMemMb")],
-            vec!["Disk used %".into(), field(&s, "/diskInfo/usedPercentage")],
-            vec!["Disk free GB".into(), field(&s, "/diskInfo/freeGb")],
-            vec!["Uptime (s)".into(), field(&s, "/uptime")],
-        ],
-    );
+    let s = client.call("metrics", "getSystemStats", json!({}))?;
+    table(&["Metrik", "Nilai"], stats_rows(&s));
     Ok(())
+}
+
+pub fn load_avg(s: &Value) -> String {
+    s.get("loadAvg")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|v| v.as_str().unwrap_or("-").to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
+pub fn stats_rows(s: &Value) -> Vec<Vec<String>> {
+    let pair = |pct: f64, used: &str, total: &str| {
+        format!(
+            "{pct:.1} % ({} / {})",
+            format_bytes(num(s, used)),
+            format_bytes(num(s, total))
+        )
+    };
+    vec![
+        vec!["CPU".into(), format!("{:.1} %", series_last(s, "cpu"))],
+        vec!["Cores".into(), field(s, "/cpuCores")],
+        vec!["Load avg".into(), load_avg(s)],
+        vec![
+            "Memory".into(),
+            pair(
+                series_last(s, "memory"),
+                "/memoryUsedBytes",
+                "/memoryTotalBytes",
+            ),
+        ],
+        vec![
+            "Disk".into(),
+            pair(series_last(s, "disk"), "/diskUsedBytes", "/diskTotalBytes"),
+        ],
+        vec![
+            "Network In".into(),
+            format_rate(series_last(s, "networkIn")),
+        ],
+        vec![
+            "Network Out".into(),
+            format_rate(series_last(s, "networkOut")),
+        ],
+    ]
 }
 
 pub fn node_list(client: &EasypanelClient) -> Result<()> {
@@ -811,21 +850,15 @@ pub fn action_kill(client: &EasypanelClient, id: &str) -> Result<()> {
 /// Field `serviceName` dari API keliru untuk sub-service compose: container
 /// `proj_mysql_phpmyadmin.1.x` dilaporkan sebagai `mysql`. Panel menurunkannya
 /// dari containerName, jadi kita ikut supaya namanya cocok.
-pub fn container_service(c: &Value) -> String {
-    let project = field(c, "/projectName");
-    let cname = field(c, "/containerName");
-    let base = cname.split('.').next().unwrap_or("");
-    base.strip_prefix(&format!("{project}_"))
-        .map(String::from)
-        .unwrap_or_else(|| field(c, "/serviceName"))
-}
-
 /// Baris tabel monitor per project (header project + service-nya), urut memori terbesar.
-pub fn monitor_rows(containers: Vec<Value>) -> Vec<Vec<String>> {
-    let mem = |c: &Value| num(c, "/stats/memory/usage");
+///
+/// Sumber: `metrics/getAllServicesStats` — `networkIn`/`networkOut` sudah berupa
+/// laju byte/detik, dan `serviceName` benar untuk sub-service compose.
+pub fn monitor_rows(services: Vec<Value>) -> Vec<Vec<String>> {
+    let mem = |c: &Value| num(c, "/memory");
     let mut groups: std::collections::HashMap<String, Vec<Value>> =
         std::collections::HashMap::new();
-    for c in containers {
+    for c in services {
         groups.entry(field(&c, "/projectName")).or_default().push(c);
     }
     let mut groups: Vec<(String, Vec<Value>)> = groups.into_iter().collect();
@@ -838,18 +871,18 @@ pub fn monitor_rows(containers: Vec<Value>) -> Vec<Vec<String>> {
         let sum = |ptr: &str| -> f64 { svcs.iter().map(|c| num(c, ptr)).sum() };
         rows.push(vec![
             format!("{project} ({})", svcs.len()),
-            format!("{:.1} %", sum("/stats/cpu/percent")),
-            format_bytes(sum("/stats/memory/usage")),
-            format_bytes(sum("/stats/network/in")),
-            format_bytes(sum("/stats/network/out")),
+            format!("{:.1} %", sum("/cpu")),
+            format_bytes(sum("/memory")),
+            format_rate(sum("/networkIn")),
+            format_rate(sum("/networkOut")),
         ]);
         for c in svcs {
             rows.push(vec![
-                format!("  {}", container_service(&c)),
-                format!("{:.1} %", num(&c, "/stats/cpu/percent")),
-                format_bytes(num(&c, "/stats/memory/usage")),
-                format_bytes(num(&c, "/stats/network/in")),
-                format_bytes(num(&c, "/stats/network/out")),
+                format!("  {}", field(&c, "/serviceName")),
+                format!("{:.1} %", num(&c, "/cpu")),
+                format_bytes(num(&c, "/memory")),
+                format_rate(num(&c, "/networkIn")),
+                format_rate(num(&c, "/networkOut")),
             ]);
         }
     }
@@ -860,10 +893,10 @@ pub const MONITOR_HEADERS: [&str; 5] =
     ["Project / Service", "CPU %", "Memory", "Net In", "Net Out"];
 
 pub fn monitor_services(client: &EasypanelClient) -> Result<()> {
-    let data = client.call("monitorOld", "getMonitorTableData", Value::Null)?;
+    let data = client.call("metrics", "getAllServicesStats", json!({}))?;
     let arr = data.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada container berjalan.");
+        println!("Tidak ada service berjalan.");
         return Ok(());
     }
     table(&MONITOR_HEADERS, monitor_rows(arr));
@@ -951,4 +984,161 @@ pub fn domain_list_all(client: &EasypanelClient) -> Result<()> {
     }
     table(&DOMAIN_HEADERS, arr.iter().map(domain_row).collect());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn svc(project: &str, name: &str, mem: f64, cpu: f64) -> Value {
+        json!({
+            "projectName": project, "serviceName": name,
+            "cpu": cpu, "memory": mem, "networkIn": 1024.0, "networkOut": 2048.0
+        })
+    }
+
+    #[test]
+    fn monitor_groups_by_project_and_sorts_by_memory() {
+        let rows = monitor_rows(vec![
+            svc("small", "a", 10.0, 0.1),
+            svc("big", "kecil", 1.0, 0.2),
+            svc("big", "besar", 1_073_741_824.0, 0.5),
+        ]);
+
+        // Project dengan memori terbesar lebih dulu, lalu service-nya urut memori.
+        let names: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["big (2)", "  besar", "  kecil", "small (1)", "  a"]
+        );
+        // Baris project = jumlah service-nya.
+        assert_eq!(rows[0][1], "0.7 %");
+        assert_eq!(rows[0][4], "4.0 KB/s"); // 2048*2
+    }
+
+    #[test]
+    fn monitor_formats_memory_and_rates() {
+        let rows = monitor_rows(vec![svc("p", "s", 1_073_741_824.0, 12.34)]);
+        assert_eq!(rows[1][0], "  s");
+        assert_eq!(rows[1][1], "12.3 %");
+        assert_eq!(rows[1][2], "1.0 GB");
+        assert_eq!(rows[1][3], "1.0 KB/s");
+    }
+
+    #[test]
+    fn domain_destination_handles_service_and_custom() {
+        let service = json!({
+            "destinationType": "service",
+            "serviceDestination": {
+                "protocol": "http", "projectName": "proj", "serviceName": "api",
+                "port": 8000, "path": "/"
+            }
+        });
+        assert_eq!(domain_destination(&service), "http://proj_api:8000/");
+
+        let custom = json!({
+            "destinationType": "custom",
+            "customDestination": { "servers": [
+                { "url": "https://a.test", "weight": 1 },
+                { "url": "https://b.test", "weight": 2 }
+            ]}
+        });
+        assert_eq!(
+            domain_destination(&custom),
+            "https://a.test (1), https://b.test (2)"
+        );
+
+        assert_eq!(
+            domain_destination(&json!({ "destinationType": "aneh" })),
+            "-"
+        );
+    }
+
+    #[test]
+    fn domain_source_uses_scheme_from_https_flag() {
+        assert_eq!(
+            domain_source(&json!({ "https": true, "host": "a.test", "path": "/x" })),
+            "https://a.test/x"
+        );
+        assert_eq!(
+            domain_source(&json!({ "https": false, "host": "a.test", "path": "/" })),
+            "http://a.test/"
+        );
+    }
+
+    #[test]
+    fn action_row_shows_target_duration_and_trims_description() {
+        let a = json!({
+            "projectName": "proj", "serviceName": "api", "status": "done",
+            "description": "Deploy service: baris pertama\nbaris kedua diabaikan",
+            "createdAt": "2026-07-16 05:55:15", "updatedAt": "2026-07-16 06:03:14"
+        });
+        let row = action_row(&a);
+        assert_eq!(row[0], "done");
+        assert_eq!(row[1], "proj/api");
+        assert_eq!(row[2], "Deploy service: baris pertama");
+        assert_eq!(row[3], "7 menit"); // 05:55:15 -> 06:03:14
+    }
+
+    #[test]
+    fn action_row_target_falls_back_when_not_service_scoped() {
+        let login = json!({
+            "status": "done", "description": "User masuk",
+            "createdAt": "2026-07-16 05:55:15", "updatedAt": "2026-07-16 05:55:15"
+        });
+        assert_eq!(action_row(&login)[1], "-");
+        assert_eq!(action_row(&login)[3], "0 detik");
+    }
+
+    #[test]
+    fn actions_input_only_includes_given_filters() {
+        let bare = actions_input(10, &None, &None, &None);
+        assert_eq!(bare, json!({ "limit": 10 }));
+
+        let filtered = actions_input(
+            5,
+            &Some("p".into()),
+            &Some("s".into()),
+            &Some("deployment".into()),
+        );
+        assert_eq!(
+            filtered,
+            json!({ "limit": 5, "projectName": "p", "serviceName": "s", "type": "deployment" })
+        );
+    }
+
+    #[test]
+    fn stats_rows_read_metrics_series_and_byte_totals() {
+        let s = json!({
+            "cpu": [[1, "1.0"], [2, "5.5"]],
+            "cpuCores": "16",
+            "loadAvg": ["0.10", "0.20", "0.30"],
+            "memory": [[1, "25.0"]],
+            "memoryUsedBytes": "1073741824",
+            "memoryTotalBytes": "2147483648",
+            "disk": [[1, "16.2"]],
+            "diskUsedBytes": "1073741824",
+            "diskTotalBytes": "10737418240",
+            "networkIn": [[1, "1024"]],
+            "networkOut": [[1, "2048"]]
+        });
+        let rows = stats_rows(&s);
+        assert_eq!(rows[0], vec!["CPU", "5.5 %"]); // titik terakhir
+        assert_eq!(rows[1], vec!["Cores", "16"]);
+        assert_eq!(rows[2], vec!["Load avg", "0.10, 0.20, 0.30"]);
+        assert_eq!(rows[3], vec!["Memory", "25.0 % (1.0 GB / 2.0 GB)"]);
+        assert_eq!(rows[4], vec!["Disk", "16.2 % (1.0 GB / 10.0 GB)"]);
+        assert_eq!(rows[5], vec!["Network In", "1.0 KB/s"]);
+    }
+
+    #[test]
+    fn storage_rows_sorted_by_size_desc() {
+        let rows = storage_rows(vec![
+            json!({ "projectName": "p", "serviceName": "kecil", "size": 1024, "path": "/a" }),
+            json!({ "projectName": "p", "serviceName": "besar", "size": 1048576, "path": "/b" }),
+        ]);
+        assert_eq!(rows[0][1], "besar");
+        assert_eq!(rows[0][2], "1.0 MB");
+        assert_eq!(rows[1][1], "kecil");
+    }
 }

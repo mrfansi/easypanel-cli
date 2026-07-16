@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,9 +14,8 @@ use serde_json::{json, Value};
 use crate::client::EasypanelClient;
 use crate::commands;
 use crate::config::ServerConfig;
-use crate::output::{field, num};
+use crate::output::{field, format_bytes, format_rate, num, series_last, series_tail};
 
-const CPU_HISTORY: usize = 120;
 const REFRESH: Duration = Duration::from_secs(2);
 
 /// Buka TUI untuk server default (atau --server yang sudah di-resolve).
@@ -133,7 +131,6 @@ enum Req {
     Actions,
     MonitorData,
     Storage,
-    Advanced,
     Domains,
     Services(String),
     Fetch {
@@ -157,7 +154,6 @@ enum Resp {
     Actions(Vec<Value>),
     MonitorData(Vec<Value>),
     Storage(Vec<Value>),
-    Advanced(Value),
     Domains(Vec<Value>),
     Services(String, Vec<(String, String)>),
     Viewer(String, Vec<String>),
@@ -200,7 +196,7 @@ fn spawn_workers(client: EasypanelClient) -> Workers {
 
 fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
     match req {
-        Req::Stats => match client.call("monitorOld", "getSystemStats", Value::Null) {
+        Req::Stats => match client.call("metrics", "getSystemStats", json!({})) {
             Ok(v) => Resp::Stats(v),
             Err(e) => Resp::Err(e.to_string()),
         },
@@ -224,16 +220,12 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
             Ok(v) => Resp::Actions(v.as_array().cloned().unwrap_or_default()),
             Err(e) => Resp::Err(e.to_string()),
         },
-        Req::MonitorData => match client.call("monitorOld", "getMonitorTableData", Value::Null) {
+        Req::MonitorData => match client.call("metrics", "getAllServicesStats", json!({})) {
             Ok(v) => Resp::MonitorData(v.as_array().cloned().unwrap_or_default()),
             Err(e) => Resp::Err(e.to_string()),
         },
         Req::Storage => match client.call("monitorOld", "getStorageStats", Value::Null) {
             Ok(v) => Resp::Storage(v.as_array().cloned().unwrap_or_default()),
-            Err(e) => Resp::Err(e.to_string()),
-        },
-        Req::Advanced => match client.call("monitorOld", "getAdvancedStats", Value::Null) {
-            Ok(v) => Resp::Advanced(v),
             Err(e) => Resp::Err(e.to_string()),
         },
         Req::Domains => match client.call("domains", "listDomains", json!({})) {
@@ -504,7 +496,6 @@ struct App {
     status: String,
 
     stats: Option<Value>,
-    cpu_history: VecDeque<u64>,
     nodes: Vec<Value>,
 
     actions: Vec<Value>,
@@ -512,7 +503,6 @@ struct App {
     monitor: Vec<Value>,
     monitor_state: TableState,
     storage: Vec<Value>,
-    advanced: Option<Value>,
     monitor_view: MonitorView,
     domains: Vec<Value>,
     domains_state: TableState,
@@ -544,14 +534,12 @@ impl App {
             refresh_inflight: false,
             status: "Siap".into(),
             stats: None,
-            cpu_history: VecDeque::with_capacity(CPU_HISTORY),
             nodes: Vec::new(),
             actions: Vec::new(),
             actions_state: TableState::default(),
             monitor: Vec::new(),
             monitor_state: TableState::default(),
             storage: Vec::new(),
-            advanced: None,
             monitor_view: MonitorView::Services,
             domains: Vec::new(),
             domains_state: TableState::default(),
@@ -574,14 +562,12 @@ impl App {
         self.screen = Screen::Dashboard;
         self.status = "Ganti server".into();
         self.stats = None;
-        self.cpu_history.clear();
         self.nodes.clear();
         self.actions.clear();
         self.actions_state = TableState::default();
         self.monitor.clear();
         self.monitor_state = TableState::default();
         self.storage.clear();
-        self.advanced = None;
         self.domains.clear();
         self.domains_state = TableState::default();
         self.projects.clear();
@@ -598,11 +584,6 @@ impl App {
         match resp {
             Resp::Stats(v) => {
                 self.refresh_inflight = false;
-                let cpu = num(&v, "/cpuInfo/usedPercentage").round() as u64;
-                self.cpu_history.push_back(cpu.min(100));
-                while self.cpu_history.len() > CPU_HISTORY {
-                    self.cpu_history.pop_front();
-                }
                 self.stats = Some(v);
             }
             Resp::Nodes(n) => self.nodes = n,
@@ -612,7 +593,6 @@ impl App {
             }
             Resp::MonitorData(m) => self.monitor = m,
             Resp::Storage(s) => self.storage = s,
-            Resp::Advanced(v) => self.advanced = Some(v),
             Resp::Domains(d) => {
                 self.domains = d;
                 select_first(&mut self.domains_state, self.domains.len());
@@ -697,9 +677,6 @@ impl App {
                 }
             }
             Screen::Monitor => {
-                if self.advanced.is_none() {
-                    let _ = req.send(Req::Advanced);
-                }
                 if self.monitor.is_empty() {
                     let _ = req.send(Req::MonitorData);
                 }
@@ -933,7 +910,6 @@ impl App {
                 let _ = req.send(Req::Domains);
             }
             Screen::Monitor => {
-                let _ = req.send(Req::Advanced);
                 let _ = req.send(Req::MonitorData);
                 let _ = req.send(Req::Storage);
             }
@@ -992,10 +968,6 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
     let stats = app.stats.clone().unwrap_or(Value::Null);
-    let cpu = num(&stats, "/cpuInfo/usedPercentage");
-    let mem = num(&stats, "/memInfo/usedMemPercentage");
-    let disk = num(&stats, "/diskInfo/usedPercentage");
-    let uptime = num(&stats, "/uptime");
 
     let rows = Layout::vertical([Constraint::Length(11), Constraint::Min(0)]).split(area);
     let top =
@@ -1008,22 +980,21 @@ fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(2),
     ])
     .split(top[0]);
-    render_gauge(f, left[0], "CPU", cpu);
-    render_gauge(f, left[1], "Memory", mem);
-    render_gauge(f, left[2], "Disk", disk);
+    render_gauge(f, left[0], "CPU", series_last(&stats, "cpu"));
+    render_gauge(f, left[1], "Memory", series_last(&stats, "memory"));
+    render_gauge(f, left[2], "Disk", series_last(&stats, "disk"));
     f.render_widget(
         Paragraph::new(format!(
-            " Uptime: {}    Cores: {}",
-            fmt_uptime(uptime),
-            field(&stats, "/cpuInfo/count")
+            " {} cores — load {}",
+            field(&stats, "/cpuCores"),
+            commands::load_avg(&stats)
         )),
         left[3],
     );
 
-    let data: Vec<u64> = app.cpu_history.iter().copied().collect();
     let spark = Sparkline::default()
         .block(Block::bordered().title(" CPU History (%) "))
-        .data(data)
+        .data(series_tail(&stats, "cpu", 120))
         .max(100)
         .style(Style::default().fg(Color::Cyan));
     f.render_widget(spark, top[1]);
@@ -1220,69 +1191,79 @@ fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
 
 /// Lima tile metrik dengan histori (CPU, Memory, Disk, Net In, Net Out).
 fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
-    let adv = app.advanced.clone().unwrap_or(Value::Null);
-    let series = |key: &str, ptr: &str| -> Vec<u64> {
-        adv.get(key)
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .rev()
-                    .take(60)
-                    .rev()
-                    .map(|p| num(p, ptr).max(0.0).round() as u64)
-                    .collect()
-            })
-            .unwrap_or_default()
+    let s = app.stats.clone().unwrap_or(Value::Null);
+    let pair = |used: &str, total: &str| {
+        format!(
+            "{} / {}",
+            format_bytes(num(&s, used)),
+            format_bytes(num(&s, total))
+        )
     };
-    let stats = app.stats.clone().unwrap_or(Value::Null);
 
     let tiles = [
         (
             "CPU",
-            format!("{:.1}%", num(&stats, "/cpuInfo/usedPercentage")),
-            series("cpu", "/value"),
+            format!("{:.1}%", series_last(&s, "cpu")),
+            format!(
+                "{} cores — load {}",
+                field(&s, "/cpuCores"),
+                commands::load_avg(&s)
+            ),
+            series_tail(&s, "cpu", 60),
             Color::Yellow,
         ),
         (
             "Memory",
-            format!("{:.1}%", num(&stats, "/memInfo/usedMemPercentage")),
-            series("memory", "/value"),
+            format!("{:.1}%", series_last(&s, "memory")),
+            pair("/memoryUsedBytes", "/memoryTotalBytes"),
+            series_tail(&s, "memory", 60),
             Color::Blue,
         ),
         (
             "Disk",
-            format!("{:.1}%", num(&stats, "/diskInfo/usedPercentage")),
-            series("disk", "/value"),
+            format!("{:.1}%", series_last(&s, "disk")),
+            pair("/diskUsedBytes", "/diskTotalBytes"),
+            series_tail(&s, "disk", 60),
             Color::Green,
         ),
         (
-            "Net In",
-            format!("{:.1} MB", num(&stats, "/network/inputMb")),
-            series("network", "/value/inputMb"),
+            "Network In",
+            format_rate(series_last(&s, "networkIn")),
+            String::new(),
+            series_tail(&s, "networkIn", 60),
             Color::Cyan,
         ),
         (
-            "Net Out",
-            format!("{:.1} MB", num(&stats, "/network/outputMb")),
-            series("network", "/value/outputMb"),
+            "Network Out",
+            format_rate(series_last(&s, "networkOut")),
+            String::new(),
+            series_tail(&s, "networkOut", 60),
             Color::Magenta,
         ),
     ];
 
     let cols = Layout::horizontal([Constraint::Ratio(1, 5); 5]).split(area);
-    for (i, (label, value, data, color)) in tiles.into_iter().enumerate() {
-        let inner = Layout::vertical([Constraint::Length(2), Constraint::Min(0)])
-            .split(cols[i].inner(Margin::new(1, 1)));
+    for (i, (label, value, sub, data, color)) in tiles.into_iter().enumerate() {
+        let inner = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(cols[i].inner(Margin::new(1, 1)));
         f.render_widget(Block::bordered().title(format!(" {label} ")), cols[i]);
         f.render_widget(
             Paragraph::new(value).style(Style::default().add_modifier(Modifier::BOLD)),
             inner[0],
         );
         f.render_widget(
+            Paragraph::new(sub).style(Style::default().fg(Color::DarkGray)),
+            inner[1],
+        );
+        f.render_widget(
             Sparkline::default()
                 .data(data)
                 .style(Style::default().fg(color)),
-            inner[1],
+            inner[2],
         );
     }
 }
@@ -1382,16 +1363,6 @@ fn gauge_color(pct: f64) -> Color {
     } else {
         Color::Red
     }
-}
-
-fn fmt_uptime(secs: f64) -> String {
-    let s = secs as u64;
-    format!(
-        "{}d {}h {}m",
-        s / 86400,
-        (s % 86400) / 3600,
-        (s % 3600) / 60
-    )
 }
 
 fn cap(s: &str) -> String {

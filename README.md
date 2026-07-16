@@ -127,12 +127,11 @@ Keybindings:
 | `s` | ganti server (bila ada >1 host) |
 | `r` | refresh · `q` keluar |
 
-Network berjalan di worker thread terpisah, jadi UI tidak pernah membeku saat request lambat. Ada dua lajur worker: aksi user dan polling metrik. Ini disengaja — `getSystemStats` dan `getMonitorTableData` bisa makan ~2,5 detik masing-masing, dan dengan satu lajur polling akan menahan aksi user.
+Network berjalan di worker thread terpisah, jadi UI tidak pernah membeku saat request lambat. Ada dua lajur worker: aksi user dan polling metrik, supaya polling tak pernah menahan aksi user.
 
-Catatan:
+Metrik memakai grup **`metrics`** (Prometheus), bukan `monitorOld`: ~0,3 detik vs ~2,3 detik, dan sudah menyediakan laju network, load average, serta byte used/total. Satu panggilan `metrics/getSystemStats` memberi nilai terkini **dan** historinya, jadi sparkline datang dari server.
 
-- **Net In/Out** pada tabel Services adalah **total kumulatif** byte per container (bukan laju B/s seperti di panel web).
-- Sub-tab **Docker Events** milik panel tidak tersedia: itu live stream, bukan bagian dari REST API yang terdokumentasi (`easypanel-api.json`).
+Catatan: sub-tab **Docker Events** milik panel tidak tersedia — itu live stream, bukan bagian dari REST API yang terdokumentasi (`easypanel-api.json`).
 
 ## Test
 

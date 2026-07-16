@@ -32,6 +32,44 @@ pub fn num(value: &Value, pointer: &str) -> f64 {
     }
 }
 
+/// Nilai satu titik seri metrics: `[unix_ts, "12.34"]`.
+fn point_value(p: &Value) -> f64 {
+    match p.get(1) {
+        Some(Value::String(s)) => s.parse().unwrap_or(0.0),
+        Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
+        _ => 0.0,
+    }
+}
+
+/// Nilai terbaru sebuah seri metrics (mis. "cpu").
+pub fn series_last(v: &Value, key: &str) -> f64 {
+    v.get(key)
+        .and_then(Value::as_array)
+        .and_then(|a| a.last())
+        .map(point_value)
+        .unwrap_or(0.0)
+}
+
+/// `n` titik terakhir sebuah seri, dibulatkan untuk sparkline.
+pub fn series_tail(v: &Value, key: &str, n: usize) -> Vec<u64> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .rev()
+                .take(n)
+                .rev()
+                .map(|p| point_value(p).max(0.0).round() as u64)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Laju byte per detik jadi bentuk terbaca (mis. "30.4 KB/s").
+pub fn format_rate(bytes_per_sec: f64) -> String {
+    format!("{}/s", format_bytes(bytes_per_sec))
+}
+
 /// Ukuran byte jadi bentuk terbaca (mis. "4.1 GB").
 pub fn format_bytes(bytes: f64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
