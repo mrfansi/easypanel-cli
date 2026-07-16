@@ -13,7 +13,12 @@ impl EasypanelClient {
         Self {
             url: url.trim_end_matches('/').to_string(),
             token: token.to_string(),
-            http: reqwest::blocking::Client::new(),
+            // Timeout wajib: tanpa ini satu request menggantung membekukan
+            // worker TUI selamanya (tak ada request lain yang bisa jalan).
+            http: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
         }
     }
 

@@ -4,7 +4,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::{
     Block, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Sparkline, Table, Tabs, Wrap,
@@ -25,16 +25,11 @@ pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> 
         return Ok(());
     }
 
-    let (req_tx, resp_rx) = spawn_worker(client);
-    let mut app = App::new(server_name);
-
-    // Muatan awal.
-    let _ = req_tx.send(Req::Stats);
-    let _ = req_tx.send(Req::Nodes);
-    let _ = req_tx.send(Req::Projects);
+    let names: Vec<String> = cfg.all().into_iter().map(|s| s.name).collect();
+    let mut app = App::new(server_name, names);
 
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, &mut app, &req_tx, &resp_rx);
+    let result = event_loop(&mut terminal, &mut app, cfg, client);
     ratatui::restore();
     result
 }
@@ -42,9 +37,11 @@ pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> 
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
-    req_tx: &Sender<Req>,
-    resp_rx: &Receiver<Resp>,
+    cfg: &ServerConfig,
+    client: EasypanelClient,
 ) -> Result<()> {
+    let (mut req_tx, mut resp_rx) = spawn_worker(client);
+    send_initial(&req_tx);
     let mut last_stats = Instant::now();
 
     loop {
@@ -67,8 +64,20 @@ fn event_loop(
                     {
                         break;
                     }
-                    app.on_key(key.code, req_tx);
+                    app.on_key(key.code, &req_tx);
                 }
+            }
+        }
+
+        // Ganti server: bangun worker baru (worker lama berhenti saat req_tx lama di-drop).
+        if let Some(name) = app.switch_to.take() {
+            if let Some(server) = cfg.get(&name) {
+                let (tx, rx) = spawn_worker(EasypanelClient::new(&server.url, &server.token));
+                req_tx = tx;
+                resp_rx = rx;
+                app.reset_for_server(name);
+                send_initial(&req_tx);
+                last_stats = Instant::now();
             }
         }
 
@@ -79,14 +88,48 @@ fn event_loop(
     Ok(())
 }
 
+fn send_initial(req_tx: &Sender<Req>) {
+    let _ = req_tx.send(Req::Stats);
+    let _ = req_tx.send(Req::Nodes);
+    let _ = req_tx.send(Req::Projects);
+}
+
 // ---------- Worker (network di thread terpisah agar UI tak nge-freeze) ----------
+
+#[derive(Clone, Copy)]
+enum View {
+    Logs,
+    Env,
+    Ports,
+    Mounts,
+    Domains,
+    Backups,
+}
+
+impl View {
+    fn title(self) -> &'static str {
+        match self {
+            View::Logs => "Logs",
+            View::Env => "Env",
+            View::Ports => "Ports",
+            View::Mounts => "Mounts",
+            View::Domains => "Domains",
+            View::Backups => "Database backups",
+        }
+    }
+}
 
 enum Req {
     Stats,
     Nodes,
     Projects,
     Services(String),
-    Logs(String, String),
+    Fetch {
+        view: View,
+        project: String,
+        service: String,
+        stype: String,
+    },
     Action {
         project: String,
         service: String,
@@ -100,7 +143,7 @@ enum Resp {
     Nodes(Vec<Value>),
     Projects(Vec<String>),
     Services(String, Vec<(String, String)>),
-    Logs(Vec<String>),
+    Viewer(String, Vec<String>),
     Msg(String),
     Err(String),
 }
@@ -149,40 +192,22 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                 "inspectProject",
                 json!({ "projectName": project }),
             ) {
-                Ok(v) => {
-                    let svcs = v
-                        .get("services")
-                        .and_then(Value::as_array)
-                        .map(|a| {
-                            a.iter()
-                                .map(|s| {
-                                    (
-                                        s.get("name")
-                                            .and_then(Value::as_str)
-                                            .unwrap_or("")
-                                            .to_string(),
-                                        s.get("type")
-                                            .and_then(Value::as_str)
-                                            .unwrap_or("app")
-                                            .to_string(),
-                                    )
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    Resp::Services(project, svcs)
-                }
+                Ok(v) => Resp::Services(project, parse_services(&v)),
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
-        Req::Logs(project, service) => match client.call(
-            "logs",
-            "queryServiceLogs",
-            json!({ "projectName": project, "serviceName": service, "limit": 200 }),
-        ) {
-            Ok(v) => Resp::Logs(crate::logs::format(&v)),
-            Err(e) => Resp::Err(e.to_string()),
-        },
+        Req::Fetch {
+            view,
+            project,
+            service,
+            stype,
+        } => {
+            let title = format!("{} · {}/{}", view.title(), project, service);
+            match fetch_view(client, view, &project, &service, &stype) {
+                Ok(lines) => Resp::Viewer(title, lines),
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
         Req::Action {
             project,
             service,
@@ -205,13 +230,127 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
     }
 }
 
+fn parse_services(v: &Value) -> Vec<(String, String)> {
+    v.get("services")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|s| {
+                    (
+                        s.get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        s.get("type")
+                            .and_then(Value::as_str)
+                            .unwrap_or("app")
+                            .to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn fetch_view(
+    client: &EasypanelClient,
+    view: View,
+    project: &str,
+    service: &str,
+    stype: &str,
+) -> Result<Vec<String>> {
+    let ps = json!({ "projectName": project, "serviceName": service });
+    let lines = match view {
+        View::Logs => {
+            let v = client.call(
+                "logs",
+                "queryServiceLogs",
+                json!({ "projectName": project, "serviceName": service, "limit": 200 }),
+            )?;
+            crate::logs::format(&v)
+        }
+        View::Env => {
+            let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
+            let env = v.get("env").and_then(Value::as_str).unwrap_or("");
+            env.lines().map(String::from).collect()
+        }
+        View::Ports => {
+            let v = client.call("ports", "listPorts", ps)?;
+            list_or_empty(&v, "Tidak ada port", |i, p| {
+                format!(
+                    "[{i}] {} {}->{}",
+                    field(p, "/protocol"),
+                    field(p, "/published"),
+                    field(p, "/target")
+                )
+            })
+        }
+        View::Mounts => {
+            let v = client.call("mounts", "listMounts", ps)?;
+            list_or_empty(&v, "Tidak ada mount", |i, m| {
+                let detail = match field(m, "/type").as_str() {
+                    "bind" => format!("{} -> {}", field(m, "/hostPath"), field(m, "/mountPath")),
+                    "volume" => format!("{} -> {}", field(m, "/name"), field(m, "/mountPath")),
+                    _ => field(m, "/mountPath"),
+                };
+                format!("[{i}] {}  {detail}", field(m, "/type"))
+            })
+        }
+        View::Domains => {
+            let v = client.call("domains", "listDomains", ps)?;
+            list_or_empty(&v, "Tidak ada domain", |_, d| {
+                let scheme = if d.get("https").and_then(Value::as_bool).unwrap_or(false) {
+                    "https"
+                } else {
+                    "http"
+                };
+                format!(
+                    "{} ({scheme})  port {}  [{}]",
+                    field(d, "/host"),
+                    field(d, "/serviceDestination/port"),
+                    field(d, "/id")
+                )
+            })
+        }
+        View::Backups => {
+            let v = client.call("databaseBackups", "listDatabaseBackups", ps)?;
+            list_or_empty(&v, "Tidak ada database backup", |_, b| {
+                let state = if b.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
+                    "aktif"
+                } else {
+                    "nonaktif"
+                };
+                format!(
+                    "{}  {}  {}  {state}",
+                    field(b, "/id"),
+                    field(b, "/databaseName"),
+                    field(b, "/schedule")
+                )
+            })
+        }
+    };
+    Ok(if lines.is_empty() {
+        vec!["(kosong)".to_string()]
+    } else {
+        lines
+    })
+}
+
+fn list_or_empty(v: &Value, empty: &str, f: impl Fn(usize, &Value) -> String) -> Vec<String> {
+    let arr = v.as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        return vec![empty.to_string()];
+    }
+    arr.iter().enumerate().map(|(i, x)| f(i, x)).collect()
+}
+
 // ---------- State ----------
 
 #[derive(PartialEq, Clone, Copy)]
 enum Screen {
     Dashboard,
     Projects,
-    Logs,
+    Viewer,
 }
 
 impl Screen {
@@ -219,14 +358,14 @@ impl Screen {
         match self {
             Screen::Dashboard => 0,
             Screen::Projects => 1,
-            Screen::Logs => 2,
+            Screen::Viewer => 2,
         }
     }
     fn next(self) -> Self {
         match self {
             Screen::Dashboard => Screen::Projects,
-            Screen::Projects => Screen::Logs,
-            Screen::Logs => Screen::Dashboard,
+            Screen::Projects => Screen::Viewer,
+            Screen::Viewer => Screen::Dashboard,
         }
     }
 }
@@ -247,6 +386,10 @@ struct Confirm {
 
 struct App {
     server_name: String,
+    all_servers: Vec<String>,
+    switch_to: Option<String>,
+    picker: Option<ListState>,
+
     screen: Screen,
     should_quit: bool,
     status: String,
@@ -262,17 +405,21 @@ struct App {
     current_project: Option<String>,
     focus: Focus,
 
-    logs: Vec<String>,
-    logs_scroll: u16,
-    log_target: Option<(String, String)>,
+    viewer_title: String,
+    viewer_lines: Vec<String>,
+    viewer_scroll: u16,
+    viewer_ctx: Option<(View, String, String, String)>,
 
     confirm: Option<Confirm>,
 }
 
 impl App {
-    fn new(server_name: String) -> Self {
+    fn new(server_name: String, all_servers: Vec<String>) -> Self {
         Self {
             server_name,
+            all_servers,
+            switch_to: None,
+            picker: None,
             screen: Screen::Dashboard,
             should_quit: false,
             status: "Siap".into(),
@@ -285,11 +432,29 @@ impl App {
             services_state: ListState::default(),
             current_project: None,
             focus: Focus::Projects,
-            logs: Vec::new(),
-            logs_scroll: 0,
-            log_target: None,
+            viewer_title: "Viewer".into(),
+            viewer_lines: Vec::new(),
+            viewer_scroll: 0,
+            viewer_ctx: None,
             confirm: None,
         }
+    }
+
+    fn reset_for_server(&mut self, name: String) {
+        self.server_name = name;
+        self.screen = Screen::Dashboard;
+        self.status = "Ganti server".into();
+        self.stats = None;
+        self.cpu_history.clear();
+        self.nodes.clear();
+        self.projects.clear();
+        self.projects_state = ListState::default();
+        self.services.clear();
+        self.services_state = ListState::default();
+        self.current_project = None;
+        self.focus = Focus::Projects;
+        self.viewer_lines.clear();
+        self.viewer_ctx = None;
     }
 
     fn handle(&mut self, resp: Resp) {
@@ -319,9 +484,12 @@ impl App {
                     });
                 }
             }
-            Resp::Logs(l) => {
-                self.logs = l;
-                self.logs_scroll = 0;
+            Resp::Viewer(title, lines) => {
+                self.viewer_title = title;
+                self.viewer_lines = lines;
+                self.viewer_scroll = 0;
+                self.screen = Screen::Viewer;
+                self.status = "Siap".into();
             }
             Resp::Msg(m) => self.status = m,
             Resp::Err(e) => self.status = format!("Error: {e}"),
@@ -329,18 +497,12 @@ impl App {
     }
 
     fn on_key(&mut self, code: KeyCode, req: &Sender<Req>) {
-        if let Some(c) = self.confirm.take() {
-            if matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                let _ = req.send(Req::Action {
-                    project: c.project,
-                    service: c.service.clone(),
-                    stype: c.stype,
-                    action: c.action.clone(),
-                });
-                self.status = format!("Mengirim {}...", c.action);
-            } else {
-                self.status = "Dibatalkan".into();
-            }
+        if self.confirm.is_some() {
+            self.confirm_key(code, req);
+            return;
+        }
+        if self.picker.is_some() {
+            self.picker_key(code);
             return;
         }
 
@@ -348,19 +510,80 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('1') => self.screen = Screen::Dashboard,
             KeyCode::Char('2') => self.goto_projects(req),
-            KeyCode::Char('3') => self.screen = Screen::Logs,
+            KeyCode::Char('3') => self.screen = Screen::Viewer,
             KeyCode::Tab => {
                 self.screen = self.screen.next();
                 if self.screen == Screen::Projects {
                     self.goto_projects(req);
                 }
             }
+            KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('r') => self.refresh(req),
             _ => match self.screen {
                 Screen::Projects => self.projects_key(code, req),
-                Screen::Logs => self.logs_key(code),
+                Screen::Viewer => self.viewer_key(code),
                 Screen::Dashboard => {}
             },
+        }
+    }
+
+    fn confirm_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        let c = self.confirm.take().unwrap();
+        if matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            let _ = req.send(Req::Action {
+                project: c.project,
+                service: c.service,
+                stype: c.stype,
+                action: c.action.clone(),
+            });
+            self.status = format!("Mengirim {}...", c.action);
+        } else {
+            self.status = "Dibatalkan".into();
+        }
+    }
+
+    fn open_picker(&mut self) {
+        if self.all_servers.len() < 2 {
+            self.status = "Hanya satu server terkonfigurasi".into();
+            return;
+        }
+        let cur = self
+            .all_servers
+            .iter()
+            .position(|n| n == &self.server_name)
+            .unwrap_or(0);
+        let mut st = ListState::default();
+        st.select(Some(cur));
+        self.picker = Some(st);
+    }
+
+    fn picker_key(&mut self, code: KeyCode) {
+        let Some(state) = self.picker.as_mut() else {
+            return;
+        };
+        match code {
+            KeyCode::Esc | KeyCode::Char('s') => self.picker = None,
+            KeyCode::Down | KeyCode::Char('j') => {
+                let i = (state.selected().unwrap_or(0) + 1).min(self.all_servers.len() - 1);
+                state.select(Some(i));
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let i = state.selected().unwrap_or(0).saturating_sub(1);
+                state.select(Some(i));
+            }
+            KeyCode::Enter => {
+                if let Some(name) = state
+                    .selected()
+                    .and_then(|i| self.all_servers.get(i))
+                    .cloned()
+                {
+                    if name != self.server_name {
+                        self.switch_to = Some(name);
+                    }
+                }
+                self.picker = None;
+            }
+            _ => {}
         }
     }
 
@@ -382,6 +605,11 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Enter => self.on_enter(req),
+            KeyCode::Char('e') => self.open_view(View::Env, req),
+            KeyCode::Char('p') => self.open_view(View::Ports, req),
+            KeyCode::Char('m') => self.open_view(View::Mounts, req),
+            KeyCode::Char('o') => self.open_view(View::Domains, req),
+            KeyCode::Char('b') => self.open_view(View::Backups, req),
             KeyCode::Char('d') => self.ask_action("deploy"),
             KeyCode::Char('R') => self.ask_action("restart"),
             KeyCode::Char('S') => self.ask_action("stop"),
@@ -390,16 +618,16 @@ impl App {
         }
     }
 
-    fn logs_key(&mut self, code: KeyCode) {
+    fn viewer_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Down | KeyCode::Char('j') => {
-                self.logs_scroll = self.logs_scroll.saturating_add(1)
+                self.viewer_scroll = self.viewer_scroll.saturating_add(1)
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                self.logs_scroll = self.logs_scroll.saturating_sub(1)
+                self.viewer_scroll = self.viewer_scroll.saturating_sub(1)
             }
-            KeyCode::PageDown => self.logs_scroll = self.logs_scroll.saturating_add(10),
-            KeyCode::PageUp => self.logs_scroll = self.logs_scroll.saturating_sub(10),
+            KeyCode::PageDown => self.viewer_scroll = self.viewer_scroll.saturating_add(10),
+            KeyCode::PageUp => self.viewer_scroll = self.viewer_scroll.saturating_sub(10),
             _ => {}
         }
     }
@@ -432,21 +660,29 @@ impl App {
                     let _ = req.send(Req::Services(p));
                 }
             }
-            Focus::Services => {
-                if let (Some(p), Some((s, _))) = (
-                    self.current_project.clone(),
-                    self.services_state
-                        .selected()
-                        .and_then(|i| self.services.get(i).cloned()),
-                ) {
-                    self.log_target = Some((p.clone(), s.clone()));
-                    self.logs.clear();
-                    self.logs_scroll = 0;
-                    self.screen = Screen::Logs;
-                    self.status = format!("Memuat log {p}/{s}...");
-                    let _ = req.send(Req::Logs(p, s));
-                }
-            }
+            Focus::Services => self.open_view(View::Logs, req),
+        }
+    }
+
+    fn open_view(&mut self, view: View, req: &Sender<Req>) {
+        if self.focus != Focus::Services {
+            self.status = "Fokus panel Services dulu (→)".into();
+            return;
+        }
+        if let (Some(p), Some((s, t))) = (
+            self.current_project.clone(),
+            self.services_state
+                .selected()
+                .and_then(|i| self.services.get(i).cloned()),
+        ) {
+            self.viewer_ctx = Some((view, p.clone(), s.clone(), t.clone()));
+            self.status = format!("Memuat {}...", view.title());
+            let _ = req.send(Req::Fetch {
+                view,
+                project: p,
+                service: s,
+                stype: t,
+            });
         }
     }
 
@@ -481,9 +717,14 @@ impl App {
                     let _ = req.send(Req::Services(p));
                 }
             }
-            Screen::Logs => {
-                if let Some((p, s)) = self.log_target.clone() {
-                    let _ = req.send(Req::Logs(p, s));
+            Screen::Viewer => {
+                if let Some((view, p, s, t)) = self.viewer_ctx.clone() {
+                    let _ = req.send(Req::Fetch {
+                        view,
+                        project: p,
+                        service: s,
+                        stype: t,
+                    });
                 }
             }
             Screen::Dashboard => {}
@@ -512,17 +753,20 @@ fn ui(f: &mut Frame, app: &mut App) {
     match app.screen {
         Screen::Dashboard => render_dashboard(f, chunks[1], app),
         Screen::Projects => render_projects(f, chunks[1], app),
-        Screen::Logs => render_logs(f, chunks[1], app),
+        Screen::Viewer => render_viewer(f, chunks[1], app),
     }
     render_status(f, chunks[2], app);
 
     if let Some(c) = &app.confirm {
         render_confirm(f, c);
     }
+    if app.picker.is_some() {
+        render_picker(f, app);
+    }
 }
 
 fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
-    let tabs = Tabs::new(vec!["Dashboard", "Projects", "Logs"])
+    let tabs = Tabs::new(vec!["Dashboard", "Projects", "Viewer"])
         .select(app.screen.index())
         .block(Block::bordered().title(format!(" EasyPanel — {} ", app.server_name)))
         .highlight_style(
@@ -612,9 +856,9 @@ fn render_nodes(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     let cols = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(35),
-        Constraint::Percentage(35),
+        Constraint::Percentage(28),
+        Constraint::Percentage(34),
+        Constraint::Percentage(38),
     ])
     .split(area);
 
@@ -646,7 +890,7 @@ fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
 
     let detail = match app.selected_service() {
         Some((s, t)) => format!(
-            "Service : {s}\nTipe    : {t}\n\nAksi (fokus Services):\n  [d] Deploy\n  [R] Restart\n  [S] Stop\n  [T] Start\n  [Enter] Lihat logs",
+            "Service : {s}\nTipe    : {t}\n\nView (fokus Services):\n  [Enter] Logs   [e] Env\n  [p] Ports      [m] Mounts\n  [o] Domains    [b] Backups\n\nAksi:\n  [d] Deploy  [R] Restart\n  [S] Stop    [T] Start",
         ),
         None => "Enter pada project untuk memuat service.\n→ untuk fokus panel Services.".to_string(),
     };
@@ -658,26 +902,22 @@ fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-fn render_logs(f: &mut Frame, area: Rect, app: &App) {
-    let title = match &app.log_target {
-        Some((p, s)) => format!(" Logs · {p}/{s} "),
-        None => " Logs (pilih service di Projects, Enter) ".to_string(),
-    };
+fn render_viewer(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(
-        Paragraph::new(app.logs.join("\n"))
-            .block(Block::bordered().title(title))
-            .scroll((app.logs_scroll, 0)),
+        Paragraph::new(app.viewer_lines.join("\n"))
+            .block(Block::bordered().title(format!(" {} ", app.viewer_title)))
+            .scroll((app.viewer_scroll, 0)),
         area,
     );
 }
 
 fn render_status(f: &mut Frame, area: Rect, app: &App) {
     let keys = match app.screen {
-        Screen::Dashboard => "1/2/3 pindah · r refresh · q keluar",
+        Screen::Dashboard => "1/2/3 tab · s server · r refresh · q keluar",
         Screen::Projects => {
-            "↑↓ pilih · ←→ panel · Enter buka · d/R/S/T aksi · r refresh · q keluar"
+            "↑↓ pilih · ←→ panel · Enter logs · e/p/m/o/b view · d/R/S/T aksi · s server · q keluar"
         }
-        Screen::Logs => "↑↓ scroll · PgUp/PgDn · r refresh · 1/2/3 pindah · q keluar",
+        Screen::Viewer => "↑↓ scroll · PgUp/PgDn · r refresh · 1/2/3 tab · q keluar",
     };
     f.render_widget(
         Paragraph::new(format!(" {keys}   |   {}", app.status))
@@ -702,6 +942,33 @@ fn render_confirm(f: &mut Frame, c: &Confirm) {
         ),
         area,
     );
+}
+
+fn render_picker(f: &mut Frame, app: &mut App) {
+    let area = centered(46, 50, f.area());
+    f.render_widget(Clear, area);
+    let items: Vec<ListItem> = app
+        .all_servers
+        .iter()
+        .map(|n| {
+            let mark = if n == &app.server_name {
+                " (aktif)"
+            } else {
+                ""
+            };
+            ListItem::new(format!("{n}{mark}"))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .title(" Pilih server (Enter) ")
+                .border_style(Style::default().fg(Color::Yellow)),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("› ");
+    let state = app.picker.as_mut().unwrap();
+    f.render_stateful_widget(list, area, state);
 }
 
 // ---------- Helpers ----------
