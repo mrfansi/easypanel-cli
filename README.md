@@ -123,7 +123,7 @@ easypanel --server prod   # host tertentu
 - **Actions** — riwayat action (deploy/destroy/login) dengan status, target, durasi, dan umur.
 - **Monitor** — lima tile metrik berhistori (CPU, Memory, Disk, Net In, Net Out) + sub-tab **Services** (CPU/memori/network per project & service) dan **Storage** (`v` untuk berganti).
 - **Domains** — semua domain host: source → destination (service internal atau server custom beserta bobotnya). Form edit mencakup **SSL resolver** (`certificateResolver`) dan **wildcard**. Nama resolver ditentukan konfigurasi Traefik server (mis. `google`); server menolak nama yang tak terdaftar.
-- **Projects** — **daftar datar semua service lintas project** (bukan drill-down): Project, Service, Tipe, Status, dan Source (`owner/repo#branch` atau image) dalam satu tabel yang bisa dicari dengan `/`. Hirarki project → service memaksa membuka project satu per satu dan tak bisa dicari — itu runtuh di ratusan service. Semua aksi bekerja pada baris yang disorot; `n` service baru (project dipilih dari dropdown), `N` project baru, `X` hapus project.
+- **Projects** — **daftar datar semua service lintas project** (bukan drill-down): Project, Service, Tipe, Status, Source (`owner/repo#branch` atau image), plus **CPU/Memory/Net In/Net Out per service** — semuanya dalam satu tabel yang bisa dicari dengan `/`. Metriknya live (~2 detik) selama layar ini terbuka. Hirarki project → service memaksa membuka project satu per satu dan tak bisa dicari — itu runtuh di ratusan service. Semua aksi bekerja pada baris yang disorot; `n` service baru (project dipilih dari dropdown), `N` project baru, `X` hapus project.
 - **Viewer** — pane scrollable untuk logs, env, ports, mounts, domains, database backups, dan source & build.
 
 Keybindings:
@@ -145,7 +145,9 @@ Keybindings:
 | `s` | daftar server: `Enter` pilih · `n` tambah · `e` edit (token kosong = tak diubah) · `x` hapus |
 | `r` · `q` | refresh · keluar (`Esc` **tidak** keluar — ia hanya membatalkan) |
 
-Filter dicocokkan ke teks yang **ditampilkan**, jadi mencari `mysql` menemukannya lewat nama service, nama project, tipe, maupun source. Judul tabel menunjukkan `(tersaring/total)` beserta teks filternya, dan filter dibuang saat pindah tab — filter tersembunyi membuat baris yang hilang dikira memang tak ada.
+Metrik dijoin dari `metrics/getAllServicesStats` lewat pasangan **(project, service)** — bukan nama service saja, karena nama yang sama bisa ada di beberapa project. Service tanpa metrik tampil `-`, bukan `0`.
+
+Filter dicocokkan ke kolom **identitas** (project/service/tipe/source), bukan ke angka metrik: mencari `1` tak seharusnya cocok ke setiap baris hanya karena angka CPU-nya. Ia dicocokkan ke teks yang **ditampilkan**, jadi mencari `mysql` menemukannya lewat nama service, nama project, tipe, maupun source. Judul tabel menunjukkan `(tersaring/total)` beserta teks filternya, dan filter dibuang saat pindah tab — filter tersembunyi membuat baris yang hilang dikira memang tak ada.
 
 `E` membuka env di editor: `$VISUAL`, lalu `$EDITOR`, lalu `vi`/`nano`. Editor yang ditunjuk tapi tak terpasang akan dilewati, bukan menggagalkan aksi.
 

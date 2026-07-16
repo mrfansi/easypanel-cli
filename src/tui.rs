@@ -55,8 +55,8 @@ fn event_loop(
         // menumpuk saat server lebih lambat dari interval refresh.
         if last_stats.elapsed() >= REFRESH && !app.refresh_inflight {
             let _ = w.poll.send(Req::Stats);
-            // Tabel monitor ikut live, tapi hanya saat layarnya dibuka.
-            if app.screen == Screen::Monitor {
+            // Metrik per service ikut live, tapi hanya di layar yang menampilkannya.
+            if matches!(app.screen, Screen::Monitor | Screen::Projects) {
                 let _ = w.poll.send(Req::MonitorData);
             }
             app.refresh_inflight = true;
@@ -1222,7 +1222,9 @@ fn parse_services(v: &Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-const SERVICE_HEADERS: [&str; 5] = ["Project", "Service", "Tipe", "Status", "Source"];
+const SERVICE_HEADERS: [&str; 9] = [
+    "Project", "Service", "Tipe", "Status", "Source", "CPU %", "Memory", "Net In", "Net Out",
+];
 
 /// Satu baris tabel service datar.
 ///
@@ -1247,6 +1249,23 @@ fn service_row(s: &Value) -> Vec<String> {
         field(s, "/type"),
         if enabled { "aktif" } else { "mati" }.to_string(),
         source,
+    ]
+}
+
+/// Kolom metrik untuk sebuah service; "-" bila metriknya belum/tak ada.
+///
+/// Dipisah dari service_row() supaya filter hanya mencocokkan identitas
+/// (project/service/tipe/source) — mencari "1" tak seharusnya cocok ke setiap
+/// baris hanya karena angka CPU-nya.
+fn metric_cols(m: Option<&Value>) -> Vec<String> {
+    let Some(m) = m else {
+        return vec!["-".into(), "-".into(), "-".into(), "-".into()];
+    };
+    vec![
+        format!("{:.1} %", num(m, "/cpu")),
+        format_bytes(num(m, "/memory")),
+        format_rate(num(m, "/networkIn")),
+        format_rate(num(m, "/networkOut")),
     ]
 }
 
@@ -2046,8 +2065,14 @@ impl App {
         self.filter_input = false;
         self.screen = screen;
         match screen {
-            Screen::Projects if self.all_services.is_empty() => {
-                let _ = req.send(Req::AllServices);
+            Screen::Projects => {
+                if self.all_services.is_empty() {
+                    let _ = req.send(Req::AllServices);
+                }
+                // Metrik per service dijoin ke tabel; tanpa ini kolomnya "-".
+                if self.monitor.is_empty() {
+                    let _ = req.send(Req::MonitorData);
+                }
             }
             Screen::Actions => {
                 if self.actions.is_empty() {
@@ -2147,6 +2172,25 @@ impl App {
             .iter()
             .filter(|s| keep(&service_row(s), &self.filter))
             .collect()
+    }
+
+    /// Metrik untuk sebuah service, dijoin lewat (projectName, serviceName).
+    ///
+    /// getAllServicesStats memuat lebih banyak entri daripada daftar service
+    /// (service sistem, sub-service compose), jadi yang tak cocok diabaikan.
+    fn metric_for(&self, project: &str, service: &str) -> Option<&Value> {
+        self.monitor.iter().find(|m| {
+            m.get("projectName").and_then(Value::as_str) == Some(project)
+                && m.get("serviceName").and_then(Value::as_str) == Some(service)
+        })
+    }
+
+    /// Baris tabel lengkap: identitas + metrik.
+    fn service_row_full(&self, s: &Value) -> Vec<String> {
+        let mut row = service_row(s);
+        let m = self.metric_for(&row[0], &row[1]);
+        row.extend(metric_cols(m));
+        row
     }
 
     /// (project, service, tipe) dari baris yang disorot di daftar datar.
@@ -2709,6 +2753,7 @@ impl App {
         match self.screen {
             Screen::Projects => {
                 let _ = req.send(Req::AllServices);
+                let _ = req.send(Req::MonitorData);
             }
             Screen::Viewer => {
                 if let Some((view, p, s, t)) = self.viewer_ctx.clone() {
@@ -2865,7 +2910,7 @@ fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     let rows: Vec<Vec<String>> = app
         .visible_services()
         .iter()
-        .map(|s| service_row(s))
+        .map(|s| app.service_row_full(s))
         .collect();
     let title = count_title("Services", rows.len(), app.all_services.len(), app);
     render_table(
@@ -2875,10 +2920,14 @@ fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
         &SERVICE_HEADERS,
         &[
             Constraint::Length(18),
-            Constraint::Length(24),
-            Constraint::Length(9),
+            Constraint::Length(22),
+            Constraint::Length(8),
             Constraint::Length(7),
-            Constraint::Min(20),
+            Constraint::Min(16),
+            Constraint::Length(8),
+            Constraint::Length(10),
+            Constraint::Length(11),
+            Constraint::Length(11),
         ],
         rows,
         &mut app.services_table,
@@ -3565,6 +3614,42 @@ mod tests {
 
         // Service tanpa source (baru dibuat) tak boleh bikin panik.
         assert_eq!(service_row(&svc("p", "kosong", "app"))[4], "-");
+    }
+
+    #[test]
+    fn metric_cols_render_bytes_and_rates() {
+        let m = json!({ "cpu": 0.257, "memory": 573857792.0,
+                        "networkIn": 12540.9, "networkOut": 32653.2 });
+        assert_eq!(
+            metric_cols(Some(&m)),
+            vec!["0.3 %", "547.3 MB", "12.2 KB/s", "31.9 KB/s"]
+        );
+        // Service tanpa metrik tak boleh bikin panik atau menampilkan 0 palsu.
+        assert_eq!(metric_cols(None), vec!["-", "-", "-", "-"]);
+    }
+
+    #[test]
+    fn metrics_join_by_project_and_service() {
+        // getAllServicesStats memuat lebih banyak entri daripada daftar service
+        // (service sistem, sub-service compose) — dan nama service yang sama bisa
+        // ada di project berbeda, jadi kuncinya harus pasangan, bukan nama saja.
+        let mut app = App::new("s".into(), vec![]);
+        app.all_services = vec![svc("proj-a", "mysql", "mysql")];
+        app.monitor = vec![
+            json!({ "projectName": "proj-b", "serviceName": "mysql",
+                    "cpu": 9.0, "memory": 1.0, "networkIn": 0.0, "networkOut": 0.0 }),
+            json!({ "projectName": "proj-a", "serviceName": "mysql",
+                    "cpu": 1.0, "memory": 2048.0, "networkIn": 0.0, "networkOut": 0.0 }),
+        ];
+        let row = app.service_row_full(&app.all_services[0]);
+        // Harus mengambil proj-a, bukan proj-b yang namanya sama.
+        assert_eq!(row[5], "1.0 %");
+        assert_eq!(row[6], "2.0 KB");
+
+        // Service yang tak punya metrik tetap tampil, kolomnya "-".
+        app.all_services.push(svc("proj-c", "hantu", "app"));
+        let row = app.service_row_full(&app.all_services[1]);
+        assert_eq!(row[5], "-");
     }
 
     #[test]
