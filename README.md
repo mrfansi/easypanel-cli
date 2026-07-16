@@ -101,10 +101,22 @@ easypanel --server prod   # host tertentu
 ```
 
 - **Dashboard** — gauge CPU/Memory/Disk, sparkline CPU history (auto-refresh ~2 detik), uptime, dan tabel node cluster.
-- **Projects** — panel Projects ↔ Services; buka logs atau jalankan aksi (deploy/restart/stop/start) dengan konfirmasi.
-- **Logs** — viewer log service yang bisa di-scroll.
+- **Projects** — panel Projects ↔ Services; buat project/service baru, buka view, atau jalankan aksi (deploy/restart/stop/start) dengan konfirmasi.
+- **Viewer** — pane scrollable untuk logs, env, ports, mounts, domains, dan database backups.
 
-Keybindings: `1/2/3` atau `Tab` pindah tab · `↑↓`/`jk` navigasi · `←→` pindah panel · `Enter` buka · `d/R/S/T` deploy/restart/stop/start · `r` refresh · `q` keluar.
+Keybindings:
+
+| Tombol | Aksi |
+|---|---|
+| `1/2/3`, `Tab` | pindah tab |
+| `↑↓` / `jk` | navigasi · `←→` pindah panel |
+| `Enter` | buka project → services; pada service → logs |
+| `e` `p` `m` `o` `b` | view env · ports · mounts · domains · backups |
+| `d` `R` `S` `T` | deploy · restart · stop · start (dengan konfirmasi) |
+| `s` | ganti server (bila ada >1 host) |
+| `r` | refresh · `q` keluar |
+
+Network berjalan di worker thread terpisah, jadi UI tidak pernah membeku saat request lambat.
 
 ## Test
 
