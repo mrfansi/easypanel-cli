@@ -1173,6 +1173,18 @@ fn domain_body(form: &Form) -> std::result::Result<Value, String> {
     Ok(body)
 }
 
+/// Apakah sebuah baris lolos filter.
+///
+/// Dicocokkan ke teks yang DITAMPILKAN, bukan ke JSON mentahnya: yang dicari user
+/// adalah yang terlihat di layar.
+fn keep(row: &[String], filter: &str) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    let f = filter.to_lowercase();
+    row.iter().any(|c| c.to_lowercase().contains(&f))
+}
+
 /// Pilih baris pertama bila daftar terisi dan belum ada yang dipilih.
 fn select_first(state: &mut TableState, len: usize) {
     if len == 0 {
@@ -1627,6 +1639,10 @@ struct App {
     viewer_scroll: u16,
     viewer_ctx: Option<(View, String, String, String)>,
 
+    /// Teks filter untuk tabel layar aktif ("" = tanpa filter).
+    filter: String,
+    /// Sedang mengetik filter (tombol masuk ke filter, bukan ke layar).
+    filter_input: bool,
     /// Baris info tab Maintenance: (label, nilai).
     maint: Vec<(String, String)>,
     hosts: Vec<HostRow>,
@@ -1672,6 +1688,8 @@ impl App {
             viewer_lines: Vec::new(),
             viewer_scroll: 0,
             viewer_ctx: None,
+            filter: String::new(),
+            filter_input: false,
             maint: Vec::new(),
             hosts: Vec::new(),
             hosts_state: TableState::default(),
@@ -1822,6 +1840,10 @@ impl App {
     }
 
     fn on_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        if self.filter_input {
+            self.filter_key(code);
+            return;
+        }
         if self.chooser.is_some() {
             self.chooser_key(code, req);
             return;
@@ -1840,6 +1862,10 @@ impl App {
         }
 
         match code {
+            // Esc menghapus filter yang aktif dulu; harus di ATAS arm keluar,
+            // kalau tidak Esc justru menutup aplikasi saat user cuma ingin
+            // membatalkan pencarian.
+            KeyCode::Esc if !self.filter.is_empty() => self.clear_filter(),
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('1') => self.screen = Screen::Dashboard,
             KeyCode::Char('2') => self.goto(Screen::Hosts, req),
@@ -1852,6 +1878,10 @@ impl App {
             KeyCode::Tab => self.goto(self.screen.next(), req),
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('r') => self.refresh(req),
+            KeyCode::Char('/') if self.filterable() => {
+                self.filter_input = true;
+                self.filter.clear();
+            }
             _ => match self.screen {
                 Screen::Projects => self.projects_key(code, req),
                 Screen::Viewer => self.viewer_key(code),
@@ -1865,8 +1895,87 @@ impl App {
         }
     }
 
+    fn filterable(&self) -> bool {
+        matches!(
+            self.screen,
+            Screen::Domains | Screen::Actions | Screen::Monitor
+        )
+    }
+
+    fn clear_filter(&mut self) {
+        self.filter.clear();
+        self.filter_input = false;
+        self.clamp_filtered();
+    }
+
+    /// Filter mengecilkan daftar, jadi baris terpilih bisa jatuh di luar batas.
+    fn clamp_filtered(&mut self) {
+        let len = match self.screen {
+            Screen::Domains => self.visible_domains().len(),
+            Screen::Actions => self.visible_actions().len(),
+            Screen::Monitor => self.visible_monitor_rows().len(),
+            _ => return,
+        };
+        let state = match self.screen {
+            Screen::Domains => &mut self.domains_state,
+            Screen::Actions => &mut self.actions_state,
+            Screen::Monitor => &mut self.monitor_state,
+            _ => return,
+        };
+        match len {
+            0 => state.select(None),
+            n => {
+                let i = state.selected().unwrap_or(0).min(n - 1);
+                state.select(Some(i));
+            }
+        }
+    }
+
+    fn filter_key(&mut self, code: KeyCode) {
+        match code {
+            // Esc membatalkan filter sepenuhnya; Enter menyimpannya dan kembali
+            // ke navigasi biasa.
+            KeyCode::Esc => self.clear_filter(),
+            KeyCode::Enter => self.filter_input = false,
+            KeyCode::Backspace => {
+                self.filter.pop();
+                self.clamp_filtered();
+            }
+            KeyCode::Char(c) => {
+                self.filter.push(c);
+                self.clamp_filtered();
+            }
+            _ => {}
+        }
+    }
+
+    fn visible_actions(&self) -> Vec<&Value> {
+        self.actions
+            .iter()
+            .filter(|a| {
+                keep(
+                    &commands::action_row(a, commands::ACTION_DESC_TUI),
+                    &self.filter,
+                )
+            })
+            .collect()
+    }
+
+    /// monitor_rows() mengelompokkan seluruh daftar sekaligus, jadi filternya
+    /// diterapkan ke baris hasil, bukan ke item mentah.
+    fn visible_monitor_rows(&self) -> Vec<Vec<String>> {
+        commands::monitor_rows(self.monitor.clone())
+            .into_iter()
+            .filter(|r| keep(r, &self.filter))
+            .collect()
+    }
+
     /// Pindah layar dan muat datanya bila belum ada.
     fn goto(&mut self, screen: Screen, req: &Sender<Req>) {
+        // Filter milik layar tempat ia diketik. Membawanya ke layar lain berarti
+        // menyembunyikan baris tanpa sebab yang terlihat.
+        self.filter.clear();
+        self.filter_input = false;
         self.screen = screen;
         match screen {
             Screen::Projects => {
@@ -2021,11 +2130,22 @@ impl App {
         }
     }
 
+    /// Domain yang lolos filter.
+    ///
+    /// Render DAN aksi (e/x/P) wajib lewat sini. Kalau render difilter sementara
+    /// aksi memakai indeks daftar penuh, `x` akan menghapus domain yang salah.
+    fn visible_domains(&self) -> Vec<&Value> {
+        self.domains
+            .iter()
+            .filter(|d| keep(&commands::domain_row(d), &self.filter))
+            .collect()
+    }
+
     fn domains_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         let selected = self
             .domains_state
             .selected()
-            .and_then(|i| self.domains.get(i).cloned());
+            .and_then(|i| self.visible_domains().get(i).map(|d| (*d).clone()));
 
         match code {
             KeyCode::Char('n') => {
@@ -2064,7 +2184,10 @@ impl App {
                     let _ = req.send(Req::DomainSetPrimary(field(&d, "/id")));
                 }
             }
-            _ => move_table(&mut self.domains_state, code, self.domains.len()),
+            _ => {
+                let n = self.visible_domains().len();
+                move_table(&mut self.domains_state, code, n)
+            }
         }
     }
 
@@ -2824,6 +2947,17 @@ fn render_maintenance(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// Judul tabel: sebutkan filter yang sedang aktif beserta berapa yang tersaring.
+/// Filter yang tak terlihat lebih buruk daripada tak ada filter — user akan
+/// mengira baris yang hilang itu memang tak ada.
+fn count_title(name: &str, shown: usize, total: usize, app: &App) -> String {
+    if app.filter.is_empty() && !app.filter_input {
+        return format!(" {name} ({total}) ");
+    }
+    let cursor = if app.filter_input { "▏" } else { "" };
+    format!(" {name} ({shown}/{total})  /{}{cursor} ", app.filter)
+}
+
 /// Semua host sekaligus. Baris diwarnai per status karena inti layar ini adalah
 /// menemukan host bermasalah sekilas — error yang tampil sewarna teks biasa
 /// justru terlewat.
@@ -2919,14 +3053,15 @@ fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
 
 fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
     let rows: Vec<Vec<String>> = app
-        .actions
+        .visible_actions()
         .iter()
         .map(|a| commands::action_row(a, commands::ACTION_DESC_TUI))
         .collect();
+    let title = count_title("Actions", rows.len(), app.actions.len(), app);
     render_table(
         f,
         area,
-        format!(" Actions ({}) ", app.actions.len()),
+        title,
         &commands::ACTION_HEADERS,
         &[
             Constraint::Length(8),
@@ -2941,11 +3076,16 @@ fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
-    let rows: Vec<Vec<String>> = app.domains.iter().map(commands::domain_row).collect();
+    let rows: Vec<Vec<String>> = app
+        .visible_domains()
+        .iter()
+        .map(|d| commands::domain_row(d))
+        .collect();
+    let title = count_title("Domains", rows.len(), app.domains.len(), app);
     render_table(
         f,
         area,
-        format!(" Domains ({}) ", app.domains.len()),
+        title,
         &commands::DOMAIN_HEADERS,
         &[
             Constraint::Percentage(45),
@@ -2963,11 +3103,16 @@ fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
 
     match app.monitor_view {
         MonitorView::Services => {
-            let data = commands::monitor_rows(app.monitor.clone());
+            let data = app.visible_monitor_rows();
+            let total = commands::monitor_rows(app.monitor.clone()).len();
+            let title = format!(
+                "{}· [v] Storage ",
+                count_title("Services", data.len(), total, app)
+            );
             render_table(
                 f,
                 rows[1],
-                format!(" Services ({}) · [v] Storage ", app.monitor.len()),
+                title,
                 &commands::MONITOR_HEADERS,
                 &[
                     Constraint::Min(20),
@@ -3090,13 +3235,30 @@ fn render_viewer(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_status(f: &mut Frame, area: Rect, app: &App) {
+    if app.filter_input {
+        // Saat mengetik filter, tombol layar tak berlaku — jangan tampilkan yang
+        // tidak akan bekerja.
+        let bar = Style::default().bg(Color::Indexed(238)).fg(Color::White);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(" filter: ", bar.fg(Color::Indexed(252))),
+                Span::styled(format!("{}▏", app.filter), bar.add_modifier(Modifier::BOLD)),
+                Span::styled("  Enter pakai · Esc batal", bar.fg(Color::Indexed(244))),
+            ]))
+            .style(bar),
+            area,
+        );
+        return;
+    }
     let keys = match app.screen {
-        Screen::Dashboard => "1-7/Tab tab · s server · r refresh · q keluar",
+        Screen::Dashboard => "1-8/Tab tab · s server · r refresh · q keluar",
         Screen::Hosts => "semua host · ↑↓ pilih · s ganti server aktif · r refresh · q keluar",
         Screen::Maintenance => "p prune sistem · i hapus image · c hapus build cache · r refresh · q keluar",
-        Screen::Actions => "↑↓ pilih · PgUp/PgDn · r refresh · 1-7 tab · q keluar",
-        Screen::Monitor => "v Services/Storage · ↑↓ pilih · r refresh · 1-7 tab · q keluar",
-        Screen::Domains => "n baru · e edit · x hapus · P primary · ↑↓ pilih · r refresh · q keluar",
+        Screen::Actions => "/ cari · ↑↓ pilih · PgUp/PgDn · r refresh · 1-8 tab · q keluar",
+        Screen::Monitor => "/ cari · v Services/Storage · ↑↓ pilih · r refresh · 1-8 tab · q keluar",
+        Screen::Domains => {
+            "/ cari · n baru · e edit · x hapus · P primary · ↑↓ pilih · r refresh · q keluar"
+        }
         Screen::Projects => {
             "n baru · x hapus · E env · U source · B build · e/p/m/o/b/u view · d/R/S/T aksi · q keluar"
         }
@@ -3396,6 +3558,61 @@ mod tests {
         let body = domain_body(&f).unwrap();
         assert_eq!(body["certificateResolver"], json!("letsencrypt"));
         assert_eq!(body["wildcard"], json!(true));
+    }
+
+    #[test]
+    fn keep_matches_any_column_case_insensitively() {
+        let row = vec![
+            "https://Rezabelle.com/".to_string(),
+            "http://proxy:80/".into(),
+        ];
+        assert!(keep(&row, ""));
+        assert!(keep(&row, "rezabelle"));
+        assert!(keep(&row, "PROXY"));
+        assert!(!keep(&row, "tidakada"));
+    }
+
+    #[test]
+    fn filter_narrows_domains_and_actions_use_the_same_list() {
+        // Kalau render difilter tapi aksi memakai indeks daftar penuh, `x` akan
+        // menghapus domain yang salah. Keduanya wajib lewat visible_domains().
+        let mut app = App::new("s".into(), vec![]);
+        app.domains = vec![
+            json!({ "id": "a", "host": "satu.com", "https": true, "path": "/",
+                    "destinationType": "service",
+                    "serviceDestination": { "projectName": "p", "serviceName": "x",
+                                            "port": 80, "protocol": "http", "path": "/" } }),
+            json!({ "id": "b", "host": "dua.com", "https": true, "path": "/",
+                    "destinationType": "service",
+                    "serviceDestination": { "projectName": "p", "serviceName": "y",
+                                            "port": 80, "protocol": "http", "path": "/" } }),
+        ];
+        assert_eq!(app.visible_domains().len(), 2);
+
+        app.filter = "dua".into();
+        let vis = app.visible_domains();
+        assert_eq!(vis.len(), 1);
+        // Indeks 0 dari daftar terfilter harus "dua.com" — bukan "satu.com".
+        assert_eq!(vis[0]["id"], json!("b"));
+    }
+
+    #[test]
+    fn clamp_keeps_selection_inside_filtered_list() {
+        let mut app = App::new("s".into(), vec![]);
+        app.screen = Screen::Domains;
+        app.domains = vec![
+            json!({ "id": "a", "host": "satu.com", "https": true, "path": "/" }),
+            json!({ "id": "b", "host": "dua.com", "https": true, "path": "/" }),
+        ];
+        app.domains_state.select(Some(1));
+        app.filter = "satu".into();
+        app.clamp_filtered();
+        // Hanya 1 baris tersisa; baris ke-1 sudah tak ada.
+        assert_eq!(app.domains_state.selected(), Some(0));
+
+        app.filter = "tidakadayangcocok".into();
+        app.clamp_filtered();
+        assert_eq!(app.domains_state.selected(), None);
     }
 
     #[test]
