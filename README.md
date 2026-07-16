@@ -1,180 +1,179 @@
-# easypanel
+# easypanel-cli
 
-CLI untuk mengelola **banyak host EasyPanel** — projects, services, monitoring/logs, dan node cluster. Ditulis dalam Rust.
+Manage **many [EasyPanel](https://easypanel.io) hosts from one terminal** — a Rust CLI
+and a full-screen TUI.
 
-## Build
+EasyPanel's web panel shows you one server at a time. This shows you all of them: every
+host's CPU, memory and disk side by side, every service across every project in one
+searchable table, and every domain on the box — without clicking through a hierarchy.
 
-```bash
-cargo build --release
-# binary: target/release/easypanel
 ```
-
-## Konfigurasi server
-
-Kredensial disimpan di `~/.config/easypanel/servers.json` (perms `0600`), dikelola lewat command:
-
-```bash
-easypanel server add prod --url https://panel.example.com --token <TOKEN>
-easypanel server add prod            # interaktif (prompt url + token)
-easypanel server list
-easypanel server use prod            # jadikan default
-easypanel server remove prod
-```
-
-Tak ada `server edit`: **mengedit = `add` dengan nama yang sama**, entri lama ditimpa dan status default tetap terjaga (mis. rotasi token). Server pertama otomatis jadi default. Command lain memakai server default, atau `--server <nama>` untuk menargetkan host tertentu.
-
-Dari TUI, tekan **`s`** kapan saja: `Enter` pilih server aktif, `n` tambah, `e` edit, `x` hapus. Form edit datang dengan URL sudah terisi; **token dibiarkan kosong = tidak diubah**, jadi mengganti URL tak memaksa mengetik ulang token.
-
-## Command
-
-```bash
-easypanel project list
-easypanel project create  <nama>
-easypanel project inspect <nama>
-easypanel project destroy <nama> [--yes]
-
-# Deploy & lifecycle
-easypanel service create  <project> <service> [--type app]
-easypanel service deploy  <project> <service> [--type app] [--force]
-easypanel service restart <project> <service> [--type app]
-easypanel service start   <project> <service> [--type app]
-easypanel service stop    <project> <service> [--type app]
-easypanel service destroy <project> <service> [--type app] [--yes]
-easypanel service logs    <project> <service> [--limit 100]
-
-# Environment (set-env menimpa seluruh env, baca dari --file atau stdin)
-easypanel service env     <project> <service> [--type app]
-easypanel service set-env <project> <service> [--type app] [--file .env]
-
-# Ports
-easypanel service ports       <project> <service>
-easypanel service port-add    <project> <service> --published <n> --target <n> [--protocol tcp]
-easypanel service port-remove <project> <service> --index <n>
-
-# Mounts
-easypanel service mounts       <project> <service>
-easypanel service mount-add    <project> <service> --kind volume --name <vol> --mount-path /data
-easypanel service mount-add    <project> <service> --kind bind --host-path /srv/x --mount-path /data
-easypanel service mount-remove <project> <service> --index <n>
-
-# Domains
-easypanel domain list                               # semua domain host (source -> destination)
-easypanel service domains <project> <service>       # per service (dengan id)
-easypanel domain delete       <id>
-easypanel domain set-primary  <id>
-
-# Databases & backups
-easypanel service databases      <project> <service>   # db dalam service database
-easypanel service backups        <project> <service>   # jadwal backup database
-easypanel service volume-backups <project> <service>   # jadwal backup volume
-easypanel backup db-run       <id>    # jalankan backup db sekarang
-easypanel backup db-delete    <id>
-easypanel backup volume-run   <id>
-easypanel backup volume-delete <id>
-easypanel backup providers            # storage provider (id-nya dibutuhkan restore)
-easypanel backup db-restore --project P --service S --database D --path <path> [--provider <id>] [--yes]
-
-# Certificates & notifications
-easypanel certificate list
-easypanel certificate remove <domain>
-easypanel notification list
-easypanel notification delete <id>
-
-# Actions (riwayat deploy/destroy/login)
-easypanel action list [--limit 25] [--project P] [--service S] [--type deployment]
-easypanel action kill <id>
-
-# Maintenance (server aktif)
-easypanel maintenance info                    # versi Docker, IP server, update
-easypanel maintenance prune [--yes]           # container/network/image/cache tak terpakai
-easypanel maintenance cleanup-images [--yes]
-easypanel maintenance cleanup-builder [--yes]
-
-# Monitoring & cluster
-easypanel stats                      # CPU/mem/disk/load
-easypanel monitor services           # CPU/memori/network per project & service
-easypanel monitor storage            # pemakaian disk per service
-easypanel node list                  # node swarm cluster
+┌ Hosts (3) ──────────────────────────────────────────────────────────────────────────┐
+│ Server     Status                    CPU     Memory              Disk               │
+│ prod       ok                        5.1 %   14.9 GB / 59.0 GB   127.5 GB / 784.9 GB│
+│ staging    ok                        0.4 %   2.1 GB / 16.0 GB    38.2 GB / 200.0 GB │
+│ eu-west    DEAD — token expired (401)  -       -                   -                │
+└─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Install
 
-```bash
-./install.sh                 # build release + pasang ke /usr/local/bin
-PREFIX=~/.local/bin ./install.sh
-```
-
-Rilis biner (macOS/Linux) dibuat otomatis oleh GitHub Actions saat push tag `v*`.
-
-`--type` default `app`; tipe lain (mysql, postgres, redis, mongo, mariadb, wordpress, compose, …) sesuai service EasyPanel. Ports, mounts, dan domains dipanggil per project+service (tanpa `--type`).
-
-## TUI (dashboard interaktif)
-
-Jalankan tanpa argumen (atau `easypanel menu`) untuk membuka TUI full-screen (ratatui):
+Download a binary from [Releases](https://github.com/mrfansi/easypanel-cli/releases)
+(linux-x86_64, darwin-arm64, darwin-x86_64), or build it:
 
 ```bash
-easypanel                 # server default
-easypanel --server prod   # host tertentu
+cargo build --release          # target/release/easypanel
+./install.sh                   # or: PREFIX=~/.local/bin ./install.sh
 ```
 
-- **Dashboard** — gauge CPU/Memory/Disk, sparkline CPU history (auto-refresh ~2 detik), load average, dan tabel node cluster. Server aktif saja.
-- **Hosts** — **semua** server dari `servers.json` sekaligus: CPU, memori, disk, dan load per host. Tiap host diambil di thread sendiri, jadi host lambat atau mati tak menahan yang lain; host yang gagal tampil merah beserta alasannya (unreachable, token kadaluarsa) alih-alih menggagalkan seluruh tabel. Inilah satu-satunya layar yang tak bisa digantikan panel web.
-- **Maintenance** — versi Docker, IP server, ketersediaan update, plus pembersihan Docker (`p` prune sistem, `i` hapus image, `c` hapus build cache). Semuanya destruktif dan lewat konfirmasi yang menyebut targetnya: seluruh host, bukan satu service.
-- **Actions** — riwayat action (deploy/destroy/login) dengan status, target, durasi, dan umur.
-- **Monitor** — lima tile metrik berhistori (CPU, Memory, Disk, Net In, Net Out) + sub-tab **Services** (CPU/memori/network per project & service) dan **Storage** (`v` untuk berganti).
-- **Domains** — semua domain host: source → destination (service internal atau server custom beserta bobotnya). Form edit mencakup **SSL resolver** (`certificateResolver`) dan **wildcard**. Nama resolver ditentukan konfigurasi Traefik server (mis. `google`); server menolak nama yang tak terdaftar.
-- **Projects** — **daftar datar semua service lintas project** (bukan drill-down): Project, Service, Tipe, Status, Source (`owner/repo#branch` atau image), plus **CPU/Memory/Net In/Net Out per service** — semuanya dalam satu tabel yang bisa dicari dengan `/`. Metriknya live (~2 detik) selama layar ini terbuka. Hirarki project → service memaksa membuka project satu per satu dan tak bisa dicari — itu runtuh di ratusan service. Semua aksi bekerja pada baris yang disorot; `n` service baru (project dipilih dari dropdown), `N` project baru, `X` hapus project.
-- **Viewer** — pane scrollable untuk logs, env, ports, mounts, domains, database backups, dan source & build.
+## Configure
 
-Tekan **`?`** kapan saja untuk daftar lengkap shortcut layar yang sedang dibuka — baris status hanya memuat beberapa yang pertama. Keduanya diturunkan dari satu tabel di kode, jadi tak bisa saling menyimpang.
+Credentials live in `~/.config/easypanel/servers.json`, mode `0600`.
 
-Keybindings utama:
+```bash
+easypanel server add prod --url https://panel.example.com --token <TOKEN>
+easypanel server add prod            # interactive
+easypanel server list
+easypanel server use prod            # make default
+easypanel server remove prod
+```
 
-| Tombol | Aksi |
+Get a token from EasyPanel → Settings → API Tokens. The first server becomes the
+default; every command accepts `--server <name>`.
+
+There is no `server edit` — **editing means `add` with the same name**, which overwrites
+the entry and keeps its default flag (handy for token rotation). From the TUI, press
+`s`: `n` add, `e` edit (URL pre-filled; **blank token = unchanged**), `x` delete.
+
+## TUI
+
+Run with no arguments:
+
+```bash
+easypanel                 # default server
+easypanel --server prod   # a specific host
+```
+
+Press **`?`** at any time for every shortcut on the current screen.
+
+| Screen | What it is |
 |---|---|
-| `1`–`8`, `Tab` | pindah tab (`2` = Hosts, `3` = Maintenance) |
-| `/` | cari/filter (Projects, Domains, Actions, Monitor) · `Esc` hapus filter |
-| `n` · `x` | buat · hapus service (Domains: domain) |
-| `N` · `X` | buat · hapus project |
-| `e` · `P` | Domains: edit · jadikan primary |
-| `E` | Projects: edit env service di `$EDITOR` |
-| `U` · `B` | Projects: atur source · build (service app) |
-| `v` | Monitor: ganti Services ↔ Storage |
-| `↑↓` / `jk` | navigasi |
-| `Enter` | pada service: logs |
+| **Dashboard** | CPU/memory/disk gauges, CPU history, load average, cluster nodes — active server only. |
+| **Hosts** | **Every** configured server at once. Each host is fetched on its own thread, so a slow or dead one never blocks the rest; failures show red with the reason instead of failing the table. The one screen the web panel can't replace. |
+| **Maintenance** | Docker version, server IP, update availability, plus system prune / image cleanup / builder cleanup — all behind confirmation. |
+| **Actions** | Deploy/destroy/login history with status, target, duration, age. |
+| **Monitor** | Five history tiles (CPU, memory, disk, net in/out) plus per-service metrics and storage (`v` switches). |
+| **Domains** | Every domain on the host: source → destination (internal service or weighted custom servers), SSL resolver, wildcard. |
+| **Services** | **Flat, searchable table of every service across every project** — type, status, source (`owner/repo#branch`), and live CPU/memory/network per service. No drill-down. |
+| **Viewer** | Scrollable pane for logs, env, ports, mounts, domains, backups, source & build. Reached from a service; `Esc` goes back. |
+
+### Key bindings
+
+| Key | Action |
+|---|---|
+| `?` | every shortcut for the current screen |
+| `1`–`7`, `Tab` | switch tabs (`2` = Hosts) |
+| `/` | filter (Services, Domains, Actions, Monitor) · `Esc` clears |
+| `Enter` | logs for the selected service |
 | `e` `p` `m` `o` `b` `u` | view env · ports · mounts · domains · backups · source & build |
-| `d` `R` `S` `T` | deploy · restart · stop · start (dengan konfirmasi) |
-| `s` | daftar server: `Enter` pilih · `n` tambah · `e` edit (token kosong = tak diubah) · `x` hapus |
-| `r` · `q` | refresh · keluar (`Esc` **tidak** keluar — ia hanya membatalkan) |
+| `E` | edit env in `$EDITOR` |
+| `U` · `B` | configure source · build (app services) |
+| `d` `R` `S` `T` | deploy · restart · stop · start (confirmed) |
+| `n` · `x` | new · delete service (Domains: domain) |
+| `N` · `X` | new · delete project |
+| `s` | server list: `Enter` switch · `n` add · `e` edit · `x` delete |
+| `r` · `q` | refresh · quit (`Esc` **cancels**, it does not quit) |
 
-Metrik dijoin dari `metrics/getAllServicesStats` lewat pasangan **(project, service)** — bukan nama service saja, karena nama yang sama bisa ada di beberapa project. Service tanpa metrik tampil `-`, bukan `0`.
+Filters match the text you **see**, so `mysql` finds it via service name, project name,
+type, or source. The title shows `(matched/total)`, and filters clear when you switch
+tabs — a hidden filter makes missing rows look like missing data.
 
-Filter dicocokkan ke kolom **identitas** (project/service/tipe/source), bukan ke angka metrik: mencari `1` tak seharusnya cocok ke setiap baris hanya karena angka CPU-nya. Ia dicocokkan ke teks yang **ditampilkan**, jadi mencari `mysql` menemukannya lewat nama service, nama project, tipe, maupun source. Judul tabel menunjukkan `(tersaring/total)` beserta teks filternya, dan filter dibuang saat pindah tab — filter tersembunyi membuat baris yang hilang dikira memang tak ada.
+Choice fields (project, service, repo, branch, type) open a searchable dropdown rather
+than free text, so a typo can't point a domain at a service that doesn't exist. Repo and
+branch lists come from live GitHub data via the panel.
 
-`E` membuka env di editor: `$VISUAL`, lalu `$EDITOR`, lalu `vi`/`nano`. Editor yang ditunjuk tapi tak terpasang akan dilewati, bukan menggagalkan aksi.
+Network runs on worker threads, so the UI never freezes on a slow request. Metrics poll
+on a separate lane and can't block your keystrokes.
 
-Di dalam form: `Tab` pindah field, `Esc` batal, `Enter` simpan. Field pilihan (project, service, repo, branch, tipe, protocol) membuka dropdown yang bisa dicari dengan mengetik — bukan diketik bebas, supaya tidak ada salah ketik yang mengarahkan domain ke service yang tak ada.
-
-Form **source** (`U`) mengikuti tipe yang dipilih: `github` memberi dropdown repo (dari `github/searchRepos`) dan branch (`github/searchBranches`, dimuat ulang tiap repo berganti), `git` memakai URL + ref bebas, `image` memakai image + kredensial registry. Form **build** (`B`) sama polanya untuk nixpacks/railpack/dockerfile/buildpacks.
-
-Catatan penting: `updateSourceGithub` **selalu mereset `autoDeploy` jadi false** di sisi server. Karena itu form punya toggle **Auto deploy** dan CLI memasang ulang nilainya lewat `enableGithubDeploy`/`disableGithubDeploy` setelah update — tanpa ini, sekadar mengganti branch akan mematikan auto-deploy diam-diam.
-
-Network berjalan di worker thread terpisah, jadi UI tidak pernah membeku saat request lambat. Ada dua lajur worker: aksi user dan polling metrik, supaya polling tak pernah menahan aksi user.
-
-Metrik memakai grup **`metrics`** (Prometheus), bukan `monitorOld`: ~0,3 detik vs ~2,3 detik, dan sudah menyediakan laju network, load average, serta byte used/total. Satu panggilan `metrics/getSystemStats` memberi nilai terkini **dan** historinya, jadi sparkline datang dari server.
-
-Catatan: sub-tab **Docker Events** milik panel tidak tersedia — itu live stream, bukan bagian dari REST API yang terdokumentasi (`easypanel-api.json`).
-
-**Restore database** hanya tersedia lewat CLI (`easypanel backup db-restore`), bukan TUI, dan itu disengaja: `restoreDatabaseBackup` butuh `path` file backup, sementara API EasyPanel **tak punya endpoint untuk mendaftar file backup yang ada** — hanya jadwalnya yang bisa didaftar. Form TUI dengan kolom path yang harus ditebak, untuk operasi yang menimpa database hidup, adalah jebakan. Di CLI kamu memasok path yang memang kamu ketahui, dan operasinya minta konfirmasi eksplisit.
-
-**Middlewares** (grup `middlewares`: 14 tipe bergaya Traefik — basicAuth, rateLimit, redirectScheme, …) belum bisa diedit dari TUI, tapi **selalu dilestarikan** saat mengedit domain, jadi tak ada yang hilang. Editornya belum dibuat karena belum ada kebutuhan nyata yang bisa diuji; kalau kamu mulai memakai middleware, ini yang berikutnya.
-
-## Test
+## CLI
 
 ```bash
-cargo test
+easypanel project list|create|inspect|destroy
+
+# Lifecycle
+easypanel service create|deploy|restart|start|stop|destroy <project> <service> [--type app]
+easypanel service logs <project> <service> [--limit 100]
+
+# Environment (set-env replaces everything; reads --file or stdin)
+easypanel service env|set-env <project> <service> [--file .env]
+
+# Ports, mounts, domains
+easypanel service ports|mounts|domains <project> <service>
+easypanel service port-add    <project> <service> --published 8080 --target 80
+easypanel service mount-add   <project> <service> --kind volume --name data --mount-path /data
+easypanel domain list|delete|set-primary
+
+# Databases & backups
+easypanel service databases|backups|volume-backups <project> <service>
+easypanel backup db-run|db-delete|volume-run|volume-delete <id>
+easypanel backup providers
+easypanel backup db-restore --project P --service S --database D --path <path> [--yes]
+
+# Maintenance (active server)
+easypanel maintenance info|prune|cleanup-images|cleanup-builder [--yes]
+
+# Monitoring
+easypanel stats                      # CPU/mem/disk/load
+easypanel monitor services|storage
+easypanel node list
+easypanel action list [--limit 25]
+easypanel certificate list|remove
+easypanel notification list|delete
 ```
 
-## API
+`--type` defaults to `app`; other types (mysql, postgres, redis, mongo, mariadb,
+wordpress, compose) match your EasyPanel services.
 
-EasyPanel memakai gaya tRPC: `POST {url}/api/rpc/{group}/{op}`, header `Authorization: Bearer <token>`, body `{"json": <input>}`, respons `{"json": <data>}`. Spesifikasi lengkap ada di `easypanel-api.json`. Command baru cukup memanggil `EasypanelClient::call(group, op, input)` — 374 endpoint tersedia.
+## Known limits
+
+Stated plainly, because a README that promises what the code doesn't do is a bug.
+
+- **Database restore is CLI-only, deliberately.** `restoreDatabaseBackup` needs the
+  backup file's `path`, and the API has **no endpoint that lists backup files** — only
+  schedules. A TUI form with a path you have to guess, for an operation that overwrites
+  a live database, is a trap. The CLI makes you supply a path you actually know, and
+  confirms first.
+- **Middlewares aren't editable.** The group has 14 Traefik-style types. They're
+  *always preserved* when you edit a domain, so nothing is lost — but there's no editor
+  yet. Open an issue if you use them.
+- **Docker Events isn't available.** It's a live WebSocket stream, not part of the
+  documented REST API.
+- **`updateSourceGithub` resets `autoDeploy` server-side.** Not this tool's bug, but
+  worth knowing: it silently sets `autoDeploy` to `false` on every successful call, so
+  merely changing a branch disables auto-deploy. This CLI restores the value afterwards
+  and exposes it as a toggle. Any client that doesn't will quietly break your deploys.
+
+## How it talks to EasyPanel
+
+tRPC-style: `POST {url}/api/rpc/{group}/{op}`, header `Authorization: Bearer <token>`,
+body **always** `{"json": <input>}` (`null` when there are no parameters — an empty body
+returns 400). Responses wrap the payload in `json` — **and so do errors**, which is why
+reading only the top level swallowed every server message for months.
+`easypanel-api.json` documents all 374 endpoints; a new command is usually one
+`EasypanelClient::call(group, op, input)`.
+
+Metrics come from the Prometheus-backed `metrics` group, not `monitorOld`: ~0.3 s versus
+~2.3 s, and one call returns current values, history, rates, and load average.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — especially the recurring bug classes, and why a
+test that encodes a wrong assumption is worse than no test.
+
+```bash
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+```
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).

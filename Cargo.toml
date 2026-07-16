@@ -2,7 +2,13 @@
 name = "easypanel"
 version = "0.1.0"
 edition = "2021"
-description = "CLI untuk mengelola banyak host EasyPanel"
+description = "Manage multiple EasyPanel hosts from your terminal — CLI + TUI"
+license = "MIT"
+repository = "https://github.com/mrfansi/easypanel-cli"
+homepage = "https://github.com/mrfansi/easypanel-cli"
+readme = "README.md"
+keywords = ["easypanel", "tui", "devops", "cli", "self-hosted"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "easypanel"
