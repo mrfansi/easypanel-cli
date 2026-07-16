@@ -1,10 +1,9 @@
-/vendor
+/target
+
+# Editor
 /.idea
 /.vscode
-/.vagrant
+
+# Artefak tooling agent
 .omc/
 .superpowers/
-.phpunit.result.cache
-
-# Rust
-/target
