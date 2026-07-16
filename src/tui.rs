@@ -909,6 +909,55 @@ impl Form {
     }
 }
 
+/// Dropdown untuk sebuah field Choice: daftar pilihan + filter ketik.
+///
+/// Menggilir pilihan dengan spasi tidak terpakai untuk daftar panjang (11 service),
+/// jadi field Choice membuka daftar sungguhan yang bisa dicari.
+struct Chooser {
+    field: usize,
+    label: &'static str,
+    options: Vec<String>,
+    filter: String,
+    state: ListState,
+}
+
+impl Chooser {
+    fn new(field: usize, label: &'static str, options: Vec<String>, current: &str) -> Self {
+        let mut state = ListState::default();
+        state.select(Some(options.iter().position(|o| o == current).unwrap_or(0)));
+        Self {
+            field,
+            label,
+            options,
+            filter: String::new(),
+            state,
+        }
+    }
+
+    /// Pilihan yang lolos filter (case-insensitive, substring).
+    fn matches(&self) -> Vec<String> {
+        let f = self.filter.to_lowercase();
+        self.options
+            .iter()
+            .filter(|o| f.is_empty() || o.to_lowercase().contains(&f))
+            .cloned()
+            .collect()
+    }
+
+    fn selected(&self) -> Option<String> {
+        let m = self.matches();
+        self.state.selected().and_then(|i| m.get(i).cloned())
+    }
+
+    /// Jaga agar indeks terpilih tetap valid setelah filter berubah.
+    fn clamp(&mut self) {
+        let len = self.matches().len();
+        let i = self.state.selected().unwrap_or(0);
+        self.state
+            .select(if len == 0 { None } else { Some(i.min(len - 1)) });
+    }
+}
+
 /// Perubahan daftar server: dieksekusi di event_loop yang memegang ServerConfig.
 enum ServerAction {
     Save {
@@ -925,6 +974,7 @@ struct App {
     switch_to: Option<String>,
     picker: Option<ListState>,
     form: Option<Form>,
+    chooser: Option<Chooser>,
     server_action: Option<ServerAction>,
     edit_env: Option<(String, String, String)>,
 
@@ -968,6 +1018,7 @@ impl App {
             switch_to: None,
             picker: None,
             form: None,
+            chooser: None,
             server_action: None,
             edit_env: None,
             screen: Screen::Dashboard,
@@ -1094,6 +1145,10 @@ impl App {
     }
 
     fn on_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        if self.chooser.is_some() {
+            self.chooser_key(code, req);
+            return;
+        }
         if self.form.is_some() {
             self.form_key(code, req);
             return;
@@ -1311,6 +1366,62 @@ impl App {
         }
     }
 
+    /// Buka dropdown untuk field Choice yang sedang difokus.
+    fn open_chooser(&mut self) {
+        let Some(form) = self.form.as_ref() else {
+            return;
+        };
+        let f = &form.fields[form.focus];
+        if let FieldKind::Choice(opts) = &f.kind {
+            if opts.is_empty() {
+                self.status = format!("{} belum ada pilihannya", f.label);
+                return;
+            }
+            self.chooser = Some(Chooser::new(form.focus, f.label, opts.clone(), &f.value));
+        }
+    }
+
+    fn chooser_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        let Some(ch) = self.chooser.as_mut() else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => self.chooser = None,
+            KeyCode::Down => {
+                let len = ch.matches().len();
+                let i = ch.state.selected().unwrap_or(0);
+                if len > 0 {
+                    ch.state.select(Some((i + 1).min(len - 1)));
+                }
+            }
+            KeyCode::Up => {
+                let i = ch.state.selected().unwrap_or(0);
+                ch.state.select(Some(i.saturating_sub(1)));
+            }
+            KeyCode::Backspace => {
+                ch.filter.pop();
+                ch.clamp();
+            }
+            KeyCode::Char(c) => {
+                ch.filter.push(c);
+                ch.clamp();
+            }
+            KeyCode::Enter => {
+                let picked = ch.selected();
+                let (idx, label) = (ch.field, ch.label);
+                self.chooser = None;
+                if let (Some(value), Some(form)) = (picked, self.form.as_mut()) {
+                    form.fields[idx].value = value;
+                    // Ganti project -> daftar service ikut dimuat ulang.
+                    if label == "Project" {
+                        self.load_form_services(req);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn form_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         let Some(form) = self.form.as_mut() else {
             return;
@@ -1326,11 +1437,12 @@ impl App {
             KeyCode::BackTab | KeyCode::Up => {
                 form.focus = (form.focus + form.fields.len() - 1) % form.fields.len()
             }
-            KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right if !typed => {
-                form.fields[form.focus].cycle();
-                // Ganti project -> daftar service ikut berganti (dropdown berantai).
-                if form.fields[form.focus].label == "Project" {
-                    self.load_form_services(req);
+            // Bool cukup di-toggle; Choice membuka dropdown yang bisa dicari.
+            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Left | KeyCode::Right if !typed => {
+                if form.fields[form.focus].kind == FieldKind::Bool {
+                    form.fields[form.focus].cycle();
+                } else {
+                    self.open_chooser();
                 }
             }
             KeyCode::Backspace if typed => {
@@ -1373,12 +1485,26 @@ impl App {
                 .by_label("Weight")
                 .parse()
                 .map_err(|_| "Weight harus angka")?;
+
+            // Form hanya memodelkan server pertama. Server lain (kalau ada) harus
+            // ikut utuh — memangkasnya diam-diam sama saja merusak konfigurasi.
+            let mut servers = form
+                .original
+                .as_ref()
+                .and_then(|o| o.pointer("/customDestination/servers"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let first = json!({ "url": url, "weight": weight });
+            if servers.is_empty() {
+                servers.push(first);
+            } else {
+                servers[0] = first;
+            }
+
             obj.remove("serviceDestination");
             obj.insert("destinationType".into(), json!("custom"));
-            obj.insert(
-                "customDestination".into(),
-                json!({ "servers": [{ "url": url, "weight": weight }] }),
-            );
+            obj.insert("customDestination".into(), json!({ "servers": servers }));
         } else {
             let (project, service) = (form.by_label("Project"), form.by_label("Service"));
             if project.is_empty() || service.is_empty() {
@@ -1755,6 +1881,9 @@ fn ui(f: &mut Frame, app: &mut App) {
     if let Some(form) = &app.form {
         render_form(f, form);
     }
+    if let Some(ch) = app.chooser.as_mut() {
+        render_chooser(f, ch);
+    }
 }
 
 fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
@@ -2122,7 +2251,7 @@ fn render_form(f: &mut Frame, form: &Form) {
     for (i, field) in form.fields.iter().enumerate() {
         let focused = i == form.focus;
         let hint = if focused && !field.kind.is_typed() {
-            "  (spasi untuk ubah)"
+            "  ⌄ Enter untuk pilih"
         } else {
             ""
         };
@@ -2147,10 +2276,32 @@ fn render_form(f: &mut Frame, form: &Form) {
     }
 
     f.render_widget(
-        Paragraph::new("[Enter] simpan   [Tab] pindah field   [Esc] batal")
+        Paragraph::new("[Enter] pilih/simpan   [Tab] pindah field   [Esc] batal")
             .style(Style::default().fg(Color::DarkGray)),
         slots[form.fields.len()],
     );
+}
+
+fn render_chooser(f: &mut Frame, ch: &mut Chooser) {
+    let items = ch.matches();
+    let height = (items.len() as u16 + 4).clamp(5, 16);
+    let area = centered_abs(48, height, f.area());
+    f.render_widget(Clear, area);
+
+    let title = if ch.filter.is_empty() {
+        format!(" {} — ketik untuk mencari ", ch.label)
+    } else {
+        format!(" {} — cari: {} ", ch.label, ch.filter)
+    };
+    let list = List::new(items.into_iter().map(ListItem::new).collect::<Vec<_>>())
+        .block(
+            Block::bordered()
+                .title(title)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("› ");
+    f.render_stateful_widget(list, area, &mut ch.state);
 }
 
 fn render_confirm(f: &mut Frame, c: &Confirm) {

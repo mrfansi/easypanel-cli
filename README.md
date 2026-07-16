@@ -119,13 +119,18 @@ Keybindings:
 | Tombol | Aksi |
 |---|---|
 | `1`–`6`, `Tab` | pindah tab |
+| `n` · `x` | buat · hapus (Projects: project/service sesuai panel yang difokus; Domains: domain) |
+| `e` · `P` | Domains: edit · jadikan primary |
+| `E` | Projects: edit env service di `$EDITOR` |
 | `v` | Monitor: ganti Services ↔ Storage |
 | `↑↓` / `jk` | navigasi · `←→` pindah panel |
 | `Enter` | buka project → services; pada service → logs |
 | `e` `p` `m` `o` `b` | view env · ports · mounts · domains · backups |
 | `d` `R` `S` `T` | deploy · restart · stop · start (dengan konfirmasi) |
-| `s` | ganti server (bila ada >1 host) |
+| `s` | daftar server: pilih · `n` tambah · `e` edit · `x` hapus |
 | `r` | refresh · `q` keluar |
+
+Di dalam form: `Tab` pindah field, `Esc` batal, `Enter` simpan. Field pilihan (project, service, tipe, protocol) membuka dropdown yang bisa dicari dengan mengetik — bukan diketik bebas, supaya tidak ada salah ketik yang mengarahkan domain ke service yang tak ada.
 
 Network berjalan di worker thread terpisah, jadi UI tidak pernah membeku saat request lambat. Ada dua lajur worker: aksi user dan polling metrik, supaya polling tak pernah menahan aksi user.
 
