@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-16
+
+The release that makes this project legally usable and legible to people who
+didn't write it.
+
 ### Added
 
 - **MIT licence.** Without one, nobody could legally use this code — the single
@@ -75,5 +80,6 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.1.0
