@@ -907,10 +907,20 @@ fn domain_fields(existing: Option<&Value>, projects: &[String]) -> Vec<Field> {
     let server = existing.and_then(|d| d.pointer("/customDestination/servers/0"));
     let service = get("/serviceDestination/serviceName", "");
 
+    let wildcard = existing
+        .and_then(|d| d.get("wildcard"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
     vec![
         Field::text("Host", &get("/host", "")),
         Field::text("Path", &get("/path", "/")),
         Field::boolean("HTTPS", https),
+        // Nama resolver Traefik ditentukan konfigurasi server (mis. "letsencrypt",
+        // "google"); tak ada endpoint untuk mendaftarnya, jadi teks bebas —
+        // menebak-nebak isi dropdown justru menyesatkan.
+        Field::text("SSL resolver", &get("/certificateResolver", "")),
+        Field::boolean("Wildcard", wildcard),
         Field::choice("Tujuan", DEST_KINDS, &get("/destinationType", "service")),
         Field::choice_owned(
             "Project",
@@ -1049,6 +1059,86 @@ fn build_body(form: &Form) -> std::result::Result<Value, String> {
         };
     }
     Ok(json!({ "build": build }))
+}
+
+/// Body createDomain/updateDomain dari form.
+///
+/// Saat edit, berangkat dari JSON domain aslinya sehingga field yang tak ada
+/// di form (middlewares) tetap utuh — bukan ditimpa nilai default.
+fn domain_body(form: &Form) -> std::result::Result<Value, String> {
+    let host = form.by_label("Host");
+    if host.is_empty() {
+        return Err("Host wajib diisi".into());
+    }
+
+    let mut body = form.original.clone().unwrap_or_else(
+        || json!({ "wildcard": false, "certificateResolver": "", "middlewares": [] }),
+    );
+    body["host"] = json!(host);
+    body["path"] = json!(match form.by_label("Path").as_str() {
+        "" => "/".to_string(),
+        p => p.to_string(),
+    });
+    body["https"] = json!(form.is_on_label("HTTPS"));
+    body["certificateResolver"] = json!(form.by_label("SSL resolver"));
+    body["wildcard"] = json!(form.is_on_label("Wildcard"));
+
+    let obj = body.as_object_mut().ok_or("bentuk domain tak dikenal")?;
+    if form.by_label("Tujuan") == "custom" {
+        let url = form.by_label("Server URL");
+        if url.is_empty() {
+            return Err("Server URL wajib diisi untuk tujuan custom".into());
+        }
+        let weight: u32 = form
+            .by_label("Weight")
+            .parse()
+            .map_err(|_| "Weight harus angka")?;
+
+        // Form hanya memodelkan server pertama. Server lain (kalau ada) harus
+        // ikut utuh — memangkasnya diam-diam sama saja merusak konfigurasi.
+        let mut servers = form
+            .original
+            .as_ref()
+            .and_then(|o| o.pointer("/customDestination/servers"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let first = json!({ "url": url, "weight": weight });
+        if servers.is_empty() {
+            servers.push(first);
+        } else {
+            servers[0] = first;
+        }
+
+        obj.remove("serviceDestination");
+        obj.insert("destinationType".into(), json!("custom"));
+        obj.insert("customDestination".into(), json!({ "servers": servers }));
+    } else {
+        let (project, service) = (form.by_label("Project"), form.by_label("Service"));
+        if project.is_empty() || service.is_empty() {
+            return Err("Project dan service wajib diisi".into());
+        }
+        let port: u32 = form
+            .by_label("Port")
+            .parse()
+            .map_err(|_| "Port harus angka")?;
+        obj.remove("customDestination");
+        obj.insert("destinationType".into(), json!("service"));
+        obj.insert(
+            "serviceDestination".into(),
+            json!({
+                "projectName": project,
+                "serviceName": service,
+                "port": port,
+                "protocol": form.by_label("Protocol"),
+                "path": match form.by_label("Path tujuan").as_str() {
+                    "" => "/".to_string(),
+                    p => p.to_string(),
+                }
+            }),
+        );
+    }
+    Ok(body)
 }
 
 /// Pilih baris pertama bila daftar terisi dan belum ada yang dipilih.
@@ -1322,7 +1412,8 @@ struct Form {
     /// domain, "Tipe" di form source/build).
     switch: &'static str,
     /// JSON asli saat mode edit. Submit berangkat dari sini supaya field yang
-    /// tak ada di form (middlewares, certificateResolver, wildcard) ikut utuh.
+    /// tak ada di form (middlewares pada domain, nixpacksVersion pada build)
+    /// ikut utuh.
     original: Option<Value>,
 }
 
@@ -2051,85 +2142,6 @@ impl App {
         }
     }
 
-    /// Body createDomain/updateDomain dari form.
-    ///
-    /// Saat edit, berangkat dari JSON domain aslinya sehingga field yang tak ada
-    /// di form (middlewares, certificateResolver, wildcard) tetap utuh — bukan
-    /// ditimpa nilai default.
-    fn domain_body(&self, form: &Form) -> std::result::Result<Value, String> {
-        let host = form.by_label("Host");
-        if host.is_empty() {
-            return Err("Host wajib diisi".into());
-        }
-
-        let mut body = form.original.clone().unwrap_or_else(
-            || json!({ "wildcard": false, "certificateResolver": "", "middlewares": [] }),
-        );
-        body["host"] = json!(host);
-        body["path"] = json!(match form.by_label("Path").as_str() {
-            "" => "/".to_string(),
-            p => p.to_string(),
-        });
-        body["https"] = json!(form.is_on_label("HTTPS"));
-
-        let obj = body.as_object_mut().ok_or("bentuk domain tak dikenal")?;
-        if form.by_label("Tujuan") == "custom" {
-            let url = form.by_label("Server URL");
-            if url.is_empty() {
-                return Err("Server URL wajib diisi untuk tujuan custom".into());
-            }
-            let weight: u32 = form
-                .by_label("Weight")
-                .parse()
-                .map_err(|_| "Weight harus angka")?;
-
-            // Form hanya memodelkan server pertama. Server lain (kalau ada) harus
-            // ikut utuh — memangkasnya diam-diam sama saja merusak konfigurasi.
-            let mut servers = form
-                .original
-                .as_ref()
-                .and_then(|o| o.pointer("/customDestination/servers"))
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let first = json!({ "url": url, "weight": weight });
-            if servers.is_empty() {
-                servers.push(first);
-            } else {
-                servers[0] = first;
-            }
-
-            obj.remove("serviceDestination");
-            obj.insert("destinationType".into(), json!("custom"));
-            obj.insert("customDestination".into(), json!({ "servers": servers }));
-        } else {
-            let (project, service) = (form.by_label("Project"), form.by_label("Service"));
-            if project.is_empty() || service.is_empty() {
-                return Err("Project dan service wajib diisi".into());
-            }
-            let port: u32 = form
-                .by_label("Port")
-                .parse()
-                .map_err(|_| "Port harus angka")?;
-            obj.remove("customDestination");
-            obj.insert("destinationType".into(), json!("service"));
-            obj.insert(
-                "serviceDestination".into(),
-                json!({
-                    "projectName": project,
-                    "serviceName": service,
-                    "port": port,
-                    "protocol": form.by_label("Protocol"),
-                    "path": match form.by_label("Path tujuan").as_str() {
-                        "" => "/".to_string(),
-                        p => p.to_string(),
-                    }
-                }),
-            );
-        }
-        Ok(body)
-    }
-
     fn submit_form(&mut self, req: &Sender<Req>) {
         let Some(form) = self.form.as_ref() else {
             return;
@@ -2207,7 +2219,7 @@ impl App {
                     return;
                 }
             },
-            FormKind::DomainCreate | FormKind::DomainEdit { .. } => match self.domain_body(form) {
+            FormKind::DomainCreate | FormKind::DomainEdit { .. } => match domain_body(form) {
                 Ok(body) => {
                     let id = match &form.kind {
                         FormKind::DomainEdit { id } => Some(id.clone()),
@@ -3172,6 +3184,66 @@ mod tests {
         ));
         assert_eq!(f_val(&f, "Repo"), "");
         assert_eq!(source_body(&f).unwrap_err(), "Repo wajib dipilih");
+    }
+
+    #[test]
+    fn domain_edit_keeps_middlewares_and_extra_servers() {
+        // Middleware belum bisa diedit dari TUI, jadi HARUS ikut utuh. Begitu juga
+        // server custom kedua dst., yang tak dimodelkan form.
+        let original = json!({
+            "id": "d1", "host": "a.test", "path": "/", "https": true,
+            "wildcard": false, "certificateResolver": "google",
+            "middlewares": ["mw1", "mw2"],
+            "destinationType": "custom",
+            "customDestination": { "servers": [
+                { "url": "http://a:1", "weight": 1 },
+                { "url": "http://b:2", "weight": 5 }
+            ]}
+        });
+        let mut f = Form::new(
+            FormKind::DomainEdit { id: "d1".into() },
+            "t",
+            domain_fields(Some(&original), &[]),
+        );
+        f.original = Some(original);
+        let body = domain_body(&f).unwrap();
+        assert_eq!(body["middlewares"], json!(["mw1", "mw2"]));
+        assert_eq!(body["certificateResolver"], json!("google"));
+        // Server kedua tak boleh terpangkas diam-diam.
+        assert_eq!(
+            body["customDestination"]["servers"][1],
+            json!({ "url": "http://b:2", "weight": 5 })
+        );
+    }
+
+    #[test]
+    fn domain_ssl_resolver_and_wildcard_are_editable() {
+        let original = json!({
+            "id": "d1", "host": "a.test", "path": "/", "https": true,
+            "wildcard": false, "certificateResolver": "", "middlewares": [],
+            "destinationType": "service",
+            "serviceDestination": { "projectName": "p", "serviceName": "s",
+                                    "port": 80, "protocol": "http", "path": "/" }
+        });
+        let mut f = Form::new(
+            FormKind::DomainEdit { id: "d1".into() },
+            "t",
+            domain_fields(Some(&original), &["p".into()]),
+        );
+        f.original = Some(original);
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == "SSL resolver")
+            .unwrap()
+            .value = "letsencrypt".into();
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == "Wildcard")
+            .unwrap()
+            .value = "ya".into();
+        let body = domain_body(&f).unwrap();
+        assert_eq!(body["certificateResolver"], json!("letsencrypt"));
+        assert_eq!(body["wildcard"], json!(true));
     }
 
     #[test]

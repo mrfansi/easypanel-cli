@@ -111,7 +111,7 @@ easypanel --server prod   # host tertentu
 - **Hosts** — **semua** server dari `servers.json` sekaligus: CPU, memori, disk, dan load per host. Tiap host diambil di thread sendiri, jadi host lambat atau mati tak menahan yang lain; host yang gagal tampil merah beserta alasannya (unreachable, token kadaluarsa) alih-alih menggagalkan seluruh tabel. Inilah satu-satunya layar yang tak bisa digantikan panel web.
 - **Actions** — riwayat action (deploy/destroy/login) dengan status, target, durasi, dan umur.
 - **Monitor** — lima tile metrik berhistori (CPU, Memory, Disk, Net In, Net Out) + sub-tab **Services** (CPU/memori/network per project & service) dan **Storage** (`v` untuk berganti).
-- **Domains** — semua domain host: source → destination (service internal atau server custom beserta bobotnya).
+- **Domains** — semua domain host: source → destination (service internal atau server custom beserta bobotnya). Form edit mencakup **SSL resolver** (`certificateResolver`) dan **wildcard**. Nama resolver ditentukan konfigurasi Traefik server (mis. `google`); server menolak nama yang tak terdaftar.
 - **Projects** — panel Projects ↔ Services; buat project/service baru, atur source & build, buka view, atau jalankan aksi (deploy/restart/stop/start) dengan konfirmasi.
 - **Viewer** — pane scrollable untuk logs, env, ports, mounts, domains, database backups, dan source & build.
 
@@ -143,6 +143,8 @@ Network berjalan di worker thread terpisah, jadi UI tidak pernah membeku saat re
 Metrik memakai grup **`metrics`** (Prometheus), bukan `monitorOld`: ~0,3 detik vs ~2,3 detik, dan sudah menyediakan laju network, load average, serta byte used/total. Satu panggilan `metrics/getSystemStats` memberi nilai terkini **dan** historinya, jadi sparkline datang dari server.
 
 Catatan: sub-tab **Docker Events** milik panel tidak tersedia — itu live stream, bukan bagian dari REST API yang terdokumentasi (`easypanel-api.json`).
+
+**Middlewares** (grup `middlewares`: 14 tipe bergaya Traefik — basicAuth, rateLimit, redirectScheme, …) belum bisa diedit dari TUI, tapi **selalu dilestarikan** saat mengedit domain, jadi tak ada yang hilang. Editornya belum dibuat karena belum ada kebutuhan nyata yang bisa diuji; kalau kamu mulai memakai middleware, ini yang berikutnya.
 
 ## Test
 
