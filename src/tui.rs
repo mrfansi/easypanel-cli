@@ -25,7 +25,7 @@ pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> 
         return Ok(());
     }
 
-    let names: Vec<String> = cfg.all().into_iter().map(|s| s.name).collect();
+    let names: Vec<(String, String)> = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
     let mut app = App::new(server_name, names);
 
     let mut terminal = ratatui::init();
@@ -107,7 +107,7 @@ fn event_loop(
                 Ok(msg) => msg,
                 Err(e) => format!("Error: {e}"),
             };
-            app.all_servers = cfg.all().into_iter().map(|s| s.name).collect();
+            app.all_servers = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
         }
 
         // Edit env: lepas terminal, buka $EDITOR, lalu ambil alih lagi.
@@ -147,6 +147,15 @@ fn event_loop(
 fn apply_server_action(cfg: &ServerConfig, action: ServerAction) -> Result<String> {
     match action {
         ServerAction::Save { name, url, token } => {
+            // Token tak pernah ditampilkan kembali ke layar; membiarkannya kosong
+            // saat edit berarti "pakai yang lama", bukan "kosongkan".
+            let token = match token {
+                Some(t) => t,
+                None => cfg
+                    .get(&name)
+                    .map(|s| s.token)
+                    .ok_or_else(|| anyhow::anyhow!("server '{name}' tak ditemukan"))?,
+            };
             cfg.add(&name, &url, &token)?;
             Ok(format!("Server '{name}' disimpan"))
         }
@@ -1543,14 +1552,17 @@ enum ServerAction {
     Save {
         name: String,
         url: String,
-        token: String,
+        /// None = pertahankan token yang tersimpan (form edit yang dibiarkan kosong).
+        token: Option<String>,
     },
     Remove(String),
 }
 
 struct App {
     server_name: String,
-    all_servers: Vec<String>,
+    /// (nama, url) tiap server. URL ikut disimpan supaya form edit bisa
+    /// terisi nilai sekarang, bukan kosong seperti form tambah.
+    all_servers: Vec<(String, String)>,
     switch_to: Option<String>,
     picker: Option<ListState>,
     form: Option<Form>,
@@ -1596,7 +1608,7 @@ struct App {
 }
 
 impl App {
-    fn new(server_name: String, all_servers: Vec<String>) -> Self {
+    fn new(server_name: String, all_servers: Vec<(String, String)>) -> Self {
         Self {
             server_name,
             all_servers,
@@ -1873,7 +1885,8 @@ impl App {
         }
     }
 
-    fn picker_selected(&self) -> Option<String> {
+    /// (nama, url) server yang sedang disorot di picker.
+    fn picker_selected(&self) -> Option<(String, String)> {
         self.picker
             .as_ref()
             .and_then(|s| s.selected())
@@ -2150,13 +2163,26 @@ impl App {
         // Validasi minimal di sini; sisanya biar server yang menolak.
         match &form.kind {
             FormKind::ServerAdd | FormKind::ServerEdit { .. } => {
+                // Tambah: token wajib. Edit: token kosong = pertahankan yang lama,
+                // supaya mengganti URL saja tak memaksa mengetik ulang token.
                 let (name, url, token) = match &form.kind {
-                    FormKind::ServerAdd => (form.val(0), form.val(1), form.val(2)),
-                    FormKind::ServerEdit { name } => (name.clone(), form.val(0), form.val(1)),
+                    FormKind::ServerAdd => (form.val(0), form.val(1), Some(form.val(2))),
+                    FormKind::ServerEdit { name } => (
+                        name.clone(),
+                        form.val(0),
+                        match form.val(1) {
+                            t if t.is_empty() => None,
+                            t => Some(t),
+                        },
+                    ),
                     _ => unreachable!(),
                 };
-                if name.is_empty() || url.is_empty() || token.is_empty() {
-                    self.status = "Nama, URL, dan token wajib diisi".into();
+                if name.is_empty() || url.is_empty() {
+                    self.status = "Nama dan URL wajib diisi".into();
+                    return;
+                }
+                if token.as_deref() == Some("") {
+                    self.status = "Token wajib diisi".into();
                     return;
                 }
                 if !commands::valid_name(&name) {
@@ -2259,15 +2285,16 @@ impl App {
         self.status = "Mengirim...".into();
     }
 
+    /// Buka daftar server (pilih / tambah / edit / hapus).
+    ///
+    /// Tidak boleh menolak saat cuma ada satu server: picker ini satu-satunya
+    /// jalan menambah server dari TUI, jadi menolaknya membuat server kedua
+    /// mustahil dibuat tanpa keluar ke CLI.
     fn open_picker(&mut self) {
-        if self.all_servers.len() < 2 {
-            self.status = "Hanya satu server terkonfigurasi".into();
-            return;
-        }
         let cur = self
             .all_servers
             .iter()
-            .position(|n| n == &self.server_name)
+            .position(|(n, _)| n == &self.server_name)
             .unwrap_or(0);
         let mut st = ListState::default();
         st.select(Some(cur));
@@ -2293,17 +2320,22 @@ impl App {
                 ));
             }
             KeyCode::Char('e') => {
-                if let Some(name) = self.picker_selected() {
+                if let Some((name, url)) = self.picker_selected() {
                     self.picker = None;
                     self.form = Some(Form::new(
                         FormKind::ServerEdit { name: name.clone() },
                         format!(" Edit server: {name} "),
-                        vec![Field::text("URL", ""), Field::secret("Token")],
+                        vec![
+                            Field::text("URL", &url),
+                            // Token sengaja tak diisi ulang: menampilkannya kembali ke
+                            // layar tak perlu. Kosong = pakai token yang tersimpan.
+                            Field::secret("Token (kosong = tak diubah)"),
+                        ],
                     ));
                 }
             }
             KeyCode::Char('x') => {
-                if let Some(name) = self.picker_selected() {
+                if let Some((name, _)) = self.picker_selected() {
                     self.picker = None;
                     self.server_action = Some(ServerAction::Remove(name));
                 }
@@ -2317,7 +2349,7 @@ impl App {
                 state.select(Some(i));
             }
             KeyCode::Enter => {
-                if let Some(name) = state
+                if let Some((name, _)) = state
                     .selected()
                     .and_then(|i| self.all_servers.get(i))
                     .cloned()
@@ -3076,13 +3108,18 @@ fn render_picker(f: &mut Frame, app: &mut App) {
     let items: Vec<ListItem> = app
         .all_servers
         .iter()
-        .map(|n| {
+        .map(|(n, url)| {
             let mark = if n == &app.server_name {
                 " (aktif)"
             } else {
                 ""
             };
-            ListItem::new(format!("{n}{mark}"))
+            // URL ikut ditampilkan: nama saja tak cukup untuk memastikan host mana
+            // yang akan diedit atau dihapus.
+            ListItem::new(Line::from(vec![
+                Span::raw(format!("{n}{mark}  ")),
+                Span::styled(url.clone(), Style::default().fg(Color::DarkGray)),
+            ]))
         })
         .collect();
     let list = List::new(items)

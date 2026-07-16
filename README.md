@@ -21,7 +21,9 @@ easypanel server use prod            # jadikan default
 easypanel server remove prod
 ```
 
-Server pertama otomatis jadi default. Command lain memakai server default, atau `--server <nama>` untuk menargetkan host tertentu.
+Tak ada `server edit`: **mengedit = `add` dengan nama yang sama**, entri lama ditimpa dan status default tetap terjaga (mis. rotasi token). Server pertama otomatis jadi default. Command lain memakai server default, atau `--server <nama>` untuk menargetkan host tertentu.
+
+Dari TUI, tekan **`s`** kapan saja: `Enter` pilih server aktif, `n` tambah, `e` edit, `x` hapus. Form edit datang dengan URL sudah terisi; **token dibiarkan kosong = tidak diubah**, jadi mengganti URL tak memaksa mengetik ulang token.
 
 ## Command
 
@@ -129,7 +131,7 @@ Keybindings:
 | `Enter` | buka project → services; pada service → logs |
 | `e` `p` `m` `o` `b` `u` | view env · ports · mounts · domains · backups · source & build |
 | `d` `R` `S` `T` | deploy · restart · stop · start (dengan konfirmasi) |
-| `s` | daftar server: pilih · `n` tambah · `e` edit · `x` hapus |
+| `s` | daftar server: `Enter` pilih · `n` tambah · `e` edit (token kosong = tak diubah) · `x` hapus |
 | `r` | refresh · `q` keluar |
 
 Di dalam form: `Tab` pindah field, `Esc` batal, `Enter` simpan. Field pilihan (project, service, repo, branch, tipe, protocol) membuka dropdown yang bisa dicari dengan mengetik — bukan diketik bebas, supaya tidak ada salah ketik yang mengarahkan domain ke service yang tak ada.
