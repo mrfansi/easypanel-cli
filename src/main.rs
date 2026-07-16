@@ -50,6 +50,12 @@ enum Command {
     /// Jalankan/hapus backup (by id)
     #[command(subcommand)]
     Backup(BackupCmd),
+    /// Riwayat action (deploy, destroy, login, ...)
+    #[command(subcommand)]
+    Action(ActionCmd),
+    /// Monitoring per-service dan storage
+    #[command(subcommand)]
+    Monitor(MonitorCmd),
     /// Menu interaktif
     Menu,
 }
@@ -221,10 +227,38 @@ enum NodeCmd {
 
 #[derive(Subcommand)]
 enum DomainCmd {
+    /// Daftar semua domain di host (source -> destination)
+    List,
     /// Hapus domain berdasarkan id
     Delete { id: String },
     /// Jadikan domain sebagai primary
     SetPrimary { id: String },
+}
+
+#[derive(Subcommand)]
+enum ActionCmd {
+    /// Daftar action terbaru
+    List {
+        #[arg(long, default_value_t = 25)]
+        limit: u32,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        service: Option<String>,
+        /// Filter tipe (mis. deployment)
+        #[arg(long = "type")]
+        action_type: Option<String>,
+    },
+    /// Hentikan action yang sedang berjalan
+    Kill { id: String },
+}
+
+#[derive(Subcommand)]
+enum MonitorCmd {
+    /// CPU/memori/network per project & service
+    Services,
+    /// Pemakaian storage per service
+    Storage,
 }
 
 #[derive(Subcommand)]
@@ -446,8 +480,30 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
         Some(Command::Domain(c)) => {
             let client = resolve_client(cfg, &cli.server)?;
             match c {
+                DomainCmd::List => commands::domain_list_all(&client),
                 DomainCmd::Delete { id } => commands::domain_delete(&client, &id),
                 DomainCmd::SetPrimary { id } => commands::domain_set_primary(&client, &id),
+            }
+        }
+
+        Some(Command::Action(c)) => {
+            let client = resolve_client(cfg, &cli.server)?;
+            match c {
+                ActionCmd::List {
+                    limit,
+                    project,
+                    service,
+                    action_type,
+                } => commands::action_list(&client, limit, project, service, action_type),
+                ActionCmd::Kill { id } => commands::action_kill(&client, &id),
+            }
+        }
+
+        Some(Command::Monitor(c)) => {
+            let client = resolve_client(cfg, &cli.server)?;
+            match c {
+                MonitorCmd::Services => commands::monitor_services(&client),
+                MonitorCmd::Storage => commands::monitor_storage(&client),
             }
         }
 

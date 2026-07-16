@@ -2,6 +2,10 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
 /// Klien tRPC EasyPanel: POST {url}/api/rpc/{group}/{op}, body {"json": input}.
+///
+/// Clone berbagi connection pool reqwest yang sama, jadi murah: dipakai untuk
+/// memberi tiap worker TUI klien sendiri.
+#[derive(Clone)]
 pub struct EasypanelClient {
     url: String,
     token: String,

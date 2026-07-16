@@ -6,7 +6,9 @@ use std::io::Read;
 use crate::client::EasypanelClient;
 use crate::config::ServerConfig;
 use crate::logs;
-use crate::output::{field, table, yes_no};
+use crate::output::{
+    age_of, duration_between, field, first_line, format_bytes, num, table, yes_no,
+};
 
 /// Resolve klien untuk server aktif (dari --server atau default).
 pub fn resolve_client(cfg: &ServerConfig, server: &Option<String>) -> Result<EasypanelClient> {
@@ -732,5 +734,221 @@ pub fn volume_backup_run(client: &EasypanelClient, id: &str) -> Result<()> {
 pub fn volume_backup_delete(client: &EasypanelClient, id: &str) -> Result<()> {
     client.call("volumeBackups", "destroyVolumeBackup", json!({ "id": id }))?;
     println!("Volume backup {id} dihapus.");
+    Ok(())
+}
+
+// ---------- Actions ----------
+
+/// Bangun input listActions dari filter opsional.
+pub fn actions_input(
+    limit: u32,
+    project: &Option<String>,
+    service: &Option<String>,
+    atype: &Option<String>,
+) -> Value {
+    let mut input = json!({ "limit": limit });
+    if let Some(p) = project {
+        input["projectName"] = json!(p);
+    }
+    if let Some(s) = service {
+        input["serviceName"] = json!(s);
+    }
+    if let Some(t) = atype {
+        input["type"] = json!(t);
+    }
+    input
+}
+
+/// Baris tabel untuk satu action (dipakai CLI dan TUI).
+pub fn action_row(a: &Value) -> Vec<String> {
+    let target = match (
+        field(a, "/projectName").as_str(),
+        field(a, "/serviceName").as_str(),
+    ) {
+        ("-", _) => "-".to_string(),
+        (p, "-") => p.to_string(),
+        (p, s) => format!("{p}/{s}"),
+    };
+    vec![
+        field(a, "/status"),
+        target,
+        first_line(&field(a, "/description"), 60),
+        duration_between(&field(a, "/createdAt"), &field(a, "/updatedAt")),
+        age_of(&field(a, "/createdAt")),
+    ]
+}
+
+pub const ACTION_HEADERS: [&str; 5] = ["Status", "Target", "Deskripsi", "Durasi", "Umur"];
+
+pub fn action_list(
+    client: &EasypanelClient,
+    limit: u32,
+    project: Option<String>,
+    service: Option<String>,
+    atype: Option<String>,
+) -> Result<()> {
+    let input = actions_input(limit, &project, &service, &atype);
+    let actions = client.call("actions", "listActions", input)?;
+    let arr = actions.as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        println!("Tidak ada action.");
+        return Ok(());
+    }
+    table(&ACTION_HEADERS, arr.iter().map(action_row).collect());
+    Ok(())
+}
+
+pub fn action_kill(client: &EasypanelClient, id: &str) -> Result<()> {
+    client.call("actions", "killAction", json!({ "id": id }))?;
+    println!("Action {id} dihentikan.");
+    Ok(())
+}
+
+// ---------- Monitor ----------
+
+/// Nama service dari containerName ("proj_svc.1.hash" -> "svc").
+///
+/// Field `serviceName` dari API keliru untuk sub-service compose: container
+/// `proj_mysql_phpmyadmin.1.x` dilaporkan sebagai `mysql`. Panel menurunkannya
+/// dari containerName, jadi kita ikut supaya namanya cocok.
+pub fn container_service(c: &Value) -> String {
+    let project = field(c, "/projectName");
+    let cname = field(c, "/containerName");
+    let base = cname.split('.').next().unwrap_or("");
+    base.strip_prefix(&format!("{project}_"))
+        .map(String::from)
+        .unwrap_or_else(|| field(c, "/serviceName"))
+}
+
+/// Baris tabel monitor per project (header project + service-nya), urut memori terbesar.
+pub fn monitor_rows(containers: Vec<Value>) -> Vec<Vec<String>> {
+    let mem = |c: &Value| num(c, "/stats/memory/usage");
+    let mut groups: std::collections::HashMap<String, Vec<Value>> =
+        std::collections::HashMap::new();
+    for c in containers {
+        groups.entry(field(&c, "/projectName")).or_default().push(c);
+    }
+    let mut groups: Vec<(String, Vec<Value>)> = groups.into_iter().collect();
+    let total = |v: &[Value]| -> f64 { v.iter().map(mem).sum() };
+    groups.sort_by(|a, b| total(&b.1).total_cmp(&total(&a.1)));
+
+    let mut rows = Vec::new();
+    for (project, mut svcs) in groups {
+        svcs.sort_by(|a, b| mem(b).total_cmp(&mem(a)));
+        let sum = |ptr: &str| -> f64 { svcs.iter().map(|c| num(c, ptr)).sum() };
+        rows.push(vec![
+            format!("{project} ({})", svcs.len()),
+            format!("{:.1} %", sum("/stats/cpu/percent")),
+            format_bytes(sum("/stats/memory/usage")),
+            format_bytes(sum("/stats/network/in")),
+            format_bytes(sum("/stats/network/out")),
+        ]);
+        for c in svcs {
+            rows.push(vec![
+                format!("  {}", container_service(&c)),
+                format!("{:.1} %", num(&c, "/stats/cpu/percent")),
+                format_bytes(num(&c, "/stats/memory/usage")),
+                format_bytes(num(&c, "/stats/network/in")),
+                format_bytes(num(&c, "/stats/network/out")),
+            ]);
+        }
+    }
+    rows
+}
+
+pub const MONITOR_HEADERS: [&str; 5] =
+    ["Project / Service", "CPU %", "Memory", "Net In", "Net Out"];
+
+pub fn monitor_services(client: &EasypanelClient) -> Result<()> {
+    let data = client.call("monitorOld", "getMonitorTableData", Value::Null)?;
+    let arr = data.as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        println!("Tidak ada container berjalan.");
+        return Ok(());
+    }
+    table(&MONITOR_HEADERS, monitor_rows(arr));
+    Ok(())
+}
+
+/// Baris tabel storage, urut terbesar.
+pub fn storage_rows(mut arr: Vec<Value>) -> Vec<Vec<String>> {
+    arr.sort_by(|a, b| num(b, "/size").total_cmp(&num(a, "/size")));
+    arr.iter()
+        .map(|s| {
+            vec![
+                field(s, "/projectName"),
+                field(s, "/serviceName"),
+                format_bytes(num(s, "/size")),
+                field(s, "/path"),
+            ]
+        })
+        .collect()
+}
+
+pub const STORAGE_HEADERS: [&str; 4] = ["Project", "Service", "Ukuran", "Path"];
+
+pub fn monitor_storage(client: &EasypanelClient) -> Result<()> {
+    let data = client.call("monitorOld", "getStorageStats", Value::Null)?;
+    let arr = data.as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        println!("Tidak ada data storage.");
+        return Ok(());
+    }
+    table(&STORAGE_HEADERS, storage_rows(arr));
+    Ok(())
+}
+
+// ---------- Domains (host-wide) ----------
+
+/// Sumber domain: "https://host/path".
+pub fn domain_source(d: &Value) -> String {
+    let scheme = if d.get("https").and_then(Value::as_bool).unwrap_or(false) {
+        "https"
+    } else {
+        "http"
+    };
+    format!("{scheme}://{}{}", field(d, "/host"), field(d, "/path"))
+}
+
+/// Tujuan domain: service internal, atau daftar server custom dengan bobotnya.
+pub fn domain_destination(d: &Value) -> String {
+    match field(d, "/destinationType").as_str() {
+        "service" => format!(
+            "{}://{}_{}:{}{}",
+            field(d, "/serviceDestination/protocol"),
+            field(d, "/serviceDestination/projectName"),
+            field(d, "/serviceDestination/serviceName"),
+            field(d, "/serviceDestination/port"),
+            field(d, "/serviceDestination/path"),
+        ),
+        "custom" => d
+            .pointer("/customDestination/servers")
+            .and_then(Value::as_array)
+            .map(|servers| {
+                servers
+                    .iter()
+                    .map(|s| format!("{} ({})", field(s, "/url"), field(s, "/weight")))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_else(|| "-".to_string()),
+        _ => "-".to_string(),
+    }
+}
+
+pub const DOMAIN_HEADERS: [&str; 3] = ["Source", "Destination", "ID"];
+
+pub fn domain_row(d: &Value) -> Vec<String> {
+    vec![domain_source(d), domain_destination(d), field(d, "/id")]
+}
+
+pub fn domain_list_all(client: &EasypanelClient) -> Result<()> {
+    let domains = client.call("domains", "listDomains", json!({}))?;
+    let arr = domains.as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        println!("Tidak ada domain.");
+        return Ok(());
+    }
+    table(&DOMAIN_HEADERS, arr.iter().map(domain_row).collect());
     Ok(())
 }

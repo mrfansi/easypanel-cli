@@ -56,7 +56,8 @@ easypanel service mount-add    <project> <service> --kind bind --host-path /srv/
 easypanel service mount-remove <project> <service> --index <n>
 
 # Domains
-easypanel service domains <project> <service>       # list (dengan id)
+easypanel domain list                               # semua domain host (source -> destination)
+easypanel service domains <project> <service>       # per service (dengan id)
 easypanel domain delete       <id>
 easypanel domain set-primary  <id>
 
@@ -75,8 +76,14 @@ easypanel certificate remove <domain>
 easypanel notification list
 easypanel notification delete <id>
 
+# Actions (riwayat deploy/destroy/login)
+easypanel action list [--limit 25] [--project P] [--service S] [--type deployment]
+easypanel action kill <id>
+
 # Monitoring & cluster
 easypanel stats                      # CPU/mem/disk/uptime
+easypanel monitor services           # CPU/memori/network per project & service
+easypanel monitor storage            # pemakaian disk per service
 easypanel node list                  # node swarm cluster
 ```
 
@@ -101,6 +108,9 @@ easypanel --server prod   # host tertentu
 ```
 
 - **Dashboard** — gauge CPU/Memory/Disk, sparkline CPU history (auto-refresh ~2 detik), uptime, dan tabel node cluster.
+- **Actions** — riwayat action (deploy/destroy/login) dengan status, target, durasi, dan umur.
+- **Monitor** — lima tile metrik berhistori (CPU, Memory, Disk, Net In, Net Out) + sub-tab **Services** (CPU/memori/network per project & service) dan **Storage** (`v` untuk berganti).
+- **Domains** — semua domain host: source → destination (service internal atau server custom beserta bobotnya).
 - **Projects** — panel Projects ↔ Services; buat project/service baru, buka view, atau jalankan aksi (deploy/restart/stop/start) dengan konfirmasi.
 - **Viewer** — pane scrollable untuk logs, env, ports, mounts, domains, dan database backups.
 
@@ -108,7 +118,8 @@ Keybindings:
 
 | Tombol | Aksi |
 |---|---|
-| `1/2/3`, `Tab` | pindah tab |
+| `1`–`6`, `Tab` | pindah tab |
+| `v` | Monitor: ganti Services ↔ Storage |
 | `↑↓` / `jk` | navigasi · `←→` pindah panel |
 | `Enter` | buka project → services; pada service → logs |
 | `e` `p` `m` `o` `b` | view env · ports · mounts · domains · backups |
@@ -116,7 +127,12 @@ Keybindings:
 | `s` | ganti server (bila ada >1 host) |
 | `r` | refresh · `q` keluar |
 
-Network berjalan di worker thread terpisah, jadi UI tidak pernah membeku saat request lambat.
+Network berjalan di worker thread terpisah, jadi UI tidak pernah membeku saat request lambat. Ada dua lajur worker: aksi user dan polling metrik. Ini disengaja — `getSystemStats` dan `getMonitorTableData` bisa makan ~2,5 detik masing-masing, dan dengan satu lajur polling akan menahan aksi user.
+
+Catatan:
+
+- **Net In/Out** pada tabel Services adalah **total kumulatif** byte per container (bukan laju B/s seperti di panel web).
+- Sub-tab **Docker Events** milik panel tidak tersedia: itu live stream, bukan bagian dari REST API yang terdokumentasi (`easypanel-api.json`).
 
 ## Test
 
