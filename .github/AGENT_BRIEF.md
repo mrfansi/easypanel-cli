@@ -9,7 +9,33 @@ community. One meaningful improvement per run — quality over volume.
 
 ---
 
-## Hard constraint: you have no live server
+## Ground truth from the server (verified 2026-07-18, EasyPanel 2.32.2)
+
+The owner granted temporary read-only SSH to the running host and the whole direction
+was checked against it — not guessed. Keep this even after the access is gone:
+
+- **Every endpoint this tool calls exists in EasyPanel 2.32.2's `backend.js`.** The
+  endpoint usage is correct and current, not reverse-engineered wishful thinking.
+- **EasyPanel runs on Docker Swarm.** A "service" is a swarm service; deploy is a swarm
+  update + image build, which is *why* `deployService` blocks for minutes and why create
+  must not deploy inline. The dispatch-and-don't-wait approach is right.
+- **Logs are backed by Grafana Loki + Promtail** (containers on the host). That is why
+  `queryServiceLogs` returns Loki-shaped `{entries:[{values:[[ns,line]]}]}` and why the
+  live tail with a nanosecond `start` cursor is the correct model.
+- **`enabled` is a config flag, not a running state.** Ground truth for "is it running"
+  is whether the container is `Up` — which the API exposes only as "does it have metrics
+  in `getAllServicesStats`". That is exactly what the Status column now uses (v0.15.0).
+
+### When the owner provides SSH (read-only only)
+
+If a run has SSH to the host, it may **read** to validate direction — `docker ps`,
+EasyPanel version, `backend.js` endpoint names, container state. **Never mutate anything
+on the server over SSH**: no restarts, no writes, no touching real services or the data
+volume (it is LMDB at `/etc/easypanel/data/`, and it holds every service's secrets — do
+not dump values). All mutations still go through the API against a `zzz-*` throwaway.
+Treat the key like any credential: never print it, never commit it.
+
+## Hard constraint: you have no live server (cloud runs)
 
 You have **no EasyPanel server, no credentials, and no way to obtain them.** Never
 invent any.
