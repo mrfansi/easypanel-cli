@@ -713,6 +713,8 @@ pub(super) enum FormKind {
         project: String,
         service: String,
     },
+    /// Cari kata kunci di log semua service sekaligus.
+    LogSearch,
     SourceEdit {
         project: String,
         service: String,

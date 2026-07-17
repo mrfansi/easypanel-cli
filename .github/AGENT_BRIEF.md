@@ -156,11 +156,9 @@ logs, real services crash-looping — `harisenin-com_webapp` had `Exited (1)`). 
 the tool from "a nicer panel" into "the first place you look when something breaks."
 Each is grounded in an endpoint confirmed to exist in `backend.js` 2.32.2.
 
-1. **Cross-service log search.** Loki backs every service's logs, and `queryServiceLogs`
-   accepts a `search` param (verified live). "Find this error across all 42 services" is
-   something neither the dashboard nor any competitor does from a terminal. Build a
-   screen/flow: one query, fan out across services, show matches with service + time.
-   This is the single highest-leverage feature this project can add.
+1. ~~**Cross-service log search.**~~ Done in v0.17.0. `g` → query → parallel fan-out of
+   `queryServiceLogs` (with `search`) across every service, grouped results. Verified
+   live: "Error" across 33 services in 0.5 s. The highest-leverage feature, shipped.
 2. **Health & crash visibility.** On a real host, services crash and swarm restarts them
    — the operator needs to *see* it. The Status column already separates running from
    stopped (v0.15.0); go further: surface unhealthy/recently-crashed/restart-looping

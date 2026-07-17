@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-07-18
+
+### Added
+
+- **Cross-service log search — grep every service's logs at once.** Press `g` on
+  Services, type a query, and it searches the logs of *all* services in parallel and
+  shows the matches grouped by service, newest first. Nothing else in the EasyPanel
+  ecosystem does this from a terminal: to find where an error is happening across dozens
+  of services, you no longer open them one by one.
+
+  It works because EasyPanel's logs are backed by Grafana Loki (confirmed on the host)
+  and `queryServiceLogs` accepts a `search` parameter that runs server-side. The tool
+  fans out one request per service on its own thread; measured against the live server,
+  searching **"Error" across 33 services took 0.5 s** and pinpointed the three that were
+  actually erroring. This is the first feature that makes the tool the place you look
+  *first* when something breaks, not a nicer read-only panel.
+
 ## [0.16.0] — 2026-07-18
 
 ### Added

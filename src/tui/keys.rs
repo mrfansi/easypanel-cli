@@ -423,6 +423,13 @@ impl App {
             KeyCode::Char('U') => self.open_config_form(false, req),
             KeyCode::Char('B') => self.open_config_form(true, req),
             KeyCode::Char('E') => self.start_env_edit(),
+            KeyCode::Char('g') => {
+                self.form = Some(Form::new(
+                    FormKind::LogSearch,
+                    " Cari log di SEMUA service ",
+                    vec![Field::text("Kata kunci", "")],
+                ));
+            }
             KeyCode::Char('P') => {
                 if let Some((project, service, _)) = self.selected_row() {
                     self.form = Some(Form::new(

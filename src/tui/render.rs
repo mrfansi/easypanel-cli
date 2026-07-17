@@ -60,6 +60,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
         ],
         Screen::Projects => &[
             Key("/", "cari service"),
+            Key("g", "cari kata di log SEMUA service"),
             Key("Enter", "logs"),
             Key("n", "service baru"),
             Key("x", "hapus service"),

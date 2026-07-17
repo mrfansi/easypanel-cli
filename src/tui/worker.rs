@@ -69,6 +69,11 @@ pub(super) enum Req {
     MaintInfo,
     /// Pembersihan Docker: systemPrune / cleanupDockerImages / cleanupDockerBuilder.
     MaintAction(&'static str),
+    /// Cari `query` di log SEMUA service sekaligus (fitur killer). Fan-out
+    /// paralel; hasil digabung per service.
+    LogSearch {
+        query: String,
+    },
     /// Ronde tail log berikutnya. `since` = timestamp terbaru yang sudah
     /// terlihat; None = batch pertama.
     LogTail {
@@ -321,6 +326,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
+        Req::LogSearch { query } => log_search(client, &query),
         Req::Repos => Resp::Repos(github_repos(client)),
         Req::ConfigForm {
             project,
@@ -623,6 +629,81 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
             }
         }
     }
+}
+
+/// Cari `query` di log semua service sekaligus — fitur killer.
+///
+/// EasyPanel tak punya endpoint "cari lintas service"; kita fan-out
+/// `queryServiceLogs` (yang menerima `search`, terverifikasi di server) ke tiap
+/// service secara PARALEL. Satu thread per service dengan klien kloningan; log
+/// didukung Loki, jadi pencarian dilakukan server-side, cepat. Hasil digabung,
+/// dikelompokkan per service, hanya yang punya match.
+fn log_search(client: &EasypanelClient, query: &str) -> Resp {
+    if query.trim().is_empty() {
+        return Resp::Err("Kata kunci pencarian kosong".into());
+    }
+    let all = match client.call("projects", "listProjectsAndServices", Value::Null) {
+        Ok(v) => v,
+        Err(e) => return Resp::Err(e.to_string()),
+    };
+    let services: Vec<(String, String)> = all
+        .get("services")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|s| (field(s, "/projectName"), field(s, "/name")))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Fan-out paralel: satu thread per service. reqwest blocking berbagi pool,
+    // tapi Loki menjawab cepat, jadi puluhan service selesai dalam ~1-2 detik.
+    let handles: Vec<_> = services
+        .into_iter()
+        .map(|(project, service)| {
+            let c = client.clone();
+            let q = query.to_string();
+            thread::spawn(move || {
+                let v = c
+                    .call(
+                        "logs",
+                        "queryServiceLogs",
+                        json!({
+                            "projectName": project, "serviceName": service,
+                            "search": q, "limit": 40
+                        }),
+                    )
+                    .ok()?;
+                let lines = crate::logs::format(&v);
+                if lines.is_empty() {
+                    None
+                } else {
+                    Some((project, service, lines))
+                }
+            })
+        })
+        .collect();
+
+    let mut hits: Vec<(String, String, Vec<String>)> =
+        handles.into_iter().filter_map(|h| h.join().ok()?).collect();
+    hits.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+
+    let total: usize = hits.iter().map(|(_, _, l)| l.len()).sum();
+    let mut out = Vec::new();
+    for (project, service, lines) in &hits {
+        out.push(format!("── {project}/{service} ({}) ──", lines.len()));
+        out.extend(lines.iter().cloned());
+        out.push(String::new());
+    }
+    if out.is_empty() {
+        out.push(format!(
+            "Tak ada match untuk '{query}' di service mana pun."
+        ));
+    }
+    Resp::Viewer(
+        format!("Cari '{query}' — {total} baris di {} service", hits.len()),
+        out,
+    )
 }
 
 pub(super) fn fetch_view(

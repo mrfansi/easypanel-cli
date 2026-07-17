@@ -825,6 +825,25 @@ impl App {
                     return;
                 }
             },
+            FormKind::LogSearch => {
+                let query = form.by_label("Kata kunci");
+                if query.is_empty() {
+                    self.status = "Isi kata kunci dulu".into();
+                    return;
+                }
+                // Buka Viewer kosong; hasil menyusul saat fan-out selesai.
+                self.viewer_lines = vec!["Mencari di semua service...".into()];
+                self.viewer_scroll = 0;
+                self.viewer_follow = false;
+                self.log_cursor = None;
+                self.viewer_title = format!("Cari '{query}'");
+                self.viewer_ctx = None;
+                self.screen = Screen::Viewer;
+                self.status = format!("Mencari '{query}' di semua service...");
+                let _ = req.send(Req::LogSearch { query });
+                self.form = None;
+                return;
+            }
             FormKind::PortCreate { project, service } => match port_body(form) {
                 Ok(values) => {
                     let _ = req.send(Req::PortSave {
