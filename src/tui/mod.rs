@@ -1,0 +1,295 @@
+//! TUI EasyPanel.
+//!
+//! Dipecah mengikuti aliran datanya, bukan tipenya: `worker` bicara ke jaringan
+//! di thread lain dan hanya mengenal Req/Resp; `app` memegang state dan tombol;
+//! `render` menggambar dan tak pernah memutuskan apa pun; `form` dan `table`
+//! adalah bahasa bersama di antaranya. `mod.rs` hanya menyatukan: event loop,
+//! penyerahan ke $EDITOR, dan perubahan daftar server — satu-satunya tempat yang
+//! memegang ServerConfig.
+
+mod app;
+mod form;
+mod keys;
+mod render;
+mod table;
+mod worker;
+
+#[cfg(test)]
+mod tests;
+
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use anyhow::Result;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use serde_json::json;
+
+use crate::client::EasypanelClient;
+use crate::config::ServerConfig;
+
+const REFRESH: Duration = Duration::from_secs(2);
+/// Batas baris yang ditahan viewer saat tail log berjalan.
+const LOG_BUFFER: usize = 5_000;
+
+use app::{App, HostRow, HostState, Screen, ServerAction};
+use render::ui;
+use worker::{spawn_workers, Req, Resp, View};
+
+/// Buka TUI untuk server default (atau --server yang sudah di-resolve).
+pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> Result<()> {
+    if cfg.all().is_empty() {
+        println!("Belum ada server. Jalankan: easypanel server add");
+        return Ok(());
+    }
+
+    let names: Vec<(String, String)> = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
+    let mut app = App::new(server_name, names);
+
+    let mut terminal = ratatui::init();
+    let result = event_loop(&mut terminal, &mut app, cfg, client);
+    ratatui::restore();
+    result
+}
+
+fn event_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    cfg: &ServerConfig,
+    client: EasypanelClient,
+) -> Result<()> {
+    let mut w = spawn_workers(client);
+    send_initial(&w.user);
+    let mut last_stats = Instant::now();
+
+    loop {
+        while let Ok(resp) = w.resp.try_recv() {
+            app.handle(resp, &w.user);
+        }
+
+        terminal.draw(|f| ui(f, app))?;
+
+        // Metrik jalan di lajur poll. Guard in-flight menjaga agar ronde tak
+        // menumpuk saat server lebih lambat dari interval refresh.
+        if last_stats.elapsed() >= REFRESH && !app.refresh_inflight {
+            let _ = w.poll.send(Req::Stats);
+            // Metrik per service ikut live, tapi hanya di layar yang menampilkannya.
+            if matches!(app.screen, Screen::Monitor | Screen::Projects) {
+                let _ = w.poll.send(Req::MonitorData);
+            }
+            // Log ikut hidup selama viewer-nya terbuka. Di lajur poll, bukan
+            // lajur user: tail tiap dua detik tak boleh mengantre di belakang
+            // (atau di depan) aksi yang ditekan user.
+            if let (Screen::Viewer, Some((View::Logs, project, service, _))) =
+                (app.screen, &app.viewer_ctx)
+            {
+                let _ = w.poll.send(Req::LogTail {
+                    project: project.clone(),
+                    service: service.clone(),
+                    since: app.log_cursor.clone(),
+                });
+            }
+            app.refresh_inflight = true;
+            last_stats = Instant::now();
+        }
+
+        if event::poll(Duration::from_millis(120))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        break;
+                    }
+                    app.on_key(key.code, &w.user);
+                }
+            }
+        }
+
+        // Layar Hosts: satu thread per server. Fan-out ada di sini karena hanya
+        // event_loop yang memegang ServerConfig (url + token tiap host).
+        if app.load_hosts {
+            app.load_hosts = false;
+            app.hosts = cfg
+                .all()
+                .into_iter()
+                .map(|s| HostRow {
+                    name: s.name,
+                    url: s.url,
+                    state: HostState::Loading,
+                })
+                .collect();
+            for s in cfg.all() {
+                let tx = w.resp_tx.clone();
+                thread::spawn(move || {
+                    let client = EasypanelClient::new(&s.url, &s.token);
+                    let data = client
+                        .call("metrics", "getSystemStats", json!({}))
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(Resp::HostStat { name: s.name, data });
+                });
+            }
+        }
+
+        // Perubahan daftar server perlu ServerConfig, yang hanya ada di sini.
+        if let Some(action) = app.server_action.take() {
+            app.status = match apply_server_action(cfg, action) {
+                Ok(msg) => msg,
+                Err(e) => format!("Error: {e}"),
+            };
+            app.all_servers = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
+        }
+
+        // Edit env: lepas terminal, buka $EDITOR, lalu ambil alih lagi.
+        if let Some((project, service, stype)) = app.edit_env.take() {
+            match edit_env_in_editor(&w.user, &w.resp, terminal, &project, &service, &stype) {
+                Ok(Some(env)) => {
+                    let _ = w.user.send(Req::EnvSave {
+                        project,
+                        service,
+                        stype,
+                        env,
+                    });
+                    app.status = "Menyimpan env...".into();
+                }
+                Ok(None) => app.status = "Env tidak berubah".into(),
+                Err(e) => app.status = format!("Error: {e}"),
+            }
+        }
+
+        // Ganti server: bangun worker baru (yang lama berhenti saat sender-nya di-drop).
+        if let Some(name) = app.switch_to.take() {
+            if let Some(server) = cfg.get(&name) {
+                w = spawn_workers(EasypanelClient::new(&server.url, &server.token));
+                app.reset_for_server(name);
+                send_initial(&w.user);
+                last_stats = Instant::now();
+            }
+        }
+
+        if app.should_quit {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn apply_server_action(cfg: &ServerConfig, action: ServerAction) -> Result<String> {
+    match action {
+        ServerAction::Save { name, url, token } => {
+            // Token tak pernah ditampilkan kembali ke layar; membiarkannya kosong
+            // saat edit berarti "pakai yang lama", bukan "kosongkan".
+            let token = match token {
+                Some(t) => t,
+                None => cfg
+                    .get(&name)
+                    .map(|s| s.token)
+                    .ok_or_else(|| anyhow::anyhow!("server '{name}' tak ditemukan"))?,
+            };
+            cfg.add(&name, &url, &token)?;
+            Ok(format!("Server '{name}' disimpan"))
+        }
+        ServerAction::Remove(name) => {
+            cfg.remove(&name)?;
+            Ok(format!("Server '{name}' dihapus"))
+        }
+    }
+}
+
+/// Ambil env service, buka di `$EDITOR`, kembalikan isinya bila berubah.
+///
+/// Memakai editor milik user (pola `kubectl edit`) alih-alih menulis textarea
+/// sendiri di ratatui: jauh lebih sedikit kode dan sudah familier. Terminal
+/// dilepas selama editor jalan, lalu diambil alih kembali.
+fn edit_env_in_editor(
+    req: &Sender<Req>,
+    resp: &Receiver<Resp>,
+    terminal: &mut ratatui::DefaultTerminal,
+    project: &str,
+    service: &str,
+    stype: &str,
+) -> Result<Option<String>> {
+    // Ambil env terkini lebih dulu (blocking; user memang sedang menunggu).
+    req.send(Req::Fetch {
+        view: View::Env,
+        project: project.to_string(),
+        service: service.to_string(),
+        stype: stype.to_string(),
+    })?;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let current = loop {
+        match resp.recv_timeout(Duration::from_millis(200)) {
+            Ok(Resp::Viewer(_, lines)) => break lines.join("\n"),
+            Ok(Resp::Err(e)) => return Err(anyhow::anyhow!(e)),
+            Ok(_) => {}
+            Err(_) if Instant::now() > deadline => {
+                return Err(anyhow::anyhow!("timeout mengambil env"))
+            }
+            Err(_) => {}
+        }
+    };
+
+    let path = std::env::temp_dir().join(format!("easypanel-{project}-{service}.env"));
+    std::fs::write(&path, &current)?;
+
+    ratatui::restore();
+    let opened = open_in_editor(&path);
+    *terminal = ratatui::init();
+    terminal.clear()?;
+    opened?;
+
+    let edited = std::fs::read_to_string(&path)?;
+    let _ = std::fs::remove_file(&path);
+
+    Ok((edited.trim_end() != current.trim_end()).then_some(edited))
+}
+
+/// Kandidat editor: pilihan user dulu, lalu cadangan yang pasti ada di Unix.
+///
+/// Tiap entri dipecah jadi program + argumen, supaya `EDITOR="code -w"` bekerja
+/// dan tidak dicari sebagai satu biner bernama "code -w".
+fn editor_candidates() -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .map(|v| v.split_whitespace().map(String::from).collect::<Vec<_>>())
+        .filter(|v| !v.is_empty())
+        .collect();
+    out.push(vec!["vi".into()]);
+    out.push(vec!["nano".into()]);
+    out
+}
+
+/// Buka file di editor pertama yang benar-benar ada.
+///
+/// $EDITOR yang menunjuk editor tak terpasang (mis. `nvim` yang belum dipasang)
+/// dulu gagal dengan "No such file or directory (os error 2)" — pesan yang
+/// terbaca seolah file env-nya yang hilang, bukan editornya. Sekarang kandidat
+/// yang hilang dilewati, dan kalau semuanya hilang pesannya menyebut nama-namanya.
+fn open_in_editor(path: &std::path::Path) -> Result<()> {
+    let mut missing = Vec::new();
+    for cand in editor_candidates() {
+        let (prog, args) = cand.split_first().expect("kandidat tak pernah kosong");
+        match std::process::Command::new(prog)
+            .args(args)
+            .arg(path)
+            .status()
+        {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => anyhow::bail!("editor '{prog}' keluar dengan {status}"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(prog.clone()),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    anyhow::bail!(
+        "tak ada editor yang bisa dipakai (dicoba: {}). Set $EDITOR ke editor yang terpasang.",
+        missing.join(", ")
+    )
+}
+
+fn send_initial(req_tx: &Sender<Req>) {
+    let _ = req_tx.send(Req::Stats);
+    let _ = req_tx.send(Req::Nodes);
+    let _ = req_tx.send(Req::Projects);
+}

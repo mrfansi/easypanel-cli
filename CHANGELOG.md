@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-07-17
+
+### Changed
+
+- **`src/tui.rs` is now a `tui/` module.** One 5,087-line file held the worker, the
+  state, every key handler, every form, and every renderer. It was asked for by the
+  project owner in plain terms — hard for a human to maintain — and it was making each
+  new feature more expensive than the last.
+
+  The cut follows the data flow rather than the types: `worker` talks to the network on
+  another thread and knows only `Req`/`Resp`; `app` holds state and selectors; `keys` is
+  a second `impl App` that maps key to action; `render` draws and decides nothing;
+  `form` and `table` are the shared vocabulary between them; `mod` keeps the event loop,
+  the `$EDITOR` hand-off, and `ServerConfig` — which nothing else may touch. Largest
+  file is now ~960 lines.
+
+  **No behaviour change**, and that is the whole point of the release note: the same 83
+  tests, not one of them edited, and the test-name list diffed identical before and
+  after. The binary was then driven for real — the log viewer, the help overlay and the
+  create form all behave as before. Tests stayed in a single `tui/tests.rs` on purpose:
+  an untouched suite is what makes it evidence.
+
 ## [0.11.0] — 2026-07-17
 
 ### Added

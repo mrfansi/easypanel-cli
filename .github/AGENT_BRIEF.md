@@ -59,15 +59,19 @@ no excuses. You are expected to finish one per run.
    domains/ports/resources are still `createService`-capable and still not offered —
    propose them separately, one at a time.
 
-6. **Dockerfile source type.** The panel offers five sources; this offers three.
+6. ~~**Split `src/tui.rs`.**~~ Done in v0.11.1. 5,087 lines became `tui/` — `worker`
+   (network, Req/Resp only), `app` (state + selectors), `keys` (a second `impl App`:
+   key -> action), `form`, `table`, `render` (draws, decides nothing), `mod` (event loop,
+   `$EDITOR` hand-off, the only holder of `ServerConfig`). No behaviour change: the same
+   83 tests, untouched, and the test-name list diffed identical before and after. Largest
+   file is now `app.rs` at ~960 lines. Tests deliberately stayed in one `tui/tests.rs` —
+   an untouched suite is the proof; distributing them is separate work.
+7. **Dockerfile source type.** The panel offers five sources; this offers three.
    `services/app/updateSourceDockerfile` takes the Dockerfile inline, so it needs the
    `$EDITOR` hand-off `edit_env_in_editor` already implements — a Dockerfile does not
    belong in a single-line field. (`uploadCodeArchive` is the fifth; it takes a
    server-side `archivePath`, so it needs a file transfer this tool has no path for.
    Investigate before promising it.)
-7. **Split `src/tui.rs`.** It is ~3,700 lines and holds the worker, the app state, every
-   form, and every renderer. Split into a `tui/` module (`app.rs`, `worker.rs`,
-   `form.rs`, `render.rs`) with **no behaviour change** — tests must pass untouched.
 8. **`unwrap`/`expect` audit.** Find every one reachable from untrusted input (API
    responses, config files, `$EDITOR`, terminal size). Each either becomes a real error
    or gets a comment proving it cannot fire.
