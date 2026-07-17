@@ -9,6 +9,15 @@ homepage = "https://github.com/mrfansi/easypanel-cli"
 readme = "README.md"
 keywords = ["easypanel", "tui", "devops", "cli", "self-hosted"]
 categories = ["command-line-utilities"]
+# Yang tak dipakai crate: spec API 0,7 MB (cuma rujukan pengembang, tak dibaca
+# runtime), skrip installer (pemakai `cargo install` tak perlu), meta repo & CI.
+exclude = [
+    "easypanel-api.json",
+    "install.sh",
+    ".github/",
+    ".editorconfig",
+    ".gitattributes",
+]
 
 [[bin]]
 name = "easypanel"

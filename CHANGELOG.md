@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The published crate no longer carries the 0.7 MB `easypanel-api.json` (a developer
+  reference the code never reads), `install.sh`, or repo/CI metadata — `cargo package`
+  drops from 34 files / 1.2 MB to 23 / 442 KB. No effect on the shipped binary; this is
+  `cargo install`/`cargo publish` hygiene. `cargo publish --dry-run` builds the packaged
+  crate standalone, and the name is free on crates.io.
+
 ## [0.14.0] — 2026-07-18
 
 ### Added

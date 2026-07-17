@@ -109,10 +109,27 @@ no excuses. You are expected to finish one per run.
    exact command and the verbatim server error (how nearly every real bug here was
    found), and the feature template asks whether the API actually supports it, because
    this tool never invents a schema. YAML validated; badge URLs return 200.
-12. **`cargo publish` readiness** — `cargo package --list` clean, no stray files.
+12. ~~**`cargo publish` readiness.**~~ Done. `Cargo.toml` `exclude` drops the 0.7 MB
+   `easypanel-api.json` (developer reference, never read at runtime — only mentioned in a
+   comment), `install.sh`, and the `.github/`/editor meta. The package went from 34 files
+   / 1.2 MB to 23 files / 442 KB, all `src/` + README/LICENSE/CHANGELOG. `cargo publish
+   --dry-run` compiles the packaged crate standalone; the name `easypanel` is free on
+   crates.io. Actual publishing is left to the owner — it is public and irreversible, so
+   it is a deliberate `cargo publish`, not something an agent should do unprompted.
 
-When the list is empty, propose the next item at the bottom of this file in your PR
-rather than inventing work silently.
+**The numbered backlog above is complete.** Do not invent filler. New work now comes
+from one of three places, in this order of preference:
+
+1. **A real bug or rough edge found by driving the live TUI** — the richest source here;
+   almost every important fix in this project came from watching the screen, not tests.
+2. **A concrete gap against the EasyPanel dashboard** the API actually supports (check
+   `easypanel-api.json`): e.g. ports/mounts/resources in the create wizard, a middlewares
+   editor (registry is empty today), or per-service resource limits.
+3. **Publishing** to crates.io once the owner approves (readiness is done).
+
+If none of these yields a genuinely useful change, the correct move is to do nothing and
+say so. A run that ships no code because there was nothing worth shipping is a success,
+not a failure — the earlier "fourteen empty runs" problem was avoidance, not restraint.
 
 ## Also in scope, any time
 
