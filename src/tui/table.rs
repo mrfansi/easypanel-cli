@@ -34,7 +34,7 @@ pub(super) enum Line2<'a> {
 ///
 /// `source` diringkas dari inspectService-nya listProjectsAndServices, jadi repo
 /// dan branch terlihat tanpa membuka apa pun.
-pub(super) fn service_row(s: &Value) -> Vec<String> {
+pub(super) fn service_row(s: &Value, running: Option<bool>) -> Vec<String> {
     let source = match field(s, "/source/type").as_str() {
         "github" => format!(
             "{}/{}#{}",
@@ -46,15 +46,35 @@ pub(super) fn service_row(s: &Value) -> Vec<String> {
         "image" => field(s, "/source/image"),
         _ => "-".to_string(),
     };
-    let enabled = s.get("enabled").and_then(Value::as_bool).unwrap_or(true);
     vec![
         field(s, "/projectName"),
         field(s, "/name"),
         field(s, "/type"),
-        if enabled { "aktif" } else { "mati" }.to_string(),
+        service_status(s, running).into(),
         source,
         auto_deploy_cell(s).into(),
     ]
+}
+
+/// Status jalan/mati sebuah service.
+///
+/// `enabled` dari API cuma berarti "tidak di-disable user", BUKAN "container
+/// hidup" — service yang crash tetap enabled. Sinyal jalan sebenarnya adalah
+/// apakah ia punya metrik (getAllServicesStats hanya memuat yang berjalan). Jadi
+/// `running`: Some(true)=ada metrik, Some(false)=tak ada (padahal enabled → mati
+/// beneran), None=metrik belum dimuat / konteks filter (jangan menuduh mati).
+///
+/// - "mati": di-disable user (enabled=false)
+/// - "berhenti": enabled tapi tak jalan (crash/stop) — inilah yang dulu bohong
+///   menampilkan "aktif"
+/// - "aktif": jalan, atau belum bisa dipastikan (metrik belum ada)
+pub(super) fn service_status(s: &Value, running: Option<bool>) -> &'static str {
+    let enabled = s.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    match (enabled, running) {
+        (false, _) => "mati",
+        (true, Some(false)) => "berhenti",
+        (true, _) => "aktif",
+    }
 }
 
 /// Kolom Auto: hanya source github yang punya auto deploy.

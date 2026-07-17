@@ -529,7 +529,7 @@ impl App {
                 .all_services
                 .iter()
                 .filter(|s| s.get("projectName").and_then(Value::as_str) == Some(p.as_str()))
-                .filter(|s| project_matches || keep(&service_row(s), &self.filter))
+                .filter(|s| project_matches || keep(&service_row(s, None), &self.filter))
                 .collect();
             kept.sort_by_key(|s| field(s, "/name"));
 
@@ -552,7 +552,7 @@ impl App {
     pub(super) fn visible_services(&self) -> Vec<&Value> {
         self.all_services
             .iter()
-            .filter(|s| keep(&service_row(s), &self.filter))
+            .filter(|s| keep(&service_row(s, None), &self.filter))
             .collect()
     }
 

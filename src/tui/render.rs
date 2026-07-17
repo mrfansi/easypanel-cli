@@ -290,7 +290,18 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
                 project_row(name, services.len(), &mets)
             }
             Line2::Service(s) => {
-                let mut row = service_row(s);
+                // Status jalan/mati dari metrik: ada metrik = jalan. Tapi jangan
+                // menuduh "berhenti" sebelum metrik pertama dimuat (monitor kosong)
+                // — saat itu jatuh ke enabled saja (None).
+                let running = if app.monitor.is_empty() {
+                    None
+                } else {
+                    Some(
+                        app.metric_for(&field(s, "/projectName"), &field(s, "/name"))
+                            .is_some(),
+                    )
+                };
+                let mut row = service_row(s, running);
                 // Kolom Project dilebur ke header; service cukup menjorok di bawahnya.
                 let name = format!("  {}", row.remove(1));
                 row.remove(0);
@@ -314,7 +325,8 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
         &[
             Constraint::Min(26),
             Constraint::Length(8),
-            Constraint::Length(7),
+            // 9, bukan 7: "berhenti" (8 huruf) harus muat, tak terpotong.
+            Constraint::Length(9),
             Constraint::Min(16),
             Constraint::Length(5),
             Constraint::Length(8),

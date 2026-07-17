@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-07-18
+
+### Fixed
+
+- **The Status column now means "running", not just "enabled".** It read the API's
+  `enabled` field, which only says a service isn't *disabled* — so a crashed or
+  never-deployed service still showed **aktif**, a confident lie. Verified against a live
+  server: `enabled` is `true` for every service here whether or not it runs; the real
+  running signal is whether the service has metrics in `getAllServicesStats` (which only
+  lists running containers). Status now has three states — **aktif** (running),
+  **berhenti** (enabled but not running: crashed, stopped, or never deployed), **mati**
+  (disabled by the user). Before metrics have loaded it falls back to enabled, so it
+  never flashes "berhenti" for everything on startup.
+
 ## [0.14.1] — 2026-07-18
 
 ### Fixed

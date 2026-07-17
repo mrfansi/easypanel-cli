@@ -105,18 +105,37 @@ fn service_row_summarises_source_without_opening_anything() {
         "projectName": "p", "name": "api", "type": "app", "enabled": true,
         "source": { "type": "github", "owner": "acme", "repo": "web", "ref": "dev" }
     });
-    assert_eq!(service_row(&github)[4], "acme/web#dev");
+    assert_eq!(service_row(&github, None)[4], "acme/web#dev");
 
     let image = json!({
         "projectName": "p", "name": "cache", "type": "redis", "enabled": false,
         "source": { "type": "image", "image": "redis:7" }
     });
-    let row = service_row(&image);
+    let row = service_row(&image, None);
     assert_eq!(row[4], "redis:7");
     assert_eq!(row[3], "mati");
 
     // Service tanpa source (baru dibuat) tak boleh bikin panik.
-    assert_eq!(service_row(&svc("p", "kosong", "app"))[4], "-");
+    assert_eq!(service_row(&svc("p", "kosong", "app"), None)[4], "-");
+}
+
+#[test]
+fn status_reflects_running_state_not_just_enabled() {
+    // `enabled` cuma "tidak di-disable", bukan "hidup". Service crash tetap
+    // enabled — dulu tabel bohong menampilkan "aktif". Sekarang metrik yang
+    // menentukan jalan/mati.
+    let on = json!({ "projectName": "p", "name": "a", "type": "app", "enabled": true });
+    let off = json!({ "projectName": "p", "name": "b", "type": "app", "enabled": false });
+
+    // Di-disable user -> "mati", apa pun metriknya.
+    assert_eq!(service_status(&off, Some(true)), "mati");
+    assert_eq!(service_status(&off, None), "mati");
+    // Enabled + ada metrik -> jalan.
+    assert_eq!(service_status(&on, Some(true)), "aktif");
+    // Enabled TAPI tak ada metrik (crash/stop) -> "berhenti", bukan "aktif" palsu.
+    assert_eq!(service_status(&on, Some(false)), "berhenti");
+    // Metrik belum dimuat (None) -> jangan menuduh mati; jatuh ke "aktif".
+    assert_eq!(service_status(&on, None), "aktif");
 }
 
 #[test]
@@ -142,7 +161,7 @@ fn auto_deploy_column_separates_off_from_not_applicable() {
 
     // service_row masih memisah project dan nama; render melebur keduanya,
     // jadi indeksnya bergeser satu terhadap header.
-    assert_eq!(service_row(&on)[5], "✓");
+    assert_eq!(service_row(&on, None)[5], "✓");
     assert_eq!(SERVICE_HEADERS[4], "Auto");
 }
 
