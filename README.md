@@ -87,7 +87,7 @@ Press **`?`** at any time for every shortcut on the current screen.
 | **Monitor** | Five history tiles (CPU, memory, disk, net in/out) plus per-service metrics and storage (`v` switches). |
 | **Domains** | Every domain on the host: source → destination (internal service or weighted custom servers), SSL resolver, wildcard. |
 | **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. Shows type, status, source (`owner/repo#branch`), and live CPU/memory/network. Selecting a header targets the project (`n` new service, `X` destroy); selecting a service targets the service. |
-| **Viewer** | Scrollable pane for logs, env, ports, mounts, domains, backups, source & build. Reached from a service; `Esc` goes back. |
+| **Viewer** | Scrollable pane for logs, env, ports, mounts, domains, backups, source & build. Reached from a service; `Esc` goes back. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. |
 
 ### Key bindings
 
@@ -96,7 +96,7 @@ Press **`?`** at any time for every shortcut on the current screen.
 | `?` | every shortcut for the current screen |
 | `1`–`7`, `Tab` | switch tabs (`2` = Hosts) |
 | `/` | filter (Services, Domains, Actions, Monitor) · `Esc` clears |
-| `Enter` | logs for the selected service |
+| `Enter` | logs for the selected service (**live**; `End` re-follows) |
 | `e` `p` `m` `o` `b` `u` | view env · ports · mounts · domains · backups · source & build |
 | `E` | edit env in `$EDITOR` |
 | `U` · `B` | configure source · build (app services) |
@@ -114,6 +114,12 @@ Leave the repo empty to create a bare service and configure it later. Creating a
 *with* a GitHub source takes the server about **100 seconds** (against 0.2 s without
 one); the status line says so before it starts, and the request is given its own longer
 deadline so it cannot time out while the server is still working.
+
+Logs are not a snapshot. EasyPanel has no log streaming endpoint — there is exactly one
+SSE route on the whole API and it is for the Actions list — so the tail polls
+`queryServiceLogs` every two seconds with `start` set past the newest line already
+shown, which fetches only what is new rather than re-pulling 200 lines. It runs on the
+metrics lane, so it never queues behind a key you pressed.
 
 The Services table has an **Auto** column: `✓` auto deploy on, `✗` off, `-` not
 applicable. Only GitHub sources have auto deploy at all — it works by creating a

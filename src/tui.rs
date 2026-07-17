@@ -17,6 +17,8 @@ use crate::config::ServerConfig;
 use crate::output::{field, format_bytes, format_rate, num, series_last, series_spark};
 
 const REFRESH: Duration = Duration::from_secs(2);
+/// Batas baris yang ditahan viewer saat tail log berjalan.
+const LOG_BUFFER: usize = 5_000;
 
 /// Buka TUI untuk server default (atau --server yang sudah di-resolve).
 pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> Result<()> {
@@ -58,6 +60,18 @@ fn event_loop(
             // Metrik per service ikut live, tapi hanya di layar yang menampilkannya.
             if matches!(app.screen, Screen::Monitor | Screen::Projects) {
                 let _ = w.poll.send(Req::MonitorData);
+            }
+            // Log ikut hidup selama viewer-nya terbuka. Di lajur poll, bukan
+            // lajur user: tail tiap dua detik tak boleh mengantre di belakang
+            // (atau di depan) aksi yang ditekan user.
+            if let (Screen::Viewer, Some((View::Logs, project, service, _))) =
+                (app.screen, &app.viewer_ctx)
+            {
+                let _ = w.poll.send(Req::LogTail {
+                    project: project.clone(),
+                    service: service.clone(),
+                    since: app.log_cursor.clone(),
+                });
             }
             app.refresh_inflight = true;
             last_stats = Instant::now();
@@ -266,7 +280,7 @@ fn send_initial(req_tx: &Sender<Req>) {
 
 // ---------- Worker (network di thread terpisah agar UI tak nge-freeze) ----------
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum View {
     Logs,
     Env,
@@ -326,6 +340,13 @@ enum Req {
     MaintInfo,
     /// Pembersihan Docker: systemPrune / cleanupDockerImages / cleanupDockerBuilder.
     MaintAction(&'static str),
+    /// Ronde tail log berikutnya. `since` = timestamp terbaru yang sudah
+    /// terlihat; None = batch pertama.
+    LogTail {
+        project: String,
+        service: String,
+        since: Option<String>,
+    },
     /// Daftar repo GitHub untuk dropdown "Repo" di form "Service baru".
     ///
     /// Form source memakai ConfigForm, tapi itu butuh service yang SUDAH ada —
@@ -406,6 +427,11 @@ enum Resp {
         build: bool,
         data: Value,
         repos: Vec<String>,
+    },
+    /// Baris log yang lebih baru dari `since`, plus kursor untuk ronde berikutnya.
+    LogTail {
+        lines: Vec<String>,
+        cursor: Option<String>,
     },
     /// Daftar kosong = GitHub tak tersambung; "Repo" tetap jadi input teks.
     Repos(Vec<String>),
@@ -535,6 +561,25 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                     project,
                     parse_services(&v).into_iter().map(|(n, _)| n).collect(),
                 ),
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::LogTail {
+            project,
+            service,
+            since,
+        } => {
+            let mut input = json!({
+                "projectName": project, "serviceName": service, "limit": 200
+            });
+            if let Some(ts) = &since {
+                input["start"] = json!(crate::logs::after(ts));
+            }
+            match client.call("logs", "queryServiceLogs", input) {
+                Ok(v) => Resp::LogTail {
+                    lines: crate::logs::format(&v),
+                    cursor: crate::logs::newest_ts(&v),
+                },
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
@@ -1990,6 +2035,12 @@ struct App {
     viewer_lines: Vec<String>,
     viewer_scroll: u16,
     viewer_ctx: Option<(View, String, String, String)>,
+    /// Timestamp log terbaru yang sudah tampil; penanda lanjut buat tail.
+    /// Some = tail aktif (hanya untuk View::Logs).
+    log_cursor: Option<String>,
+    /// Viewer menempel di baris terakhir. Log tumbuh dari bawah, jadi tanpa ini
+    /// baris baru datang di luar layar dan tail-nya tampak mati.
+    viewer_follow: bool,
 
     /// Teks filter untuk tabel layar aktif ("" = tanpa filter).
     filter: String,
@@ -2039,6 +2090,8 @@ impl App {
             viewer_lines: Vec::new(),
             viewer_scroll: 0,
             viewer_ctx: None,
+            log_cursor: None,
+            viewer_follow: false,
             filter: String::new(),
             filter_input: false,
             help: false,
@@ -2144,6 +2197,20 @@ impl App {
                 select_first(&mut self.hosts_state, self.hosts.len());
             }
             Resp::MaintInfo(rows) => self.maint = rows,
+            Resp::LogTail { lines, cursor } => {
+                // Batch pertama tiba ke viewer_lines yang kosong, jadi menambah
+                // = mengganti; ronde berikutnya menyambung. Tak perlu tahu yang
+                // mana: `since` yang menentukan apa yang dikirim server.
+                if !lines.is_empty() {
+                    self.viewer_lines.extend(lines);
+                    // Tail berjam-jam tak boleh menumpuk tanpa batas.
+                    let extra = self.viewer_lines.len().saturating_sub(LOG_BUFFER);
+                    self.viewer_lines.drain(..extra);
+                }
+                if cursor.is_some() {
+                    self.log_cursor = cursor;
+                }
+            }
             Resp::Repos(repos) => {
                 if let Some(f) = self
                     .form
@@ -3125,14 +3192,23 @@ impl App {
         match code {
             // Viewer dimasuki dari sebuah service, jadi Esc mengembalikan ke sana.
             KeyCode::Esc => self.screen = Screen::Projects,
+            // Menggulung ke atas melepas tempelan: kalau tidak, baris log yang
+            // baru datang akan menyeret layar kembali ke bawah persis saat user
+            // sedang membaca sesuatu di atas.
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::PageUp | KeyCode::Home => {
+                self.viewer_follow = false;
+                let step = if code == KeyCode::PageUp { 10 } else { 1 };
+                self.viewer_scroll = match code {
+                    KeyCode::Home => 0,
+                    _ => self.viewer_scroll.saturating_sub(step),
+                };
+            }
+            // End menempel kembali ke baris terakhir dan melanjutkan mengikuti.
+            KeyCode::End => self.viewer_follow = true,
             KeyCode::Down | KeyCode::Char('j') => {
                 self.viewer_scroll = self.viewer_scroll.saturating_add(1)
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.viewer_scroll = self.viewer_scroll.saturating_sub(1)
-            }
             KeyCode::PageDown => self.viewer_scroll = self.viewer_scroll.saturating_add(10),
-            KeyCode::PageUp => self.viewer_scroll = self.viewer_scroll.saturating_sub(10),
             _ => {}
         }
     }
@@ -3141,6 +3217,27 @@ impl App {
         if let Some((p, s, t)) = self.selected_row() {
             self.viewer_ctx = Some((view, p.clone(), s.clone(), t.clone()));
             self.status = format!("Memuat {}...", view.title());
+            // Log itu aliran, bukan dokumen: mulai dari kosong, tempel ke baris
+            // terakhir, dan biarkan lajur poll menyambungnya. Tampilan lain
+            // adalah snapshot dan tetap mulai dari atas.
+            if view == View::Logs {
+                self.viewer_lines.clear();
+                self.viewer_scroll = 0;
+                self.log_cursor = None;
+                self.viewer_follow = true;
+                // Tampilan lain berpindah layar lewat Resp::Viewer; log tak lewat
+                // sana, jadi perpindahannya harus di sini. Tanpa ini Enter tampak
+                // tak melakukan apa pun.
+                self.viewer_title = format!("Logs · {p}/{s}");
+                self.screen = Screen::Viewer;
+                let _ = req.send(Req::LogTail {
+                    project: p,
+                    service: s,
+                    since: None,
+                });
+                return;
+            }
+            self.viewer_follow = false;
             let _ = req.send(Req::Fetch {
                 view,
                 project: p,
@@ -3270,8 +3367,8 @@ fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("X", "hapus project"),
         ],
         Screen::Viewer => &[
-            Key("↑↓", "scroll"),
-            Key("PgUp/PgDn", "lompat"),
+            Key("↑↓ / PgUp/PgDn", "scroll (melepas ikut-baris-terakhir)"),
+            Key("End", "ikuti baris terakhir lagi (log)"),
             Key("Esc", "kembali ke Services"),
         ],
     }
@@ -3849,10 +3946,26 @@ fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn render_viewer(f: &mut Frame, area: Rect, app: &App) {
+fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
+    // Tinggi baru diketahui saat render, jadi posisi "menempel di bawah" dihitung
+    // di sini — bukan di handler, yang tak tahu sebesar apa layarnya.
+    if app.viewer_follow {
+        let rows = area.height.saturating_sub(2);
+        app.viewer_scroll = (app.viewer_lines.len() as u16).saturating_sub(rows);
+    }
     f.render_widget(
         Paragraph::new(app.viewer_lines.join("\n"))
-            .block(Block::bordered().title(format!(" {} ", app.viewer_title)))
+            .block(Block::bordered().title(format!(
+                " {}{} ",
+                app.viewer_title,
+                // Katakan kalau memang hidup. Tanpa ini, log yang diam tak bisa
+                // dibedakan dari tail yang mati.
+                match (app.log_cursor.is_some(), app.viewer_follow) {
+                    (true, true) => " · live",
+                    (true, false) => " · live (dijeda — End untuk ikut lagi)",
+                    _ => "",
+                }
+            )))
             .scroll((app.viewer_scroll, 0)),
         area,
     );

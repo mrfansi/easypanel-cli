@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-07-17
+
+### Added
+
+- **Service logs tail live.** `Enter` on a service used to fetch 200 lines once and show
+  that snapshot forever — open it, and it was already out of date. The pane now sticks
+  to the newest line and new output appears as the service produces it. Scrolling up
+  pauses the follow (the title says so, rather than leaving you guessing) and `End`
+  resumes it.
+
+  There is no streaming endpoint to use: the entire API has one `text/event-stream`
+  route and it belongs to the Actions list. So the tail polls `queryServiceLogs` every
+  two seconds with `start` set past the newest line already shown — fetching only what
+  is new instead of re-pulling 200 lines each round — on the metrics lane, so it never
+  queues behind a keystroke. `start` must be a **string** of nanoseconds; a number is
+  rejected with "Input validation failed" (established against a live server, not
+  guessed). The buffer is capped at 5,000 lines so an hours-long tail cannot grow
+  without bound.
+
+  Known limit, stated rather than hidden: two log lines written in the same nanosecond
+  would cost the second one. The alternative — an inclusive cursor plus de-duplication —
+  re-fetches lines every round to defend against something that does not happen in
+  practice.
+
 ## [0.10.0] — 2026-07-17
 
 ### Added

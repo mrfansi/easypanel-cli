@@ -44,6 +44,39 @@ pub fn format(result: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Timestamp (nanodetik) baris terbaru, untuk melanjutkan tail dari sini.
+///
+/// queryServiceLogs menerima `start`, jadi tail cukup meminta yang lebih baru
+/// dari ini — bukan menarik ulang 200 baris tiap dua detik. `start` WAJIB string;
+/// mengirim angka ditolak dengan "Input validation failed" (diuji ke server).
+pub fn newest_ts(result: &Value) -> Option<String> {
+    result
+        .get("entries")?
+        .as_array()?
+        .iter()
+        .filter_map(|e| e.get("values")?.as_array())
+        .flatten()
+        .filter_map(|p| p.as_array()?.first()?.as_str())
+        // Panjang dulu, baru leksikografis: "9" > "10" kalau dibandingkan
+        // sebagai teks, dan nanodetik bisa berganti jumlah digit.
+        .max_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)))
+        .map(str::to_string)
+}
+
+/// Timestamp berikutnya yang belum terlihat, untuk dipakai sebagai `start`.
+///
+/// Ceiling yang diketahui: dua baris pada nanodetik yang SAMA persis membuat
+/// yang kedua terlewat. Nanodetik bertabrakan praktis tak terjadi, dan
+/// alternatifnya (start inklusif + dedupe) menarik ulang baris tiap ronde.
+pub fn after(ts: &str) -> String {
+    match ts.parse::<u64>() {
+        Ok(n) => (n + 1).to_string(),
+        // Bukan angka: minta dari sini lagi dan biarkan satu baris terulang,
+        // ketimbang melompati log yang belum terlihat.
+        Err(_) => ts.to_string(),
+    }
+}
+
 fn format_time(ns: &str) -> String {
     let secs = ns.parse::<i64>().unwrap_or(0) / 1_000_000_000;
     Local
@@ -81,6 +114,41 @@ mod tests {
     #[test]
     fn falls_back_to_plain_strings() {
         assert_eq!(format(&json!(["satu", "dua"])), vec!["satu", "dua"]);
+    }
+
+    #[test]
+    fn newest_ts_survives_a_digit_change() {
+        // Nanodetik dibandingkan sebagai teks akan bilang "9..." > "10...".
+        // Kursor yang meleset ke belakang mengulang log; yang meleset ke depan
+        // MELEWATKANNYA diam-diam.
+        let v = json!({ "entries": [{ "values": [
+            ["9999999999999999999", "lama, digitnya kurang"],
+            ["10000000000000000000", "baru"],
+        ]}]});
+        assert_eq!(newest_ts(&v).as_deref(), Some("10000000000000000000"));
+    }
+
+    #[test]
+    fn newest_ts_reads_across_every_entry_group() {
+        // queryServiceLogs mengelompokkan per label stream; yang terbaru bisa
+        // ada di grup mana pun.
+        let v = json!({ "entries": [
+            { "values": [["1600000000000000000", "a"]] },
+            { "values": [["1600000060000000000", "b"]] },
+        ]});
+        assert_eq!(newest_ts(&v).as_deref(), Some("1600000060000000000"));
+        assert_eq!(newest_ts(&json!({})), None);
+        assert_eq!(newest_ts(&json!({ "entries": [] })), None);
+    }
+
+    #[test]
+    fn after_asks_for_the_next_nanosecond_only() {
+        // start bersifat inklusif: meminta ulang ts yang sama akan mengirim
+        // balik baris yang sudah tampil.
+        assert_eq!(after("1600000000000000000"), "1600000000000000001");
+        // Bukan angka -> jangan melompat. Satu baris terulang jauh lebih baik
+        // daripada satu baris hilang tanpa jejak.
+        assert_eq!(after("bukan-angka"), "bukan-angka");
     }
 
     #[test]
