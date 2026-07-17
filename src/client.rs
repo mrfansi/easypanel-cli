@@ -40,7 +40,7 @@ impl EasypanelClient {
         let status = resp.status();
         if !status.is_success() {
             if status.as_u16() == 401 {
-                bail!("Token tidak valid atau kadaluarsa (401).");
+                bail!("Invalid or expired token (401).");
             }
             let body: Value = resp.json().unwrap_or(Value::Null);
             // EasyPanel menaruh pesan error DI DALAM "json", sama seperti respons
@@ -117,7 +117,7 @@ mod tests {
         let err = client
             .call("projects", "listProjects", Value::Null)
             .unwrap_err();
-        assert!(err.to_string().contains("Token tidak valid"));
+        assert!(err.to_string().contains("Invalid or expired token"));
     }
 
     #[test]

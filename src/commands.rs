@@ -14,15 +14,12 @@ use crate::output::{
 /// Resolve klien untuk server aktif (dari --server atau default).
 pub fn resolve_client(cfg: &ServerConfig, server: &Option<String>) -> Result<EasypanelClient> {
     let s = match server {
-        Some(name) => cfg.get(name).ok_or_else(|| {
-            anyhow!(
-                "Server '{}' tidak ditemukan. Lihat: easypanel server list",
-                name
-            )
-        })?,
+        Some(name) => cfg
+            .get(name)
+            .ok_or_else(|| anyhow!("Server '{}' not found. See: easypanel server list", name))?,
         None => cfg
             .default()
-            .ok_or_else(|| anyhow!("Belum ada server default. Jalankan: easypanel server add"))?,
+            .ok_or_else(|| anyhow!("No default server. Run: easypanel server add"))?,
     };
     Ok(EasypanelClient::new(&s.url, &s.token))
 }
@@ -51,10 +48,10 @@ pub fn server_add(
 ) -> Result<()> {
     let name = match name {
         Some(n) => n,
-        None => Input::new().with_prompt("Nama server").interact_text()?,
+        None => Input::new().with_prompt("Server name").interact_text()?,
     };
     if !valid_name(&name) {
-        return Err(anyhow!("Nama server hanya boleh a-z, 0-9, -, _"));
+        return Err(anyhow!("Server names may only contain a-z, 0-9, - and _"));
     }
     let url = match url {
         Some(u) => u,
@@ -82,7 +79,7 @@ pub fn server_add(
 pub fn server_list(cfg: &ServerConfig) -> Result<()> {
     let servers = cfg.all();
     if servers.is_empty() {
-        println!("Belum ada server. Jalankan: easypanel server add");
+        println!("No servers configured yet. Run: easypanel server add");
         return Ok(());
     }
 
@@ -97,13 +94,13 @@ pub fn server_list(cfg: &ServerConfig) -> Result<()> {
             ]
         })
         .collect();
-    table(&["Default", "Nama", "URL", "Token"], rows);
+    table(&["Default", "Name", "URL", "Token"], rows);
     Ok(())
 }
 
 pub fn server_use(cfg: &ServerConfig, name: &str) -> Result<()> {
     if cfg.get(name).is_none() {
-        return Err(anyhow!("Server '{}' tidak ditemukan.", name));
+        return Err(anyhow!("Server '{}' not found.", name));
     }
     cfg.set_default(name)?;
     println!("Server default sekarang: {name}");
@@ -112,10 +109,10 @@ pub fn server_use(cfg: &ServerConfig, name: &str) -> Result<()> {
 
 pub fn server_remove(cfg: &ServerConfig, name: &str) -> Result<()> {
     if cfg.get(name).is_none() {
-        return Err(anyhow!("Server '{}' tidak ditemukan.", name));
+        return Err(anyhow!("Server '{}' not found.", name));
     }
     cfg.remove(name)?;
-    println!("Server '{name}' dihapus.");
+    println!("Server '{name}' removed.");
     Ok(())
 }
 
@@ -133,7 +130,7 @@ pub fn project_list(client: &EasypanelClient) -> Result<()> {
     let projects = client.call("projects", "listProjects", Value::Null)?;
     let arr = projects.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada project.");
+        println!("No projects.");
         return Ok(());
     }
 
@@ -151,16 +148,16 @@ pub fn project_list(client: &EasypanelClient) -> Result<()> {
             ]
         })
         .collect();
-    table(&["Nama", "Dibuat", "Members"], rows);
+    table(&["Name", "Created", "Members"], rows);
     Ok(())
 }
 
 pub fn project_create(client: &EasypanelClient, name: &str) -> Result<()> {
     if !valid_name(name) {
-        return Err(anyhow!("Nama project hanya boleh a-z, 0-9, -, _"));
+        return Err(anyhow!("Project names may only contain a-z, 0-9, - and _"));
     }
     client.call("projects", "createProject", json!({ "name": name }))?;
-    println!("Project '{name}' dibuat.");
+    println!("Project '{name}' created.");
     Ok(())
 }
 
@@ -191,7 +188,7 @@ pub fn project_inspect(client: &EasypanelClient, name: &str) -> Result<()> {
             ]
         })
         .collect();
-    table(&["Service", "Tipe", "Aktif"], rows);
+    table(&["Service", "Type", "Enabled"], rows);
     Ok(())
 }
 
@@ -214,7 +211,7 @@ pub fn service_action(
         &format!("{action}Service"),
         input,
     )?;
-    println!("{} dipicu untuk {}/{}.", ucfirst(action), project, service);
+    println!("{} triggered for {}/{}.", ucfirst(action), project, service);
     Ok(())
 }
 
@@ -232,7 +229,7 @@ pub fn service_logs(
 
     let lines = logs::format(&result);
     if lines.is_empty() {
-        println!("Tidak ada log.");
+        println!("No logs.");
         return Ok(());
     }
     for line in lines {
@@ -247,7 +244,7 @@ pub fn service_logs(
 /// berisi laju network + total/used byte, tak seperti `monitorOld` (~2,3 detik).
 pub fn stats(client: &EasypanelClient) -> Result<()> {
     let s = client.call("metrics", "getSystemStats", json!({}))?;
-    table(&["Metrik", "Nilai"], stats_rows(&s));
+    table(&["Metric", "Value"], stats_rows(&s));
     Ok(())
 }
 
@@ -302,7 +299,7 @@ pub fn node_list(client: &EasypanelClient) -> Result<()> {
     let nodes = client.call("cluster", "listNodes", Value::Null)?;
     let arr = nodes.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada node (atau host bukan cluster).");
+        println!("No nodes (or this host is not a cluster).");
         return Ok(());
     }
 
@@ -363,7 +360,7 @@ pub fn service_set_env(
         "updateEnv",
         json!({ "projectName": project, "serviceName": service, "env": env }),
     )?;
-    println!("Env untuk {project}/{service} diperbarui.");
+    println!("Env for {project}/{service} updated.");
     Ok(())
 }
 
@@ -377,7 +374,7 @@ pub fn ports_list(client: &EasypanelClient, project: &str, service: &str) -> Res
     )?;
     let arr = ports.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada port ter-expose.");
+        println!("No exposed ports.");
         return Ok(());
     }
     let rows = arr
@@ -392,7 +389,7 @@ pub fn ports_list(client: &EasypanelClient, project: &str, service: &str) -> Res
             ]
         })
         .collect();
-    table(&["Index", "Protokol", "Published", "Target"], rows);
+    table(&["Index", "Protocol", "Published", "Target"], rows);
     Ok(())
 }
 
@@ -428,7 +425,7 @@ pub fn port_remove(
         "deletePort",
         json!({ "projectName": project, "serviceName": service, "index": index }),
     )?;
-    println!("Port index {index} dihapus dari {project}/{service}.");
+    println!("Port {index} removed from {project}/{service}.");
     Ok(())
 }
 
@@ -442,7 +439,7 @@ pub fn mounts_list(client: &EasypanelClient, project: &str, service: &str) -> Re
     )?;
     let arr = mounts.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada mount.");
+        println!("No mounts.");
         return Ok(());
     }
     let rows = arr
@@ -457,7 +454,7 @@ pub fn mounts_list(client: &EasypanelClient, project: &str, service: &str) -> Re
             vec![i.to_string(), field(m, "/type"), detail]
         })
         .collect();
-    table(&["Index", "Tipe", "Detail"], rows);
+    table(&["Index", "Type", "Detail"], rows);
     Ok(())
 }
 
@@ -473,19 +470,15 @@ pub fn mount_add(
     let values = match kind {
         "volume" => json!({
             "type": "volume",
-            "name": name.ok_or_else(|| anyhow!("--name wajib untuk mount tipe volume"))?,
+            "name": name.ok_or_else(|| anyhow!("--name is required for a volume mount"))?,
             "mountPath": mount_path
         }),
         "bind" => json!({
             "type": "bind",
-            "hostPath": host_path.ok_or_else(|| anyhow!("--host-path wajib untuk mount tipe bind"))?,
+            "hostPath": host_path.ok_or_else(|| anyhow!("--host-path is required for a bind mount"))?,
             "mountPath": mount_path
         }),
-        other => {
-            return Err(anyhow!(
-                "Tipe mount tidak didukung: {other} (pakai volume|bind)"
-            ))
-        }
+        other => return Err(anyhow!("Unsupported mount type: {other} (use volume|bind)")),
     };
     client.call(
         "mounts",
@@ -507,7 +500,7 @@ pub fn mount_remove(
         "deleteMount",
         json!({ "projectName": project, "serviceName": service, "index": index }),
     )?;
-    println!("Mount index {index} dihapus dari {project}/{service}.");
+    println!("Mount {index} removed from {project}/{service}.");
     Ok(())
 }
 
@@ -521,7 +514,7 @@ pub fn domains_list(client: &EasypanelClient, project: &str, service: &str) -> R
     )?;
     let arr = domains.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada domain.");
+        println!("No domains.");
         return Ok(());
     }
     let rows = arr
@@ -546,13 +539,13 @@ pub fn domains_list(client: &EasypanelClient, project: &str, service: &str) -> R
 
 pub fn domain_delete(client: &EasypanelClient, id: &str) -> Result<()> {
     client.call("domains", "deleteDomain", json!({ "id": id }))?;
-    println!("Domain {id} dihapus.");
+    println!("Domain {id} deleted.");
     Ok(())
 }
 
 pub fn domain_set_primary(client: &EasypanelClient, id: &str) -> Result<()> {
     client.call("domains", "setPrimaryDomain", json!({ "id": id }))?;
-    println!("Domain {id} dijadikan primary.");
+    println!("Domain {id} is now primary.");
     Ok(())
 }
 
@@ -565,14 +558,14 @@ pub fn service_create(
     stype: &str,
 ) -> Result<()> {
     if !valid_name(service) {
-        return Err(anyhow!("Nama service hanya boleh a-z, 0-9, -, _"));
+        return Err(anyhow!("Service names may only contain a-z, 0-9, - and _"));
     }
     client.call(
         &format!("services/{stype}"),
         "createService",
         json!({ "projectName": project, "serviceName": service }),
     )?;
-    println!("Service {service} ({stype}) dibuat di {project}.");
+    println!("Service {service} ({stype}) created in {project}.");
     Ok(())
 }
 
@@ -584,7 +577,7 @@ pub fn service_destroy(
     yes: bool,
 ) -> Result<()> {
     if !confirm(
-        &format!("Hapus service '{service}' pada '{project}'? Tidak bisa dibatalkan."),
+        &format!("Destroy service '{service}' in '{project}'? This cannot be undone."),
         yes,
     )? {
         return Ok(());
@@ -594,19 +587,19 @@ pub fn service_destroy(
         "destroyService",
         json!({ "projectName": project, "serviceName": service }),
     )?;
-    println!("Service {project}/{service} dihapus.");
+    println!("Service {project}/{service} destroyed.");
     Ok(())
 }
 
 pub fn project_destroy(client: &EasypanelClient, name: &str, yes: bool) -> Result<()> {
     if !confirm(
-        &format!("Hapus project '{name}' beserta semua service-nya? Tidak bisa dibatalkan."),
+        &format!("Destroy project '{name}' and every service in it? This cannot be undone."),
         yes,
     )? {
         return Ok(());
     }
     client.call("projects", "destroyProject", json!({ "name": name }))?;
-    println!("Project {name} dihapus.");
+    println!("Project {name} destroyed.");
     Ok(())
 }
 
@@ -626,7 +619,7 @@ pub fn certificate_list(client: &EasypanelClient) -> Result<()> {
     let certs = client.call("certificates", "listCertificates", Value::Null)?;
     let arr = certs.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada certificate.");
+        println!("No certificates.");
         return Ok(());
     }
     let rows = arr.iter().map(|c| vec![field(c, "/domain/main")]).collect();
@@ -640,7 +633,7 @@ pub fn certificate_remove(client: &EasypanelClient, domain: &str) -> Result<()> 
         "removeCertificate",
         json!({ "domain": domain }),
     )?;
-    println!("Certificate untuk {domain} dihapus.");
+    println!("Certificate for {domain} removed.");
     Ok(())
 }
 
@@ -654,14 +647,14 @@ pub fn notification_list(client: &EasypanelClient) -> Result<()> {
         .cloned()
         .unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada notification channel.");
+        println!("No notification channels.");
         return Ok(());
     }
     let rows = arr
         .iter()
         .map(|c| vec![field(c, "/id"), field(c, "/name")])
         .collect();
-    table(&["ID", "Nama"], rows);
+    table(&["ID", "Name"], rows);
     Ok(())
 }
 
@@ -671,7 +664,7 @@ pub fn notification_delete(client: &EasypanelClient, id: &str) -> Result<()> {
         "destroyNotificationChannel",
         json!({ "id": id }),
     )?;
-    println!("Notification channel {id} dihapus.");
+    println!("Notification channel {id} deleted.");
     Ok(())
 }
 
@@ -685,7 +678,7 @@ pub fn service_databases(client: &EasypanelClient, project: &str, service: &str)
     )?;
     let arr = dbs.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada database.");
+        println!("No databases.");
         return Ok(());
     }
     for db in arr {
@@ -704,7 +697,7 @@ pub fn db_backup_list(client: &EasypanelClient, project: &str, service: &str) ->
     )?;
     let arr = res.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada database backup.");
+        println!("No database backups.");
         return Ok(());
     }
     let rows = arr
@@ -718,13 +711,13 @@ pub fn db_backup_list(client: &EasypanelClient, project: &str, service: &str) ->
             ]
         })
         .collect();
-    table(&["ID", "Database", "Schedule", "Aktif"], rows);
+    table(&["ID", "Database", "Schedule", "Enabled"], rows);
     Ok(())
 }
 
 pub fn db_backup_run(client: &EasypanelClient, id: &str) -> Result<()> {
     client.call("databaseBackups", "runDatabaseBackup", json!({ "id": id }))?;
-    println!("Backup database {id} dijalankan.");
+    println!("Database backup {id} started.");
     Ok(())
 }
 
@@ -734,7 +727,7 @@ pub fn db_backup_delete(client: &EasypanelClient, id: &str) -> Result<()> {
         "deleteDatabaseBackup",
         json!({ "id": id }),
     )?;
-    println!("Backup database {id} dihapus.");
+    println!("Database backup {id} deleted.");
     Ok(())
 }
 
@@ -746,7 +739,7 @@ pub fn volume_backup_list(client: &EasypanelClient, project: &str, service: &str
     )?;
     let arr = res.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada volume backup.");
+        println!("No volume backups.");
         return Ok(());
     }
     let rows = arr
@@ -760,19 +753,19 @@ pub fn volume_backup_list(client: &EasypanelClient, project: &str, service: &str
             ]
         })
         .collect();
-    table(&["ID", "Volume", "Schedule", "Aktif"], rows);
+    table(&["ID", "Volume", "Schedule", "Enabled"], rows);
     Ok(())
 }
 
 pub fn volume_backup_run(client: &EasypanelClient, id: &str) -> Result<()> {
     client.call("volumeBackups", "runVolumeBackup", json!({ "id": id }))?;
-    println!("Volume backup {id} dijalankan.");
+    println!("Volume backup {id} started.");
     Ok(())
 }
 
 pub fn volume_backup_delete(client: &EasypanelClient, id: &str) -> Result<()> {
     client.call("volumeBackups", "destroyVolumeBackup", json!({ "id": id }))?;
-    println!("Volume backup {id} dihapus.");
+    println!("Volume backup {id} deleted.");
     Ok(())
 }
 
@@ -824,7 +817,7 @@ pub fn action_row(a: &Value, desc_max: usize) -> Vec<String> {
     ]
 }
 
-pub const ACTION_HEADERS: [&str; 5] = ["Status", "Target", "Deskripsi", "Durasi", "Umur"];
+pub const ACTION_HEADERS: [&str; 5] = ["Status", "Target", "Description", "Duration", "Age"];
 
 pub fn action_list(
     client: &EasypanelClient,
@@ -837,7 +830,7 @@ pub fn action_list(
     let actions = client.call("actions", "listActions", input)?;
     let arr = actions.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada action.");
+        println!("No actions.");
         return Ok(());
     }
     table(
@@ -906,7 +899,7 @@ pub fn monitor_services(client: &EasypanelClient) -> Result<()> {
     let data = client.call("metrics", "getAllServicesStats", json!({}))?;
     let arr = data.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada service berjalan.");
+        println!("No running services.");
         return Ok(());
     }
     table(&MONITOR_HEADERS, monitor_rows(arr));
@@ -928,13 +921,13 @@ pub fn storage_rows(mut arr: Vec<Value>) -> Vec<Vec<String>> {
         .collect()
 }
 
-pub const STORAGE_HEADERS: [&str; 4] = ["Project", "Service", "Ukuran", "Path"];
+pub const STORAGE_HEADERS: [&str; 4] = ["Project", "Service", "Size", "Path"];
 
 pub fn monitor_storage(client: &EasypanelClient) -> Result<()> {
     let data = client.call("monitorOld", "getStorageStats", Value::Null)?;
     let arr = data.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada data storage.");
+        println!("No storage data.");
         return Ok(());
     }
     table(&STORAGE_HEADERS, storage_rows(arr));
@@ -989,7 +982,7 @@ pub fn domain_list_all(client: &EasypanelClient) -> Result<()> {
     let domains = client.call("domains", "listDomains", json!({}))?;
     let arr = domains.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
-        println!("Tidak ada domain.");
+        println!("No domains.");
         return Ok(());
     }
     table(&DOMAIN_HEADERS, arr.iter().map(domain_row).collect());
@@ -1017,13 +1010,13 @@ pub fn maintenance_info(client: &EasypanelClient) -> Result<()> {
 /// Pembersihan Docker; `op` sudah dibatasi enum CLI.
 pub fn maintenance_clean(client: &EasypanelClient, op: &str, label: &str, yes: bool) -> Result<()> {
     if !confirm(
-        &format!("{label} pada seluruh host? Tidak bisa dibatalkan."),
+        &format!("{label} on the whole host? This cannot be undone."),
         yes,
     )? {
         return Ok(());
     }
     client.call("settings", op, Value::Null)?;
-    println!("{label}: selesai.");
+    println!("{label}: done.");
     Ok(())
 }
 
@@ -1045,7 +1038,7 @@ pub fn storage_providers(client: &EasypanelClient) -> Result<()> {
                 .collect()
         })
         .unwrap_or_default();
-    table(&["ID", "Nama", "Tipe", "Path"], rows);
+    table(&["ID", "Name", "Type", "Path"], rows);
     Ok(())
 }
 
@@ -1074,10 +1067,10 @@ pub fn backup_db_restore(
             let all = v.as_array().cloned().unwrap_or_default();
             match all.len() {
                 1 => field(&all[0], "/id"),
-                0 => anyhow::bail!("Tidak ada storage provider terkonfigurasi."),
+                0 => anyhow::bail!("No storage provider is configured."),
                 n => anyhow::bail!(
-                    "Ada {n} storage provider; pilih salah satu dengan --provider \
-                     (lihat: easypanel backup providers)."
+                    "There are {n} storage providers; pick one with --provider \
+                     (see: easypanel backup providers)."
                 ),
             }
         }
@@ -1085,8 +1078,8 @@ pub fn backup_db_restore(
 
     if !confirm(
         &format!(
-            "Restore '{database}' pada {project}/{service} dari '{path}'? \
-             Isi database sekarang akan DITIMPA dan tidak bisa dikembalikan."
+            "Restore '{database}' on {project}/{service} from '{path}'? \
+             The current database contents will be OVERWRITTEN and cannot be recovered."
         ),
         yes,
     )? {
@@ -1104,7 +1097,7 @@ pub fn backup_db_restore(
             "storageProviderId": provider_id,
         }),
     )?;
-    println!("Restore '{database}' dijalankan.");
+    println!("Restore of '{database}' started.");
     Ok(())
 }
 

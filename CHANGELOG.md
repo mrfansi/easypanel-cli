@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-17
+
+### Changed
+
+- **The CLI now speaks English.** `--help`, the man page, shell completions, table
+  headers, confirmations, error messages and results are all translated — they come
+  from one source, so translating the help text moved all three surfaces at once.
+  The README promised English while the first thing a new user saw was
+  `Belum ada server. Jalankan: easypanel server add`. Half-translating would have
+  been worse than not translating: it reads as broken rather than foreign.
+
+  Code comments and commit messages stay in Indonesian, as before. The TUI is not
+  translated yet.
+
 ## [0.4.0] — 2026-07-17
 
 ### Added
@@ -111,7 +125,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.0
 [0.4.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.4.0
 [0.3.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.2.0

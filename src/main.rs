@@ -13,9 +13,13 @@ use commands::resolve_client;
 use config::ServerConfig;
 
 #[derive(Parser)]
-#[command(name = "easypanel", version, about = "Kelola banyak host EasyPanel")]
+#[command(
+    name = "easypanel",
+    version,
+    about = "Manage many EasyPanel hosts from one terminal"
+)]
 struct Cli {
-    /// Nama server target (default: server bertanda default)
+    /// Target server (default: the one marked default)
     #[arg(long, global = true)]
     server: Option<String>,
 
@@ -25,69 +29,69 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Kelola host EasyPanel
+    /// Manage EasyPanel hosts
     #[command(subcommand)]
     Server(ServerCmd),
-    /// Kelola project
+    /// Manage projects
     #[command(subcommand)]
     Project(ProjectCmd),
-    /// Kelola service (--type default: app)
+    /// Manage services (--type defaults to app)
     #[command(subcommand)]
     Service(ServiceCmd),
-    /// System stats host (CPU/mem/disk/load)
+    /// Host system stats (CPU/mem/disk/load)
     Stats,
-    /// Kelola node cluster
+    /// Manage cluster nodes
     #[command(subcommand)]
     Node(NodeCmd),
-    /// Kelola domain (by id)
+    /// Manage domains (by id)
     #[command(subcommand)]
     Domain(DomainCmd),
-    /// Kelola SSL certificates
+    /// Manage SSL certificates
     #[command(subcommand)]
     Certificate(CertificateCmd),
-    /// Kelola notification channels
+    /// Manage notification channels
     #[command(subcommand)]
     Notification(NotificationCmd),
-    /// Jalankan/hapus backup (by id)
+    /// Run or delete backups (by id)
     #[command(subcommand)]
     Backup(BackupCmd),
-    /// Riwayat action (deploy, destroy, login, ...)
+    /// Action history (deploy, destroy, login, ...)
     #[command(subcommand)]
     Action(ActionCmd),
-    /// Monitoring per-service dan storage
+    /// Per-service monitoring and storage
     #[command(subcommand)]
     Monitor(MonitorCmd),
-    /// Info server & pembersihan Docker
+    /// Server info and Docker cleanup
     Maintenance {
         #[command(subcommand)]
         cmd: MaintenanceCmd,
     },
-    /// Cetak skrip completion shell (bash, zsh, fish, elvish, powershell)
+    /// Print a shell completion script (bash, zsh, fish, elvish, powershell)
     Completions {
-        /// Shell target; kosongkan untuk menebak dari $SHELL
+        /// Target shell; omit to guess from $SHELL
         shell: Option<Shell>,
     },
-    /// Cetak man page (roff) ke stdout
+    /// Print the man page (roff) to stdout
     Man,
-    /// Menu interaktif
+    /// Interactive TUI
     Menu,
 }
 
 #[derive(Subcommand)]
 enum MaintenanceCmd {
-    /// Versi Docker, IP server, ketersediaan update
+    /// Docker version, server IP, update availability
     Info,
-    /// Hapus container/network/image/build cache yang tak terpakai
+    /// Remove unused containers, networks, images and build cache
     Prune {
         #[arg(long)]
         yes: bool,
     },
-    /// Hapus image Docker yang tak terpakai
+    /// Remove unused Docker images
     CleanupImages {
         #[arg(long)]
         yes: bool,
     },
-    /// Hapus build cache Docker
+    /// Remove the Docker build cache
     CleanupBuilder {
         #[arg(long)]
         yes: bool,
@@ -96,7 +100,7 @@ enum MaintenanceCmd {
 
 #[derive(Subcommand)]
 enum ServerCmd {
-    /// Tambah host EasyPanel
+    /// Add an EasyPanel host
     Add {
         name: Option<String>,
         #[arg(long)]
@@ -104,23 +108,23 @@ enum ServerCmd {
         #[arg(long)]
         token: Option<String>,
     },
-    /// Daftar host terkonfigurasi
+    /// List configured hosts
     List,
-    /// Jadikan sebuah server sebagai default
+    /// Make a server the default
     Use { name: String },
-    /// Hapus host
+    /// Remove a host
     Remove { name: String },
 }
 
 #[derive(Subcommand)]
 enum ProjectCmd {
-    /// Daftar project
+    /// List projects
     List,
-    /// Buat project baru
+    /// Create a project
     Create { name: String },
-    /// Lihat detail project dan service-nya
+    /// Inspect a project and its services
     Inspect { name: String },
-    /// Hapus project beserta semua service-nya
+    /// Destroy a project and every service in it
     Destroy {
         name: String,
         #[arg(long)]
@@ -130,7 +134,7 @@ enum ProjectCmd {
 
 #[derive(Subcommand)]
 enum ServiceCmd {
-    /// Deploy service
+    /// Deploy a service
     Deploy {
         project: String,
         service: String,
@@ -139,42 +143,42 @@ enum ServiceCmd {
         #[arg(long)]
         force: bool,
     },
-    /// Restart service
+    /// Restart a service
     Restart {
         project: String,
         service: String,
         #[arg(long = "type", default_value = "app")]
         service_type: String,
     },
-    /// Start service
+    /// Start a service
     Start {
         project: String,
         service: String,
         #[arg(long = "type", default_value = "app")]
         service_type: String,
     },
-    /// Stop service
+    /// Stop a service
     Stop {
         project: String,
         service: String,
         #[arg(long = "type", default_value = "app")]
         service_type: String,
     },
-    /// Tampilkan log service
+    /// Show service logs
     Logs {
         project: String,
         service: String,
         #[arg(long, default_value_t = 100)]
         limit: u32,
     },
-    /// Tampilkan environment variables service
+    /// Show service environment variables
     Env {
         project: String,
         service: String,
         #[arg(long = "type", default_value = "app")]
         service_type: String,
     },
-    /// Ganti environment variables (dari --file atau stdin, menimpa yang lama)
+    /// Replace environment variables (from --file or stdin; overwrites all)
     SetEnv {
         project: String,
         service: String,
@@ -183,9 +187,9 @@ enum ServiceCmd {
         #[arg(long)]
         file: Option<String>,
     },
-    /// Daftar port ter-expose
+    /// List exposed ports
     Ports { project: String, service: String },
-    /// Tambah port (published:target)
+    /// Add a port (published:target)
     PortAdd {
         project: String,
         service: String,
@@ -196,16 +200,16 @@ enum ServiceCmd {
         #[arg(long, default_value = "tcp")]
         protocol: String,
     },
-    /// Hapus port berdasarkan index
+    /// Remove a port by index
     PortRemove {
         project: String,
         service: String,
         #[arg(long)]
         index: u32,
     },
-    /// Daftar mount
+    /// List mounts
     Mounts { project: String, service: String },
-    /// Tambah mount (volume|bind)
+    /// Add a mount (volume|bind)
     MountAdd {
         project: String,
         service: String,
@@ -213,36 +217,36 @@ enum ServiceCmd {
         kind: String,
         #[arg(long = "mount-path")]
         mount_path: String,
-        /// Nama volume (untuk --kind volume)
+        /// Volume name (for --kind volume)
         #[arg(long)]
         name: Option<String>,
-        /// Path host (untuk --kind bind)
+        /// Host path (for --kind bind)
         #[arg(long = "host-path")]
         host_path: Option<String>,
     },
-    /// Hapus mount berdasarkan index
+    /// Remove a mount by index
     MountRemove {
         project: String,
         service: String,
         #[arg(long)]
         index: u32,
     },
-    /// Daftar domain service
+    /// List a service's domains
     Domains { project: String, service: String },
-    /// Daftar database dalam service database
+    /// List databases inside a database service
     Databases { project: String, service: String },
-    /// Daftar jadwal backup database service
+    /// List database backup schedules
     Backups { project: String, service: String },
-    /// Daftar jadwal backup volume service
+    /// List volume backup schedules
     VolumeBackups { project: String, service: String },
-    /// Buat service kosong (konfigurasi source menyusul)
+    /// Create an empty service (configure its source afterwards)
     Create {
         project: String,
         service: String,
         #[arg(long = "type", default_value = "app")]
         service_type: String,
     },
-    /// Hapus service
+    /// Destroy a service
     Destroy {
         project: String,
         service: String,
@@ -255,23 +259,23 @@ enum ServiceCmd {
 
 #[derive(Subcommand)]
 enum NodeCmd {
-    /// Daftar node cluster
+    /// List cluster nodes
     List,
 }
 
 #[derive(Subcommand)]
 enum DomainCmd {
-    /// Daftar semua domain di host (source -> destination)
+    /// List every domain on the host (source -> destination)
     List,
-    /// Hapus domain berdasarkan id
+    /// Delete a domain by id
     Delete { id: String },
-    /// Jadikan domain sebagai primary
+    /// Make a domain primary
     SetPrimary { id: String },
 }
 
 #[derive(Subcommand)]
 enum ActionCmd {
-    /// Daftar action terbaru
+    /// List recent actions
     List {
         #[arg(long, default_value_t = 25)]
         limit: u32,
@@ -279,64 +283,64 @@ enum ActionCmd {
         project: Option<String>,
         #[arg(long)]
         service: Option<String>,
-        /// Filter tipe (mis. deployment)
+        /// Filter by type (e.g. deployment)
         #[arg(long = "type")]
         action_type: Option<String>,
     },
-    /// Hentikan action yang sedang berjalan
+    /// Kill a running action
     Kill { id: String },
 }
 
 #[derive(Subcommand)]
 enum MonitorCmd {
-    /// CPU/memori/network per project & service
+    /// CPU/memory/network per project and service
     Services,
-    /// Pemakaian storage per service
+    /// Storage usage per service
     Storage,
 }
 
 #[derive(Subcommand)]
 enum CertificateCmd {
-    /// Daftar certificate
+    /// List certificates
     List,
-    /// Hapus certificate berdasarkan domain
+    /// Remove a certificate by domain
     Remove { domain: String },
 }
 
 #[derive(Subcommand)]
 enum NotificationCmd {
-    /// Daftar notification channel
+    /// List notification channels
     List,
-    /// Hapus notification channel berdasarkan id
+    /// Delete a notification channel by id
     Delete { id: String },
 }
 
 #[derive(Subcommand)]
 enum BackupCmd {
-    /// Jalankan backup database sekarang (by id)
+    /// Run a database backup now (by id)
     DbRun { id: String },
-    /// Hapus jadwal backup database (by id)
+    /// Delete a database backup schedule (by id)
     DbDelete { id: String },
-    /// Jalankan backup volume sekarang (by id)
+    /// Run a volume backup now (by id)
     VolumeRun { id: String },
-    /// Hapus jadwal backup volume (by id)
+    /// Delete a volume backup schedule (by id)
     VolumeDelete { id: String },
-    /// Storage provider terdaftar (id-nya dibutuhkan db-restore)
+    /// List storage providers (db-restore needs their id)
     Providers,
-    /// Restore database dari sebuah file backup (MENIMPA isi database)
+    /// Restore a database from a backup file (OVERWRITES the database)
     DbRestore {
         #[arg(long)]
         project: String,
         #[arg(long)]
         service: String,
-        /// Nama database tujuan
+        /// Target database name
         #[arg(long)]
         database: String,
-        /// Path file backup di storage provider. Wajib: API EasyPanel tak punya
-        /// endpoint untuk mendaftar file backup yang ada.
+        /// Path to the backup file in the storage provider. Required: the EasyPanel
+        /// API has no endpoint that lists existing backup files.
         #[arg(long)]
         path: String,
-        /// Id storage provider (opsional bila cuma ada satu)
+        /// Storage provider id (optional when only one exists)
         #[arg(long)]
         provider: Option<String>,
         #[arg(long)]
@@ -380,7 +384,7 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
 
         None | Some(Command::Menu) => {
             if cfg.all().is_empty() {
-                println!("Belum ada server. Jalankan: easypanel server add");
+                println!("No servers configured yet. Run: easypanel server add");
                 return Ok(());
             }
             let name = cli
@@ -632,18 +636,18 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
             match cmd {
                 MaintenanceCmd::Info => commands::maintenance_info(&client),
                 MaintenanceCmd::Prune { yes } => {
-                    commands::maintenance_clean(&client, "systemPrune", "Prune sistem Docker", yes)
+                    commands::maintenance_clean(&client, "systemPrune", "Prune Docker system", yes)
                 }
                 MaintenanceCmd::CleanupImages { yes } => commands::maintenance_clean(
                     &client,
                     "cleanupDockerImages",
-                    "Hapus image tak terpakai",
+                    "Remove unused images",
                     yes,
                 ),
                 MaintenanceCmd::CleanupBuilder { yes } => commands::maintenance_clean(
                     &client,
                     "cleanupDockerBuilder",
-                    "Hapus build cache",
+                    "Remove build cache",
                     yes,
                 ),
             }

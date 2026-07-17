@@ -1223,7 +1223,7 @@ fn parse_services(v: &Value) -> Vec<(String, String)> {
 }
 
 const SERVICE_HEADERS: [&str; 9] = [
-    "Project", "Service", "Tipe", "Status", "Source", "CPU %", "Memory", "Net In", "Net Out",
+    "Project", "Service", "Type", "Status", "Source", "CPU %", "Memory", "Net In", "Net Out",
 ];
 
 /// Satu baris tabel service datar.
