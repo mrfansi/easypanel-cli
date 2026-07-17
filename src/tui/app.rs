@@ -123,6 +123,9 @@ pub(super) struct App {
     pub(super) chooser: Option<Chooser>,
     pub(super) server_action: Option<ServerAction>,
     pub(super) edit_env: Option<(String, String, String)>,
+    /// Indeks field form yang menunggu dibuka di $EDITOR; event_loop yang
+    /// mengerjakannya — hanya ia yang memegang terminal.
+    pub(super) edit_field: Option<usize>,
 
     pub(super) screen: Screen,
     pub(super) should_quit: bool,
@@ -185,6 +188,7 @@ impl App {
             chooser: None,
             server_action: None,
             edit_env: None,
+            edit_field: None,
             screen: Screen::Dashboard,
             should_quit: false,
             refresh_inflight: false,

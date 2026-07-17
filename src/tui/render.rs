@@ -92,7 +92,10 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
 pub(super) const OVERLAY_KEYS: &[Key] = &[
     Key("Tab / ↑↓", "pindah field"),
     Key("Enter", "simpan"),
-    Key("Spasi / ←→", "buka dropdown, atau ubah field ya/tidak"),
+    Key(
+        "Spasi / ←→",
+        "buka dropdown, ubah field ya/tidak, atau buka $EDITOR",
+    ),
     Key("ketik", "saring isi dropdown"),
     Key("Esc", "batal"),
 ];
@@ -751,6 +754,7 @@ pub(super) fn render_form(f: &mut Frame, form: &Form) {
         let hint = match (focused, &field.kind) {
             (true, FieldKind::Bool) => "  ⌄ Spasi untuk ubah",
             (true, FieldKind::Choice(_)) => "  ⌄ Spasi untuk pilih",
+            (true, FieldKind::Editor) => "  ⌄ Spasi untuk buka di $EDITOR",
             _ => "",
         };
         let line = Line::from(vec![

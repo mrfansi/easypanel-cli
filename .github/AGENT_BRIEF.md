@@ -66,12 +66,17 @@ no excuses. You are expected to finish one per run.
    83 tests, untouched, and the test-name list diffed identical before and after. Largest
    file is now `app.rs` at ~960 lines. Tests deliberately stayed in one `tui/tests.rs` —
    an untouched suite is the proof; distributing them is separate work.
-7. **Dockerfile source type.** The panel offers five sources; this offers three.
-   `services/app/updateSourceDockerfile` takes the Dockerfile inline, so it needs the
-   `$EDITOR` hand-off `edit_env_in_editor` already implements — a Dockerfile does not
-   belong in a single-line field. (`uploadCodeArchive` is the fifth; it takes a
-   server-side `archivePath`, so it needs a file transfer this tool has no path for.
-   Investigate before promising it.)
+7. ~~**Dockerfile source type.**~~ Done in v0.12.0. `FieldKind::Editor` holds the
+   contents and `Space` opens them in `$EDITOR`, reusing the env hand-off; the field
+   shows a line count, not a snippet. Verified live: `createService` stores the inline
+   Dockerfile byte-for-byte and `updateSourceDockerfile` persists an edit (it answers
+   `200 {}` with no `json` key — the client already treats that as success).
+
+   **Upload is the last one and is still not implementable.** `uploadCodeArchive` takes
+   `archivePath`: a path that must already exist **on the server**. There is no upload
+   endpoint anywhere in the API, so there is nothing to send a file to. Do not add a
+   field that asks the user to type a server-side path — that is a guess, not a feature.
+   If you find a real upload route, reopen this.
 8. **`unwrap`/`expect` audit.** Find every one reachable from untrusted input (API
    responses, config files, `$EDITOR`, terminal size). Each either becomes a real error
    or gets a comment proving it cannot fire.

@@ -140,6 +140,33 @@ fn event_loop(
             app.all_servers = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
         }
 
+        // Sunting sebuah field form (Dockerfile) di $EDITOR. Beda dengan env:
+        // isinya sudah ada di form, jadi tak ada yang perlu diambil dari server.
+        if let Some(idx) = app.edit_field.take() {
+            let current = app
+                .form
+                .as_ref()
+                .map(|f| f.fields[idx].value.clone())
+                .unwrap_or_default();
+            let name = app
+                .form
+                .as_ref()
+                .map(|f| f.fields[idx].label.to_lowercase())
+                .unwrap_or_else(|| "teks".into());
+            // Namanya menentukan syntax highlighting editor: vim mengenali
+            // *.dockerfile, tapi tidak "easypanel-tmp".
+            match edit_text_in_editor(terminal, &format!("easypanel-form.{name}"), &current) {
+                Ok(Some(edited)) => {
+                    if let Some(form) = app.form.as_mut() {
+                        form.fields[idx].value = edited;
+                    }
+                    app.status = "Diperbarui — Enter untuk menyimpan".into();
+                }
+                Ok(None) => app.status = "Tidak berubah".into(),
+                Err(e) => app.status = format!("Error: {e}"),
+            }
+        }
+
         // Edit env: lepas terminal, buka $EDITOR, lalu ambil alih lagi.
         if let Some((project, service, stype)) = app.edit_env.take() {
             match edit_env_in_editor(&w.user, &w.resp, terminal, &project, &service, &stype) {
@@ -230,8 +257,24 @@ fn edit_env_in_editor(
         }
     };
 
-    let path = std::env::temp_dir().join(format!("easypanel-{project}-{service}.env"));
-    std::fs::write(&path, &current)?;
+    edit_text_in_editor(
+        terminal,
+        &format!("easypanel-{project}-{service}.env"),
+        &current,
+    )
+}
+
+/// Suntingkan teks di `$EDITOR`; None bila tak berubah.
+///
+/// Terminal dilepas selama editor jalan, lalu diambil alih kembali — termasuk
+/// bila editornya gagal, kalau tidak TUI-nya tak pernah kembali.
+fn edit_text_in_editor(
+    terminal: &mut ratatui::DefaultTerminal,
+    filename: &str,
+    current: &str,
+) -> Result<Option<String>> {
+    let path = std::env::temp_dir().join(filename);
+    std::fs::write(&path, current)?;
 
     ratatui::restore();
     let opened = open_in_editor(&path);

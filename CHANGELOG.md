@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-07-17
+
+### Added
+
+- **Dockerfile sources.** The panel offers five source types; this offered three, then
+  four. `dockerfile` now works in both the source form (`U`) and the create form (`n`).
+
+  `updateSourceDockerfile` takes the Dockerfile's **contents**, not a path — so it is
+  multi-line, and a single-line form field would have been a lie that sends one long
+  line that never builds. The content opens in `$VISUAL`/`$EDITOR` with `Space`, reusing
+  the hand-off `E` already uses for env; the field itself shows `12 baris` or `(kosong)`,
+  because with hundreds of lines what you need to know is whether it is filled in, not
+  what its first line says.
+
+  Verified against a live server on a throwaway project, then cleaned up: `createService`
+  stored the inline Dockerfile byte-for-byte, newlines intact, and `updateSourceDockerfile`
+  persisted an edit. It answers `200` with a body of `{}` — no `json` key — which the
+  client already reads as success rather than an error.
+
+### Fixed
+
+- **A Dockerfile source would have been sent labelled `type: "image"`.** `create_source`
+  mapped the source type with a `_ => "image"` catch-all, so a fourth type fell through
+  it silently. The body would have passed validation and the service would have been
+  built from an image nobody named. The mapping is now exhaustive and returns an error
+  on anything unknown, and a test fails if the catch-all comes back.
+
+- **The build form's `Dockerfile` field is now `Dockerfile path`.** It holds the path to
+  a Dockerfile *in the repository*, while the new source field holds a Dockerfile's
+  *contents*. Two fields, same name, opposite meanings — one of them had to say what it
+  is.
+
 ## [0.11.1] — 2026-07-17
 
 ### Changed

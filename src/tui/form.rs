@@ -15,7 +15,7 @@ pub(super) const SERVICE_TYPES: &[&str] = &[
 ];
 pub(super) const DEST_KINDS: &[&str] = &["service", "custom"];
 pub(super) const PROTOCOLS: &[&str] = &["http", "https"];
-pub(super) const SOURCE_TYPES: &[&str] = &["github", "git", "image"];
+pub(super) const SOURCE_TYPES: &[&str] = &["github", "git", "image", "dockerfile"];
 pub(super) const BUILD_TYPES: &[&str] = &[
     "nixpacks",
     "railpack",
@@ -75,6 +75,7 @@ pub(super) fn source_fields(source: Option<&Value>, repos: Vec<String>) -> Vec<F
         Field::text("Git URL", if stype == "git" { &repo } else { "" }).when("Source", "git"),
         Field::text("Ref", &branch).when("Source", "git"),
         Field::text("Path", &get("/path", "/")).when("Source", "github,git"),
+        Field::editor("Dockerfile", &get("/dockerfile", "")).when("Source", "dockerfile"),
         Field::text("Docker image", &get("/image", "")).when("Source", "image"),
         Field::text("Registry user", &get("/username", "")).when("Source", "image"),
         Field::secret_val("Registry password", &get("/password", "")).when("Source", "image"),
@@ -111,7 +112,7 @@ pub(super) fn build_fields(build: Option<&Value>) -> Vec<Field> {
         Field::text("Nix packages", &get("/nixPackages", "")).when("Tipe", "nixpacks"),
         Field::text("Apt packages", &get("/aptPackages", "")).when("Tipe", "nixpacks"),
         Field::text("Mise packages", &get("/misePackages", "")).when("Tipe", "railpack"),
-        Field::text("Dockerfile", &get("/file", "Dockerfile")).when("Tipe", "dockerfile"),
+        Field::text("Dockerfile path", &get("/file", "Dockerfile")).when("Tipe", "dockerfile"),
         Field::text("Builder", &get("/buildpacksBuilder", "heroku/builder:24"))
             .when("Tipe", "buildpacks"),
     ]
@@ -202,16 +203,23 @@ pub(super) fn create_source(form: &Form) -> std::result::Result<Option<Value>, S
     let untouched = match form.by_label("Source").as_str() {
         "github" => form.by_label("Repo").is_empty(),
         "git" => form.by_label("Git URL").is_empty(),
+        "dockerfile" => form.by_label("Dockerfile").is_empty(),
         _ => form.by_label("Docker image").is_empty(),
     };
     if untouched {
         return Ok(None);
     }
     let (op, mut body, auto) = source_body(form)?;
+    // Dipetakan dari `op`, bukan dibaca ulang dari form: satu sumber kebenaran.
+    // Sebuah catch-all `_ => "image"` di sini pernah akan melabeli source
+    // dockerfile sebagai image — body-nya lolos validasi bentuk, lalu service-nya
+    // di-build dari image yang tak pernah disebut siapa pun.
     body["type"] = json!(match op {
         "updateSourceGithub" => "github",
         "updateSourceGit" => "git",
-        _ => "image",
+        "updateSourceDockerfile" => "dockerfile",
+        "updateSourceImage" => "image",
+        other => return Err(format!("source tak dikenal: {other}")),
     });
     // Di jalur edit, autoDeploy harus dipasang lewat enableGithubDeploy susulan
     // karena updateSourceGithub mereset-nya. createService menerimanya langsung.
@@ -291,6 +299,17 @@ pub(super) fn source_body(
                 None,
             ))
         }
+        "dockerfile" => {
+            let content = form.by_label("Dockerfile");
+            if content.is_empty() {
+                return Err("Dockerfile masih kosong — Spasi untuk membukanya di $EDITOR".into());
+            }
+            Ok((
+                "updateSourceDockerfile",
+                json!({ "dockerfile": content }),
+                None,
+            ))
+        }
         _ => {
             let image = form.by_label("Docker image");
             if image.is_empty() {
@@ -344,7 +363,7 @@ pub(super) fn build_body(form: &Form) -> std::result::Result<Value, String> {
             ("Start command", "startCommand"),
             ("Mise packages", "misePackages"),
         ],
-        "dockerfile" => &[("Dockerfile", "file")],
+        "dockerfile" => &[("Dockerfile path", "file")],
         "buildpacks" => &[("Builder", "buildpacksBuilder")],
         // heroku-buildpacks / paketo-buildpacks cuma butuh `type`.
         _ => &[],
@@ -450,6 +469,12 @@ pub(super) enum FieldKind {
     /// Pilihan dari data nyata (project/service/protocol), digilir dgn spasi/←/→.
     /// Dinamis supaya isinya bisa datang dari API, bukan diketik manual.
     Choice(Vec<String>),
+    /// Isi multi-baris yang disunting di $EDITOR, seperti env.
+    ///
+    /// Sebuah Dockerfile tak pernah muat di field satu baris; memaksakannya ke
+    /// FieldKind::Text berarti user mengetik "\n" harfiah dan mengirim satu baris
+    /// panjang yang tak akan pernah di-build.
+    Editor,
 }
 
 impl FieldKind {
@@ -471,6 +496,15 @@ pub(super) struct Field {
 }
 
 impl Field {
+    /// Field yang isinya disunting di $EDITOR, bukan diketik di form.
+    pub(super) fn editor(label: &'static str, value: &str) -> Self {
+        Self {
+            label,
+            value: value.into(),
+            kind: FieldKind::Editor,
+            only_for: Vec::new(),
+        }
+    }
     pub(super) fn text(label: &'static str, value: &str) -> Self {
         Self {
             label,
@@ -567,6 +601,10 @@ impl Field {
     pub(super) fn shown(&self) -> String {
         match self.kind {
             FieldKind::Secret => "•".repeat(self.value.chars().count()),
+            // Isinya bisa ratusan baris: yang berguna di sini adalah apakah ia
+            // ada dan sebesar apa, bukan cuplikan baris pertamanya.
+            FieldKind::Editor if self.value.trim().is_empty() => "(kosong)".into(),
+            FieldKind::Editor => format!("{} baris", self.value.lines().count()),
             _ => self.value.clone(),
         }
     }

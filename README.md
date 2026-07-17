@@ -107,6 +107,13 @@ Press **`?`** at any time for every shortcut on the current screen.
 | `s` | server list: `Enter` switch · `n` add · `e` edit · `x` delete |
 | `r` · `q` | refresh · quit (`Esc` **cancels**, it does not quit) |
 
+**Dockerfile sources open in `$EDITOR`.** Pick `dockerfile` as the source and the field
+shows how many lines it holds; `Space` opens the content in `$VISUAL`/`$EDITOR` (the
+same hand-off `E` uses for env), and the form takes back the terminal when you quit.
+A Dockerfile is not a single-line value, and `updateSourceDockerfile` takes its contents
+inline rather than a path — so pretending otherwise would send one long line that never
+builds.
+
 **`n` creates an app and its source in one form.** Pick the type, and for `app` the
 source fields (GitHub repo, branch, auto deploy, path) appear in the same dialog —
 `createService` takes the source inline, so there is no create-then-edit round trip.
@@ -192,11 +199,10 @@ Stated plainly, because a README that promises what the code doesn't do is a bug
   schedules. A TUI form with a path you have to guess, for an operation that overwrites
   a live database, is a trap. The CLI makes you supply a path you actually know, and
   confirms first.
-- **Two of the panel's five source types are missing.** Github, Git and Docker Image
-  work; **Dockerfile** (inline content) and **Upload** (a code archive) do not.
-  Dockerfile needs the `$EDITOR` hand-off the env editor already uses — a Dockerfile
-  does not belong in a single-line field. Upload needs a file transfer the API
-  models as a server-side `archivePath`. Both are tracked in
+- **One of the panel's five source types is missing: Upload.** Github, Git, Docker
+  Image and Dockerfile all work. Upload needs to hand a code archive to the server, but
+  the API models it as a server-side `archivePath` — a path that must already exist on
+  the box — so there is no file transfer to implement against. Tracked in
   `.github/AGENT_BRIEF.md`.
 - **Middlewares aren't editable.** The group has 14 Traefik-style types. They're
   *always preserved* when you edit a domain, so nothing is lost — but there's no editor

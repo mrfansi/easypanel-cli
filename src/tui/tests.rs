@@ -698,6 +698,59 @@ fn source_github_sends_owner_and_repo_split() {
 }
 
 #[test]
+fn dockerfile_source_sends_its_contents_inline() {
+    // updateSourceDockerfile menerima ISI Dockerfile, bukan path — jadi ia
+    // multi-baris, dan itulah kenapa ia lewat $EDITOR.
+    let body = json!({ "type": "dockerfile", "dockerfile": "FROM alpine\nRUN echo hai" });
+    let f = form(source_fields(Some(&body), vec![]));
+    let (op, sent, auto) = source_body(&f).unwrap();
+    assert_eq!(op, "updateSourceDockerfile");
+    assert_eq!(sent, json!({ "dockerfile": "FROM alpine\nRUN echo hai" }));
+    assert_eq!(auto, None, "dockerfile tak punya auto deploy");
+
+    // Kosong ditolak dengan menyebut cara mengisinya, bukan "wajib diisi".
+    let f = form(source_fields(
+        Some(&json!({ "type": "dockerfile" })),
+        vec![],
+    ));
+    let err = source_body(&f).unwrap_err();
+    assert!(err.contains("$EDITOR"), "{err}");
+}
+
+#[test]
+fn dockerfile_source_is_not_mislabelled_as_an_image() {
+    // create_source dulu memetakan tipe dengan catch-all `_ => "image"`. Sebuah
+    // source dockerfile akan lolos sebagai image: bentuknya sah, tapi
+    // service-nya di-build dari image yang tak pernah disebut siapa pun.
+    let f = create_form(&[
+        ("Nama", "web"),
+        ("Tipe", "app"),
+        ("Source", "dockerfile"),
+        ("Dockerfile", "FROM alpine"),
+    ]);
+    let src = create_source(&f).unwrap().unwrap();
+    assert_eq!(src["type"], json!("dockerfile"));
+    assert_eq!(src["dockerfile"], json!("FROM alpine"));
+    assert!(src.get("image").is_none());
+
+    // Dockerfile kosong = belum diisi -> source dihilangkan, bukan dikirim
+    // sebagai image kosong.
+    let f = create_form(&[("Nama", "web"), ("Source", "dockerfile")]);
+    assert_eq!(create_source(&f).unwrap(), None);
+}
+
+#[test]
+fn the_editor_field_shows_its_size_not_its_first_line() {
+    // Isi ratusan baris di kolom satu baris cuma jadi bubur; yang berguna adalah
+    // apakah ia sudah diisi.
+    let f = Field::editor("Dockerfile", "FROM alpine\nRUN echo hai\nCMD sh");
+    assert_eq!(f.shown(), "3 baris");
+    assert_eq!(Field::editor("Dockerfile", "").shown(), "(kosong)");
+    // Bukan field ketik: Spasi membuka $EDITOR, bukan menyisipkan spasi.
+    assert!(!f.kind.is_typed());
+}
+
+#[test]
 fn source_git_and_image_have_no_auto_deploy() {
     // Hanya source github yang punya konsep auto deploy.
     let f = form(source_fields(

@@ -267,11 +267,15 @@ impl App {
             // field terakhirnya Choice ("Service baru" tipe app) tak pernah bisa
             // disimpan — Enter cuma buka-tutup dropdown, selamanya.
             KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right if !typed => {
-                if form.fields[form.focus].kind == FieldKind::Bool {
-                    form.fields[form.focus].cycle();
-                    form.clamp_focus();
-                } else {
-                    self.open_chooser();
+                match form.fields[form.focus].kind {
+                    FieldKind::Bool => {
+                        form.fields[form.focus].cycle();
+                        form.clamp_focus();
+                    }
+                    // Isi multi-baris berpindah ke $EDITOR. event_loop yang
+                    // melakukannya: hanya ia yang boleh melepas terminal.
+                    FieldKind::Editor => self.edit_field = Some(form.focus),
+                    _ => self.open_chooser(),
                 }
             }
             KeyCode::Backspace if typed => {
