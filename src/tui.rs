@@ -937,15 +937,27 @@ fn source_fields(source: Option<&Value>, repos: Vec<String>) -> Vec<Field> {
 
 /// Field form build; `build` adalah objek `build` dari inspectService.
 ///
-/// nixpacks dan railpack berbagi label perintah yang sama — aman karena hanya
-/// satu tipe yang tampil sekaligus, dan `by_label` membaca field yang tampil itu.
+/// nixpacks dan railpack berbagi label perintah yang sama, dan itu aman HANYA
+/// karena label bersama punya SATU field ber-.when("nixpacks,railpack") — bukan
+/// karena by_label() sadar visibilitas. Ia memakai find(): field pertama dengan
+/// label itu, tampil atau tidak. Dua field berlabel sama = tipe yang satu menulis
+/// nilai milik tipe lain.
 fn build_fields(build: Option<&Value>) -> Vec<Field> {
     let get = |ptr: &str, default: &str| match build.map(|b| field(b, ptr)) {
         Some(v) if v != "-" => v,
         _ => default.to_string(),
     };
+    let version = match get("/type", "nixpacks").as_str() {
+        "railpack" => get("/railpackVersion", "0.17.1"),
+        _ => get("/nixpacksVersion", "1.41.0"),
+    };
     vec![
         Field::choice("Tipe", BUILD_TYPES, &get("/type", "nixpacks")),
+        // SATU field Version, bukan satu per tipe: by_label() memakai find(), jadi
+        // ia mengambil field PERTAMA berlabel itu — bukan yang sedang tampil. Dua
+        // field "Version" akan membuat railpack menulis versi milik nixpacks.
+        // build_body() sudah memetakannya ke kunci yang benar per tipe.
+        Field::text("Version", &version).when("nixpacks,railpack"),
         Field::text("Install command", &get("/installCommand", "")).when("nixpacks,railpack"),
         Field::text("Build command", &get("/buildCommand", "")).when("nixpacks,railpack"),
         Field::text("Start command", &get("/startCommand", "")).when("nixpacks,railpack"),
@@ -1129,6 +1141,7 @@ fn build_body(form: &Form) -> std::result::Result<Value, String> {
 
     let keys: &[(&str, &str)] = match t.as_str() {
         "nixpacks" => &[
+            ("Version", "nixpacksVersion"),
             ("Install command", "installCommand"),
             ("Build command", "buildCommand"),
             ("Start command", "startCommand"),
@@ -1136,6 +1149,7 @@ fn build_body(form: &Form) -> std::result::Result<Value, String> {
             ("Apt packages", "aptPackages"),
         ],
         "railpack" => &[
+            ("Version", "railpackVersion"),
             ("Install command", "installCommand"),
             ("Build command", "buildCommand"),
             ("Start command", "startCommand"),
@@ -4307,6 +4321,80 @@ mod tests {
         assert_eq!(op, "updateSourceImage");
         // Kirim "" akan menimpa kredensial registry jadi kosong.
         assert_eq!(body, json!({ "image": "nginx:latest" }));
+    }
+
+    #[test]
+    fn version_field_maps_to_the_right_key_per_builder() {
+        // Satu field "Version" melayani nixpacks dan railpack. Kalau dibuat dua
+        // field berlabel sama, by_label() — yang memakai find(), bukan visibilitas —
+        // akan mengambil yang pertama, jadi railpack menulis versi milik nixpacks.
+        let original = json!({ "type": "railpack", "railpackVersion": "0.17.1" });
+        let mut f = form(build_fields(Some(&original)));
+        f.original = Some(original);
+        assert_eq!(f.by_label("Version"), "0.17.1");
+
+        let body = build_body(&f).unwrap();
+        assert_eq!(body["build"]["railpackVersion"], json!("0.17.1"));
+        assert!(
+            body["build"].get("nixpacksVersion").is_none(),
+            "railpack tak boleh menulis kunci milik nixpacks"
+        );
+
+        // nixpacks membaca kunci versinya sendiri.
+        let original = json!({ "type": "nixpacks", "nixpacksVersion": "1.41.0" });
+        let mut f = form(build_fields(Some(&original)));
+        f.original = Some(original);
+        assert_eq!(f.by_label("Version"), "1.41.0");
+        assert_eq!(
+            build_body(&f).unwrap()["build"]["nixpacksVersion"],
+            json!("1.41.0")
+        );
+    }
+
+    #[test]
+    fn changing_the_builder_version_actually_reaches_the_body() {
+        // Sebelumnya versi hanya dilestarikan dari build asli: user terkunci di
+        // versi yang kebetulan dipakai saat service dibuat.
+        let original = json!({ "type": "nixpacks", "nixpacksVersion": "1.41.0" });
+        let mut f = form(build_fields(Some(&original)));
+        f.original = Some(original);
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == "Version")
+            .unwrap()
+            .value = "1.42.0".into();
+        assert_eq!(
+            build_body(&f).unwrap()["build"]["nixpacksVersion"],
+            json!("1.42.0")
+        );
+    }
+
+    #[test]
+    fn no_two_fields_share_a_label_in_any_form() {
+        // by_label() memakai find(): label ganda berarti field yang tersembunyi bisa
+        // membajak nilai milik yang tampil, diam-diam.
+        let forms = vec![
+            ("build", build_fields(Some(&json!({ "type": "nixpacks" })))),
+            (
+                "build/railpack",
+                build_fields(Some(&json!({ "type": "railpack" }))),
+            ),
+            (
+                "source",
+                source_fields(Some(&json!({ "type": "github" })), vec![]),
+            ),
+            ("domain", domain_fields(None, &["p".into()])),
+        ];
+        for (name, fields) in forms {
+            let mut seen = std::collections::HashSet::new();
+            for f in &fields {
+                assert!(
+                    seen.insert(f.label),
+                    "form {name}: label '{}' ganda",
+                    f.label
+                );
+            }
+        }
     }
 
     #[test]

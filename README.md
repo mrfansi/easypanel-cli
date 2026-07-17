@@ -172,6 +172,12 @@ Stated plainly, because a README that promises what the code doesn't do is a bug
   schedules. A TUI form with a path you have to guess, for an operation that overwrites
   a live database, is a trap. The CLI makes you supply a path you actually know, and
   confirms first.
+- **Two of the panel's five source types are missing.** Github, Git and Docker Image
+  work; **Dockerfile** (inline content) and **Upload** (a code archive) do not.
+  Dockerfile needs the `$EDITOR` hand-off the env editor already uses — a Dockerfile
+  does not belong in a single-line field. Upload needs a file transfer the API
+  models as a server-side `archivePath`. Both are tracked in
+  `.github/AGENT_BRIEF.md`.
 - **Middlewares aren't editable.** The group has 14 Traefik-style types. They're
   *always preserved* when you edit a domain, so nothing is lost — but there's no editor
   yet. Open an issue if you use them.

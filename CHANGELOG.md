@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-07-17
+
+### Fixed
+
+- **The builder version could not be changed.** `nixpacksVersion` and
+  `railpackVersion` were carefully *preserved* from the original build — and never
+  offered for editing, so you were pinned to whatever version the service happened
+  to be created with. The panel offers it; now so does the build form.
+
+  Getting there exposed a trap worth naming: the first attempt used two fields both
+  labelled "Version", one per builder. `by_label()` uses `find()` — it returns the
+  first field with that label, **not the visible one** — so railpack would have
+  written nixpacks's version. A comment in this file claimed `by_label` "reads the
+  visible field". It does not, and never did; shared labels only worked because each
+  was a single field serving both builders. One field now serves both, and a test
+  asserts no form has duplicate labels.
+
 ## [0.8.0] — 2026-07-17
 
 ### Security
@@ -223,7 +240,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.8.1
 [0.8.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.8.0
 [0.7.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.7.0
 [0.6.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.6.0

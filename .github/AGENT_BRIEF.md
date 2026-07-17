@@ -52,20 +52,26 @@ no excuses. You are expected to finish one per run.
    dropped `paste`; `cargo audit` went from 3 warnings to 1, and that one
    (`async-std`) is dev-only via `httpmock` and never ships. Required **no code
    changes** — the APIs this project uses were untouched by the major bump.
-5. **Split `src/tui.rs`.** It is ~3,700 lines and holds the worker, the app state, every
+5. **Dockerfile source type.** The panel offers five sources; this offers three.
+   `services/app/updateSourceDockerfile` takes the Dockerfile inline, so it needs the
+   `$EDITOR` hand-off `edit_env_in_editor` already implements — a Dockerfile does not
+   belong in a single-line field. (`uploadCodeArchive` is the fifth; it takes a
+   server-side `archivePath`, so it needs a file transfer this tool has no path for.
+   Investigate before promising it.)
+6. **Split `src/tui.rs`.** It is ~3,700 lines and holds the worker, the app state, every
    form, and every renderer. Split into a `tui/` module (`app.rs`, `worker.rs`,
    `form.rs`, `render.rs`) with **no behaviour change** — tests must pass untouched.
-6. **`unwrap`/`expect` audit.** Find every one reachable from untrusted input (API
+7. **`unwrap`/`expect` audit.** Find every one reachable from untrusted input (API
    responses, config files, `$EDITOR`, terminal size). Each either becomes a real error
    or gets a comment proving it cannot fire.
-7. **`--json` output** for the read-only commands (`stats`, `monitor services`,
+8. **`--json` output** for the read-only commands (`stats`, `monitor services`,
    `project list`, `domain list`, …) so people can script against it. Print the API's
    own JSON; do not invent a schema.
-8. **Test coverage for `src/config.rs` and `src/output.rs` edge cases** — malformed
+9. **Test coverage for `src/config.rs` and `src/output.rs` edge cases** — malformed
    JSON, missing file, unreadable permissions, empty series, huge byte values.
-9. **Issue and PR templates** under `.github/`, plus README badges (CI, release,
+10. **Issue and PR templates** under `.github/`, plus README badges (CI, release,
    licence).
-10. **`cargo publish` readiness** — `cargo package --list` clean, no stray files.
+11. **`cargo publish` readiness** — `cargo package --list` clean, no stray files.
 
 When the list is empty, propose the next item at the bottom of this file in your PR
 rather than inventing work silently.
