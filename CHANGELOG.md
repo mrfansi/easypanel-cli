@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-17
+
+### Added
+
+- **`cargo audit` in CI**, on every push and weekly on a schedule — advisories
+  appear whether or not you commit, so a push-only check would miss them until the
+  next unrelated change. Reports 0 vulnerabilities today. Deliberately *without*
+  `--deny warnings`: that would paint CI red until ratatui 0.30 lands, and a CI
+  that is always red stops being read.
+
+### Changed
+
+- **Services shows the hierarchy again — in one table.** A project header with its
+  service count and aggregate metrics, followed by its services. The flat list
+  fixed drill-down but broke something else: a table of *services* has no row for a
+  project with none, so creating a project appeared to do nothing, and the project
+  could not be selected, filled, or deleted. Selecting a header now targets the
+  project (`n` new service, `X` destroy); selecting a service targets the service.
+  A header can never be mistaken for a service — service actions refuse it.
+
 ## [0.5.2] — 2026-07-17
 
 ### Fixed
@@ -155,7 +175,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.6.0
 [0.5.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.2
 [0.5.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.0

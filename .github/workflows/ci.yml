@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Advisory baru muncul tanpa peduli kita commit atau tidak. Tanpa jadwal, kita
+  # hanya tahu ada kerentanan saat kebetulan sedang mengubah sesuatu.
+  schedule:
+    - cron: "17 3 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,3 +27,28 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      # Sengaja TANPA --deny warnings.
+      #
+      # `cargo audit` polos gagal pada kerentanan sungguhan dan hanya mencatat
+      # peringatan "unmaintained/unsound". Itu yang kita mau: --deny warnings
+      # akan membuat CI merah hari ini dan tetap merah sampai ratatui naik ke
+      # 0.30 — dan CI yang selalu merah berhenti dibaca, lalu kerentanan
+      # sungguhan lewat tanpa disadari.
+      #
+      # Yang dilaporkan hari ini (0 kerentanan, 3 peringatan):
+      #   async-std  unmaintained — lewat httpmock, DEV-dependency saja; tak
+      #              pernah ikut ke biner yang dirilis.
+      #   paste      unmaintained — proc-macro lewat ratatui; hanya jalan saat
+      #              kompilasi, tak ada kodenya di biner.
+      #   lru 0.12   unsound (RUSTSEC-2026-0002) — IKUT ke biner lewat ratatui
+      #              0.29. Terpatch di lru >=0.16.3; ratatui 0.30 memakai 0.18
+      #              dan melepas paste sekaligus. Itu upgrade breaking untuk TUI
+      #              ~3.700 baris, jadi dijadwalkan sebagai pekerjaan tersendiri.
+      - run: cargo audit

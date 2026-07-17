@@ -1222,9 +1222,30 @@ fn parse_services(v: &Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-const SERVICE_HEADERS: [&str; 9] = [
-    "Project", "Service", "Type", "Status", "Source", "CPU %", "Memory", "Net In", "Net Out",
+const SERVICE_HEADERS: [&str; 8] = [
+    "Project / Service",
+    "Type",
+    "Status",
+    "Source",
+    "CPU %",
+    "Memory",
+    "Net In",
+    "Net Out",
 ];
+
+/// Satu baris tabel Services: header project, atau service di bawahnya.
+///
+/// Hirarki dipertahankan tapi tetap satu tabel: drill-down memaksa membuka
+/// project satu per satu dan tak bisa dicari, sementara daftar datar tanpa
+/// header membuat project kosong hilang sama sekali — tak terlihat, tak bisa
+/// dipilih, tak bisa dihapus.
+enum Line2<'a> {
+    Project {
+        name: &'a str,
+        services: Vec<&'a Value>,
+    },
+    Service(&'a Value),
+}
 
 /// Satu baris tabel service datar.
 ///
@@ -1861,6 +1882,8 @@ impl App {
             Resp::AllServices { projects, services } => {
                 self.projects = projects;
                 self.all_services = services;
+                self.all_services
+                    .sort_by_key(|s| (field(s, "/projectName"), field(s, "/name")));
                 let n = self.visible_services().len();
                 select_first(&mut self.services_table, n);
             }
@@ -2043,7 +2066,7 @@ impl App {
             Screen::Domains => self.visible_domains().len(),
             Screen::Actions => self.visible_actions().len(),
             Screen::Monitor => self.visible_monitor_rows().len(),
-            Screen::Projects => self.visible_services().len(),
+            Screen::Projects => self.visible_rows().len(),
             _ => return,
         };
         let state = match self.screen {
@@ -2207,6 +2230,40 @@ impl App {
         }
     }
 
+    /// Baris yang tampil: header project diikuti service-nya, terfilter.
+    ///
+    /// Render DAN aksi wajib lewat sini. Kalau render difilter sementara aksi
+    /// memakai indeks daftar penuh, `x` akan menghapus service yang salah.
+    fn visible_rows(&self) -> Vec<Line2<'_>> {
+        let f = self.filter.to_lowercase();
+        let mut names: Vec<&String> = self.projects.iter().collect();
+        names.sort();
+
+        let mut out = Vec::new();
+        for p in names {
+            // Nama project yang cocok menahan seluruh isinya: mencari
+            // "harisenin-net" harus memperlihatkan service-nya, bukan header kosong.
+            let project_matches = f.is_empty() || p.to_lowercase().contains(&f);
+            let mut kept: Vec<&Value> = self
+                .all_services
+                .iter()
+                .filter(|s| s.get("projectName").and_then(Value::as_str) == Some(p.as_str()))
+                .filter(|s| project_matches || keep(&service_row(s), &self.filter))
+                .collect();
+            kept.sort_by_key(|s| field(s, "/name"));
+
+            if kept.is_empty() && !project_matches {
+                continue;
+            }
+            out.push(Line2::Project {
+                name: p,
+                services: kept.clone(),
+            });
+            out.extend(kept.into_iter().map(Line2::Service));
+        }
+        out
+    }
+
     /// Service yang lolos filter.
     ///
     /// Render DAN aksi wajib lewat sini: kalau render difilter sementara aksi
@@ -2229,23 +2286,27 @@ impl App {
         })
     }
 
-    /// Baris tabel lengkap: identitas + metrik.
-    fn service_row_full(&self, s: &Value) -> Vec<String> {
-        let mut row = service_row(s);
-        let m = self.metric_for(&row[0], &row[1]);
-        row.extend(metric_cols(m));
-        row
+    /// (project, service, tipe) — hanya bila baris yang disorot adalah SERVICE.
+    /// Header project mengembalikan None, jadi aksi service (logs/deploy/hapus)
+    /// tak pernah dijalankan pada service yang tak ada.
+    fn selected_row(&self) -> Option<(String, String, String)> {
+        match self.visible_rows().get(self.services_table.selected()?)? {
+            Line2::Service(s) => Some((
+                field(s, "/projectName"),
+                field(s, "/name"),
+                field(s, "/type"),
+            )),
+            Line2::Project { .. } => None,
+        }
     }
 
-    /// (project, service, tipe) dari baris yang disorot di daftar datar.
-    fn selected_row(&self) -> Option<(String, String, String)> {
-        let vis = self.visible_services();
-        let s = self.services_table.selected().and_then(|i| vis.get(i))?;
-        Some((
-            field(s, "/projectName"),
-            field(s, "/name"),
-            field(s, "/type"),
-        ))
+    /// Nama project dari baris yang disorot, header maupun service. Dipakai aksi
+    /// yang bekerja pada PROJECT: buat service, hapus project.
+    fn selected_project(&self) -> Option<String> {
+        match self.visible_rows().get(self.services_table.selected()?)? {
+            Line2::Project { name, .. } => Some((*name).to_string()),
+            Line2::Service(s) => Some(field(s, "/projectName")),
+        }
     }
 
     /// Domain yang lolos filter.
@@ -2707,7 +2768,7 @@ impl App {
                 ));
             }
             KeyCode::Char('X') => {
-                if let Some((p, _, _)) = self.selected_row() {
+                if let Some(p) = self.selected_project() {
                     self.confirm = Some(Confirm {
                         action: "destroy-project".into(),
                         project: p.clone(),
@@ -2722,7 +2783,7 @@ impl App {
             KeyCode::Char('S') => self.ask_action("stop"),
             KeyCode::Char('T') => self.ask_action("start"),
             _ => {
-                let n = self.visible_services().len();
+                let n = self.visible_rows().len();
                 move_table(&mut self.services_table, code, n)
             }
         }
@@ -2736,8 +2797,7 @@ impl App {
             return;
         }
         let project = self
-            .selected_row()
-            .map(|(p, _, _)| p)
+            .selected_project()
             .unwrap_or_else(|| self.projects[0].clone());
         self.form = Some(Form::new(
             FormKind::ServiceCreate,
@@ -3091,19 +3151,56 @@ fn render_nodes(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     let rows: Vec<Vec<String>> = app
-        .visible_services()
+        .visible_rows()
         .iter()
-        .map(|s| app.service_row_full(s))
+        .map(|r| match r {
+            // Header project: agregat anak-anaknya, seperti tab Monitor. Hitungan
+            // (n) membuat project kosong terlihat sebagai (0), bukan hilang.
+            Line2::Project { name, services } => {
+                let sum = |ptr: &str| -> f64 {
+                    services
+                        .iter()
+                        .filter_map(|s| {
+                            app.metric_for(&field(s, "/projectName"), &field(s, "/name"))
+                        })
+                        .map(|m| num(m, ptr))
+                        .sum()
+                };
+                vec![
+                    format!("{name} ({})", services.len()),
+                    "-".into(),
+                    "-".into(),
+                    "-".into(),
+                    format!("{:.1} %", sum("/cpu")),
+                    format_bytes(sum("/memory")),
+                    format_rate(sum("/networkIn")),
+                    format_rate(sum("/networkOut")),
+                ]
+            }
+            Line2::Service(s) => {
+                let mut row = service_row(s);
+                // Kolom Project dilebur ke header; service cukup menjorok di bawahnya.
+                let name = format!("  {}", row.remove(1));
+                row.remove(0);
+                let mut out = vec![name];
+                out.extend(row);
+                out.extend(metric_cols(
+                    app.metric_for(&field(s, "/projectName"), &field(s, "/name")),
+                ));
+                out
+            }
+        })
         .collect();
-    let title = count_title("Services", rows.len(), app.all_services.len(), app);
+    let total = app.all_services.len();
+    let shown = rows.iter().filter(|r| r[0].starts_with("  ")).count();
+    let title = count_title("Services", shown, total, app);
     render_table(
         f,
         area,
         title,
         &SERVICE_HEADERS,
         &[
-            Constraint::Length(18),
-            Constraint::Length(22),
+            Constraint::Min(26),
             Constraint::Length(8),
             Constraint::Length(7),
             Constraint::Min(16),
@@ -3822,15 +3919,14 @@ mod tests {
             json!({ "projectName": "proj-a", "serviceName": "mysql",
                     "cpu": 1.0, "memory": 2048.0, "networkIn": 0.0, "networkOut": 0.0 }),
         ];
-        let row = app.service_row_full(&app.all_services[0]);
+        let m = app.metric_for("proj-a", "mysql").unwrap();
         // Harus mengambil proj-a, bukan proj-b yang namanya sama.
-        assert_eq!(row[5], "1.0 %");
-        assert_eq!(row[6], "2.0 KB");
+        assert_eq!(metric_cols(Some(m))[0], "1.0 %");
+        assert_eq!(metric_cols(Some(m))[1], "2.0 KB");
 
-        // Service yang tak punya metrik tetap tampil, kolomnya "-".
-        app.all_services.push(svc("proj-c", "hantu", "app"));
-        let row = app.service_row_full(&app.all_services[1]);
-        assert_eq!(row[5], "-");
+        // Service yang tak punya metrik: kolomnya "-", bukan 0 palsu.
+        assert!(app.metric_for("proj-c", "hantu").is_none());
+        assert_eq!(metric_cols(app.metric_for("proj-c", "hantu"))[0], "-");
     }
 
     #[test]
@@ -3858,24 +3954,68 @@ mod tests {
     }
 
     #[test]
-    fn selected_row_follows_the_filtered_list() {
-        // Kalau aksi memakai indeks daftar penuh, 'x' akan menghapus service lain.
+    fn rows_are_project_headers_followed_by_their_services() {
         let mut app = App::new("s".into(), vec![]);
-        app.all_services = vec![
-            svc("p1", "satu", "app"),
-            svc("p2", "dua", "app"),
-            svc("p3", "tiga", "app"),
-        ];
-        app.filter = "tiga".into();
-        app.services_table.select(Some(0));
-        assert_eq!(
-            app.selected_row(),
-            Some(("p3".into(), "tiga".into(), "app".into()))
+        app.projects = vec!["p1".into(), "p2".into()];
+        app.all_services = vec![svc("p1", "b", "app"), svc("p1", "a", "app")];
+
+        let rows = app.visible_rows();
+        // p1 header + 2 service (urut nama) + p2 header (kosong, tetap tampil).
+        assert_eq!(rows.len(), 4);
+        assert!(
+            matches!(&rows[0], Line2::Project { name, services } if *name == "p1" && services.len() == 2)
+        );
+        assert!(matches!(&rows[1], Line2::Service(s) if field(s, "/name") == "a"));
+        assert!(matches!(&rows[2], Line2::Service(s) if field(s, "/name") == "b"));
+        // Project tanpa service HARUS punya baris: kalau tidak ia hilang sama
+        // sekali — tak terlihat, tak bisa dipilih, tak bisa dihapus.
+        assert!(
+            matches!(&rows[3], Line2::Project { name, services } if *name == "p2" && services.is_empty())
         );
     }
 
-    /// Tiap layar yang punya tombol harus mendaftarkannya; layar yang lupa
-    /// mendaftar akan tampil kosong di bantuan tanpa ada yang menyadarinya.
+    #[test]
+    fn header_row_is_never_mistaken_for_a_service() {
+        // Aksi service (logs/deploy/hapus) pada header project akan menyentuh
+        // service yang tak ada. selected_row() harus None di header.
+        let mut app = App::new("s".into(), vec![]);
+        app.projects = vec!["p1".into()];
+        app.all_services = vec![svc("p1", "api", "app")];
+
+        app.services_table.select(Some(0)); // header
+        assert_eq!(app.selected_row(), None);
+        assert_eq!(app.selected_project(), Some("p1".into()));
+
+        app.services_table.select(Some(1)); // service
+        assert_eq!(
+            app.selected_row(),
+            Some(("p1".into(), "api".into(), "app".into()))
+        );
+        assert_eq!(app.selected_project(), Some("p1".into()));
+    }
+
+    #[test]
+    fn filtering_a_project_name_keeps_its_services() {
+        let mut app = App::new("s".into(), vec![]);
+        app.projects = vec!["harisenin-net".into(), "edukasistudio".into()];
+        app.all_services = vec![
+            svc("harisenin-net", "api", "app"),
+            svc("edukasistudio", "web", "app"),
+        ];
+
+        // Nama project cocok -> isinya ikut tampil, bukan header kosong.
+        app.filter = "harisenin".into();
+        let rows = app.visible_rows();
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(&rows[1], Line2::Service(s) if field(s, "/name") == "api"));
+
+        // Nama service cocok -> header project-nya ikut, supaya konteksnya jelas.
+        app.filter = "web".into();
+        let rows = app.visible_rows();
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(&rows[0], Line2::Project { name, .. } if *name == "edukasistudio"));
+    }
+
     #[test]
     fn every_interactive_screen_documents_its_keys() {
         for sc in [

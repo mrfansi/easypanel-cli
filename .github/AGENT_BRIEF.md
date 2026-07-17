@@ -46,22 +46,28 @@ no excuses. You are expected to finish one per run.
    CLI, pure codegen, fully testable.
 2. **Man page.** Add `clap_mangen`, generate `easypanel.1`, ship it in the release
    tarball and install it in `install.sh`.
-3. **`cargo audit`.** Add `cargo-audit` to CI as its own job; fix or document whatever
-   it reports.
-4. **Split `src/tui.rs`.** It is ~3,700 lines and holds the worker, the app state, every
+3. ~~**`cargo audit`.**~~ Done — CI runs it on every push and weekly on a schedule
+   (advisories appear whether or not you commit). Reports 0 vulnerabilities today.
+4. **Upgrade ratatui 0.29 → 0.30.** This is the *fix* for what the audit reports:
+   ratatui 0.29 ships `lru` 0.12, which is unsound (RUSTSEC-2026-0002, patched in
+   >=0.16.3); ratatui 0.30 uses `lru` 0.18 and drops `paste` entirely. That clears
+   two of the three warnings — the third, `async-std`, only arrives via `httpmock`
+   and never ships. It is a breaking upgrade across a ~3,700-line TUI, so treat it
+   as its own job: migrate, verify every screen still renders, keep tests green.
+5. **Split `src/tui.rs`.** It is ~3,700 lines and holds the worker, the app state, every
    form, and every renderer. Split into a `tui/` module (`app.rs`, `worker.rs`,
    `form.rs`, `render.rs`) with **no behaviour change** — tests must pass untouched.
-5. **`unwrap`/`expect` audit.** Find every one reachable from untrusted input (API
+6. **`unwrap`/`expect` audit.** Find every one reachable from untrusted input (API
    responses, config files, `$EDITOR`, terminal size). Each either becomes a real error
    or gets a comment proving it cannot fire.
-6. **`--json` output** for the read-only commands (`stats`, `monitor services`,
+7. **`--json` output** for the read-only commands (`stats`, `monitor services`,
    `project list`, `domain list`, …) so people can script against it. Print the API's
    own JSON; do not invent a schema.
-7. **Test coverage for `src/config.rs` and `src/output.rs` edge cases** — malformed
+8. **Test coverage for `src/config.rs` and `src/output.rs` edge cases** — malformed
    JSON, missing file, unreadable permissions, empty series, huge byte values.
-8. **Issue and PR templates** under `.github/`, plus README badges (CI, release,
+9. **Issue and PR templates** under `.github/`, plus README badges (CI, release,
    licence).
-9. **`cargo publish` readiness** — `cargo package --list` clean, no stray files.
+10. **`cargo publish` readiness** — `cargo package --list` clean, no stray files.
 
 When the list is empty, propose the next item at the bottom of this file in your PR
 rather than inventing work silently.
