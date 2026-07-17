@@ -149,7 +149,31 @@ Every run should leave the project able to do something useful it could not do b
 or handle scale it could not handle before. Still one meaningful, verified change per
 run; still no invented features and no unverified claims.
 
-### Killer features — what the server's reality says matters most
+### Killer feature READY TO BUILD: remote container terminal
+
+The protocol is **fully verified with a live WebSocket round-trip** (2026-07-18), not
+guessed. A shell into any container, on any host, from the TUI — using the API token the
+tool already stores. Nothing to reverse-engineer; just build it.
+
+- **URL**: `wss://{panel}/ws/containerShell?container={id}&command={b64}&token={apiToken}`
+  (Fastify route under prefix `/ws`; the panel's http(s) origin → ws(s)).
+- **Auth**: the same API token, as the `token` query param. No session cookie needed.
+- **Container id**: resolve first via `projects/getDockerContainers` with
+  `{ "service": "{projectName}_{serviceName}" }` → item's `Id` (and `State` == "running").
+- **command**: base64 of a shell, e.g. `sh`. Runs `docker exec -it <id> /bin/sh -c sh`.
+- **Framing (JSON both ways)**: client→server `{"input":"<keys>"}` and
+  `{"resize":[cols,rows]}`; server→client `{"output":"<bytes>"}`. Shell exit closes the
+  socket.
+
+Build notes: add a blocking WebSocket client (`tungstenite` with rustls, matching the
+existing rustls stack). Reuse the `$EDITOR` hand-off pattern in `mod.rs` — release
+ratatui (`ratatui::restore()`), go raw, run the session, re-acquire (`ratatui::init()`).
+One thread pumps WS `output` → stdout; the main loop reads raw stdin → `input`; send an
+initial `resize` from the real terminal size. Verified live: connecting with
+`command=base64("sh")`, sending an `input` of `echo …`, the `output` came back with the
+shell prompt and the command result. This is the flagship feature — do it well.
+
+### Other killer features — what the server's reality says matters most
 
 Prioritised from a read-only look at the live host (42 swarm services, Grafana Loki
 logs, real services crash-looping — `harisenin-com_webapp` had `Exited (1)`). These turn
