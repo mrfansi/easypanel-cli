@@ -117,18 +117,54 @@ no excuses. You are expected to finish one per run.
    crates.io. Actual publishing is left to the owner — it is public and irreversible, so
    it is a deliberate `cargo publish`, not something an agent should do unprompted.
 
-**The numbered backlog above is complete.** Do not invent filler. New work now comes
-from one of three places, in this order of preference:
+**The original hardening backlog is complete.** The mandate now is explicit and
+standing: **keep making this a richer, more scalable tool** — the owner asked for it.
+Every run should leave the project able to do something useful it could not do before,
+or handle scale it could not handle before. Still one meaningful, verified change per
+run; still no invented features and no unverified claims.
 
-1. **A real bug or rough edge found by driving the live TUI** — the richest source here;
-   almost every important fix in this project came from watching the screen, not tests.
-2. **A concrete gap against the EasyPanel dashboard** the API actually supports (check
-   `easypanel-api.json`): e.g. ports/mounts/resources in the create wizard, a middlewares
-   editor (registry is empty today), or per-service resource limits.
-3. **Publishing** to crates.io once the owner approves (readiness is done).
+### Growth backlog — features the API already supports
 
-If none of these yields a genuinely useful change, the correct move is to do nothing and
-say so. A run that ships no code because there was nothing worth shipping is a success,
+Every endpoint below exists in `easypanel-api.json` — none is speculative. Each is a
+gap between what EasyPanel's dashboard does and what this tool does. Verify live with a
+`zzz-*` target and clean up.
+
+1. **Port management** (`ports/createPort`, `deletePort`, `getExposedPorts`). The TUI
+   only *views* ports (`p`); add create/delete, and a Ports step in the create wizard.
+2. **Mount management** (`mounts/createMount`, `updateMount`, `deleteMount`). Same — the
+   viewer is read-only; the CLI already has `mount-add`, the TUI does not.
+3. **Resource limits** (`services/*/updateResources`) — CPU/memory reservations and
+   limits per service, editable from the TUI and a wizard step. Real scalability lever.
+4. **Basic auth** (`updateBasicAuth`), **redirects** (`updateRedirects`),
+   **maintenance mode** (`updateMaintenanceMode`) — each a small, self-contained editor.
+5. **Templates** (`templates/createFromSchema`) — EasyPanel's one-click app catalogue.
+   Large; scope a slice (list + deploy one) before promising the whole thing.
+6. **Middlewares editor** for domains — the field is preserved on edit but not editable;
+   registry is empty today, so confirm there is a way to list/define them first.
+
+### Scalability — the tool must not fold at real scale
+
+The owner runs hosts with hundreds of services and 700+ domains. Things to watch and
+improve, each verifiable:
+
+- **Render cost** on huge tables (the flat services list, 713-domain hosts) — measure,
+  don't guess; ratatui redraws every frame.
+- **API round-trips** — the poll lane refetches everything every 2 s. Consider what can
+  be incremental (logs already are) without going stale.
+- **Many-host workflows** — the Hosts screen fans out per host; make sure a slow/dead
+  host never degrades the rest (it currently does not — keep it that way as features
+  grow).
+
+### Also valid, any run
+
+- **A real bug or rough edge found by driving the live TUI** — still the richest source;
+  almost every important fix here came from watching the screen, not from tests. Prefer
+  this over the backlog when you find one.
+- **Publishing** to crates.io once the owner approves (readiness is done).
+
+Do not invent filler. If a run genuinely finds nothing worth shipping, the correct move
+is to do nothing and say so. A run that ships no code because there was nothing worth
+shipping is a success,
 not a failure — the earlier "fourteen empty runs" problem was avoidance, not restraint.
 
 ## Also in scope, any time
