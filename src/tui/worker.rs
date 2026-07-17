@@ -116,10 +116,13 @@ pub(super) enum Req {
         project: String,
         service: String,
         stype: String,
-        /// Field khusus tipe (databaseName, user, password, …). Hanya yang diisi
-        /// user yang ikut: kosong berarti server yang membuatkan, dan mengirim ""
-        /// akan menimpanya jadi string kosong, bukan membiarkannya di-generate.
+        /// Field yang aman inline di createService: db (databaseName, user, …),
+        /// build, env, dotEnvPath, domains. Semua ini cepat dan TAK memicu deploy.
+        /// Hanya field yang diisi user yang ikut: kosong = server yang membuatkan.
         extra: Value,
+        /// Source diterapkan TERPISAH setelah createService (updateSource*), sebab
+        /// inline-nya memicu deploy 100 detik. (op, body, auto_deploy).
+        source: Option<super::form::SourceCall>,
     },
     DomainSave {
         id: Option<String>,
@@ -396,13 +399,17 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                             "disableGithubDeploy"
                         };
                         match client.call("services/app", ep, ps) {
-                            Ok(_) => Resp::Done("Tersimpan".into(), Refresh::None),
+                            // Refresh::Projects, bukan None: tanpa ini kolom Source
+                            // di tabel tetap menampilkan branch/source lama sampai
+                            // user menekan `r`. Persis kelas bug yang sama dengan
+                            // service terhapus yang tak hilang dari tabel.
+                            Ok(_) => Resp::Done("Tersimpan".into(), Refresh::Projects),
                             Err(e) => {
                                 Resp::Err(format!("source tersimpan, auto deploy gagal: {e}"))
                             }
                         }
                     }
-                    None => Resp::Done("Tersimpan".into(), Refresh::None),
+                    None => Resp::Done("Tersimpan".into(), Refresh::Projects),
                 },
                 Err(e) => Resp::Err(e.to_string()),
             }
@@ -458,25 +465,43 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
             service,
             stype,
             extra,
+            source,
         } => {
+            let grp = format!("services/{stype}");
+            let ps = json!({ "projectName": project, "serviceName": service });
             let mut input = extra;
             input["projectName"] = json!(project);
             input["serviceName"] = json!(service);
-            // Dengan source github, createService butuh ~100 detik (diukur di
-            // server); tanpa source, 0,2 detik. Batas 30 detik bawaan membuat
-            // request putus sementara server tetap menyelesaikannya — user
-            // melihat "gagal" lalu menemukan service-nya sudah ada.
-            let slow = input.get("source").is_some();
-            match client.call_within(
-                &format!("services/{stype}"),
-                "createService",
-                input,
-                slow.then(|| std::time::Duration::from_secs(180)),
-            ) {
-                Ok(_) => Resp::Done(
-                    format!("Service '{service}' ({stype}) dibuat"),
-                    Refresh::Projects,
-                ),
+            // 1) Buat service. Tanpa source inline ini cepat (~0,2 detik) dan tak
+            //    memicu deploy, jadi service langsung muncul di tabel.
+            match client.call(&grp, "createService", input) {
+                Ok(_) => {
+                    // 2) Terapkan source terpisah (updateSource* + autoDeploy).
+                    //    Menyimpan konfigurasi saja, tanpa men-deploy.
+                    if let Some((op, mut body, auto)) = source {
+                        body["projectName"] = json!(project);
+                        body["serviceName"] = json!(service);
+                        if let Err(e) = client.call(&grp, op, body) {
+                            return Resp::Err(format!(
+                                "Service '{service}' dibuat, tapi source gagal: {e}"
+                            ));
+                        }
+                        if let Some(on) = auto {
+                            let ep = if on {
+                                "enableGithubDeploy"
+                            } else {
+                                "disableGithubDeploy"
+                            };
+                            let _ = client.call(&grp, ep, ps.clone());
+                        }
+                    }
+                    // Sengaja TIDAK deploy: biar muncul dulu di tabel, lalu user
+                    // menekan `d`. Deploy saat create-lah yang dulu bikin error.
+                    Resp::Done(
+                        format!("Service '{service}' dibuat — tekan d untuk deploy"),
+                        Refresh::Projects,
+                    )
+                }
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
@@ -533,10 +558,27 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
             stype,
             action,
         } => {
-            let mut input = json!({ "projectName": project, "serviceName": service });
+            // Deploy DI-DISPATCH, tidak ditunggu. Build lamanya tak tentu — bisa
+            // menit, tergantung repo — dan melebihi batas proxy mana pun (diukur:
+            // 125 detik lalu 524 dari Cloudflare). Menunggunya = "error sending
+            // request" padahal deploy jalan terus. Jadi picu di thread terpisah
+            // dan langsung lapor dimulai; server menyelesaikan build sendiri
+            // (drop koneksi tak membatalkannya — terbukti di createService).
             if action == "deploy" {
-                input["forceRebuild"] = json!(false);
+                let c = client.clone();
+                let (grp, input) = (
+                    format!("services/{stype}"),
+                    json!({ "projectName": project, "serviceName": service, "forceRebuild": false }),
+                );
+                std::thread::spawn(move || {
+                    let _ = c.call(&grp, "deployService", input);
+                });
+                return Resp::Done(
+                    format!("Deploy {project}/{service} dimulai — pantau di Logs (Enter)"),
+                    Refresh::None,
+                );
             }
+            let input = json!({ "projectName": project, "serviceName": service });
             match client.call(
                 &format!("services/{stype}"),
                 &format!("{action}Service"),

@@ -7,17 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-18
+
 ### Added
+
+- **Creating a service is now a wizard that follows EasyPanel's own flow.** `n` steps
+  through **Dasar → Source → Build → Environment → Domains** — `Enter` advances, `Esc`
+  goes back, and the title shows where you are (`2/5 Source`). Databases stay a single
+  step, because they have no source/build/env/domain to configure. Everything is
+  collected once and the service is created in one go — no more create-then-edit.
+
+  This grew from the earlier one-form create, which had become too crowded: the panel
+  itself is stepwise, so the CLI now matches it. Any form whose fields all sit on step 0
+  still renders as a single page, so nothing else changed.
+
+- **The build engine, environment, and a first domain are part of creation.** Pick
+  nixpacks/railpack/dockerfile/buildpacks and its version, paste env vars (opened in
+  `$EDITOR`, like the env editor), and set one domain (host, port, HTTPS, path) — all
+  before the service exists. `createService` takes build/env/domains inline.
 
 - README badges (CI, latest release, licence) and GitHub issue/PR templates.
 
-### Changed
+- **"Create env file" (dotEnvPath).** The Environment step has a *Buat file .env* toggle
+  matching the dashboard; when on, a path field appears (default `.env`) and the env is
+  written as a file in the container.
 
-- Regression tests lock in the config data-loss protection and the byte/series
-  formatters' defensive behaviour: an unreadable config now provably errors rather than
-  silently wiping every server, and `format_bytes` provably turns negative/NaN into
-  "0 B". No behaviour change — these guarantees existed, but nothing failed if a refactor
-  broke them. Each new test was verified to fail when its guard is removed.
+### Fixed
+
+- **Creating a service no longer deploys it immediately.** This was the real cause of
+  the "it errored / it never appeared" reports: `createService` with a source inline
+  triggers a build-and-deploy that takes ~100 seconds and can fail on a repo that isn't
+  ready — all while the row is absent from the table. Measured against a live server,
+  the source is what triggers it. So the service is now created **without** a source
+  (0.2 s, appears instantly), and the source is applied by a separate `updateSource*`
+  call (~2 s, config only, no deploy). Deploy is left as the explicit `d` you press when
+  the service is in the table and you're ready — exactly the dashboard's order.
+
+- **Editing a source or build now updates the table.** Changing a branch (`U`) saved
+  correctly on the server but the Source column kept showing the old branch until a
+  manual `r` — `updateSource`/`updateBuild` returned without asking for a refresh. They
+  now refresh the list, same as create and destroy already do.
+
+- **Deploy is dispatched, not awaited.** `d` used to wait for `deployService` to return,
+  but a deploy *is* a build — it takes however long the build takes (measured at 125 s
+  on one repo, past every proxy's limit; a proxy returned `524` while the build kept
+  going). Waiting turned a working deploy into `error sending request`. Deploy now fires
+  on a background thread and the status immediately says it started — the build runs on
+  the server regardless (dropping the connection doesn't cancel it), and you watch it in
+  the logs. Build time varies by repo, so there is no timeout to tune; not waiting is
+  the fix.
+
+- **Result and error messages are readable again.** The status bar drew the keybindings
+  first and the message last, so a long error was pushed off the right edge and
+  truncated (`…ke rep`). The message now leads on the left, in red for errors, and the
+  keybindings yield the space when it's tight — they're only a reminder, and `?` has the
+  full list. The create status also no longer flashes to a generic "Mengirim…" over its
+  own message.
 
 ## [0.13.0] — 2026-07-18
 

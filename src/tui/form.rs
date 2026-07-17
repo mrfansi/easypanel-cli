@@ -99,22 +99,22 @@ pub(super) fn build_fields(build: Option<&Value>) -> Vec<Field> {
         _ => get("/nixpacksVersion", "1.41.0"),
     };
     vec![
-        Field::choice("Tipe", BUILD_TYPES, &get("/type", "nixpacks")),
+        Field::choice("Build", BUILD_TYPES, &get("/type", "nixpacks")),
         // SATU field Version, bukan satu per tipe: by_label() memakai find(), jadi
         // ia mengambil field PERTAMA berlabel itu — bukan yang sedang tampil. Dua
         // field "Version" akan membuat railpack menulis versi milik nixpacks.
         // build_body() sudah memetakannya ke kunci yang benar per tipe.
-        Field::text("Version", &version).when("Tipe", "nixpacks,railpack"),
+        Field::text("Version", &version).when("Build", "nixpacks,railpack"),
         Field::text("Install command", &get("/installCommand", ""))
-            .when("Tipe", "nixpacks,railpack"),
-        Field::text("Build command", &get("/buildCommand", "")).when("Tipe", "nixpacks,railpack"),
-        Field::text("Start command", &get("/startCommand", "")).when("Tipe", "nixpacks,railpack"),
-        Field::text("Nix packages", &get("/nixPackages", "")).when("Tipe", "nixpacks"),
-        Field::text("Apt packages", &get("/aptPackages", "")).when("Tipe", "nixpacks"),
-        Field::text("Mise packages", &get("/misePackages", "")).when("Tipe", "railpack"),
-        Field::text("Dockerfile path", &get("/file", "Dockerfile")).when("Tipe", "dockerfile"),
+            .when("Build", "nixpacks,railpack"),
+        Field::text("Build command", &get("/buildCommand", "")).when("Build", "nixpacks,railpack"),
+        Field::text("Start command", &get("/startCommand", "")).when("Build", "nixpacks,railpack"),
+        Field::text("Nix packages", &get("/nixPackages", "")).when("Build", "nixpacks"),
+        Field::text("Apt packages", &get("/aptPackages", "")).when("Build", "nixpacks"),
+        Field::text("Mise packages", &get("/misePackages", "")).when("Build", "railpack"),
+        Field::text("Dockerfile path", &get("/file", "Dockerfile")).when("Build", "dockerfile"),
         Field::text("Builder", &get("/buildpacksBuilder", "heroku/builder:24"))
-            .when("Tipe", "buildpacks"),
+            .when("Build", "buildpacks"),
     ]
 }
 
@@ -196,7 +196,19 @@ pub(super) fn domain_fields(existing: Option<&Value>, projects: &[String]) -> Ve
 /// Kosong berarti user belum memilih, bukan error: service app boleh dibuat
 /// tanpa source lalu diatur belakangan, dan createService cuma mewajibkan
 /// projectName + serviceName.
-pub(super) fn create_source(form: &Form) -> std::result::Result<Option<Value>, String> {
+/// Panggilan updateSource: (endpoint, body, auto_deploy). Dipakai lintas modul
+/// (form membuatnya, worker menjalankannya), jadi satu alias.
+pub(super) type SourceCall = (&'static str, Value, Option<bool>);
+
+/// Panggilan updateSource untuk service baru: (op, body, auto), atau None bila
+/// bukan app / source belum diisi.
+///
+/// Source DITERAPKAN TERPISAH setelah createService, bukan inline. Sebabnya
+/// diukur di server: createService dengan source langsung memicu deploy (~100
+/// detik + bisa error build), sedangkan updateSource cuma menyimpan konfigurasi
+/// (~2 detik, tanpa deploy). Jadi service muncul seketika di tabel dan deploy
+/// tetap aksi eksplisit `d` — persis alur dashboard EasyPanel.
+pub(super) fn create_source(form: &Form) -> std::result::Result<Option<SourceCall>, String> {
     if form.by_label("Tipe") != "app" {
         return Ok(None);
     }
@@ -209,24 +221,50 @@ pub(super) fn create_source(form: &Form) -> std::result::Result<Option<Value>, S
     if untouched {
         return Ok(None);
     }
-    let (op, mut body, auto) = source_body(form)?;
-    // Dipetakan dari `op`, bukan dibaca ulang dari form: satu sumber kebenaran.
-    // Sebuah catch-all `_ => "image"` di sini pernah akan melabeli source
-    // dockerfile sebagai image — body-nya lolos validasi bentuk, lalu service-nya
-    // di-build dari image yang tak pernah disebut siapa pun.
-    body["type"] = json!(match op {
-        "updateSourceGithub" => "github",
-        "updateSourceGit" => "git",
-        "updateSourceDockerfile" => "dockerfile",
-        "updateSourceImage" => "image",
-        other => return Err(format!("source tak dikenal: {other}")),
-    });
-    // Di jalur edit, autoDeploy harus dipasang lewat enableGithubDeploy susulan
-    // karena updateSourceGithub mereset-nya. createService menerimanya langsung.
-    if let Some(on) = auto {
-        body["autoDeploy"] = json!(on);
+    source_body(form).map(Some)
+}
+
+/// Objek `build` untuk createService, atau None untuk service non-app.
+///
+/// createService menerima `build` inline sama seperti `source`. Hanya app yang
+/// punya build; database dibuat server tanpa langkah build. build_body() sudah
+/// memetakan tiap engine ke kuncinya (nixpacksVersion vs railpackVersion, dst),
+/// jadi cukup panggil dan ambil isinya.
+pub(super) fn create_build(form: &Form) -> Option<Value> {
+    if form.by_label("Tipe") != "app" {
+        return None;
     }
-    Ok(Some(body))
+    build_body(form).ok().and_then(|b| b.get("build").cloned())
+}
+
+/// Isi `env` untuk createService, atau None bila kosong. String KEY=value
+/// multi-baris, disunting di $EDITOR — sama seperti env service yang sudah ada.
+pub(super) fn create_env(form: &Form) -> Option<String> {
+    let env = form.by_label("Environment");
+    (!env.is_empty()).then_some(env)
+}
+
+/// Array `domains` untuk createService (satu domain), atau None bila host kosong.
+///
+/// API cuma mewajibkan `host`. `port` adalah number, jadi diparse; kalau tak
+/// valid, dihilangkan ketimbang mengirim 0 yang menunjuk port salah.
+pub(super) fn create_domains(form: &Form) -> Option<Value> {
+    let host = form.by_label("Domain host");
+    if host.is_empty() {
+        return None;
+    }
+    let mut d = serde_json::Map::new();
+    d.insert("host".into(), json!(host));
+    d.insert("https".into(), json!(form.is_on_label("Domain HTTPS")));
+    let path = form.by_label("Domain path");
+    d.insert(
+        "path".into(),
+        json!(if path.is_empty() { "/".into() } else { path }),
+    );
+    if let Ok(port) = form.by_label("Domain port").parse::<u32>() {
+        d.insert("port".into(), json!(port));
+    }
+    Some(json!([Value::Object(d)]))
 }
 
 pub(super) fn service_extra(form: &Form) -> Value {
@@ -337,7 +375,7 @@ pub(super) fn source_body(
 /// tak ada di form (nixpacksVersion, railpackVersion) tetap utuh. Saat tipe
 /// diganti, field tipe lama justru tak boleh ikut terbawa.
 pub(super) fn build_body(form: &Form) -> std::result::Result<Value, String> {
-    let t = form.by_label("Tipe");
+    let t = form.by_label("Build");
     let same_type =
         form.original.as_ref().map(|o| field(o, "/type")).as_deref() == Some(t.as_str());
 
@@ -493,6 +531,11 @@ pub(super) struct Field {
     /// Panel juga begini: memilih Service/Custom mengganti field di bawahnya,
     /// bukan menampilkan keduanya sekaligus.
     pub(super) only_for: Vec<(&'static str, &'static str)>,
+    /// Langkah wizard tempat field ini muncul. 0 = langkah pertama. Form yang
+    /// semua field-nya di langkah 0 tetap satu halaman biasa; begitu ada field
+    /// di langkah > 0, form itu jadi wizard bertahap. Nilai submit tetap dibaca
+    /// dari SEMUA langkah sekaligus.
+    pub(super) step: u8,
 }
 
 impl Field {
@@ -503,6 +546,7 @@ impl Field {
             value: value.into(),
             kind: FieldKind::Editor,
             only_for: Vec::new(),
+            step: 0,
         }
     }
     pub(super) fn text(label: &'static str, value: &str) -> Self {
@@ -511,6 +555,7 @@ impl Field {
             value: value.into(),
             kind: FieldKind::Text,
             only_for: Vec::new(),
+            step: 0,
         }
     }
     /// Tampilkan field ini hanya bila field `switch` bernilai salah satu `tags`
@@ -519,6 +564,12 @@ impl Field {
     /// baru" perlu "tipe service = app" DAN "tipe source = github" sekaligus.
     pub(super) fn when(mut self, switch: &'static str, tags: &'static str) -> Self {
         self.only_for.push((switch, tags));
+        self
+    }
+
+    /// Tempatkan field di langkah wizard `n` (0 = langkah pertama).
+    pub(super) fn step(mut self, n: u8) -> Self {
+        self.step = n;
         self
     }
     pub(super) fn secret(label: &'static str) -> Self {
@@ -530,6 +581,7 @@ impl Field {
             value: value.into(),
             kind: FieldKind::Secret,
             only_for: Vec::new(),
+            step: 0,
         }
     }
     pub(super) fn boolean(label: &'static str, on: bool) -> Self {
@@ -538,6 +590,7 @@ impl Field {
             value: if on { "ya".into() } else { "tidak".into() },
             kind: FieldKind::Bool,
             only_for: Vec::new(),
+            step: 0,
         }
     }
     pub(super) fn choice(label: &'static str, options: &[&str], value: &str) -> Self {
@@ -558,6 +611,7 @@ impl Field {
             value,
             kind: FieldKind::Choice(options),
             only_for: Vec::new(),
+            step: 0,
         }
     }
     /// Ganti daftar pilihan (mis. service terisi setelah project dipilih).
@@ -643,6 +697,8 @@ pub(super) struct Form {
     /// tak ada di form (middlewares pada domain, nixpacksVersion pada build)
     /// ikut utuh.
     pub(super) original: Option<Value>,
+    /// Langkah wizard yang sedang tampil. 0 untuk form satu halaman biasa.
+    pub(super) step: usize,
 }
 
 impl Form {
@@ -653,6 +709,7 @@ impl Form {
             fields,
             focus: 0,
             original: None,
+            step: 0,
         }
     }
     pub(super) fn with_original(mut self, original: Value) -> Self {
@@ -678,9 +735,61 @@ impl Form {
             .collect()
     }
 
-    /// Pindah fokus `delta` langkah di antara field yang tampil saja.
+    /// Langkah-langkah yang benar-benar punya field tampil, terurut. Untuk
+    /// service database ini cuma `[0]` (field source/build tergantung Tipe=app),
+    /// jadi form-nya tetap satu halaman; untuk app `[0, 1, 2]` → wizard.
+    pub(super) fn steps_present(&self) -> Vec<u8> {
+        let mut steps: Vec<u8> = self
+            .visible()
+            .iter()
+            .map(|&i| self.fields[i].step)
+            .collect();
+        steps.sort_unstable();
+        steps.dedup();
+        steps
+    }
+
+    /// Form ini bertahap (lebih dari satu langkah berisi field).
+    pub(super) fn is_wizard(&self) -> bool {
+        self.steps_present().len() > 1
+    }
+
+    /// Field tampil DI LANGKAH SEKARANG. Beda dari visible(), yang lintas-langkah
+    /// dan dipakai saat submit untuk membaca semua nilai sekaligus.
+    pub(super) fn visible_here(&self) -> Vec<usize> {
+        let step = self.step as u8;
+        self.visible()
+            .into_iter()
+            .filter(|&i| self.fields[i].step == step)
+            .collect()
+    }
+
+    /// Langkah berisi berikutnya setelah yang sekarang, bila ada.
+    pub(super) fn next_present_step(&self) -> Option<usize> {
+        self.steps_present()
+            .into_iter()
+            .map(usize::from)
+            .find(|&s| s > self.step)
+    }
+
+    /// Langkah berisi sebelum yang sekarang, bila ada.
+    pub(super) fn prev_present_step(&self) -> Option<usize> {
+        self.steps_present()
+            .into_iter()
+            .rev()
+            .map(usize::from)
+            .find(|&s| s < self.step)
+    }
+
+    /// Pindah ke langkah `step` dan letakkan fokus di field pertamanya.
+    pub(super) fn goto_step(&mut self, step: usize) {
+        self.step = step;
+        self.focus = self.visible_here().first().copied().unwrap_or(0);
+    }
+
+    /// Pindah fokus `delta` langkah di antara field yang tampil di langkah ini.
     pub(super) fn move_focus(&mut self, delta: isize) {
-        let vis = self.visible();
+        let vis = self.visible_here();
         if vis.is_empty() {
             return;
         }
@@ -691,7 +800,7 @@ impl Form {
 
     /// Setelah Tujuan berganti, fokus bisa tertinggal di field yang kini tersembunyi.
     pub(super) fn clamp_focus(&mut self) {
-        let vis = self.visible();
+        let vis = self.visible_here();
         if !vis.contains(&self.focus) {
             self.focus = vis.first().copied().unwrap_or(0);
         }

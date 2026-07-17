@@ -256,10 +256,16 @@ impl App {
         let typed = form.fields[form.focus].kind.is_typed();
 
         match code {
-            KeyCode::Esc => {
-                self.form = None;
-                self.status = "Dibatalkan".into();
-            }
+            // Wizard: Esc mundur satu langkah, dan membatalkan hanya di langkah
+            // pertama. Form satu-halaman tak punya langkah sebelumnya, jadi Esc
+            // langsung membatalkan seperti dulu.
+            KeyCode::Esc => match form.prev_present_step() {
+                Some(step) => form.goto_step(step),
+                None => {
+                    self.form = None;
+                    self.status = "Dibatalkan".into();
+                }
+            },
             KeyCode::Tab | KeyCode::Down => form.move_focus(1),
             KeyCode::BackTab | KeyCode::Up => form.move_focus(-1),
             // Bool cukup di-toggle; Choice membuka dropdown yang bisa dicari.
@@ -282,7 +288,13 @@ impl App {
                 form.fields[form.focus].value.pop();
             }
             KeyCode::Char(c) if typed => form.fields[form.focus].value.push(c),
-            KeyCode::Enter => self.submit_form(req),
+            // Wizard: Enter maju satu langkah, dan menyimpan hanya di langkah
+            // terakhir. Form satu-halaman tak punya langkah berikutnya, jadi Enter
+            // langsung menyimpan seperti dulu.
+            KeyCode::Enter => match form.next_present_step() {
+                Some(step) => form.goto_step(step),
+                None => self.submit_form(req),
+            },
             _ => {}
         }
     }

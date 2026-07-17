@@ -118,13 +118,18 @@ A Dockerfile is not a single-line value, and `updateSourceDockerfile` takes its 
 inline rather than a path — so pretending otherwise would send one long line that never
 builds.
 
-**`n` creates an app and its source in one form.** Pick the type, and for `app` the
-source fields (GitHub repo, branch, auto deploy, path) appear in the same dialog —
-`createService` takes the source inline, so there is no create-then-edit round trip.
-Leave the repo empty to create a bare service and configure it later. Creating an app
-*with* a GitHub source takes the server about **100 seconds** (against 0.2 s without
-one); the status line says so before it starts, and the request is given its own longer
-deadline so it cannot time out while the server is still working.
+**`n` opens a creation wizard that follows the EasyPanel dashboard's flow:**
+**Dasar → Source → Build → Environment → Domains.** `Enter` advances a step, `Esc` goes
+back, and the title shows where you are (`2/5 Source`). A database is a single step —
+it has no source or build to configure. Every field is optional except the name; leave
+source empty for a bare app you'll configure later, and the *Buat file .env* toggle in
+Environment writes the vars as a `.env` file (the dashboard's "Create env file").
+
+Creating the service does **not** deploy it. It appears in the table in about a second,
+and you press `d` to deploy when you're ready — the same order the dashboard uses.
+(Applying a source inline at creation would trigger a ~100-second build-and-deploy that
+can fail before the row even shows; the source is applied as a separate, config-only
+call instead.)
 
 Logs are not a snapshot. EasyPanel has no log streaming endpoint — there is exactly one
 SSE route on the whole API and it is for the Actions list — so the tail polls

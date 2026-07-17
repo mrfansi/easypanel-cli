@@ -1,7 +1,7 @@
 use std::sync::mpsc::Sender;
 
 use ratatui::widgets::{ListState, TableState};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::commands;
 use crate::output::field;
@@ -759,29 +759,41 @@ impl App {
                     self.status = "Service names may only contain a-z, 0-9, - and _".into();
                     return;
                 }
-                let mut extra = service_extra(form);
-                match create_source(form) {
-                    Ok(Some(src)) => extra["source"] = src,
-                    Ok(None) => {}
+                // Source diterapkan terpisah (lihat create_source): inline-nya
+                // memicu deploy. build/env/domains aman inline — cepat, tak deploy.
+                let source = match create_source(form) {
+                    Ok(s) => s,
                     Err(msg) => {
                         self.status = msg;
                         return;
                     }
-                }
-                // Dengan source, panggilannya makan ~100 detik (diukur di server).
-                // Diam selama itu tak bisa dibedakan dari hang, dan user akan
-                // menutup TUI di tengah jalan.
-                self.status = if extra.get("source").is_some() {
-                    format!("Membuat '{service}' dengan source-nya — ini bisa 1-2 menit...")
-                } else {
-                    format!("Membuat '{service}'...")
                 };
+                let mut extra = service_extra(form);
+                if let Some(build) = create_build(form) {
+                    extra["build"] = build;
+                }
+                if let Some(env) = create_env(form) {
+                    extra["env"] = json!(env);
+                    // "Buat file .env" -> tulis env sebagai file di path ini.
+                    if form.is_on_label("Buat file .env") {
+                        let path = form.by_label("Path file .env");
+                        extra["dotEnvPath"] =
+                            json!(if path.is_empty() { ".env".into() } else { path });
+                    }
+                }
+                if let Some(domains) = create_domains(form) {
+                    extra["domains"] = domains;
+                }
+                self.status = format!("Membuat '{service}'...");
                 let _ = req.send(Req::ServiceCreate {
                     project,
                     service,
                     stype,
                     extra,
+                    source,
                 });
+                self.form = None;
+                return;
             }
             FormKind::SourceEdit { project, service } => match source_body(form) {
                 Ok((op, body, auto_deploy)) => {
@@ -880,10 +892,46 @@ impl App {
         //
         // Daftar repo menyusul lewat Resp::Repos: menunggunya di sini akan
         // membekukan TUI sampai searchRepos selesai.
+        // Wizard mengikuti alur dashboard EasyPanel: Dasar → Source → Build.
+        // Field source & build hanya untuk app (`.when("Tipe","app")`), jadi
+        // service database tetap satu langkah. `.step()` menaruhnya di halaman
+        // masing-masing; nilai submit tetap dibaca lintas-langkah.
         fields.extend(
             source_fields(None, Vec::new())
                 .into_iter()
-                .map(|f| f.when("Tipe", "app")),
+                .map(|f| f.when("Tipe", "app").step(1)),
+        );
+        fields.extend(
+            build_fields(None)
+                .into_iter()
+                .map(|f| f.when("Tipe", "app").step(2)),
+        );
+        // Lanjutan alur dashboard: Environment lalu Domains. Keduanya diterima
+        // createService inline (`env` string, `domains` array; hanya `host`
+        // wajib). Label domain diberi awalan "Domain " supaya "Path" tak
+        // bertabrakan dengan "Path" milik source — by_label() memakai find().
+        fields.push(Field::editor("Environment", "").when("Tipe", "app").step(3));
+        // "Create env file" di dashboard: menulis env sebagai file .env di path
+        // tsb (API: dotEnvPath). Path hanya tampil saat toggle-nya nyala.
+        fields.push(
+            Field::boolean("Buat file .env", false)
+                .when("Tipe", "app")
+                .step(3),
+        );
+        fields.push(
+            Field::text("Path file .env", ".env")
+                .when("Tipe", "app")
+                .when("Buat file .env", "ya")
+                .step(3),
+        );
+        fields.extend(
+            [
+                Field::text("Domain host", ""),
+                Field::text("Domain port", "3000"),
+                Field::boolean("Domain HTTPS", true),
+                Field::text("Domain path", "/"),
+            ]
+            .map(|f| f.when("Tipe", "app").step(4)),
         );
         self.form = Some(Form::new(FormKind::ServiceCreate, " Service baru ", fields));
         let _ = req.send(Req::Repos);

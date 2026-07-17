@@ -268,26 +268,23 @@ fn a_new_app_carries_its_source_in_the_same_request() {
         ("Repo", "acme/web"),
         ("Branch", "dev"),
     ]);
-    let src = create_source(&f).unwrap().unwrap();
+    // Source diterapkan lewat updateSourceGithub TERPISAH (bukan inline di
+    // createService, yang memicu deploy). create_source memberi (op, body, auto).
+    let (op, body, auto) = create_source(&f).unwrap().unwrap();
+    assert_eq!(op, "updateSourceGithub");
     assert_eq!(
-        src,
-        json!({ "type": "github", "owner": "acme", "repo": "web", "ref": "dev",
-                    "path": "/", "autoDeploy": false })
+        body,
+        json!({ "owner": "acme", "repo": "web", "ref": "dev", "path": "/" })
     );
+    assert_eq!(auto, Some(false));
 
-    // Auto deploy ikut di dalam source. Jalur edit terpaksa memasangnya lewat
-    // enableGithubDeploy susulan karena updateSourceGithub mereset-nya;
-    // createService tidak.
     let f = create_form(&[
         ("Nama", "web"),
         ("Repo", "acme/web"),
         ("Branch", "dev"),
         ("Auto deploy", "ya"),
     ]);
-    assert_eq!(
-        create_source(&f).unwrap().unwrap()["autoDeploy"],
-        json!(true)
-    );
+    assert_eq!(create_source(&f).unwrap().unwrap().2, Some(true));
 }
 
 #[test]
@@ -548,12 +545,21 @@ fn enter_saves_the_form_from_a_choice_field() {
         .find(|f| f.label == "Nama")
         .unwrap()
         .value = "webapp".into();
-    // Fokus di "Tipe", sebuah field Choice. Dulu ia juga field TERAKHIR yang
-    // tampil untuk tipe app, jadi form ini benar-benar tak punya jalan untuk
-    // disimpan; sejak source ikut di form yang sama, ia tak lagi terakhir.
-    // Yang dijaga tetap sama: Enter menyimpan, tidak membuka dropdown.
+    // Tipe database = wizard satu langkah, jadi Enter langsung menyimpan (bukan
+    // maju ke langkah source/build yang tak ada untuk database). Regresi yang
+    // dijaga: Enter pada field Choice TAK membuka dropdown — dulu ia begitu,
+    // sehingga form tak pernah bisa disimpan.
+    form.fields
+        .iter_mut()
+        .find(|f| f.label == "Tipe")
+        .unwrap()
+        .value = "redis".into();
     form.focus = form.fields.iter().position(|f| f.label == "Tipe").unwrap();
     assert!(matches!(form.fields[form.focus].kind, FieldKind::Choice(_)));
+    assert!(
+        !app.form.as_ref().unwrap().is_wizard(),
+        "redis = satu langkah"
+    );
 
     app.form_key(KeyCode::Enter, &tx);
 
@@ -561,8 +567,119 @@ fn enter_saves_the_form_from_a_choice_field() {
     assert!(matches!(
         rx.try_recv(),
         Ok(Req::ServiceCreate { ref service, ref stype, .. })
-            if service == "webapp" && stype == "app"
+            if service == "webapp" && stype == "redis"
     ));
+}
+
+#[test]
+fn env_and_domain_are_attached_only_when_filled() {
+    // Kedua langkah opsional: kosong = tak dikirim (bukan env "" atau domain
+    // tanpa host). Port diparse jadi number; path default "/".
+    let f = create_form(&[("Nama", "web"), ("Tipe", "app")]);
+    assert_eq!(create_env(&f), None, "env kosong tak dikirim");
+    assert_eq!(create_domains(&f), None, "tanpa host tak ada domain");
+
+    let f = create_form(&[
+        ("Nama", "web"),
+        ("Environment", "FOO=bar\nBAZ=qux"),
+        ("Domain host", "web.test"),
+        ("Domain port", "8080"),
+    ]);
+    assert_eq!(create_env(&f).as_deref(), Some("FOO=bar\nBAZ=qux"));
+    let d = create_domains(&f).unwrap();
+    assert_eq!(d[0]["host"], json!("web.test"));
+    assert_eq!(d[0]["port"], json!(8080), "port harus number, bukan string");
+    assert_eq!(d[0]["https"], json!(true));
+    assert_eq!(d[0]["path"], json!("/"));
+
+    // Port non-numerik dihilangkan, bukan dikirim 0 (port salah lebih buruk).
+    let f = create_form(&[("Domain host", "web.test"), ("Domain port", "bukan")]);
+    assert!(create_domains(&f).unwrap()[0].get("port").is_none());
+}
+
+#[test]
+fn create_keeps_source_separate_and_never_deploys_inline() {
+    // Insight pemilik proyek: createService dengan source inline langsung
+    // men-deploy (~100 detik, bisa error). Source harus TERPISAH supaya service
+    // muncul dulu di tabel, lalu deploy manual. Jadi Req membawa `source`
+    // sendiri, dan `extra` (yang masuk createService) TAK memuat "source".
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["p".into()];
+    app.new_service_form(&tx);
+    assert!(matches!(rx.try_recv(), Ok(Req::Repos)));
+    let form = app.form.as_mut().unwrap();
+    for (label, val) in [
+        ("Nama", "web"),
+        ("Repo", "acme/web"),
+        ("Branch", "dev"),
+        ("Environment", "A=1"),
+        ("Buat file .env", "ya"),
+    ] {
+        form.fields
+            .iter_mut()
+            .find(|f| f.label == label)
+            .unwrap()
+            .value = val.into();
+    }
+    app.submit_form(&tx);
+
+    match rx.try_recv() {
+        Ok(Req::ServiceCreate { extra, source, .. }) => {
+            assert!(extra.get("source").is_none(), "source tak boleh inline");
+            assert!(matches!(source, Some(("updateSourceGithub", _, _))));
+            // env file: toggle nyala -> dotEnvPath, dan env ikut inline (aman).
+            assert_eq!(extra["env"], json!("A=1"));
+            assert_eq!(extra["dotEnvPath"], json!(".env"));
+        }
+        _ => panic!("harus mengirim ServiceCreate"),
+    }
+}
+
+#[test]
+fn app_creation_is_a_five_step_wizard_ending_in_one_request() {
+    // Alur dashboard EasyPanel: Dasar → Source → Build → Environment → Domains.
+    // Enter maju tiap langkah lalu MENYIMPAN di langkah terakhir; Esc mundur.
+    // Semuanya jadi SATU createService, bukan create-lalu-edit berkali-kali.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["p".into()];
+    app.new_service_form(&tx);
+    assert!(matches!(rx.try_recv(), Ok(Req::Repos)));
+
+    let form = app.form.as_mut().unwrap();
+    form.fields
+        .iter_mut()
+        .find(|f| f.label == "Nama")
+        .unwrap()
+        .value = "web".into();
+    // Isi satu domain supaya bisa dipastikan ikut ke request.
+    form.fields
+        .iter_mut()
+        .find(|f| f.label == "Domain host")
+        .unwrap()
+        .value = "web.test".into();
+    // app (default) → lima langkah.
+    assert_eq!(form.steps_present(), vec![0, 1, 2, 3, 4]);
+    assert_eq!(form.step, 0);
+
+    for expected in [1, 2, 3, 4] {
+        app.form_key(KeyCode::Enter, &tx);
+        assert_eq!(app.form.as_ref().unwrap().step, expected);
+    }
+    // Mundur satu lalu maju lagi: navigasi dua arah.
+    app.form_key(KeyCode::Esc, &tx);
+    assert_eq!(app.form.as_ref().unwrap().step, 3);
+    app.form_key(KeyCode::Enter, &tx); // kembali ke Domains (terakhir)
+    app.form_key(KeyCode::Enter, &tx); // Domains = terakhir → simpan
+
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::ServiceCreate { ref service, ref stype, ref extra, .. })
+            if service == "web" && stype == "app"
+                && extra.get("build").is_some()
+                && extra["domains"][0]["host"] == json!("web.test")),
+        "langkah terakhir harus mengirim createService dengan build + domain inline"
+    );
 }
 
 #[test]
@@ -728,13 +845,14 @@ fn dockerfile_source_is_not_mislabelled_as_an_image() {
         ("Source", "dockerfile"),
         ("Dockerfile", "FROM alpine"),
     ]);
-    let src = create_source(&f).unwrap().unwrap();
-    assert_eq!(src["type"], json!("dockerfile"));
-    assert_eq!(src["dockerfile"], json!("FROM alpine"));
-    assert!(src.get("image").is_none());
+    // Dockerfile diterapkan lewat updateSourceDockerfile, bukan disalahlabeli
+    // jadi image. create_source memberi op yang benar + isi Dockerfile.
+    let (op, body, _) = create_source(&f).unwrap().unwrap();
+    assert_eq!(op, "updateSourceDockerfile");
+    assert_eq!(body["dockerfile"], json!("FROM alpine"));
+    assert!(body.get("image").is_none());
 
-    // Dockerfile kosong = belum diisi -> source dihilangkan, bukan dikirim
-    // sebagai image kosong.
+    // Dockerfile kosong = belum diisi -> source dihilangkan.
     let f = create_form(&[("Nama", "web"), ("Source", "dockerfile")]);
     assert_eq!(create_source(&f).unwrap(), None);
 }
@@ -879,7 +997,7 @@ fn build_drops_old_fields_when_type_changes() {
     f.original = Some(original);
     f.fields
         .iter_mut()
-        .find(|x| x.label == "Tipe")
+        .find(|x| x.label == "Build")
         .unwrap()
         .value = "dockerfile".into();
     let body = build_body(&f).unwrap();

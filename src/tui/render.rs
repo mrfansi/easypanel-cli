@@ -718,13 +718,25 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
 
     // Warna bernama (Color::Blue) ditafsirkan tema terminal dan bisa jadi biru
     // terang, sehingga teks putih di atasnya nyaris tak terbaca. Indeks palet
-    // memberi abu-abu gelap yang pasti, dengan status di-bold agar menonjol.
+    // memberi abu-abu gelap yang pasti.
     let bar = Style::default().bg(Color::Indexed(238)).fg(Color::White);
+
+    // Pesan status di KIRI, bukan kanan: dulu ia diletakkan setelah semua tombol,
+    // jadi pesan panjang (error) terdorong ke tepi dan terpotong ("...ke rep").
+    // Yang harus dibaca utuh adalah hasilnya; kalau sempit, biar tombol — yang
+    // cuma pengingat dan lengkap di "?" — yang menyerah lebih dulu.
+    let is_error = app.status.starts_with("Error") || app.status.contains("gagal");
+    let status_style = if is_error {
+        // Merah muda palet: kontras di atas abu-abu, tak bergantung tema.
+        bar.fg(Color::Indexed(210)).add_modifier(Modifier::BOLD)
+    } else {
+        bar.add_modifier(Modifier::BOLD)
+    };
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(format!(" {keys} "), bar.fg(Color::Indexed(252))),
+            Span::styled(format!(" {} ", app.status), status_style),
             Span::styled("│ ", bar.fg(Color::Indexed(244))),
-            Span::styled(app.status.clone(), bar.add_modifier(Modifier::BOLD)),
+            Span::styled(keys.to_string(), bar.fg(Color::Indexed(252))),
         ]))
         .style(bar),
         area,
@@ -732,13 +744,38 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn render_form(f: &mut Frame, form: &Form) {
-    let visible = form.visible();
+    // Hanya field langkah sekarang yang tampil (satu-halaman = semuanya).
+    let visible = form.visible_here();
     let height = (visible.len() as u16 + 5).min(f.area().height);
     let area = centered_abs(64, height, f.area());
     f.render_widget(Clear, area);
+    // Judul menyebut langkah agar wizard tak terasa seperti form yang terpotong.
+    let steps = form.steps_present();
+    let title = if form.is_wizard() {
+        let at = steps
+            .iter()
+            .position(|&s| s as usize == form.step)
+            .unwrap_or(0);
+        let label = match form.step {
+            0 => "Dasar",
+            1 => "Source",
+            2 => "Build",
+            3 => "Environment",
+            _ => "Domains",
+        };
+        format!(
+            "{} — {}/{} {}",
+            form.title.trim(),
+            at + 1,
+            steps.len(),
+            label
+        )
+    } else {
+        form.title.clone()
+    };
     f.render_widget(
         Block::bordered()
-            .title(form.title.clone())
+            .title(title)
             .border_style(Style::default().fg(Color::Cyan)),
         area,
     );
@@ -777,9 +814,25 @@ pub(super) fn render_form(f: &mut Frame, form: &Form) {
         f.render_widget(Paragraph::new(line), slots[slot]);
     }
 
+    // Footer menyesuaikan langkah: Enter "lanjut" sampai langkah terakhir, dan
+    // Esc "kembali" sampai langkah pertama.
+    let footer = if form.is_wizard() {
+        let enter = if form.next_present_step().is_some() {
+            "lanjut →"
+        } else {
+            "buat service"
+        };
+        let esc = if form.prev_present_step().is_some() {
+            "← kembali"
+        } else {
+            "batal"
+        };
+        format!("[Enter] {enter}   [Esc] {esc}   [Tab] pindah field   [Spasi] pilih")
+    } else {
+        "[Spasi] pilih   [Enter] simpan   [Tab] pindah field   [Esc] batal".to_string()
+    };
     f.render_widget(
-        Paragraph::new("[Spasi] pilih   [Enter] simpan   [Tab] pindah field   [Esc] batal")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
         slots[visible.len()],
     );
 }

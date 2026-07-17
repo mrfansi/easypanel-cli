@@ -151,6 +151,28 @@ response-shape assumptions, metrics joins. File an issue instead.
 5. **Destructive actions without confirmation.** Deleting a server used to wipe its
    token instantly, with no prompt and no way to recover it.
 
+## UX, workflow, and architecture are part of "done"
+
+Required by the project owner. A feature that works but is awkward is not finished.
+
+- **UI/UX is a first-class concern.** Look at what you built the way a new user would.
+  Is the important thing readable, or crammed and truncated (a result message pushed off
+  the right edge behind the keybindings was a real bug)? Does a colour carry meaning?
+  Does the layout waste or hide space?
+- **The workflow must be seamless, following real best practice.** A user should move
+  through a task without dead ends, silent no-ops, or a form they can't escape. Follow
+  the pattern the domain already sets — for service creation, that is the EasyPanel
+  dashboard's own flow (Basic → Source → Build), not an order invented here.
+- **Navigation and layout must be clear.** Every screen says where you are and how to
+  leave. A multi-step flow shows the step ("2/3 Source") and which key advances or goes
+  back. No guessing which key does what.
+- **Use established patterns in the architecture so it stays maintainable.** Reach for a
+  known shape (a wizard is steps + next/back, a form field carries its own visibility
+  and step rules) rather than a bespoke tangle. The test of a good structure: a new
+  field or step is a small, obvious change — not an edit in five places. Keep the module
+  boundaries the split established (`worker` I/O, `app` state, `keys` actions, `form`/
+  `table` vocabulary, `render` draws nothing-decides).
+
 ## Drive the TUI and look at it before you call anything done
 
 Required by the project owner, and the record backs them up. Every one of these was
