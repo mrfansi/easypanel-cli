@@ -26,6 +26,18 @@ cargo build --release          # target/release/easypanel
 ./install.sh                   # or: PREFIX=~/.local/bin ./install.sh
 ```
 
+### Shell completions
+
+```bash
+easypanel completions zsh  > ~/.zfunc/_easypanel        # zsh (ensure ~/.zfunc is in $fpath)
+easypanel completions bash > /etc/bash_completion.d/easypanel
+easypanel completions fish > ~/.config/fish/completions/easypanel.fish
+```
+
+`elvish` and `powershell` also work. With no argument the shell is guessed from
+`$SHELL`. `install.sh` installs zsh/bash/fish completions automatically when it can
+find the right directory.
+
 ## Configure
 
 Credentials live in `~/.config/easypanel/servers.json`, mode `0600`.

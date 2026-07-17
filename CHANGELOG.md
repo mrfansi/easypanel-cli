@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-17
+
+### Added
+
+- **Shell completions** for bash, zsh, fish, elvish and PowerShell via
+  `easypanel completions <shell>`. With no argument the shell is guessed from
+  `$SHELL`. `install.sh` now installs zsh/bash/fish completions automatically —
+  but only into directories that already exist, since creating completion
+  directories on someone else's system isn't an installer's business.
+- Two tests that keep it honest: clap's `debug_assert()` validates the whole CLI
+  definition (duplicate names, conflicting args) at test time instead of at
+  runtime, and every shell's script is checked for real subcommands — a generator
+  that emits an empty-but-valid script would otherwise pass silently.
+
 ## [0.2.0] — 2026-07-16
 
 The release that makes this project legally usable and legible to people who
@@ -80,6 +94,7 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.1.0

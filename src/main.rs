@@ -6,7 +6,8 @@ mod output;
 mod tui;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 use commands::resolve_client;
 use config::ServerConfig;
@@ -60,6 +61,11 @@ enum Command {
     Maintenance {
         #[command(subcommand)]
         cmd: MaintenanceCmd,
+    },
+    /// Cetak skrip completion shell (bash, zsh, fish, elvish, powershell)
+    Completions {
+        /// Shell target; kosongkan untuk menebak dari $SHELL
+        shell: Option<Shell>,
     },
     /// Menu interaktif
     Menu,
@@ -348,6 +354,19 @@ fn main() {
 
 fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
     match cli.command {
+        // Tak menyentuh jaringan maupun config: didahulukan supaya completion
+        // tetap bisa dicetak sebelum ada server terdaftar sekalipun.
+        Some(Command::Completions { shell }) => {
+            let Some(shell) = shell.or_else(Shell::from_env) else {
+                anyhow::bail!(
+                    "Tak bisa menebak shell dari $SHELL. Sebutkan: easypanel completions <bash|zsh|fish|elvish|powershell>"
+                );
+            };
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "easypanel", &mut std::io::stdout());
+            Ok(())
+        }
+
         None | Some(Command::Menu) => {
             if cfg.all().is_empty() {
                 println!("Belum ada server. Jalankan: easypanel server add");
@@ -617,6 +636,43 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     yes,
                 ),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// clap memvalidasi seluruh definisi CLI: nama ganda, arg konflik, dsb.
+    /// Ini menangkap kesalahan yang selama ini hanya muncul saat runtime.
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn completions_generate_for_every_shell() {
+        for shell in [
+            Shell::Bash,
+            Shell::Zsh,
+            Shell::Fish,
+            Shell::Elvish,
+            Shell::PowerShell,
+        ] {
+            let mut out = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "easypanel", &mut out);
+            let script = String::from_utf8(out).expect("skrip completion harus UTF-8");
+            assert!(
+                script.len() > 100,
+                "{shell} menghasilkan skrip kosong/terlalu pendek"
+            );
+            // Skrip yang tak menyebut subcommand mana pun berarti generatornya
+            // kehilangan definisi CLI — lolos "tak error" tapi tak berguna.
+            assert!(
+                script.contains("maintenance"),
+                "{shell} tak memuat subcommand nyata"
+            );
         }
     }
 }
