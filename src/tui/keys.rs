@@ -423,6 +423,17 @@ impl App {
             KeyCode::Char('U') => self.open_config_form(false, req),
             KeyCode::Char('B') => self.open_config_form(true, req),
             KeyCode::Char('E') => self.start_env_edit(),
+            KeyCode::Char('P') => {
+                if let Some((project, service, _)) = self.selected_row() {
+                    self.form = Some(Form::new(
+                        FormKind::PortCreate { project, service },
+                        " Port baru ",
+                        port_fields(),
+                    ));
+                } else {
+                    self.status = "Pilih sebuah service dulu".into();
+                }
+            }
             KeyCode::Char('n') => self.new_service_form(req),
             KeyCode::Char('x') => self.ask_action("destroy"),
             // Panel Projects sudah tak ada, tapi project tetap harus bisa

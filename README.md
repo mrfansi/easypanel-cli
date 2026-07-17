@@ -105,6 +105,7 @@ Press **`?`** at any time for every shortcut on the current screen.
 | `E` | edit env in `$EDITOR` |
 | `U` · `B` | configure source · build (app services) |
 | `A` | turn auto deploy on/off (GitHub sources only) |
+| `P` | add an exposed port (published→target, tcp/udp) |
 | `d` `R` `S` `T` | deploy · restart · stop · start (confirmed) |
 | `n` · `x` | new · delete service (Domains: domain) |
 | `N` · `X` | new · delete project |

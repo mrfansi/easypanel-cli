@@ -15,6 +15,7 @@ pub(super) const SERVICE_TYPES: &[&str] = &[
 ];
 pub(super) const DEST_KINDS: &[&str] = &["service", "custom"];
 pub(super) const PROTOCOLS: &[&str] = &["http", "https"];
+pub(super) const PORT_PROTOCOLS: &[&str] = &["tcp", "udp"];
 pub(super) const SOURCE_TYPES: &[&str] = &["github", "git", "image", "dockerfile"];
 pub(super) const BUILD_TYPES: &[&str] = &[
     "nixpacks",
@@ -497,6 +498,35 @@ pub(super) fn domain_body(form: &Form) -> std::result::Result<Value, String> {
     Ok(body)
 }
 
+/// Field form "Port baru": published (host) -> target (container) + protokol.
+pub(super) fn port_fields() -> Vec<Field> {
+    vec![
+        Field::text("Published", ""),
+        Field::text("Target", ""),
+        Field::choice("Protocol", PORT_PROTOCOLS, "tcp"),
+    ]
+}
+
+/// Objek `values` untuk createPort: `{published, target, protocol}`.
+///
+/// Keduanya number di API, jadi diparse; angka non-valid ditolak dengan pesan
+/// jelas, bukan dikirim 0 yang membuka port salah.
+pub(super) fn port_body(form: &Form) -> std::result::Result<Value, String> {
+    let published: u32 = form
+        .by_label("Published")
+        .parse()
+        .map_err(|_| "Published harus angka port (mis. 8080)")?;
+    let target: u32 = form
+        .by_label("Target")
+        .parse()
+        .map_err(|_| "Target harus angka port (mis. 80)")?;
+    Ok(json!({
+        "published": published,
+        "target": target,
+        "protocol": form.by_label("Protocol"),
+    }))
+}
+
 // ---------- Form (ratatui tak punya widget input, jadi dibuat sendiri) ----------
 
 #[derive(PartialEq, Clone)]
@@ -677,6 +707,11 @@ pub(super) enum FormKind {
     DomainCreate,
     DomainEdit {
         id: String,
+    },
+    /// Tambah port yang di-expose ke sebuah service.
+    PortCreate {
+        project: String,
+        service: String,
     },
     SourceEdit {
         project: String,

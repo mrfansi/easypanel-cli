@@ -128,6 +128,12 @@ pub(super) enum Req {
         id: Option<String>,
         body: Value,
     },
+    /// Tambah port (createPort) ke sebuah service.
+    PortSave {
+        project: String,
+        service: String,
+        values: Value,
+    },
     DomainDelete(String),
     DomainSetPrimary(String),
     EnvSave {
@@ -523,6 +529,25 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                         "Domain dibuat".into()
                     },
                     Refresh::Domains,
+                ),
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::PortSave {
+            project,
+            service,
+            values,
+        } => {
+            // Port tak tampil di tabel Services, jadi tak perlu refresh; user
+            // membukanya lagi dengan `p` untuk memeriksa.
+            match client.call(
+                "ports",
+                "createPort",
+                json!({ "projectName": project, "serviceName": service, "values": values }),
+            ) {
+                Ok(_) => Resp::Done(
+                    format!("Port ditambahkan ke {project}/{service}"),
+                    Refresh::None,
                 ),
                 Err(e) => Resp::Err(e.to_string()),
             }

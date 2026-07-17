@@ -75,6 +75,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("u", "lihat source & build"),
             Key("E", "edit env di $EDITOR"),
             Key("A", "auto deploy on/off (source GitHub)"),
+            Key("P", "tambah port"),
             Key("U", "atur source (service app)"),
             Key("B", "atur build (service app)"),
             Key("N", "project baru"),

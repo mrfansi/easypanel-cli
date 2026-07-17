@@ -129,8 +129,10 @@ Every endpoint below exists in `easypanel-api.json` — none is speculative. Eac
 gap between what EasyPanel's dashboard does and what this tool does. Verify live with a
 `zzz-*` target and clean up.
 
-1. **Port management** (`ports/createPort`, `deletePort`, `getExposedPorts`). The TUI
-   only *views* ports (`p`); add create/delete, and a Ports step in the create wizard.
+1. **Port management.** *Add* is done in v0.16.0 (`P` → createPort, verified live).
+   Still open: **delete** a port from the TUI (`deletePort` by index — endpoint verified,
+   needs a select-and-confirm UI) and a **Ports step in the create wizard**
+   (`createService` takes `ports` inline).
 2. **Mount management** (`mounts/createMount`, `updateMount`, `deleteMount`). Same — the
    viewer is read-only; the CLI already has `mount-add`, the TUI does not.
 3. **Resource limits** (`services/*/updateResources`) — CPU/memory reservations and

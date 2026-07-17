@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-07-18
+
+### Added
+
+- **Expose a port from the TUI.** `P` on a service opens a small form (Published, Target,
+  Protocol tcp/udp) and creates the port via `ports/createPort`. The TUI could only
+  *view* ports (`p`); now it can add them, like the CLI's `port-add` already does. Ports
+  are numbers in the API, so the form parses them and rejects non-numbers rather than
+  sending a `0` that would open the wrong port. Verified against a live server: the port
+  lands in `listPorts`, and `deletePort` (by index) removes it — delete from the TUI and
+  a Ports step in the create wizard are the next slice.
+
 ## [0.15.0] — 2026-07-18
 
 ### Fixed

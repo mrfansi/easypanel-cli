@@ -825,6 +825,19 @@ impl App {
                     return;
                 }
             },
+            FormKind::PortCreate { project, service } => match port_body(form) {
+                Ok(values) => {
+                    let _ = req.send(Req::PortSave {
+                        project: project.clone(),
+                        service: service.clone(),
+                        values,
+                    });
+                }
+                Err(msg) => {
+                    self.status = msg;
+                    return;
+                }
+            },
             FormKind::DomainCreate | FormKind::DomainEdit { .. } => match domain_body(form) {
                 Ok(body) => {
                     let id = match &form.kind {

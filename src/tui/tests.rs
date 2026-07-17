@@ -120,6 +120,41 @@ fn service_row_summarises_source_without_opening_anything() {
 }
 
 #[test]
+fn port_body_parses_numbers_and_rejects_junk() {
+    let f = form(port_fields());
+    // Kosong -> ditolak dengan pesan, bukan port 0.
+    assert!(port_body(&f).is_err());
+
+    let mut f = form(port_fields());
+    for (label, val) in [("Published", "8080"), ("Target", "80"), ("Protocol", "udp")] {
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == label)
+            .unwrap()
+            .value = val.into();
+    }
+    let v = port_body(&f).unwrap();
+    // published/target HARUS number (API menolak string), protocol apa adanya.
+    assert_eq!(v["published"], json!(8080));
+    assert_eq!(v["target"], json!(80));
+    assert_eq!(v["protocol"], json!("udp"));
+
+    // Published non-angka -> error, bukan diam-diam 0.
+    let mut f = form(port_fields());
+    f.fields
+        .iter_mut()
+        .find(|x| x.label == "Published")
+        .unwrap()
+        .value = "abc".into();
+    f.fields
+        .iter_mut()
+        .find(|x| x.label == "Target")
+        .unwrap()
+        .value = "80".into();
+    assert!(port_body(&f).is_err());
+}
+
+#[test]
 fn status_reflects_running_state_not_just_enabled() {
     // `enabled` cuma "tidak di-disable", bukan "hidup". Service crash tetap
     // enabled — dulu tabel bohong menampilkan "aktif". Sekarang metrik yang
