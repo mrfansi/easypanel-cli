@@ -52,26 +52,51 @@ no excuses. You are expected to finish one per run.
    dropped `paste`; `cargo audit` went from 3 warnings to 1, and that one
    (`async-std`) is dev-only via `httpmock` and never ships. Required **no code
    changes** — the APIs this project uses were untouched by the major bump.
-5. **Dockerfile source type.** The panel offers five sources; this offers three.
+5. **Configure a service while creating it, not after.** Asked for directly by the
+   project owner: "kenapa gak ketika create service langsung konfigurasi sekaligus saja
+   di 1 form yang sama, daripada create dulu kemudian baru edit yang lain-lain?"
+
+   They are right, and the API agrees: `createService` accepts `source`, `build`, `env`,
+   `domains`, `deploy`, `mounts`, `ports`, and `resources` inline — only `projectName`
+   and `serviceName` are required. `source` there is the bare object
+   (`{type, owner, repo, ref, path, autoDeploy}`), i.e. exactly what the update
+   endpoints wrap. Create-then-edit is a limitation of the **form**, not the API.
+
+   Two things block a naive merge, both discovered by trying:
+   - **One switch per form.** `Form::switch` holds a single label and `Field::when` tags
+     match against that one field. The merged form needs two conditions at once
+     (service type == app **and** source type == github). Generalise `only_for` to a
+     list of `(switch_label, tags)` and drop `Form::switch`; ~31 `.when(` call sites.
+   - **Label collisions.** Create and source both use `Tipe`, `Image`, and `Password`.
+     `by_label()` uses `find()`, so a merged form would silently read the wrong field —
+     see `no_two_fields_share_a_label_in_any_form()`, which exists to catch exactly
+     this. Rename the source fields (`Tipe`→`Source`, `Image`→`Docker image`,
+     `Username`/`Password`→`Registry user`/`Registry password`); they are clearer names
+     in the standalone Source form anyway.
+
+   Scope it to Source first — an app service without one is useless, whereas build has
+   real server-side defaults. Do not merge everything at once.
+
+6. **Dockerfile source type.** The panel offers five sources; this offers three.
    `services/app/updateSourceDockerfile` takes the Dockerfile inline, so it needs the
    `$EDITOR` hand-off `edit_env_in_editor` already implements — a Dockerfile does not
    belong in a single-line field. (`uploadCodeArchive` is the fifth; it takes a
    server-side `archivePath`, so it needs a file transfer this tool has no path for.
    Investigate before promising it.)
-6. **Split `src/tui.rs`.** It is ~3,700 lines and holds the worker, the app state, every
+7. **Split `src/tui.rs`.** It is ~3,700 lines and holds the worker, the app state, every
    form, and every renderer. Split into a `tui/` module (`app.rs`, `worker.rs`,
    `form.rs`, `render.rs`) with **no behaviour change** — tests must pass untouched.
-7. **`unwrap`/`expect` audit.** Find every one reachable from untrusted input (API
+8. **`unwrap`/`expect` audit.** Find every one reachable from untrusted input (API
    responses, config files, `$EDITOR`, terminal size). Each either becomes a real error
    or gets a comment proving it cannot fire.
-8. **`--json` output** for the read-only commands (`stats`, `monitor services`,
+9. **`--json` output** for the read-only commands (`stats`, `monitor services`,
    `project list`, `domain list`, …) so people can script against it. Print the API's
    own JSON; do not invent a schema.
-9. **Test coverage for `src/config.rs` and `src/output.rs` edge cases** — malformed
+10. **Test coverage for `src/config.rs` and `src/output.rs` edge cases** — malformed
    JSON, missing file, unreadable permissions, empty series, huge byte values.
-10. **Issue and PR templates** under `.github/`, plus README badges (CI, release,
+11. **Issue and PR templates** under `.github/`, plus README badges (CI, release,
    licence).
-11. **`cargo publish` readiness** — `cargo package --list` clean, no stray files.
+12. **`cargo publish` readiness** — `cargo package --list` clean, no stray files.
 
 When the list is empty, propose the next item at the bottom of this file in your PR
 rather than inventing work silently.
