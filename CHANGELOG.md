@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-07-18
+
+### Fixed
+
+- **Status messages now fade.** A one-off notification like "Deploy … dimulai" used to
+  sit in the status bar forever, because nothing ever cleared it — it only changed when
+  the next action wrote over it, which read as "still happening". A message now reverts
+  to "Siap" after six idle seconds. The fade is tracked in one place (the event loop),
+  not sprinkled across every `self.status =`, and the periodic metric poll deliberately
+  never touches the status, so it doesn't keep resetting the timer.
+
 ### Changed
 
 - The published crate no longer carries the 0.7 MB `easypanel-api.json` (a developer

@@ -61,10 +61,25 @@ fn event_loop(
     let mut w = spawn_workers(client);
     send_initial(&w.user);
     let mut last_stats = Instant::now();
+    // Status memudar: dilacak di sini, bukan di tiap `self.status = …` yang
+    // tersebar. Timer reset saat pesannya berubah; kalau diam ≥ IDLE detik dan
+    // bukan "Siap", kembalikan ke "Siap" supaya notifikasi sementara (mis.
+    // "Deploy dimulai") tak menetap selamanya.
+    const STATUS_IDLE: Duration = Duration::from_secs(6);
+    let mut last_status = app.status.clone();
+    let mut status_since = Instant::now();
 
     loop {
         while let Ok(resp) = w.resp.try_recv() {
             app.handle(resp, &w.user);
+        }
+
+        if app.status != last_status {
+            last_status = app.status.clone();
+            status_since = Instant::now();
+        } else if app.status != "Siap" && status_since.elapsed() >= STATUS_IDLE {
+            app.status = "Siap".into();
+            last_status = app.status.clone();
         }
 
         terminal.draw(|f| ui(f, app))?;
