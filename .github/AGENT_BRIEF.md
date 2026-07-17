@@ -35,18 +35,53 @@ Therefore:
 - If an improvement needs live verification, **open a GitHub issue describing it and
   stop.** Do not guess.
 
-## In scope (verifiable with `cargo` alone)
+## The backlog — start here
 
-- **Audits** — panics, `unwrap`/`expect` on untrusted input, unsafe defaults, error
-  handling, integer overflow, unbounded allocations.
-- **Tests for existing pure logic** — the form/filter/body builders in `src/tui.rs`,
-  plus `src/output.rs`, `src/config.rs`. These are pure functions; test them hard.
-- **Docs** — README accuracy above all. A README that promises what the code does not
-  do is a bug (it once claimed `stats` showed uptime; nothing rendered uptime).
-- **Refactors** that reduce duplication without changing behaviour.
+**Work the top unfinished item.** Check whether it is already done before starting; if
+it is, move to the next. These are all verifiable with `cargo` alone — no live server,
+no excuses. You are expected to finish one per run.
+
+1. **Shell completions.** Add `clap_complete`; generate bash/zsh/fish completions via a
+   hidden `completions <shell>` subcommand. Document it in the README. High value for a
+   CLI, pure codegen, fully testable.
+2. **Man page.** Add `clap_mangen`, generate `easypanel.1`, ship it in the release
+   tarball and install it in `install.sh`.
+3. **`cargo audit`.** Add `cargo-audit` to CI as its own job; fix or document whatever
+   it reports.
+4. **Split `src/tui.rs`.** It is ~3,700 lines and holds the worker, the app state, every
+   form, and every renderer. Split into a `tui/` module (`app.rs`, `worker.rs`,
+   `form.rs`, `render.rs`) with **no behaviour change** — tests must pass untouched.
+5. **`unwrap`/`expect` audit.** Find every one reachable from untrusted input (API
+   responses, config files, `$EDITOR`, terminal size). Each either becomes a real error
+   or gets a comment proving it cannot fire.
+6. **`--json` output** for the read-only commands (`stats`, `monitor services`,
+   `project list`, `domain list`, …) so people can script against it. Print the API's
+   own JSON; do not invent a schema.
+7. **Test coverage for `src/config.rs` and `src/output.rs` edge cases** — malformed
+   JSON, missing file, unreadable permissions, empty series, huge byte values.
+8. **Issue and PR templates** under `.github/`, plus README badges (CI, release,
+   licence).
+9. **`cargo publish` readiness** — `cargo package --list` clean, no stray files.
+
+When the list is empty, propose the next item at the bottom of this file in your PR
+rather than inventing work silently.
+
+## Also in scope, any time
+
+- **Docs accuracy.** A README that promises what the code does not do is a bug — it once
+  claimed `stats` showed uptime, which nothing rendered.
 - **Dependency updates**, CI improvements, packaging.
 - **Contrast/accessibility** — named colours (`Color::Blue`) are reinterpreted by
   terminal themes and have twice produced unreadable text here. Use `Color::Indexed`.
+
+## You are expected to ship
+
+The constraints below are about **how** to work, not permission to skip working. "Do
+nothing" is only correct when the whole backlog above is genuinely done — which today it
+is not. Fourteen consecutive runs that produced nothing is a failure, not caution.
+
+If you cannot push or open a PR, **say so loudly and specifically in your final
+message** (the exact command and the exact error). Do not fail silently.
 
 ## Out of scope
 
