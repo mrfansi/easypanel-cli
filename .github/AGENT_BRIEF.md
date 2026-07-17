@@ -77,9 +77,16 @@ no excuses. You are expected to finish one per run.
    endpoint anywhere in the API, so there is nothing to send a file to. Do not add a
    field that asks the user to type a server-side path — that is a guess, not a feature.
    If you find a real upload route, reopen this.
-8. **`unwrap`/`expect` audit.** Find every one reachable from untrusted input (API
-   responses, config files, `$EDITOR`, terminal size). Each either becomes a real error
-   or gets a comment proving it cannot fire.
+8. ~~**`unwrap`/`expect` audit.**~~ Done in v0.12.1. Every production `unwrap`/`expect`
+   reachable from untrusted input was checked. One real bug: `mask_token` sliced the
+   config token by byte (`&token[..6]`), so a hand-edited token with a multibyte char at
+   the boundary crashed `server list` — the `len() <= 10` guard counts bytes, not chars.
+   Now char-based, with a regression test. The two remaining production `unwrap`s
+   (`confirm_key`, `render_picker`) were guarded by their callers; both were made total
+   (let-else / if-let) so they cannot panic even if the call order changes. Everything
+   else was already defensive: `output.rs` is `and_then`/`unwrap_or` throughout, layout
+   `[n]` indices equal their constraint count, terminal arithmetic is `saturating_sub`,
+   and API-driven indexing is guarded by `is_empty()`.
 9. **`--json` output** for the read-only commands (`stats`, `monitor services`,
    `project list`, `domain list`, …) so people can script against it. Print the API's
    own JSON; do not invent a schema.

@@ -860,8 +860,13 @@ pub(super) fn render_picker(f: &mut Frame, app: &mut App) {
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("› ");
-    let state = app.picker.as_mut().unwrap();
-    f.render_stateful_widget(list, area, state);
+    // Dipanggil hanya saat picker Some (lihat ui()), tapi total menghindari
+    // panic kalau urutan itu berubah: tanpa state, cukup gambar list tanpa sorot.
+    if let Some(state) = app.picker.as_mut() {
+        f.render_stateful_widget(list, area, state);
+    } else {
+        f.render_widget(list, area);
+    }
 }
 
 // ---------- Helpers ----------

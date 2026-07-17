@@ -117,10 +117,17 @@ pub fn server_remove(cfg: &ServerConfig, name: &str) -> Result<()> {
 }
 
 fn mask_token(token: &str) -> String {
-    if token.len() <= 10 {
+    // Per KARAKTER, bukan byte: token berasal dari file config yang bisa disunting
+    // tangan. `&token[..6]` mengiris pada indeks byte, dan sebuah token dengan
+    // karakter multibyte di batas itu membuat `server list` panic — len() menghitung
+    // byte, jadi guard <= 10 pun tak melindunginya.
+    let chars: Vec<char> = token.chars().collect();
+    if chars.len() <= 10 {
         "***".to_string()
     } else {
-        format!("{}…{}", &token[..6], &token[token.len() - 4..])
+        let head: String = chars[..6].iter().collect();
+        let tail: String = chars[chars.len() - 4..].iter().collect();
+        format!("{head}…{tail}")
     }
 }
 
@@ -1104,6 +1111,21 @@ pub fn backup_db_restore(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mask_token_never_panics_on_a_hand_edited_token() {
+        // Token berasal dari file config yang bisa disunting tangan. Versi lama
+        // mengiris per byte: token 13 byte dengan '€' (3 byte) di batas indeks 6
+        // membuat `server list` panic. Menghitung per karakter menyelesaikannya.
+        assert_eq!(mask_token("aaaaa€aaaaa"), "aaaaa€…aaaa");
+        assert_eq!(mask_token("short"), "***");
+        assert_eq!(
+            mask_token("你好世界一二三四五六七"),
+            "你好世界一二…四五六七"
+        );
+        // ASCII biasa tetap seperti dulu.
+        assert_eq!(mask_token("abcdefghijklmnop"), "abcdef…mnop");
+    }
 
     fn svc(project: &str, name: &str, mem: f64, cpu: f64) -> Value {
         json!({

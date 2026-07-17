@@ -288,7 +288,12 @@ impl App {
     }
 
     pub(super) fn confirm_key(&mut self, code: KeyCode, req: &Sender<Req>) {
-        let c = self.confirm.take().unwrap();
+        // Pemanggil sudah cek is_some(), tapi total lebih tahan daripada unwrap
+        // yang bergantung pada guard di tempat lain: kalau dipanggil tanpa
+        // konfirmasi aktif, tak ada yang perlu dilakukan.
+        let Some(c) = self.confirm.take() else {
+            return;
+        };
         if !matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
             self.status = "Dibatalkan".into();
             return;

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-07-17
+
+### Fixed
+
+- **`server list` could crash on a hand-edited token.** The token column is masked to
+  `715b0c…0c72`, and the masking sliced the string by **byte** index (`&token[..6]`).
+  The guard that skips short tokens counts bytes too (`len() <= 10`), so it does not
+  protect a token that is long enough in bytes but has a multibyte character straddling
+  byte 6 — a config file is user-editable, and such a token would panic the command
+  outright. Masking now works per character. Proven with a test that panicked before the
+  fix (`aaaaa€aaaaa`, `你好世界一二三四五六七`).
+
+### Changed
+
+- **Hardened the two remaining `unwrap`s reachable at runtime.** `confirm_key` and the
+  server picker's renderer relied on their callers having checked `is_some()` first;
+  both are now total (they do nothing / render without a selection if that ever stops
+  holding) rather than panicking. No behaviour change today — this is defence against a
+  future caller. The rest of the codebase's `unwrap`s are in tests or provably cannot
+  fire; this completes the audit of every one reachable from API responses, config
+  files, `$EDITOR`, or terminal size.
+
 ## [0.12.0] — 2026-07-17
 
 ### Added
