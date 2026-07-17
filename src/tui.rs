@@ -344,6 +344,17 @@ enum Req {
         body: Value,
         auto_deploy: Option<bool>,
     },
+    /// Nyalakan/matikan auto deploy tanpa menyentuh source.
+    ///
+    /// Terpisah dari ConfigSave: lewat sana berarti mengirim ulang
+    /// updateSourceGithub, yang mereset autoDeploy jadi false lalu memasangnya
+    /// kembali — dua panggilan dan satu jendela di mana nilainya salah, hanya
+    /// untuk membalik sebuah bool.
+    AutoDeploy {
+        project: String,
+        service: String,
+        on: bool,
+    },
     ProjectCreate(String),
     ProjectDestroy(String),
     ServiceCreate {
@@ -613,6 +624,28 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                     None => Resp::Done("Tersimpan".into(), Refresh::None),
                 },
                 Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::AutoDeploy {
+            project,
+            service,
+            on,
+        } => {
+            let ep = if on {
+                "enableGithubDeploy"
+            } else {
+                "disableGithubDeploy"
+            };
+            let ps = json!({ "projectName": project, "serviceName": service });
+            match client.call("services/app", ep, ps) {
+                Ok(_) => Resp::Done(
+                    format!(
+                        "Auto deploy {} untuk {service}",
+                        if on { "aktif" } else { "mati" }
+                    ),
+                    Refresh::Projects,
+                ),
+                Err(e) => Resp::Err(auto_deploy_error(&service, &e.to_string())),
             }
         }
         Req::Fetch {
@@ -1271,11 +1304,12 @@ fn parse_services(v: &Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-const SERVICE_HEADERS: [&str; 8] = [
+const SERVICE_HEADERS: [&str; 9] = [
     "Project / Service",
     "Type",
     "Status",
     "Source",
+    "Auto",
     "CPU %",
     "Memory",
     "Net In",
@@ -1319,7 +1353,49 @@ fn service_row(s: &Value) -> Vec<String> {
         field(s, "/type"),
         if enabled { "aktif" } else { "mati" }.to_string(),
         source,
+        auto_deploy_cell(s).into(),
     ]
+}
+
+/// Kolom Auto: hanya source github yang punya auto deploy.
+///
+/// Tiga keadaan, bukan dua. Server tak mengirim `autoDeploy` untuk source image
+/// maupun database (diperiksa langsung ke API: hadir pada 15 dari 16 app, yang
+/// satu itu bersumber image). "✗" di baris MySQL akan berarti "belum" untuk
+/// sesuatu yang tak pernah bisa dinyalakan — persis jenis angka yang percaya
+/// diri tapi salah.
+fn auto_deploy_cell(s: &Value) -> &'static str {
+    match (
+        field(s, "/source/type").as_str(),
+        s.pointer("/source/autoDeploy").and_then(Value::as_bool),
+    ) {
+        ("github", Some(true)) => "✓",
+        ("github", Some(false)) => "✗",
+        _ => "-",
+    }
+}
+
+/// Baris header project: agregat metrik anak-anaknya.
+///
+/// `mets` sudah disaring: hanya service yang metriknya ada. Kalau kosong, tak
+/// ada yang diukur — jadi "-", bukan angka. "0.0 %" akan mengklaim sudah diukur
+/// dan hasilnya nol, dan tanpa penjaga ini `Sum` untuk f64 (identitasnya -0.0)
+/// mencetak "-0.0 %": CPU negatif yang tampak meyakinkan.
+fn project_row(name: &str, count: usize, mets: &[&Value]) -> Vec<String> {
+    let mut row: Vec<String> = vec![format!("{name} ({count})")];
+    row.extend(["-", "-", "-", "-"].map(String::from));
+    if mets.is_empty() {
+        row.extend(metric_cols(None));
+        return row;
+    }
+    let sum = |ptr: &str| -> f64 { mets.iter().map(|m| num(m, ptr)).sum() };
+    row.extend([
+        format!("{:.1} %", sum("/cpu")),
+        format_bytes(sum("/memory")),
+        format_rate(sum("/networkIn")),
+        format_rate(sum("/networkOut")),
+    ]);
+    row
 }
 
 /// Kolom metrik untuk sebuah service; "-" bila metriknya belum/tak ada.
@@ -1344,6 +1420,24 @@ fn metric_cols(m: Option<&Value>) -> Vec<String> {
 /// EasyPanel membungkus error upstream, jadi token GitHub mati muncul sebagai
 /// "[400] Request failed with status code 403 Forbidden" — dua kode status dan
 /// nol petunjuk. Yang perlu user tahu adalah kredensialnya ditolak.
+/// Pesan gagal auto deploy yang menyebut sebabnya, bukan tumpukan kode status.
+///
+/// enable/disableGithubDeploy membuat webhook GitHub, jadi ia gagal untuk repo
+/// yang tak kita kuasai. EasyPanel meneruskannya sebagai 400 yang di dalamnya
+/// ada 404 dari `GET /repos/{owner}/{repo}/hooks` — diamati langsung di server
+/// pada sebuah service yang sumbernya repo pihak ketiga.
+///
+/// Yang tak dikenali dikembalikan apa adanya: pesan server yang panjang tetap
+/// lebih berguna daripada "gagal", dan membuangnya adalah bug yang pernah
+/// terjadi di proyek ini.
+fn auto_deploy_error(service: &str, raw: &str) -> String {
+    if raw.contains("404") && raw.contains("/hooks") {
+        format!("Auto deploy {service}: tak ada akses webhook ke repo itu — biasanya karena repo pihak ketiga")
+    } else {
+        format!("Auto deploy {service} gagal: {raw}")
+    }
+}
+
 fn short_reason(err: &str) -> &str {
     if err.contains("403") || err.contains("Forbidden") {
         "GitHub menolak: 403"
@@ -2349,6 +2443,49 @@ impl App {
         }
     }
 
+    /// Service terpilih, utuh — selected_row() hanya memberi identitasnya, dan
+    /// beberapa aksi perlu isinya (mis. autoDeploy sekarang).
+    fn selected_service(&self) -> Option<&Value> {
+        match self.visible_rows().get(self.services_table.selected()?)? {
+            Line2::Service(s) => Some(*s),
+            Line2::Project { .. } => None,
+        }
+    }
+
+    /// Balik auto deploy service terpilih.
+    fn toggle_auto_deploy(&mut self, req: &Sender<Req>) {
+        let picked = self.selected_service().map(|s| {
+            (
+                field(s, "/projectName"),
+                field(s, "/name"),
+                // None = tak punya auto deploy sama sekali (database, source
+                // image), bukan "mati". Menawarkan toggle di sana cuma akan
+                // memancing error dari server.
+                match field(s, "/source/type").as_str() {
+                    "github" => s.pointer("/source/autoDeploy").and_then(Value::as_bool),
+                    _ => None,
+                },
+            )
+        });
+        match picked {
+            None => self.status = "Pilih sebuah service dulu".into(),
+            Some((_, _, None)) => {
+                self.status = "Auto deploy hanya ada pada service dengan source GitHub".into()
+            }
+            Some((project, service, Some(on))) => {
+                self.status = format!(
+                    "{} auto deploy untuk {service}...",
+                    if on { "Mematikan" } else { "Menyalakan" }
+                );
+                let _ = req.send(Req::AutoDeploy {
+                    project,
+                    service,
+                    on: !on,
+                });
+            }
+        }
+    }
+
     /// Nama project dari baris yang disorot, header maupun service. Dipakai aksi
     /// yang bekerja pada PROJECT: buat service, hapus project.
     fn selected_project(&self) -> Option<String> {
@@ -2806,6 +2943,7 @@ impl App {
             KeyCode::Char('o') => self.open_view(View::Domains, req),
             KeyCode::Char('b') => self.open_view(View::Backups, req),
             KeyCode::Char('u') => self.open_view(View::Source, req),
+            KeyCode::Char('A') => self.toggle_auto_deploy(req),
             KeyCode::Char('U') => self.open_config_form(false, req),
             KeyCode::Char('B') => self.open_config_form(true, req),
             KeyCode::Char('E') => self.start_env_edit(),
@@ -3016,6 +3154,7 @@ fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("b", "lihat backups"),
             Key("u", "lihat source & build"),
             Key("E", "edit env di $EDITOR"),
+            Key("A", "auto deploy on/off (source GitHub)"),
             Key("U", "atur source (service app)"),
             Key("B", "atur build (service app)"),
             Key("N", "project baru"),
@@ -3221,25 +3360,11 @@ fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
             // Header project: agregat anak-anaknya, seperti tab Monitor. Hitungan
             // (n) membuat project kosong terlihat sebagai (0), bukan hilang.
             Line2::Project { name, services } => {
-                let sum = |ptr: &str| -> f64 {
-                    services
-                        .iter()
-                        .filter_map(|s| {
-                            app.metric_for(&field(s, "/projectName"), &field(s, "/name"))
-                        })
-                        .map(|m| num(m, ptr))
-                        .sum()
-                };
-                vec![
-                    format!("{name} ({})", services.len()),
-                    "-".into(),
-                    "-".into(),
-                    "-".into(),
-                    format!("{:.1} %", sum("/cpu")),
-                    format_bytes(sum("/memory")),
-                    format_rate(sum("/networkIn")),
-                    format_rate(sum("/networkOut")),
-                ]
+                let mets: Vec<&Value> = services
+                    .iter()
+                    .filter_map(|s| app.metric_for(&field(s, "/projectName"), &field(s, "/name")))
+                    .collect();
+                project_row(name, services.len(), &mets)
             }
             Line2::Service(s) => {
                 let mut row = service_row(s);
@@ -3268,6 +3393,7 @@ fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
             Constraint::Length(8),
             Constraint::Length(7),
             Constraint::Min(16),
+            Constraint::Length(5),
             Constraint::Length(8),
             Constraint::Length(10),
             Constraint::Length(11),
@@ -3959,6 +4085,67 @@ mod tests {
     }
 
     #[test]
+    fn auto_deploy_column_separates_off_from_not_applicable() {
+        // Bentuk ini dipastikan ke API sungguhan, bukan dikarang: source github
+        // selalu membawa autoDeploy (15/16 app), source image tak pernah.
+        let on = json!({ "projectName": "p", "name": "a", "type": "app",
+            "source": { "type": "github", "owner": "acme", "repo": "web",
+                        "ref": "dev", "autoDeploy": true } });
+        let off = json!({ "projectName": "p", "name": "b", "type": "app",
+            "source": { "type": "github", "owner": "acme", "repo": "web",
+                        "ref": "dev", "autoDeploy": false } });
+        let image = json!({ "projectName": "p", "name": "c", "type": "app",
+            "source": { "type": "image", "image": "nginx:1" } });
+        let db = json!({ "projectName": "p", "name": "d", "type": "mysql" });
+
+        assert_eq!(auto_deploy_cell(&on), "✓");
+        assert_eq!(auto_deploy_cell(&off), "✗");
+        // Bukan "✗": MySQL dan source image tak punya auto deploy untuk
+        // dinyalakan, jadi "belum" akan jadi klaim yang salah.
+        assert_eq!(auto_deploy_cell(&image), "-");
+        assert_eq!(auto_deploy_cell(&db), "-");
+
+        // service_row masih memisah project dan nama; render melebur keduanya,
+        // jadi indeksnya bergeser satu terhadap header.
+        assert_eq!(service_row(&on)[5], "✓");
+        assert_eq!(SERVICE_HEADERS[4], "Auto");
+    }
+
+    #[test]
+    fn auto_deploy_toggle_flips_the_value_and_refuses_where_it_cannot_apply() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new("s".into(), vec![]);
+        app.projects = vec!["p".into()];
+        app.all_services = vec![
+            json!({ "projectName": "p", "name": "a", "type": "app",
+                    "source": { "type": "github", "owner": "acme", "repo": "web",
+                                "ref": "dev", "autoDeploy": true } }),
+            json!({ "projectName": "p", "name": "b", "type": "mysql" }),
+        ];
+
+        // Baris 0 = header project, 1 = service "a", 2 = service "b".
+        app.services_table.select(Some(1));
+        app.toggle_auto_deploy(&tx);
+        assert!(
+            matches!(rx.try_recv(), Ok(Req::AutoDeploy { ref service, on, .. })
+                     if service == "a" && !on),
+            "true harus dikirim sebagai on:false, bukan mengirim ulang nilai lama"
+        );
+
+        // MySQL: tak ada auto deploy untuk dibalik. Diam-diam mengirim
+        // disableGithubDeploy ke sana hanya menghasilkan error dari server.
+        app.services_table.select(Some(2));
+        app.toggle_auto_deploy(&tx);
+        assert!(rx.try_recv().is_err(), "tak boleh ada request untuk MySQL");
+        assert!(app.status.contains("GitHub"), "status: {}", app.status);
+
+        // Header project bukan service.
+        app.services_table.select(Some(0));
+        app.toggle_auto_deploy(&tx);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn metric_cols_render_bytes_and_rates() {
         let m = json!({ "cpu": 0.257, "memory": 573857792.0,
                         "networkIn": 12540.9, "networkOut": 32653.2 });
@@ -4059,13 +4246,22 @@ mod tests {
 
     #[test]
     fn empty_project_shows_no_metrics_not_negative_zero() {
-        // Sum untuk f64 memakai identitas -0.0, jadi menjumlahkan nol nilai
-        // menghasilkan -0.0 dan tercetak "-0.0 %" — CPU negatif yang tampak
-        // meyakinkan. Project tanpa service tak punya yang diukur: "-", bukan 0.
-        let empty: Vec<f64> = vec![];
-        let s: f64 = empty.iter().sum();
-        assert_eq!(format!("{s:.1}"), "-0.0", "identitas sum f64 memang -0.0");
-        assert_eq!(format!("{:.1}", s + 0.0), "0.0", "+0.0 menormalkannya");
+        // Versi lama test ini menguji `vec![].sum()` dan `metric_cols(None)` —
+        // semantik float Rust dan sebuah fungsi yang tak dipanggil baris header
+        // project. Ia lulus sementara layar sungguhan menampilkan "-0.0 %".
+        // Sekarang ia memanggil pembangun baris yang sebenarnya dipakai render.
+        let row = project_row("kosong", 0, &[]);
+        assert_eq!(row[0], "kosong (0)");
+        assert_eq!(&row[5..], ["-", "-", "-", "-"], "tak ada yang diukur");
+        assert!(
+            !row.iter().any(|c| c.contains("-0.0")),
+            "identitas Sum f64 adalah -0.0; ia tak boleh bocor ke layar: {row:?}"
+        );
+
+        // Ada metrik -> dijumlahkan sungguhan, bukan "-".
+        let m = json!({ "cpu": 1.5, "memory": 2048.0, "networkIn": 0.0, "networkOut": 0.0 });
+        let row = project_row("isi", 1, &[&m]);
+        assert_eq!(row[5], "1.5 %");
 
         assert_eq!(metric_cols(None), vec!["-", "-", "-", "-"]);
     }
@@ -4300,6 +4496,25 @@ mod tests {
             FieldKind::Choice(o) => assert_eq!(o, &vec!["dev".to_string()]),
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn auto_deploy_error_names_the_cause_and_never_swallows_the_rest() {
+        // Pesan ini disalin apa adanya dari server sungguhan saat mencoba
+        // menyalakan auto deploy untuk service yang sumbernya repo pihak ketiga.
+        let real = "[400] Request failed with status code 404 Not Found: \
+                    GET https://api.github.com/repos/benborla/mcp-server-mysql/hooks";
+        let msg = auto_deploy_error("mysql-mcp", real);
+        assert!(msg.contains("webhook"), "{msg}");
+        assert!(
+            !msg.contains("404"),
+            "tumpukan kode status tak menolong: {msg}"
+        );
+
+        // Yang tak dikenali tak boleh dibuang — membuang pesan server adalah bug
+        // yang sudah pernah terjadi di sini.
+        let msg = auto_deploy_error("api", "connection reset");
+        assert!(msg.contains("connection reset"), "{msg}");
     }
 
     #[test]

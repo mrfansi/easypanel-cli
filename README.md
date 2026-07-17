@@ -100,11 +100,17 @@ Press **`?`** at any time for every shortcut on the current screen.
 | `e` `p` `m` `o` `b` `u` | view env · ports · mounts · domains · backups · source & build |
 | `E` | edit env in `$EDITOR` |
 | `U` · `B` | configure source · build (app services) |
+| `A` | turn auto deploy on/off (GitHub sources only) |
 | `d` `R` `S` `T` | deploy · restart · stop · start (confirmed) |
 | `n` · `x` | new · delete service (Domains: domain) |
 | `N` · `X` | new · delete project |
 | `s` | server list: `Enter` switch · `n` add · `e` edit · `x` delete |
 | `r` · `q` | refresh · quit (`Esc` **cancels**, it does not quit) |
+
+The Services table has an **Auto** column: `✓` auto deploy on, `✗` off, `-` not
+applicable. Only GitHub sources have auto deploy at all — it works by creating a
+webhook — so a database or an image-sourced app shows `-`, never `✗`. `✗` would claim
+it was turned off, when in truth it was never available.
 
 Filters match the text you **see**, so `mysql` finds it via service name, project name,
 type, or source. The title shows `(matched/total)`, and filters clear when you switch

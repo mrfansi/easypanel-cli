@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-07-17
+
+### Added
+
+- **Auto deploy is visible and switchable from the Services table.** A new **Auto**
+  column shows `✓` on, `✗` off, `-` not applicable, and `A` toggles it on the selected
+  service.
+
+  The column has three states rather than two on purpose. Auto deploy exists only for
+  GitHub sources — it is implemented as a repository webhook — so a MySQL service or an
+  image-sourced app has nothing to switch. `✗` there would report "not yet", about
+  something that was never possible.
+
+  Verified against a live server, which is the only place this could be learned:
+  `enableGithubDeploy` **fails on repositories you do not control**, because creating
+  the webhook needs admin rights. EasyPanel forwards that as a `400` wrapping GitHub's
+  `404 … /hooks`, and this release names that cause instead of printing the status
+  stack. Unrecognised errors are still shown verbatim rather than flattened to "failed".
+
+### Fixed
+
+- **`-0.0 %` CPU on empty projects — for real this time.** v0.7.0 claimed this was
+  fixed. It was not: the guard never existed in `render_projects`, and the test that
+  "proved" it asserted `vec![].sum()` and `metric_cols(None)` — Rust's float semantics
+  and a function the project header row never calls. It passed on every run while the
+  screen kept showing `-0.0 %`, which is exactly the failure this project's own agent
+  brief warns about: a test that encodes a wrong assumption converts a bug into
+  evidence of correctness. The aggregation now lives in `project_row()`, the test calls
+  it, and the test fails if the guard is removed.
+
 ## [0.8.2] — 2026-07-17
 
 ### Fixed
