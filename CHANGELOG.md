@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Regression tests lock in the config data-loss protection and the byte/series
+  formatters' defensive behaviour: an unreadable config now provably errors rather than
+  silently wiping every server, and `format_bytes` provably turns negative/NaN into
+  "0 B". No behaviour change — these guarantees existed, but nothing failed if a refactor
+  broke them. Each new test was verified to fail when its guard is removed.
+
 ## [0.13.0] — 2026-07-18
 
 ### Added

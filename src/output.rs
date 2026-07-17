@@ -261,6 +261,37 @@ mod tests {
     }
 
     #[test]
+    fn format_bytes_survives_extreme_and_invalid_input() {
+        // Byte datang dari server: bisa 0, negatif (kalau server keliru), atau
+        // NaN. Semua harus jadi "0 B", bukan "-5 B", "NaN B", atau panic. Sifat
+        // ini bergantung pada `.max(0.0)`; refactor yang membuangnya diam-diam
+        // akan merusaknya, jadi dikunci di sini.
+        assert_eq!(format_bytes(-5.0), "0 B");
+        assert_eq!(format_bytes(f64::NAN), "0 B");
+        // Batas unit persis.
+        assert_eq!(format_bytes(1023.0), "1023 B");
+        assert_eq!(format_bytes(1024.0), "1.0 KB");
+        // Tak pernah melewati TB, betapapun besarnya — dan tak overflow/panic.
+        assert!(format_bytes(1024f64.powi(6)).ends_with(" TB"));
+        assert!(format_bytes(f64::MAX).ends_with(" TB"));
+        assert_eq!(format_bytes(f64::INFINITY), "inf TB");
+    }
+
+    #[test]
+    fn series_helpers_are_empty_safe() {
+        // Seri kosong / kunci hilang tak boleh panic maupun mengarang angka:
+        // "-" lebih jujur daripada 0 palsu (lihat riwayat bug loadAvg).
+        let empty = json!({ "cpu": [] });
+        assert_eq!(series_last(&empty, "cpu"), 0.0);
+        assert_eq!(series_last(&empty, "tidakada"), 0.0);
+        assert!(series_spark(&empty, "cpu", 30).is_empty());
+        assert!(series_spark(&json!({}), "cpu", 30).is_empty());
+        // Satu titik: tak ada rentang, jadi garis tengah (50), bukan bagi-nol.
+        let one = json!({ "cpu": [["1700000000000", "42"]] });
+        assert_eq!(series_spark(&one, "cpu", 30), vec![50]);
+    }
+
+    #[test]
     fn json_string_is_pretty_and_preserves_the_api_shape() {
         // --json harus mencetak apa yang server kirim, bukan skema kita — jadi
         // yang penting: valid, ter-indentasi, dan tak kehilangan/menambah field.

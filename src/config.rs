@@ -242,6 +242,35 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_file_errors_and_never_wipes() {
+        use std::os::unix::fs::PermissionsExt;
+        // Sama bahayanya dengan file rusak: kalau read gagal (izin dicabut) dibaca
+        // sebagai "kosong", perintah tulis berikutnya menghapus semua server. Read
+        // yang gagal selain NotFound harus jadi error, dan jalur tulis menolak.
+        let (dir, cfg) = temp_config();
+        cfg.add("prod", "https://prod.test", "tok-berharga")
+            .unwrap();
+        let path = path_of(&dir);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Root menembus izin 0o000; kalau file masih terbaca, uji ini tak berlaku.
+        if fs::read_to_string(&path).is_ok() {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            return;
+        }
+
+        assert!(cfg.try_all().is_err(), "read tak-terbaca harus error");
+        assert!(cfg.all().is_empty(), "jalur baca lunak tetap tak panik");
+        assert!(
+            cfg.add("baru", "https://x.test", "t").is_err(),
+            "jalur tulis harus menolak, bukan menimpa"
+        );
+
+        // Kembalikan izin supaya tempdir bisa dibersihkan.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    #[test]
     fn missing_file_is_empty_not_an_error() {
         // File hilang = belum pernah dipakai. Itu bukan kerusakan.
         let (_dir, cfg) = temp_config();

@@ -94,8 +94,14 @@ no excuses. You are expected to finish one per run.
    ~16 signatures. Covers project list/inspect, stats, node list, monitor
    services/storage, domain list, service ports/mounts/domains/databases/backups/
    volume-backups, action list, certificate list, notification list. Verified live.
-10. **Test coverage for `src/config.rs` and `src/output.rs` edge cases** — malformed
-   JSON, missing file, unreadable permissions, empty series, huge byte values.
+10. ~~**Test coverage for `src/config.rs` and `src/output.rs` edge cases.**~~ Done.
+   Added `unreadable_file_errors_and_never_wipes` (permission-denied read must error, so
+   the write path refuses instead of wiping every server — self-adapting: skips under
+   root, where 0o000 is bypassed), `format_bytes_survives_extreme_and_invalid_input`
+   (negative/NaN → "0 B", the KB boundary, and huge values that never overflow past TB),
+   and `series_helpers_are_empty_safe` (empty/missing series → 0.0 / empty spark, single
+   point → midline). Each was proven to FAIL when its guard is removed — not padding.
+   Corrupt-file and missing-file were already covered.
 11. **Issue and PR templates** under `.github/`, plus README badges (CI, release,
    licence).
 12. **`cargo publish` readiness** — `cargo package --list` clean, no stray files.
