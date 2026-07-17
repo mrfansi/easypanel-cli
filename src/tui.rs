@@ -350,6 +350,10 @@ enum Req {
         project: String,
         service: String,
         stype: String,
+        /// Field khusus tipe (databaseName, user, password, …). Hanya yang diisi
+        /// user yang ikut: kosong berarti server yang membuatkan, dan mengirim ""
+        /// akan menimpanya jadi string kosong, bukan membiarkannya di-generate.
+        extra: Value,
     },
     DomainSave {
         id: Option<String>,
@@ -639,17 +643,19 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
             project,
             service,
             stype,
-        } => match client.call(
-            &format!("services/{stype}"),
-            "createService",
-            json!({ "projectName": project, "serviceName": service }),
-        ) {
-            Ok(_) => Resp::Done(
-                format!("Service '{service}' ({stype}) dibuat"),
-                Refresh::Projects,
-            ),
-            Err(e) => Resp::Err(e.to_string()),
-        },
+            extra,
+        } => {
+            let mut input = extra;
+            input["projectName"] = json!(project);
+            input["serviceName"] = json!(service);
+            match client.call(&format!("services/{stype}"), "createService", input) {
+                Ok(_) => Resp::Done(
+                    format!("Service '{service}' ({stype}) dibuat"),
+                    Refresh::Projects,
+                ),
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
         Req::DomainSave { id, body } => {
             // createDomain mewajibkan `id` tapi server mengabaikannya dan membuat
             // cuid sendiri, jadi placeholder cukup untuk domain baru.
@@ -1011,6 +1017,35 @@ fn domain_fields(existing: Option<&Value>, projects: &[String]) -> Vec<Field> {
         )
         .when("custom"),
     ]
+}
+
+/// Field khusus tipe untuk createService, hanya yang benar-benar diisi user.
+///
+/// Semuanya opsional di API, dan kosong berarti server yang membuatkan: password
+/// acak, nama database = nama project, image resmi terbaru — sama seperti dialog
+/// panel. Mengirim "" bukan berarti "buatkan", melainkan "pakai string kosong",
+/// jadi field kosong harus DIHILANGKAN dari body, bukan dikirim kosong.
+fn service_extra(form: &Form) -> Value {
+    let mut out = serde_json::Map::new();
+    for (label, key) in [
+        ("Database", "databaseName"),
+        ("User", "user"),
+        ("Password", "password"),
+        ("Root password", "rootPassword"),
+        ("Image", "image"),
+    ] {
+        // Hanya field yang TAMPIL untuk tipe ini: mengirim rootPassword ke redis
+        // akan ditolak server, dan user tak pernah melihat field itu.
+        let visible = form
+            .visible()
+            .iter()
+            .any(|i| form.fields[*i].label == label);
+        let value = form.by_label(label);
+        if visible && !value.is_empty() {
+            out.insert(key.to_string(), json!(value));
+        }
+    }
+    Value::Object(out)
 }
 
 /// Endpoint + body updateSource* dari form.
@@ -2565,13 +2600,14 @@ impl App {
             FormKind::ServiceCreate => {
                 let (project, service, stype) = (form.val(0), form.val(1), form.val(2));
                 if !commands::valid_name(&service) || project.is_empty() {
-                    self.status = "Nama service hanya boleh a-z, 0-9, -, _".into();
+                    self.status = "Service names may only contain a-z, 0-9, - and _".into();
                     return;
                 }
                 let _ = req.send(Req::ServiceCreate {
                     project,
                     service,
                     stype,
+                    extra: service_extra(form),
                 });
             }
             FormKind::SourceEdit { project, service } => match source_body(form) {
@@ -2799,15 +2835,26 @@ impl App {
         let project = self
             .selected_project()
             .unwrap_or_else(|| self.projects[0].clone());
-        self.form = Some(Form::new(
-            FormKind::ServiceCreate,
-            " Service baru ",
-            vec![
-                Field::choice_owned("Project", self.projects.clone(), &project),
-                Field::text("Nama", ""),
-                Field::choice("Tipe", SERVICE_TYPES, "app"),
-            ],
-        ));
+        // Field database mengikuti Tipe, seperti dialog panel. Semuanya opsional:
+        // kosong berarti server yang membuatkan (password acak, nama database =
+        // nama project, image resmi terbaru) — sama persis dengan panel.
+        self.form = Some(
+            Form::new(
+                FormKind::ServiceCreate,
+                " Service baru ",
+                vec![
+                    Field::choice_owned("Project", self.projects.clone(), &project),
+                    Field::text("Nama", ""),
+                    Field::choice("Tipe", SERVICE_TYPES, "app"),
+                    Field::text("Database", "").when("mysql,mariadb,postgres"),
+                    Field::text("User", "").when("mysql,mariadb,postgres,mongo"),
+                    Field::secret("Password").when("mysql,mariadb,postgres,mongo,redis"),
+                    Field::secret("Root password").when("mysql,mariadb"),
+                    Field::text("Image", "").when("mysql,mariadb,postgres,mongo,redis"),
+                ],
+            )
+            .switch("Tipe"),
+        );
     }
 
     fn viewer_key(&mut self, code: KeyCode) {
@@ -3951,6 +3998,59 @@ mod tests {
         // Nama project juga ikut dicocokkan, bukan cuma nama service.
         app.filter = "edukasistudio".into();
         assert_eq!(app.visible_services().len(), 2);
+    }
+
+    #[test]
+    fn service_extra_omits_empty_and_hidden_fields() {
+        let mut app = App::new("s".into(), vec![]);
+        app.projects = vec!["p".into()];
+        app.services_table.select(None);
+        app.new_service_form();
+        let form = app.form.as_mut().unwrap();
+
+        // Tipe app: tak ada field database sama sekali.
+        assert_eq!(service_extra(form), json!({}));
+
+        // Tipe redis: hanya password + image yang tampil. Mengisi Root password
+        // (tersembunyi untuk redis) tak boleh ikut terkirim — server menolaknya.
+        for (label, val) in [
+            ("Tipe", "redis"),
+            ("Password", "s3cret"),
+            ("Root password", "bocor"),
+        ] {
+            form.fields
+                .iter_mut()
+                .find(|f| f.label == label)
+                .unwrap()
+                .value = val.into();
+        }
+        assert_eq!(service_extra(form), json!({ "password": "s3cret" }));
+
+        // Tipe mysql: Root password kini tampil, jadi ikut. Database/User/Image
+        // dibiarkan kosong -> DIHILANGKAN, bukan dikirim "": server harus
+        // membuatkan sendiri, dan "" berarti "pakai string kosong".
+        form.fields
+            .iter_mut()
+            .find(|f| f.label == "Tipe")
+            .unwrap()
+            .value = "mysql".into();
+        assert_eq!(
+            service_extra(form),
+            json!({ "password": "s3cret", "rootPassword": "bocor" })
+        );
+    }
+
+    #[test]
+    fn empty_project_shows_no_metrics_not_negative_zero() {
+        // Sum untuk f64 memakai identitas -0.0, jadi menjumlahkan nol nilai
+        // menghasilkan -0.0 dan tercetak "-0.0 %" — CPU negatif yang tampak
+        // meyakinkan. Project tanpa service tak punya yang diukur: "-", bukan 0.
+        let empty: Vec<f64> = vec![];
+        let s: f64 = empty.iter().sum();
+        assert_eq!(format!("{s:.1}"), "-0.0", "identitas sum f64 memang -0.0");
+        assert_eq!(format!("{:.1}", s + 0.0), "0.0", "+0.0 menormalkannya");
+
+        assert_eq!(metric_cols(None), vec!["-", "-", "-", "-"]);
     }
 
     #[test]

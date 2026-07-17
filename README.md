@@ -110,6 +110,13 @@ Filters match the text you **see**, so `mysql` finds it via service name, projec
 type, or source. The title shows `(matched/total)`, and filters clear when you switch
 tabs — a hidden filter makes missing rows look like missing data.
 
+Creating a database service asks for what the panel asks for — database name, user,
+password, root password, image — with the fields swapping to match the type you pick.
+All optional: **leave one empty and the server generates it** (random password, database
+named after the project, official latest image), exactly like the web panel. Empty
+fields are omitted from the request rather than sent as `""`, because those are not the
+same thing: `""` creates a MySQL with no database, no user and no password.
+
 Choice fields (project, service, repo, branch, type) open a searchable dropdown rather
 than free text, so a typo can't point a domain at a service that doesn't exist. Repo and
 branch lists come from live GitHub data via the panel.

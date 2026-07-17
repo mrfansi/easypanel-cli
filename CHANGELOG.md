@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-17
+
+### Added
+
+- **Database services ask for what the panel asks for.** Creating mysql, mariadb,
+  postgres, mongo or redis now offers database name, user, password, root password
+  and image, with the fields swapping to match the type — redis has no database
+  name, only mysql and mariadb have a root password. Previously only the name and
+  type were sent, so every database service came out with server-generated
+  credentials you never saw.
+
+  All fields are optional, and an empty one is **omitted** from the request rather
+  than sent as `""`. Those are not the same thing, and the difference is not a
+  matter of taste — measured against a live server:
+
+  | | `databaseName` | `user` | `password` |
+  |---|---|---|---|
+  | field omitted | `zzz-dbtest` (project name) | `mysql` | generated, 20 chars |
+  | field sent as `""` | `None` | `None` | `None` |
+
+  Sending empty strings produces a MySQL with no database, no user and no password.
+
+### Fixed
+
+- **A project with no services showed `-0.0 %` CPU.** Rust's `Sum` for `f64` uses
+  `-0.0` as its identity (so that `-0.0 + x` preserves the sign of `x`), which means
+  summing zero values yields `-0.0`, and `{:.1}` prints it verbatim. A negative CPU
+  reading is a confidently wrong number. Projects with no services now show `-`,
+  because nothing was measured — not `0`, which would claim it was.
+
 ## [0.6.0] — 2026-07-17
 
 ### Added
@@ -175,7 +205,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.7.0
 [0.6.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.6.0
 [0.5.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.2
 [0.5.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.1
