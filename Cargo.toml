@@ -1,6 +1,6 @@
 [package]
 name = "easypanel"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "Manage multiple EasyPanel hosts from your terminal — CLI + TUI"
 license = "MIT"
@@ -23,7 +23,7 @@ dialoguer = "0.11"
 comfy-table = "7"
 chrono = "0.4"
 anyhow = "1"
-ratatui = "0.29"
+ratatui = "0.30"
 clap_complete = "4.6.7"
 clap_mangen = "0.3.0"
 

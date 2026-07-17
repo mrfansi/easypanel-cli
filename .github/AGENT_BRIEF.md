@@ -48,12 +48,10 @@ no excuses. You are expected to finish one per run.
    tarball and install it in `install.sh`.
 3. ~~**`cargo audit`.**~~ Done — CI runs it on every push and weekly on a schedule
    (advisories appear whether or not you commit). Reports 0 vulnerabilities today.
-4. **Upgrade ratatui 0.29 → 0.30.** This is the *fix* for what the audit reports:
-   ratatui 0.29 ships `lru` 0.12, which is unsound (RUSTSEC-2026-0002, patched in
-   >=0.16.3); ratatui 0.30 uses `lru` 0.18 and drops `paste` entirely. That clears
-   two of the three warnings — the third, `async-std`, only arrives via `httpmock`
-   and never ships. It is a breaking upgrade across a ~3,700-line TUI, so treat it
-   as its own job: migrate, verify every screen still renders, keep tests green.
+4. ~~**Upgrade ratatui 0.29 → 0.30.**~~ Done. Cleared the `lru` unsoundness and
+   dropped `paste`; `cargo audit` went from 3 warnings to 1, and that one
+   (`async-std`) is dev-only via `httpmock` and never ships. Required **no code
+   changes** — the APIs this project uses were untouched by the major bump.
 5. **Split `src/tui.rs`.** It is ~3,700 lines and holds the worker, the app state, every
    form, and every renderer. Split into a `tui/` module (`app.rs`, `worker.rs`,
    `form.rs`, `render.rs`) with **no behaviour change** — tests must pass untouched.

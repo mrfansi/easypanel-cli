@@ -34,21 +34,11 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-audit
-      # Sengaja TANPA --deny warnings.
+      # Sengaja TANPA --deny warnings: `cargo audit` polos gagal pada kerentanan
+      # sungguhan dan hanya mencatat peringatan "unmaintained". CI yang merah
+      # terus-menerus berhenti dibaca, lalu kerentanan sungguhan lewat.
       #
-      # `cargo audit` polos gagal pada kerentanan sungguhan dan hanya mencatat
-      # peringatan "unmaintained/unsound". Itu yang kita mau: --deny warnings
-      # akan membuat CI merah hari ini dan tetap merah sampai ratatui naik ke
-      # 0.30 — dan CI yang selalu merah berhenti dibaca, lalu kerentanan
-      # sungguhan lewat tanpa disadari.
-      #
-      # Yang dilaporkan hari ini (0 kerentanan, 3 peringatan):
-      #   async-std  unmaintained — lewat httpmock, DEV-dependency saja; tak
-      #              pernah ikut ke biner yang dirilis.
-      #   paste      unmaintained — proc-macro lewat ratatui; hanya jalan saat
-      #              kompilasi, tak ada kodenya di biner.
-      #   lru 0.12   unsound (RUSTSEC-2026-0002) — IKUT ke biner lewat ratatui
-      #              0.29. Terpatch di lru >=0.16.3; ratatui 0.30 memakai 0.18
-      #              dan melepas paste sekaligus. Itu upgrade breaking untuk TUI
-      #              ~3.700 baris, jadi dijadwalkan sebagai pekerjaan tersendiri.
+      # Hari ini: 0 kerentanan, 1 peringatan — async-std, lewat httpmock, sebuah
+      # DEV-dependency yang tak pernah ikut ke biner yang dirilis. (lru unsound
+      # dan paste hilang saat ratatui naik ke 0.30.)
       - run: cargo audit

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-17
+
+### Security
+
+- **Upgraded ratatui 0.29 → 0.30**, which clears the only advisory that actually
+  reached users. ratatui 0.29 shipped `lru` 0.12, unsound per RUSTSEC-2026-0002
+  (`IterMut` violates Stacked Borrows); 0.30 uses `lru` 0.18 and drops `paste`
+  entirely. `cargo audit` goes from 3 warnings to 1, and the remaining one
+  (`async-std`) arrives via `httpmock`, a dev-dependency that never ships.
+
+  crossterm came along from 0.28 to 0.29 as a transitive bump — that is the key
+  handling, so every screen was exercised rather than assumed: dashboard gauges and
+  sparklines, hosts, maintenance, actions, monitor, domains, the services
+  hierarchy, and the help overlay all render, with no panics.
+
+  Required no code changes. A major bump that touches nothing is worth stating
+  plainly rather than dressing up as a migration.
+
 ## [0.7.0] — 2026-07-17
 
 ### Added
@@ -205,7 +223,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.8.0
 [0.7.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.7.0
 [0.6.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.6.0
 [0.5.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.2
