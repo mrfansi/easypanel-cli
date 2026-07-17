@@ -2546,7 +2546,10 @@ impl App {
             KeyCode::Tab | KeyCode::Down => form.move_focus(1),
             KeyCode::BackTab | KeyCode::Up => form.move_focus(-1),
             // Bool cukup di-toggle; Choice membuka dropdown yang bisa dicari.
-            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Left | KeyCode::Right if !typed => {
+            // Enter sengaja TIDAK di sini: kalau Enter membuka dropdown, form yang
+            // field terakhirnya Choice ("Service baru" tipe app) tak pernah bisa
+            // disimpan — Enter cuma buka-tutup dropdown, selamanya.
+            KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right if !typed => {
                 if form.fields[form.focus].kind == FieldKind::Bool {
                     form.fields[form.focus].cycle();
                     form.clamp_focus();
@@ -3029,8 +3032,8 @@ fn screen_keys(screen: Screen) -> &'static [Key] {
 /// Tombol di dalam overlay; berlaku di form dan dropdown mana pun.
 const OVERLAY_KEYS: &[Key] = &[
     Key("Tab / ↑↓", "pindah field"),
-    Key("Enter", "simpan, atau buka dropdown pada field pilihan"),
-    Key("Spasi", "toggle field ya/tidak"),
+    Key("Enter", "simpan"),
+    Key("Spasi / ←→", "buka dropdown, atau ubah field ya/tidak"),
     Key("ketik", "saring isi dropdown"),
     Key("Esc", "batal"),
 ];
@@ -3683,10 +3686,10 @@ fn render_form(f: &mut Frame, form: &Form) {
     for (slot, &idx) in visible.iter().enumerate() {
         let field = &form.fields[idx];
         let focused = idx == form.focus;
-        let hint = if focused && !field.kind.is_typed() {
-            "  ⌄ Enter untuk pilih"
-        } else {
-            ""
+        let hint = match (focused, &field.kind) {
+            (true, FieldKind::Bool) => "  ⌄ Spasi untuk ubah",
+            (true, FieldKind::Choice(_)) => "  ⌄ Spasi untuk pilih",
+            _ => "",
         };
         let line = Line::from(vec![
             Span::styled(
@@ -3709,7 +3712,7 @@ fn render_form(f: &mut Frame, form: &Form) {
     }
 
     f.render_widget(
-        Paragraph::new("[Enter] pilih/simpan   [Tab] pindah field   [Esc] batal")
+        Paragraph::new("[Spasi] pilih   [Enter] simpan   [Tab] pindah field   [Esc] batal")
             .style(Style::default().fg(Color::DarkGray)),
         slots[visible.len()],
     );
@@ -4190,6 +4193,51 @@ mod tests {
         assert!(keep(&row, "rezabelle"));
         assert!(keep(&row, "PROXY"));
         assert!(!keep(&row, "tidakada"));
+    }
+
+    #[test]
+    fn enter_saves_the_form_from_a_choice_field() {
+        // Regresi: Enter dulu membuka dropdown pada field Choice, jadi form yang
+        // field terakhirnya Choice — "Service baru" tipe app, persis kasus yang
+        // dilaporkan — mustahil disimpan. Enter cuma buka-tutup dropdown.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new("s".into(), vec![]);
+        app.projects = vec!["p".into()];
+        app.new_service_form();
+
+        let form = app.form.as_mut().unwrap();
+        form.fields
+            .iter_mut()
+            .find(|f| f.label == "Nama")
+            .unwrap()
+            .value = "webapp".into();
+        // Fokus di "Tipe": field Choice, dan yang terakhir tampil saat tipe=app.
+        form.focus = form.fields.iter().position(|f| f.label == "Tipe").unwrap();
+        assert_eq!(*form.visible().last().unwrap(), form.focus);
+
+        app.form_key(KeyCode::Enter, &tx);
+
+        assert!(app.chooser.is_none(), "Enter tak boleh membuka dropdown");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Req::ServiceCreate { ref service, ref stype, .. })
+                if service == "webapp" && stype == "app"
+        ));
+    }
+
+    #[test]
+    fn space_opens_the_dropdown_on_a_choice_field() {
+        // Konsekuensi dari test di atas: kalau Enter menyimpan, harus ada tombol
+        // lain yang membuka dropdown — kalau tidak, Tipe jadi tak bisa diubah.
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new("s".into(), vec![]);
+        app.projects = vec!["p".into()];
+        app.new_service_form();
+        let form = app.form.as_mut().unwrap();
+        form.focus = form.fields.iter().position(|f| f.label == "Tipe").unwrap();
+
+        app.form_key(KeyCode::Char(' '), &tx);
+        assert!(app.chooser.is_some(), "Spasi harus membuka dropdown");
     }
 
     #[test]

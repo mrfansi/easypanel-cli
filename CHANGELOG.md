@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-07-17
+
+### Fixed
+
+- **A form focused on a dropdown could not be saved.** `Enter` on a choice field
+  opened the dropdown; picking a value closed it and left the focus where it was.
+  Press `Enter` again and the dropdown just reopened. On "Service baru" with type
+  `app`, "Tipe" is the *last* visible field — so the form had no reachable way to
+  save at all, and creating an app service was impossible without knowing to `Tab`
+  back to a text field first. `Enter` now always saves; `Space` / `←` / `→` open the
+  dropdown and toggle yes/no fields.
+
+  The key hints said `[Enter] pilih/simpan` — an honest description of a key that
+  was, on a choice field, only ever "pilih". They now read `[Spasi] pilih ·
+  [Enter] simpan`, and a focused field spells out which key it wants.
+
 ## [0.8.1] — 2026-07-17
 
 ### Fixed
