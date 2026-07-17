@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- README badges (CI, latest release, licence) and GitHub issue/PR templates.
+
 ### Changed
 
 - Regression tests lock in the config data-loss protection and the byte/series

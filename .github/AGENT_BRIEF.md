@@ -102,8 +102,13 @@ no excuses. You are expected to finish one per run.
    and `series_helpers_are_empty_safe` (empty/missing series → 0.0 / empty spark, single
    point → midline). Each was proven to FAIL when its guard is removed — not padding.
    Corrupt-file and missing-file were already covered.
-11. **Issue and PR templates** under `.github/`, plus README badges (CI, release,
-   licence).
+11. ~~**Issue and PR templates + README badges.**~~ Done. Three badges (CI, latest
+   release, licence) at the top of the README. Issue templates for bug and feature,
+   plus a `config.yml` pointing "how do I…" to Discussions; the PR template. All shaped
+   to this project's character rather than boilerplate: the bug template asks for the
+   exact command and the verbatim server error (how nearly every real bug here was
+   found), and the feature template asks whether the API actually supports it, because
+   this tool never invents a schema. YAML validated; badge URLs return 200.
 12. **`cargo publish` readiness** — `cargo package --list` clean, no stray files.
 
 When the list is empty, propose the next item at the bottom of this file in your PR

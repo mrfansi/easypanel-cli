@@ -1,5 +1,9 @@
 # easypanel-cli
 
+[![CI](https://github.com/mrfansi/easypanel-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/mrfansi/easypanel-cli/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/mrfansi/easypanel-cli?sort=semver)](https://github.com/mrfansi/easypanel-cli/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/mrfansi/easypanel-cli)](LICENSE)
+
 Manage **many [EasyPanel](https://easypanel.io) hosts from one terminal** — a Rust CLI
 and a full-screen TUI.
 
