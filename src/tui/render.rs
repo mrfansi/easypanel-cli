@@ -110,7 +110,9 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(0),
-        Constraint::Length(1),
+        // Dua baris: pesan status di baris sendiri (biar error panjang terbaca
+        // utuh), keybindings di bawahnya — bukan berdesak di satu baris.
+        Constraint::Length(2),
     ])
     .split(f.area());
 
@@ -795,43 +797,58 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
-    if app.filter_input {
-        // Saat mengetik filter, tombol layar tak berlaku — jangan tampilkan yang
-        // tidak akan bekerja.
-        let bar = Style::default().bg(Color::Indexed(238)).fg(Color::White);
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(" filter: ", bar.fg(Color::Indexed(252))),
-                Span::styled(format!("{}▏", app.filter), bar.add_modifier(Modifier::BOLD)),
-                Span::styled("  Enter pakai · Esc batal", bar.fg(Color::Indexed(244))),
-            ]))
-            .style(bar),
-            area,
-        );
-        return;
-    }
-    // Baris status = beberapa tombol pertama layar ini + "? bantuan" untuk
-    // selebihnya. Diambil dari tabel yang sama dengan overlay bantuan.
-    let mut parts: Vec<String> = screen_keys(app.screen)
-        .iter()
-        .take(6)
-        .map(|Key(k, d)| format!("{k} {d}"))
-        .collect();
-    parts.push("? bantuan".into());
-    parts.push("q keluar".into());
-    let keys = parts.join(" · ");
-    let keys = keys.as_str();
+/// Susun baris tombol yang MUAT di lebar `width`: sebanyak mungkin tombol layar,
+/// lalu selalu "? bantuan · q keluar" di ujung. Menyerah di batas "·", tak pernah
+/// memotong tengah kata, dan tak pernah melebihi lebar — jadi baris keybinding tak
+/// bisa meluber walau terminal disempitkan.
+pub(super) fn fit_status_keys(screen: &[Key], width: u16) -> String {
+    let tail = ["? bantuan", "q keluar"];
+    let tail_w = tail.join(" · ").chars().count() + 3; // " · " sebelum tail
+    let head_w = 1; // spasi pembuka " " di baris keybinding
+    let avail = (width as usize).saturating_sub(head_w + tail_w);
 
+    let mut shown: Vec<String> = Vec::new();
+    let mut used = 0;
+    for Key(k, d) in screen {
+        let seg = format!("{k} {d}");
+        let add = seg.chars().count() + if shown.is_empty() { 0 } else { 3 };
+        if used + add > avail {
+            break;
+        }
+        used += add;
+        shown.push(seg);
+    }
+    shown.extend(tail.iter().map(|s| s.to_string()));
+    shown.join(" · ")
+}
+
+pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     // Warna bernama (Color::Blue) ditafsirkan tema terminal dan bisa jadi biru
     // terang, sehingga teks putih di atasnya nyaris tak terbaca. Indeks palet
     // memberi abu-abu gelap yang pasti.
     let bar = Style::default().bg(Color::Indexed(238)).fg(Color::White);
 
-    // Pesan status di KIRI, bukan kanan: dulu ia diletakkan setelah semua tombol,
-    // jadi pesan panjang (error) terdorong ke tepi dan terpotong ("...ke rep").
-    // Yang harus dibaca utuh adalah hasilnya; kalau sempit, biar tombol — yang
-    // cuma pengingat dan lengkap di "?" — yang menyerah lebih dulu.
+    if app.filter_input {
+        // Saat mengetik filter, tombol layar tak berlaku — jangan tampilkan yang
+        // tidak akan bekerja. Baris kedua dibiarkan kosong (tetap berwarna bar).
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(vec![
+                    Span::styled(" filter: ", bar.fg(Color::Indexed(252))),
+                    Span::styled(format!("{}▏", app.filter), bar.add_modifier(Modifier::BOLD)),
+                    Span::styled("  Enter pakai · Esc batal", bar.fg(Color::Indexed(244))),
+                ]),
+                Line::from(""),
+            ])
+            .style(bar),
+            area,
+        );
+        return;
+    }
+
+    // Dua baris: pesan status di baris SENDIRI supaya error/hasil yang panjang
+    // terbaca utuh — dulu ia berbagi baris dengan tombol dan terpotong di tepi.
+    // Keybinding di baris kedua, muat-lebar (yang tak muat pindah ke overlay "?").
     let is_error = app.status.starts_with("Error") || app.status.contains("gagal");
     let status_style = if is_error {
         // Merah muda palet: kontras di atas abu-abu, tak bergantung tema.
@@ -839,12 +856,15 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     } else {
         bar.add_modifier(Modifier::BOLD)
     };
+    let keys = fit_status_keys(screen_keys(app.screen), area.width);
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(format!(" {} ", app.status), status_style),
-            Span::styled("│ ", bar.fg(Color::Indexed(244))),
-            Span::styled(keys.to_string(), bar.fg(Color::Indexed(252))),
-        ]))
+        Paragraph::new(vec![
+            Line::from(Span::styled(format!(" {} ", app.status), status_style)),
+            Line::from(Span::styled(
+                format!(" {keys}"),
+                bar.fg(Color::Indexed(252)),
+            )),
+        ])
         .style(bar),
         area,
     );

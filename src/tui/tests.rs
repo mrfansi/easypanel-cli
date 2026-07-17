@@ -193,6 +193,38 @@ fn replica_stats_distinguish_down_from_stopped() {
 }
 
 #[test]
+fn status_keys_fit_the_width_and_never_drop_help() {
+    let keys = screen_keys(Screen::Projects);
+
+    // Sempit: tombol layar menyerah, tapi "? bantuan · q keluar" TETAP ada dan
+    // baris tak melebihi lebar (tak meluber ke luar pane).
+    let narrow = fit_status_keys(keys, 30);
+    assert!(
+        narrow.contains("? bantuan") && narrow.contains("q keluar"),
+        "escape-hatch harus selalu tampil"
+    );
+    // render_status menggambar baris ini sebagai " {keys}", jadi ukur yang itu.
+    let rendered = format!(" {narrow}");
+    assert!(rendered.chars().count() <= 30, "baris meluber: {narrow:?}");
+
+    // Sangat sempit: tetap tak panik, minimal tail muncul.
+    let tiny = fit_status_keys(keys, 12);
+    assert!(tiny.contains("? bantuan"));
+
+    // Makin lebar makin banyak tombol muat (monotonik), tak pernah lebih sedikit.
+    let wide = fit_status_keys(keys, 600);
+    let count = |s: &str| s.matches(" · ").count();
+    assert!(count(&wide) >= count(&narrow));
+    // Cukup lebar -> tombol terakhir layar pun ikut (semua muat di 600 kolom).
+    assert!(
+        wide.contains("hapus project"),
+        "600 kolom harusnya memuat semua"
+    );
+    // Menyerah di batas "·", bukan tengah kata: tak ada spasi ganda dari potongan.
+    assert!(!narrow.contains("  "));
+}
+
+#[test]
 fn task_stats_parse_matches_server_shape() {
     // Bentuk terverifikasi ke server hidup: objek { "{proj}_{svc}": {actual,desired} }.
     let v = json!({

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2] — 2026-07-18
+
+### Changed
+
+- **The bottom status bar is now two lines: the message on its own line, keybindings
+  below it.** Before, the status/result message and the whole keybinding list shared one
+  row, so a long message (an error, a "deploy dimulai…" note) competed with the shortcuts
+  and could be clipped at the right edge — you couldn't read it in full. Now the message
+  gets a dedicated line and is never truncated by the shortcuts.
+- **The keybinding line is width-aware.** It fits as many of the screen's shortcuts as the
+  terminal is wide, always keeping `? bantuan · q keluar` at the end, and drops the rest
+  at a `·` boundary (never mid-word) — the full list is always in the `?` help overlay. On
+  a narrow terminal the bar no longer overflows or cuts a shortcut in half.
+
 ## [0.19.1] — 2026-07-18
 
 ### Changed
