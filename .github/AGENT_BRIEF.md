@@ -41,41 +41,23 @@ Therefore:
 it is, move to the next. These are all verifiable with `cargo` alone — no live server,
 no excuses. You are expected to finish one per run.
 
-1. **Shell completions.** Add `clap_complete`; generate bash/zsh/fish completions via a
-   hidden `completions <shell>` subcommand. Document it in the README. High value for a
-   CLI, pure codegen, fully testable.
-2. **Man page.** Add `clap_mangen`, generate `easypanel.1`, ship it in the release
-   tarball and install it in `install.sh`.
+1. ~~**Shell completions.**~~ Done — `completions <shell>` covers bash/zsh/fish/elvish/
+   powershell, documented in the README, one test per shell.
+2. ~~**Man page.**~~ Done — `man` renders `easypanel.1`; the release tarball ships it and
+   `install.sh` installs it.
 3. ~~**`cargo audit`.**~~ Done — CI runs it on every push and weekly on a schedule
    (advisories appear whether or not you commit). Reports 0 vulnerabilities today.
 4. ~~**Upgrade ratatui 0.29 → 0.30.**~~ Done. Cleared the `lru` unsoundness and
    dropped `paste`; `cargo audit` went from 3 warnings to 1, and that one
    (`async-std`) is dev-only via `httpmock` and never ships. Required **no code
    changes** — the APIs this project uses were untouched by the major bump.
-5. **Configure a service while creating it, not after.** Asked for directly by the
-   project owner: "kenapa gak ketika create service langsung konfigurasi sekaligus saja
-   di 1 form yang sama, daripada create dulu kemudian baru edit yang lain-lain?"
-
-   They are right, and the API agrees: `createService` accepts `source`, `build`, `env`,
-   `domains`, `deploy`, `mounts`, `ports`, and `resources` inline — only `projectName`
-   and `serviceName` are required. `source` there is the bare object
-   (`{type, owner, repo, ref, path, autoDeploy}`), i.e. exactly what the update
-   endpoints wrap. Create-then-edit is a limitation of the **form**, not the API.
-
-   Two things block a naive merge, both discovered by trying:
-   - **One switch per form.** `Form::switch` holds a single label and `Field::when` tags
-     match against that one field. The merged form needs two conditions at once
-     (service type == app **and** source type == github). Generalise `only_for` to a
-     list of `(switch_label, tags)` and drop `Form::switch`; ~31 `.when(` call sites.
-   - **Label collisions.** Create and source both use `Tipe`, `Image`, and `Password`.
-     `by_label()` uses `find()`, so a merged form would silently read the wrong field —
-     see `no_two_fields_share_a_label_in_any_form()`, which exists to catch exactly
-     this. Rename the source fields (`Tipe`→`Source`, `Image`→`Docker image`,
-     `Username`/`Password`→`Registry user`/`Registry password`); they are clearer names
-     in the standalone Source form anyway.
-
-   Scope it to Source first — an app service without one is useless, whereas build has
-   real server-side defaults. Do not merge everything at once.
+5. ~~**Configure a service while creating it, not after.**~~ Done in v0.10.0. `n` sends
+   the source inline with `createService`. Field visibility now takes several conditions
+   (service type AND source type), `Form::switch` is gone, and the source labels were
+   renamed (`Source`, `Docker image`, `Registry user`, `Registry password`) so the merged
+   form has no duplicate label for `by_label()`'s `find()` to resolve wrongly. Build/env/
+   domains/ports/resources are still `createService`-capable and still not offered —
+   propose them separately, one at a time.
 
 6. **Dockerfile source type.** The panel offers five sources; this offers three.
    `services/app/updateSourceDockerfile` takes the Dockerfile inline, so it needs the
@@ -137,6 +119,33 @@ response-shape assumptions, metrics joins. File an issue instead.
    mismatch is worse than a missing one. Prefer `-` over a fake `0`.
 5. **Destructive actions without confirmation.** Deleting a server used to wipe its
    token instantly, with no prompt and no way to recover it.
+
+## Drive the TUI and look at it before you call anything done
+
+Required by the project owner, and the record backs them up. Every one of these was
+found by a **human looking at the screen**, never by a test:
+
+| What the tests said | What the screen showed |
+|---|---|
+| 76 green | `Enter` on a dropdown could never save the form — "Service baru" for type `app` had **no way to submit at all** |
+| A test named `empty_project_shows_no_metrics_not_negative_zero` passed | `-0.0 %` had been on screen for two releases |
+| `destroy` returned OK | The deleted row stayed in the table until a manual refresh |
+
+Unit tests here check *shapes*. They cannot see a form you cannot escape, a key that
+does nothing, a column that never updates, or a 100-second wait with no feedback. So:
+
+- **Run the binary.** Open the screen you changed, press the keys a user would press,
+  and complete the whole workflow end to end — not just the one key you touched.
+- **Ask about the round trip**, not the request: after a create/delete/toggle, does the
+  table *show* it? Does the status line say something true?
+- **Time it.** If an action takes more than a couple of seconds, the UI must say so
+  before it starts. `createService` with a github source takes ~100 s; silence there is
+  indistinguishable from a freeze.
+- **Every field must be reachable and leavable.** Tab through the form; if focus can
+  land somewhere the form cannot be submitted or cancelled from, that is a bug.
+- Prefer a unit test on the row/body builder for the *assertion*, but only after you
+  have watched the real thing work. A green suite is not evidence that the feature is
+  usable.
 
 ## Do not trust your own harness
 

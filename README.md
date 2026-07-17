@@ -107,6 +107,14 @@ Press **`?`** at any time for every shortcut on the current screen.
 | `s` | server list: `Enter` switch · `n` add · `e` edit · `x` delete |
 | `r` · `q` | refresh · quit (`Esc` **cancels**, it does not quit) |
 
+**`n` creates an app and its source in one form.** Pick the type, and for `app` the
+source fields (GitHub repo, branch, auto deploy, path) appear in the same dialog —
+`createService` takes the source inline, so there is no create-then-edit round trip.
+Leave the repo empty to create a bare service and configure it later. Creating an app
+*with* a GitHub source takes the server about **100 seconds** (against 0.2 s without
+one); the status line says so before it starts, and the request is given its own longer
+deadline so it cannot time out while the server is still working.
+
 The Services table has an **Auto** column: `✓` auto deploy on, `✗` off, `-` not
 applicable. Only GitHub sources have auto deploy at all — it works by creating a
 webhook — so a database or an image-sourced app shows `-`, never `✗`. `✗` would claim

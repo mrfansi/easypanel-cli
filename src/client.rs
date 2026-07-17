@@ -28,14 +28,36 @@ impl EasypanelClient {
 
     /// Panggil endpoint dan kembalikan payload `.json` dari respons.
     pub fn call(&self, group: &str, op: &str, input: Value) -> Result<Value> {
+        self.call_within(group, op, input, None)
+    }
+
+    /// Seperti `call`, tapi dengan batas waktu sendiri.
+    ///
+    /// Sebagian operasi jauh lebih lama dari sisanya: `createService` menjawab
+    /// dalam 0,2 detik tanpa source, tapi 101 detik bila source github ikut —
+    /// diukur langsung ke server. Dengan batas 30 detik, request itu putus
+    /// SEMENTARA server tetap menyelesaikannya, jadi user melihat "gagal" lalu
+    /// mendapati service-nya ada saat mencoba lagi. Menaikkan batas global bukan
+    /// jawabannya: itu memaksa setiap panggilan lain menunggu dua menit sebelum
+    /// boleh melaporkan gagal.
+    pub fn call_within(
+        &self,
+        group: &str,
+        op: &str,
+        input: Value,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Value> {
         let endpoint = format!("{}/api/rpc/{}/{}", self.url, group, op);
 
-        let resp = self
+        let mut r = self
             .http
             .post(&endpoint)
             .bearer_auth(&self.token)
-            .json(&json!({ "json": input }))
-            .send()?;
+            .json(&json!({ "json": input }));
+        if let Some(t) = timeout {
+            r = r.timeout(t);
+        }
+        let resp = r.send()?;
 
         let status = resp.status();
         if !status.is_success() {

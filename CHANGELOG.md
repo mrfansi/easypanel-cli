@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-17
+
+### Added
+
+- **Create an app and its source in one form.** `n` on Services now offers the GitHub
+  repo, branch, auto deploy and path alongside the name and type, and sends them with
+  `createService` in a single request. Leave the repo empty and the service is created
+  bare, exactly as before.
+
+  Create-then-edit was never an API limitation — it was this form's. `createService`
+  accepts `source` (and `build`, `env`, `domains`, `ports`, `resources`) inline; only
+  `projectName` and `serviceName` are required. Two things in the form machinery stood
+  in the way, and both are now gone: a form could only have **one** field controlling
+  visibility (this needs two — service type *and* source type), and the create and
+  source forms shared the labels `Tipe`, `Image` and `Password`, which `by_label()`
+  resolves with `find()` — the merged form would silently have read the wrong field.
+  Source labels are now `Source`, `Docker image`, `Registry user`, `Registry password`.
+
+### Fixed
+
+- **A destroyed service stayed in the table.** `destroy`, `start`, `stop` and `restart`
+  reported success and never reloaded anything, so a deleted row sat there looking alive
+  until you pressed `r`. Same defect class as "a new service doesn't appear", which was
+  fixed for create and missed for everything else.
+
+- **Creating an app with a source would have timed out — every time.** Measured against
+  a live server: `createService` answers in **0.2 s** without a source and **101 s**
+  with a GitHub one, against a 30 s client deadline. The request would have been
+  abandoned while the server carried on and created the service anyway, so the TUI would
+  report failure and a retry would hit "already exists". Slow calls now get their own
+  deadline, and the status line warns before a 1–2 minute wait rather than looking
+  frozen. The global timeout stays at 30 s — no other call should have to wait two
+  minutes to be told it failed.
+
 ## [0.9.0] — 2026-07-17
 
 ### Added
