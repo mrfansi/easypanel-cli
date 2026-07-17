@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-07-17
+
+### Fixed
+
+- **A corrupt `servers.json` could silently delete every server.** `all()` turned
+  any read or parse failure into "no servers exist", and `add`, `remove` and
+  `set_default` all read through it and then save the result — so one unreadable
+  config plus one command would rewrite the file from scratch, taking every token
+  with it. Tokens cannot be read back from anywhere, so the loss is permanent.
+
+  Write paths now refuse to save when the config can't be read, and say what to do.
+  A *missing* file still means "no servers" — that's a first run, not damage. Read
+  paths stay soft: a corrupt file shows an empty list rather than panicking and
+  leaving the terminal in raw mode with the TUI open.
+
 ## [0.5.0] — 2026-07-17
 
 ### Changed
@@ -125,7 +140,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.0
 [0.4.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.4.0
 [0.3.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.3.0
