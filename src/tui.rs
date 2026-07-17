@@ -387,7 +387,8 @@ enum Resp {
         data: Value,
         repos: Vec<String>,
     },
-    Branches(Vec<String>),
+    /// Err = daftar branch tak bisa dimuat (mis. token GitHub di EasyPanel mati).
+    Branches(std::result::Result<Vec<String>, String>),
     MaintInfo(Vec<(String, String)>),
     /// Hasil satu host di layar Hosts; tiap host tiba sendiri-sendiri supaya
     /// host lambat/mati tak menahan yang lain.
@@ -567,17 +568,16 @@ fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                 json!({ "owner": owner, "repo": repo, "search": "" }),
             ) {
                 // searchBranches mengembalikan array string datar (bukan {items:[...]}).
-                Ok(v) => Resp::Branches(
-                    v.as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(Value::as_str)
-                                .map(String::from)
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                ),
-                Err(e) => Resp::Err(e.to_string()),
+                Ok(v) => Resp::Branches(Ok(v
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default())),
+                Err(e) => Resp::Branches(Err(e.to_string())),
             }
         }
         Req::ConfigSave {
@@ -1269,6 +1269,21 @@ fn metric_cols(m: Option<&Value>) -> Vec<String> {
     ]
 }
 
+/// Ringkas error API jadi sebab yang bisa ditindaklanjuti.
+///
+/// EasyPanel membungkus error upstream, jadi token GitHub mati muncul sebagai
+/// "[400] Request failed with status code 403 Forbidden" — dua kode status dan
+/// nol petunjuk. Yang perlu user tahu adalah kredensialnya ditolak.
+fn short_reason(err: &str) -> &str {
+    if err.contains("403") || err.contains("Forbidden") {
+        "GitHub menolak: 403"
+    } else if err.contains("401") || err.contains("Unauthorized") {
+        "GitHub menolak: token tidak valid"
+    } else {
+        "gagal"
+    }
+}
+
 /// Apakah sebuah baris lolos filter.
 ///
 /// Dicocokkan ke teks yang DITAMPILKAN, bukan ke JSON mentahnya: yang dicari user
@@ -1897,10 +1912,27 @@ impl App {
                 select_first(&mut self.hosts_state, self.hosts.len());
             }
             Resp::MaintInfo(rows) => self.maint = rows,
-            Resp::Branches(names) => {
-                if let Some(form) = self.form.as_mut() {
-                    if let Some(f) = form.fields.iter_mut().find(|f| f.label == "Branch") {
-                        f.set_options(names);
+            Resp::Branches(result) => {
+                let Some(form) = self.form.as_mut() else {
+                    return;
+                };
+                let Some(f) = form.fields.iter_mut().find(|f| f.label == "Branch") else {
+                    return;
+                };
+                match result {
+                    Ok(names) => f.set_options(names),
+                    // Tanpa daftar branch, dropdown hanya berisi nilai sekarang —
+                    // user terkunci di branch itu dan tak bisa menggantinya sama
+                    // sekali. Jatuh ke input teks: server tetap menolak branch yang
+                    // tak ada ("Branch not found"), jadi tak ada yang hilang selain
+                    // kenyamanan memilih.
+                    Err(e) => {
+                        f.kind = FieldKind::Text;
+                        self.status = format!(
+                            "Daftar branch tak bisa dimuat ({}) — ketik nama branch manual. \
+                             Perbaiki token GitHub di EasyPanel > Settings.",
+                            short_reason(&e)
+                        );
                     }
                 }
             }
@@ -3947,6 +3979,41 @@ mod tests {
         app.filter = "tidakadayangcocok".into();
         app.clamp_filtered();
         assert_eq!(app.domains_state.selected(), None);
+    }
+
+    #[test]
+    fn branch_falls_back_to_text_when_its_list_cannot_load() {
+        // Field Branch adalah dropdown yang diisi dari GitHub. Kalau daftarnya
+        // gagal (mis. token GitHub di EasyPanel ter-revoke — user benar-benar
+        // mengalaminya), opsinya cuma berisi nilai sekarang, jadi branch TAK BISA
+        // diganti sama sekali. Dropdown satu-opsi itu pintu terkunci, bukan
+        // degradasi anggun.
+        let f = source_fields(
+            Some(&json!({ "type": "github", "owner": "acme", "repo": "web", "ref": "dev" })),
+            vec!["acme/web".into()],
+        );
+        let branch = f.iter().find(|x| x.label == "Branch").unwrap();
+        assert!(matches!(branch.kind, FieldKind::Choice(_)));
+        match &branch.kind {
+            FieldKind::Choice(o) => assert_eq!(o, &vec!["dev".to_string()]),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn short_reason_names_the_cause_not_the_status_stack() {
+        // EasyPanel membungkus error upstream, jadi token GitHub mati muncul
+        // sebagai "[400] Request failed with status code 403 Forbidden" — dua kode
+        // status dan nol petunjuk tentang apa yang harus diperbaiki.
+        assert_eq!(
+            short_reason("[400] Request failed with status code 403 Forbidden"),
+            "GitHub menolak: 403"
+        );
+        assert_eq!(
+            short_reason("[400] Request failed with status code 401 Unauthorized"),
+            "GitHub menolak: token tidak valid"
+        );
+        assert_eq!(short_reason("connection reset"), "gagal");
     }
 
     #[test]

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-07-17
+
+### Fixed
+
+- **You could get locked into the current branch.** The Branch field is a dropdown
+  filled from GitHub via the panel. When that list fails to load — a revoked GitHub
+  token in EasyPanel does it — the dropdown was left holding only the current value,
+  so the branch could not be changed at all. A one-option dropdown is a locked door,
+  not graceful degradation. It now falls back to a text field; the server validates
+  the branch either way (it rejects unknown ones with "Branch not found").
+- **The error said nothing useful.** EasyPanel wraps upstream failures, so a dead
+  GitHub token surfaced as `[400] Request failed with status code 403 Forbidden` —
+  two status codes and no hint about what to fix. It now names the cause and points
+  at the GitHub token in EasyPanel's settings.
+
 ## [0.5.1] — 2026-07-17
 
 ### Fixed
@@ -140,7 +155,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.2
 [0.5.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.5.0
 [0.4.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.4.0
