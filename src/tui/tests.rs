@@ -105,18 +105,18 @@ fn service_row_summarises_source_without_opening_anything() {
         "projectName": "p", "name": "api", "type": "app", "enabled": true,
         "source": { "type": "github", "owner": "acme", "repo": "web", "ref": "dev" }
     });
-    assert_eq!(service_row(&github, None)[4], "acme/web#dev");
+    assert_eq!(service_row(&github, None, None)[4], "acme/web#dev");
 
     let image = json!({
         "projectName": "p", "name": "cache", "type": "redis", "enabled": false,
         "source": { "type": "image", "image": "redis:7" }
     });
-    let row = service_row(&image, None);
+    let row = service_row(&image, None, None);
     assert_eq!(row[4], "redis:7");
     assert_eq!(row[3], "mati");
 
     // Service tanpa source (baru dibuat) tak boleh bikin panik.
-    assert_eq!(service_row(&svc("p", "kosong", "app"), None)[4], "-");
+    assert_eq!(service_row(&svc("p", "kosong", "app"), None, None)[4], "-");
 }
 
 #[test]
@@ -163,14 +163,48 @@ fn status_reflects_running_state_not_just_enabled() {
     let off = json!({ "projectName": "p", "name": "b", "type": "app", "enabled": false });
 
     // Di-disable user -> "mati", apa pun metriknya.
-    assert_eq!(service_status(&off, Some(true)), "mati");
-    assert_eq!(service_status(&off, None), "mati");
+    assert_eq!(service_status(&off, Some(true), None), "mati");
+    assert_eq!(service_status(&off, None, None), "mati");
     // Enabled + ada metrik -> jalan.
-    assert_eq!(service_status(&on, Some(true)), "aktif");
+    assert_eq!(service_status(&on, Some(true), None), "aktif");
     // Enabled TAPI tak ada metrik (crash/stop) -> "berhenti", bukan "aktif" palsu.
-    assert_eq!(service_status(&on, Some(false)), "berhenti");
+    assert_eq!(service_status(&on, Some(false), None), "berhenti");
     // Metrik belum dimuat (None) -> jangan menuduh mati; jatuh ke "aktif".
-    assert_eq!(service_status(&on, None), "aktif");
+    assert_eq!(service_status(&on, None, None), "aktif");
+}
+
+#[test]
+fn replica_stats_distinguish_down_from_stopped() {
+    // Replika swarm (actual/desired) memisahkan yang DULU dilebur jadi "berhenti":
+    // service crash-loop (desired>0, actual<desired) itu RUSAK, bukan sengaja stop.
+    let on = json!({ "projectName": "p", "name": "a", "type": "app", "enabled": true });
+
+    // desired>0 tapi belum ada replika yang naik -> "turun" (rusak sekarang).
+    assert_eq!(service_status(&on, Some(false), Some((0, 1))), "turun");
+    // Sebagian replika hilang -> tetap "turun".
+    assert_eq!(service_status(&on, None, Some((1, 3))), "turun");
+    // Sengaja di-scale ke 0 -> "berhenti", bukan "turun".
+    assert_eq!(service_status(&on, None, Some((0, 0))), "berhenti");
+    // Replika penuh -> "aktif", meski metrik bilang belum ada (replika menang).
+    assert_eq!(service_status(&on, Some(false), Some((1, 1))), "aktif");
+    // enabled=false selalu "mati", replika tak mengubahnya.
+    let off = json!({ "projectName": "p", "name": "b", "type": "app", "enabled": false });
+    assert_eq!(service_status(&off, None, Some((0, 1))), "mati");
+}
+
+#[test]
+fn task_stats_parse_matches_server_shape() {
+    // Bentuk terverifikasi ke server hidup: objek { "{proj}_{svc}": {actual,desired} }.
+    let v = json!({
+        "edukasistudio-db_mysql": { "actual": 1, "desired": 1 },
+        "harisenin-com_webapp":   { "actual": 0, "desired": 1 },
+        "rusak":                  { "actual": 2 }
+    });
+    let m = parse_task_stats(&v);
+    assert_eq!(m.get("edukasistudio-db_mysql"), Some(&(1, 1)));
+    assert_eq!(m.get("harisenin-com_webapp"), Some(&(0, 1)));
+    // Entri tanpa `desired` diabaikan, tidak bikin panik atau nilai palsu.
+    assert_eq!(m.get("rusak"), None);
 }
 
 #[test]
@@ -196,7 +230,7 @@ fn auto_deploy_column_separates_off_from_not_applicable() {
 
     // service_row masih memisah project dan nama; render melebur keduanya,
     // jadi indeksnya bergeser satu terhadap header.
-    assert_eq!(service_row(&on, None)[5], "✓");
+    assert_eq!(service_row(&on, None, None)[5], "✓");
     assert_eq!(SERVICE_HEADERS[4], "Auto");
 }
 

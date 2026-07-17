@@ -183,12 +183,18 @@ Each is grounded in an endpoint confirmed to exist in `backend.js` 2.32.2.
 1. ~~**Cross-service log search.**~~ Done in v0.17.0. `g` → query → parallel fan-out of
    `queryServiceLogs` (with `search`) across every service, grouped results. Verified
    live: "Error" across 33 services in 0.5 s. The highest-leverage feature, shipped.
-2. **Health & crash visibility.** On a real host, services crash and swarm restarts them
-   — the operator needs to *see* it. The Status column already separates running from
-   stopped (v0.15.0); go further: surface unhealthy/recently-crashed/restart-looping
-   services at the top, with exit reason and restart count. Data sources to verify:
-   `projects/getDockerContainers` (takes `service`), `monitorOld/getDockerTaskStats`.
-   Make the tool answer "what's broken right now?" at a glance.
+2. ~~**Health & crash visibility.**~~ Done in v0.19.0. The Status column now shows
+   `turun` (red) for any service whose Swarm replicas are missing (`desired > 0`,
+   `actual < desired`) — a crash / restart-loop — and counts them in the table title
+   (`… · ⚠ 2 turun`). Derived from `monitorOld/getDockerTaskStats` (one call, all
+   services), which distinguishes a crash from an intentional stop (`desired = 0` →
+   `berhenti`) — the two used to be indistinguishable. Verified live: the `{project}_
+   {service}` join matches the replica map for all 33 services, and a deliberately
+   crash-looping throwaway reported `actual=0, desired=1` → `turun`, then cleaned up.
+   **Still open (optional depth):** exit *reason* and *restart count* per container need
+   the per-service `getDockerContainers` `Status` string ("Restarting (1)…"/"Exited (1)…")
+   — 33 calls, too costly for the poll lane; best as an on-demand drill-down on the
+   selected service, not a column.
 3. **Alerting.** Wire crash/health detection to EasyPanel's own notification channels
    (`notifications/createNotificationChannel`, `sendTestNotification`). A terminal tool
    that can also notify is a real operational upgrade.

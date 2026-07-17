@@ -34,7 +34,11 @@ pub(super) enum Line2<'a> {
 ///
 /// `source` diringkas dari inspectService-nya listProjectsAndServices, jadi repo
 /// dan branch terlihat tanpa membuka apa pun.
-pub(super) fn service_row(s: &Value, running: Option<bool>) -> Vec<String> {
+pub(super) fn service_row(
+    s: &Value,
+    running: Option<bool>,
+    replicas: Option<(i64, i64)>,
+) -> Vec<String> {
     let source = match field(s, "/source/type").as_str() {
         "github" => format!(
             "{}/{}#{}",
@@ -50,7 +54,7 @@ pub(super) fn service_row(s: &Value, running: Option<bool>) -> Vec<String> {
         field(s, "/projectName"),
         field(s, "/name"),
         field(s, "/type"),
-        service_status(s, running).into(),
+        service_status(s, running, replicas).into(),
         source,
         auto_deploy_cell(s).into(),
     ]
@@ -59,21 +63,44 @@ pub(super) fn service_row(s: &Value, running: Option<bool>) -> Vec<String> {
 /// Status jalan/mati sebuah service.
 ///
 /// `enabled` dari API cuma berarti "tidak di-disable user", BUKAN "container
-/// hidup" — service yang crash tetap enabled. Sinyal jalan sebenarnya adalah
-/// apakah ia punya metrik (getAllServicesStats hanya memuat yang berjalan). Jadi
-/// `running`: Some(true)=ada metrik, Some(false)=tak ada (padahal enabled → mati
-/// beneran), None=metrik belum dimuat / konteks filter (jangan menuduh mati).
+/// hidup" — service yang crash tetap enabled.
+///
+/// Ground truth terbaik adalah replika swarm (`replicas` = actual/desired dari
+/// getDockerTaskStats): swarm sendiri yang tahu berapa yang seharusnya jalan dan
+/// berapa yang benar-benar jalan. Kalau ada, ia menang atas tebakan metrik:
+///
+/// - "turun": desired>0 tapi actual<desired — container mati/crash-loop dan swarm
+///   belum berhasil menaikkannya lagi. Inilah yang dulu terlihat sama seperti
+///   "berhenti" (di-stop sengaja) padahal artinya "rusak sekarang".
+/// - "berhenti": desired=0 — memang di-scale ke nol / di-stop user.
+/// - "aktif": actual>=desired.
+///
+/// Tanpa replika (belum dimuat), jatuh ke sinyal metrik lama: `running`
+/// Some(true)=ada metrik, Some(false)=tak ada (padahal enabled → mati beneran),
+/// None=belum dimuat / konteks filter (jangan menuduh mati).
 ///
 /// - "mati": di-disable user (enabled=false)
-/// - "berhenti": enabled tapi tak jalan (crash/stop) — inilah yang dulu bohong
-///   menampilkan "aktif"
-/// - "aktif": jalan, atau belum bisa dipastikan (metrik belum ada)
-pub(super) fn service_status(s: &Value, running: Option<bool>) -> &'static str {
+pub(super) fn service_status(
+    s: &Value,
+    running: Option<bool>,
+    replicas: Option<(i64, i64)>,
+) -> &'static str {
     let enabled = s.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-    match (enabled, running) {
-        (false, _) => "mati",
-        (true, Some(false)) => "berhenti",
-        (true, _) => "aktif",
+    if !enabled {
+        return "mati";
+    }
+    if let Some((actual, desired)) = replicas {
+        return if desired == 0 {
+            "berhenti"
+        } else if actual < desired {
+            "turun"
+        } else {
+            "aktif"
+        };
+    }
+    match running {
+        Some(false) => "berhenti",
+        _ => "aktif",
     }
 }
 

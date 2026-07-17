@@ -93,6 +93,10 @@ fn event_loop(
             if matches!(app.screen, Screen::Monitor | Screen::Projects) {
                 let _ = w.poll.send(Req::MonitorData);
             }
+            // Status "turun" ikut live di tabel Services.
+            if app.screen == Screen::Projects {
+                let _ = w.poll.send(Req::TaskStats);
+            }
             // Log ikut hidup selama viewer-nya terbuka. Di lajur poll, bukan
             // lajur user: tail tiap dua detik tak boleh mengantre di belakang
             // (atau di depan) aksi yang ditekan user.

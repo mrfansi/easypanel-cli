@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
 use ratatui::widgets::{ListState, TableState};
@@ -150,6 +151,9 @@ pub(super) struct App {
     pub(super) actions_state: TableState,
     pub(super) monitor: Vec<Value>,
     pub(super) monitor_state: TableState,
+    /// Replika swarm per service (actual/desired), dikunci "{project}_{service}".
+    /// Sumber status "turun" di tabel Services. Kosong = belum dimuat.
+    pub(super) task_stats: HashMap<String, (i64, i64)>,
     pub(super) storage: Vec<Value>,
     pub(super) monitor_view: MonitorView,
     pub(super) domains: Vec<Value>,
@@ -213,6 +217,7 @@ impl App {
             actions: Vec::new(),
             actions_state: TableState::default(),
             monitor: Vec::new(),
+            task_stats: HashMap::new(),
             monitor_state: TableState::default(),
             storage: Vec::new(),
             monitor_view: MonitorView::Services,
@@ -270,6 +275,7 @@ impl App {
                 select_first(&mut self.actions_state, self.actions.len());
             }
             Resp::MonitorData(m) => self.monitor = m,
+            Resp::TaskStats(t) => self.task_stats = t,
             Resp::Storage(s) => self.storage = s,
             Resp::Domains(d) => {
                 self.domains = d;
@@ -499,6 +505,10 @@ impl App {
                 if self.monitor.is_empty() {
                     let _ = req.send(Req::MonitorData);
                 }
+                // Replika swarm → kolom Status ("turun" untuk yang crash/down).
+                if self.task_stats.is_empty() {
+                    let _ = req.send(Req::TaskStats);
+                }
             }
             Screen::Actions => {
                 if self.actions.is_empty() {
@@ -558,7 +568,7 @@ impl App {
                 .all_services
                 .iter()
                 .filter(|s| s.get("projectName").and_then(Value::as_str) == Some(p.as_str()))
-                .filter(|s| project_matches || keep(&service_row(s, None), &self.filter))
+                .filter(|s| project_matches || keep(&service_row(s, None, None), &self.filter))
                 .collect();
             kept.sort_by_key(|s| field(s, "/name"));
 
@@ -581,7 +591,7 @@ impl App {
     pub(super) fn visible_services(&self) -> Vec<&Value> {
         self.all_services
             .iter()
-            .filter(|s| keep(&service_row(s, None), &self.filter))
+            .filter(|s| keep(&service_row(s, None, None), &self.filter))
             .collect()
     }
 
@@ -589,6 +599,27 @@ impl App {
     ///
     /// getAllServicesStats memuat lebih banyak entri daripada daftar service
     /// (service sistem, sub-service compose), jadi yang tak cocok diabaikan.
+    /// (actual, desired) replika swarm sebuah service, dari getDockerTaskStats.
+    /// None = belum dimuat atau service tak punya swarm task.
+    pub(super) fn replicas(&self, project: &str, service: &str) -> Option<(i64, i64)> {
+        self.task_stats
+            .get(&format!("{project}_{service}"))
+            .copied()
+    }
+
+    /// Jumlah service yang sedang turun (desired>0 tapi actual<desired).
+    pub(super) fn down_count(&self) -> usize {
+        self.all_services
+            .iter()
+            .filter(|s| {
+                matches!(
+                    self.replicas(&field(s, "/projectName"), &field(s, "/name")),
+                    Some((a, d)) if d > 0 && a < d
+                )
+            })
+            .count()
+    }
+
     pub(super) fn metric_for(&self, project: &str, service: &str) -> Option<&Value> {
         self.monitor.iter().find(|m| {
             m.get("projectName").and_then(Value::as_str) == Some(project)

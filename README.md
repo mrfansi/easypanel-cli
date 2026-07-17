@@ -90,7 +90,7 @@ Press **`?`** at any time for every shortcut on the current screen.
 | **Actions** | Deploy/destroy/login history with status, target, duration, age. |
 | **Monitor** | Five history tiles (CPU, memory, disk, net in/out) plus per-service metrics and storage (`v` switches). |
 | **Domains** | Every domain on the host: source → destination (internal service or weighted custom servers), SSL resolver, wildcard. |
-| **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. Shows type, status, source (`owner/repo#branch`), and live CPU/memory/network. Selecting a header targets the project (`n` new service, `X` destroy); selecting a service targets the service. |
+| **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. Shows type, status, source (`owner/repo#branch`), and live CPU/memory/network. A crashed or restart-looping service shows **`turun` in red** (its Swarm replicas are missing) and is counted in the title, so you see what's broken at a glance — distinct from `berhenti`, which means intentionally stopped. Selecting a header targets the project (`n` new service, `X` destroy); selecting a service targets the service. |
 | **Viewer** | Scrollable pane for logs, env, ports, mounts, domains, backups, source & build. Reached from a service; `Esc` goes back. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. |
 
 ### Key bindings

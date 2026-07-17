@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -40,6 +41,9 @@ pub(super) enum Req {
     Projects,
     Actions,
     MonitorData,
+    /// Replika swarm per service (actual/desired) — ground truth "berjalan sesuai
+    /// target?". Satu panggilan menutupi semua service; `actual < desired` = turun.
+    TaskStats,
     Storage,
     Domains,
     Fetch {
@@ -155,6 +159,8 @@ pub(super) enum Resp {
     Projects(Vec<String>),
     Actions(Vec<Value>),
     MonitorData(Vec<Value>),
+    /// (actual, desired) replika swarm, dikunci nama "{project}_{service}".
+    TaskStats(HashMap<String, (i64, i64)>),
     Storage(Vec<Value>),
     Domains(Vec<Value>),
     /// Semua service lintas project + nama project untuk dropdown form.
@@ -273,6 +279,10 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
         },
         Req::MonitorData => match client.call("metrics", "getAllServicesStats", json!({})) {
             Ok(v) => Resp::MonitorData(v.as_array().cloned().unwrap_or_default()),
+            Err(e) => Resp::Err(e.to_string()),
+        },
+        Req::TaskStats => match client.call("monitorOld", "getDockerTaskStats", Value::Null) {
+            Ok(v) => Resp::TaskStats(parse_task_stats(&v)),
             Err(e) => Resp::Err(e.to_string()),
         },
         Req::Storage => match client.call("monitorOld", "getStorageStats", Value::Null) {
@@ -835,6 +845,26 @@ pub(super) fn github_repos(client: &EasypanelClient) -> Vec<String> {
                         "{}/{}",
                         r.get("owner")?.as_str()?,
                         r.get("repo")?.as_str()?
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Peta `{ "{project}_{service}": {actual, desired} }` dari getDockerTaskStats
+/// jadi `swarm_name -> (actual, desired)`. Entri tanpa kedua angka diabaikan.
+pub(super) fn parse_task_stats(v: &Value) -> HashMap<String, (i64, i64)> {
+    v.as_object()
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, t)| {
+                    Some((
+                        k.clone(),
+                        (
+                            t.get("actual").and_then(Value::as_i64)?,
+                            t.get("desired").and_then(Value::as_i64)?,
+                        ),
                     ))
                 })
                 .collect()

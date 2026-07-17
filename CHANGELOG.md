@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-07-18
+
+### Added
+
+- **Crash visibility — the Services table now tells you what's broken right now.** A new
+  `turun` status, shown in red, marks any service whose Docker Swarm replicas are missing
+  (`desired > 0` but `actual < desired`): a container that crashed or is stuck in a
+  restart loop and has not come back up. The table title also counts them
+  (`Services (33) · ⚠ 2 turun`), so a broken service is visible at a glance without
+  reading every row.
+
+  This closes a real blind spot. Until now a crashed service and a service you stopped on
+  purpose both showed `berhenti` — indistinguishable, even though one is an incident and
+  the other is intentional. The status is now derived from Swarm's own truth
+  (`getDockerTaskStats`, one call covering every service), which knows how many replicas
+  *should* run versus how many actually do — a stronger signal than "does it have
+  metrics". A service scaled to zero (`desired = 0`) stays `berhenti`; only genuinely
+  degraded services turn red.
+
+  Verified against the live host: the replica map's keys match the tool's
+  `{project}_{service}` join for all 33 services (zero misses), and a deliberately
+  crash-looping throwaway service reported `actual=0, desired=1` and classified as `turun`
+  as designed. Then cleaned up.
+
 ## [0.18.0] — 2026-07-18
 
 ### Added

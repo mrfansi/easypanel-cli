@@ -281,7 +281,10 @@ pub(super) fn render_nodes(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
-    let rows: Vec<Vec<String>> = app
+    // (cells, is_down): baris turun diwarnai merah agar "apa yang rusak" langsung
+    // terlihat. Indexed(9), bukan Color::Red bernama: tema terminal pernah membuat
+    // warna bernama tak terbaca di proyek ini (lihat AGENT_BRIEF).
+    let rows: Vec<(Vec<String>, bool)> = app
         .visible_rows()
         .iter()
         .map(|r| match r {
@@ -292,56 +295,74 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
                     .iter()
                     .filter_map(|s| app.metric_for(&field(s, "/projectName"), &field(s, "/name")))
                     .collect();
-                project_row(name, services.len(), &mets)
+                (project_row(name, services.len(), &mets), false)
             }
             Line2::Service(s) => {
+                let (project, service) = (field(s, "/projectName"), field(s, "/name"));
                 // Status jalan/mati dari metrik: ada metrik = jalan. Tapi jangan
                 // menuduh "berhenti" sebelum metrik pertama dimuat (monitor kosong)
                 // — saat itu jatuh ke enabled saja (None).
                 let running = if app.monitor.is_empty() {
                     None
                 } else {
-                    Some(
-                        app.metric_for(&field(s, "/projectName"), &field(s, "/name"))
-                            .is_some(),
-                    )
+                    Some(app.metric_for(&project, &service).is_some())
                 };
-                let mut row = service_row(s, running);
+                let replicas = app.replicas(&project, &service);
+                let is_down = matches!(replicas, Some((a, d)) if d > 0 && a < d);
+                let mut row = service_row(s, running, replicas);
                 // Kolom Project dilebur ke header; service cukup menjorok di bawahnya.
                 let name = format!("  {}", row.remove(1));
                 row.remove(0);
                 let mut out = vec![name];
                 out.extend(row);
-                out.extend(metric_cols(
-                    app.metric_for(&field(s, "/projectName"), &field(s, "/name")),
-                ));
-                out
+                out.extend(metric_cols(app.metric_for(&project, &service)));
+                (out, is_down)
             }
         })
         .collect();
     let total = app.all_services.len();
-    let shown = rows.iter().filter(|r| r[0].starts_with("  ")).count();
-    let title = count_title("Services", shown, total, app);
-    render_table(
-        f,
-        area,
-        title,
-        &SERVICE_HEADERS,
-        &[
-            Constraint::Min(26),
-            Constraint::Length(8),
-            // 9, bukan 7: "berhenti" (8 huruf) harus muat, tak terpotong.
-            Constraint::Length(9),
-            Constraint::Min(16),
-            Constraint::Length(5),
-            Constraint::Length(8),
-            Constraint::Length(10),
-            Constraint::Length(11),
-            Constraint::Length(11),
-        ],
-        rows,
-        &mut app.services_table,
+    let shown = rows.iter().filter(|(r, _)| r[0].starts_with("  ")).count();
+    let mut title = count_title("Services", shown, total, app);
+    let down = app.down_count();
+    if down > 0 {
+        title.push_str(&format!(" · ⚠ {down} turun"));
+    }
+
+    let widths = [
+        Constraint::Min(26),
+        Constraint::Length(8),
+        // 9, bukan 7: "berhenti" (8 huruf) harus muat, tak terpotong.
+        Constraint::Length(9),
+        Constraint::Min(16),
+        Constraint::Length(5),
+        Constraint::Length(8),
+        Constraint::Length(10),
+        Constraint::Length(11),
+        Constraint::Length(11),
+    ];
+    let header = Row::new(SERVICE_HEADERS.to_vec()).style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD),
     );
+    let down_style = Style::default()
+        .fg(Color::Indexed(9))
+        .add_modifier(Modifier::BOLD);
+    let body = rows.into_iter().map(|(cells, is_down)| {
+        let row = Row::new(cells);
+        if is_down {
+            row.style(down_style)
+        } else {
+            row
+        }
+    });
+    let table = Table::new(body, widths)
+        .header(header)
+        .block(Block::bordered().title(title))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("› ");
+    f.render_stateful_widget(table, area, &mut app.services_table);
 }
 
 pub(super) fn render_table(
