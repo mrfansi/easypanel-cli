@@ -149,26 +149,46 @@ Every run should leave the project able to do something useful it could not do b
 or handle scale it could not handle before. Still one meaningful, verified change per
 run; still no invented features and no unverified claims.
 
-### Growth backlog — features the API already supports
+### Killer features — what the server's reality says matters most
 
-Every endpoint below exists in `easypanel-api.json` — none is speculative. Each is a
-gap between what EasyPanel's dashboard does and what this tool does. Verify live with a
-`zzz-*` target and clean up.
+Prioritised from a read-only look at the live host (42 swarm services, Grafana Loki
+logs, real services crash-looping — `harisenin-com_webapp` had `Exited (1)`). These turn
+the tool from "a nicer panel" into "the first place you look when something breaks."
+Each is grounded in an endpoint confirmed to exist in `backend.js` 2.32.2.
 
-1. **Port management.** *Add* is done in v0.16.0 (`P` → createPort, verified live).
-   Still open: **delete** a port from the TUI (`deletePort` by index — endpoint verified,
-   needs a select-and-confirm UI) and a **Ports step in the create wizard**
-   (`createService` takes `ports` inline).
-2. **Mount management** (`mounts/createMount`, `updateMount`, `deleteMount`). Same — the
-   viewer is read-only; the CLI already has `mount-add`, the TUI does not.
-3. **Resource limits** (`services/*/updateResources`) — CPU/memory reservations and
-   limits per service, editable from the TUI and a wizard step. Real scalability lever.
-4. **Basic auth** (`updateBasicAuth`), **redirects** (`updateRedirects`),
-   **maintenance mode** (`updateMaintenanceMode`) — each a small, self-contained editor.
-5. **Templates** (`templates/createFromSchema`) — EasyPanel's one-click app catalogue.
-   Large; scope a slice (list + deploy one) before promising the whole thing.
-6. **Middlewares editor** for domains — the field is preserved on edit but not editable;
-   registry is empty today, so confirm there is a way to list/define them first.
+1. **Cross-service log search.** Loki backs every service's logs, and `queryServiceLogs`
+   accepts a `search` param (verified live). "Find this error across all 42 services" is
+   something neither the dashboard nor any competitor does from a terminal. Build a
+   screen/flow: one query, fan out across services, show matches with service + time.
+   This is the single highest-leverage feature this project can add.
+2. **Health & crash visibility.** On a real host, services crash and swarm restarts them
+   — the operator needs to *see* it. The Status column already separates running from
+   stopped (v0.15.0); go further: surface unhealthy/recently-crashed/restart-looping
+   services at the top, with exit reason and restart count. Data sources to verify:
+   `projects/getDockerContainers` (takes `service`), `monitorOld/getDockerTaskStats`.
+   Make the tool answer "what's broken right now?" at a glance.
+3. **Alerting.** Wire crash/health detection to EasyPanel's own notification channels
+   (`notifications/createNotificationChannel`, `sendTestNotification`). A terminal tool
+   that can also notify is a real operational upgrade.
+
+### Growth backlog — richer features (every endpoint verified in 2.32.2)
+
+Fill out the management surface. Verify live with a `zzz-*` target and clean up.
+
+4. **Port management.** *Add* done in v0.16.0. Open: **delete** (`deletePort` by index)
+   and a **Ports step in the create wizard** (`createService` takes `ports` inline).
+5. **Mount management** (`mounts/createMount`, `updateMount`, `deleteMount`) — TUI viewer
+   is read-only; the CLI already has `mount-add`.
+6. **Resource limits** (`updateResources`) — CPU/memory per service, TUI + wizard step.
+7. **Templates** (`templates/createFromSchema`) — EasyPanel's one-click app catalogue;
+   scope a slice (list + deploy one) first.
+8. **Middlewares editor** (`middlewares/listMiddlewares`, `createMiddleware`) — the group
+   is real (4 endpoints); domains preserve the field but can't edit it.
+9. **Cloudflare Tunnel** (`cloudflareTunnel/*`, 11 endpoints) — expose services without a
+   public IP; large but high-value for self-hosters.
+10. **Basic auth** (`updateBasicAuth`), **redirects** (`updateRedirects`),
+    **maintenance mode** (`updateMaintenanceMode`), **project env** (`updateProjectEnv`)
+    — small self-contained editors.
 
 ### Scalability — the tool must not fold at real scale
 
