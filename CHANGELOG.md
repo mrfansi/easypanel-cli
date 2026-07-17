@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-07-18
+
+### Changed
+
+- **`install.sh` no longer needs `sudo` by default.** The old default target
+  `/usr/local/bin` is on macOS's PATH but root-owned on Apple Silicon, so a plain
+  `./install.sh` failed with `install: … Permission denied`. It now installs to
+  `/usr/local/bin` only when that directory is actually writable, and otherwise falls
+  back to `~/.cargo/bin` — which is guaranteed to exist (the script just ran `cargo`) and
+  is already on PATH via rustup. `PREFIX=…` still overrides. `~/.local/bin` is
+  deliberately not the fallback: it is not on macOS's default PATH, so installing there
+  would silently produce `command not found`.
+
 ## [0.19.0] — 2026-07-18
 
 ### Added

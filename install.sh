@@ -5,7 +5,20 @@ set -e
 
 cargo build --release
 
-DEST="${PREFIX:-/usr/local/bin}"
+# Default: lokasi yang on-PATH TANPA sudo.
+# - PREFIX override selalu menang.
+# - /usr/local/bin ada di PATH bawaan macOS, tapi milik root di Apple Silicon
+#   (butuh sudo) — pakai hanya kalau memang writable.
+# - Kalau tidak, jatuh ke ~/.cargo/bin: script ini baru saja menjalankan cargo,
+#   jadi toolchain Rust pasti ada, dan rustup sudah menaruh dir itu di PATH.
+#   ~/.local/bin sengaja TIDAK dipakai: bukan bagian PATH default macOS.
+if [ -n "$PREFIX" ]; then
+    DEST="$PREFIX"
+elif [ -w /usr/local/bin ]; then
+    DEST="/usr/local/bin"
+else
+    DEST="${CARGO_HOME:-$HOME/.cargo}/bin"
+fi
 mkdir -p "$DEST"
 install -m 755 target/release/easypanel "$DEST/easypanel"
 
