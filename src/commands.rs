@@ -7,7 +7,7 @@ use crate::client::EasypanelClient;
 use crate::config::ServerConfig;
 use crate::logs;
 use crate::output::{
-    age_of, duration_between, field, first_line, format_bytes, format_rate, num, series_last,
+    self, age_of, duration_between, field, first_line, format_bytes, format_rate, num, series_last,
     table, yes_no,
 };
 
@@ -135,6 +135,10 @@ fn mask_token(token: &str) -> String {
 
 pub fn project_list(client: &EasypanelClient) -> Result<()> {
     let projects = client.call("projects", "listProjects", Value::Null)?;
+    if output::json_output() {
+        output::print_json(&projects);
+        return Ok(());
+    }
     let arr = projects.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No projects.");
@@ -170,6 +174,10 @@ pub fn project_create(client: &EasypanelClient, name: &str) -> Result<()> {
 
 pub fn project_inspect(client: &EasypanelClient, name: &str) -> Result<()> {
     let data = client.call("projects", "inspectProject", json!({ "projectName": name }))?;
+    if output::json_output() {
+        output::print_json(&data);
+        return Ok(());
+    }
     let services = data
         .get("services")
         .and_then(Value::as_array)
@@ -251,6 +259,10 @@ pub fn service_logs(
 /// berisi laju network + total/used byte, tak seperti `monitorOld` (~2,3 detik).
 pub fn stats(client: &EasypanelClient) -> Result<()> {
     let s = client.call("metrics", "getSystemStats", json!({}))?;
+    if output::json_output() {
+        output::print_json(&s);
+        return Ok(());
+    }
     table(&["Metric", "Value"], stats_rows(&s));
     Ok(())
 }
@@ -304,6 +316,10 @@ pub fn stats_rows(s: &Value) -> Vec<Vec<String>> {
 
 pub fn node_list(client: &EasypanelClient) -> Result<()> {
     let nodes = client.call("cluster", "listNodes", Value::Null)?;
+    if output::json_output() {
+        output::print_json(&nodes);
+        return Ok(());
+    }
     let arr = nodes.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No nodes (or this host is not a cluster).");
@@ -379,6 +395,10 @@ pub fn ports_list(client: &EasypanelClient, project: &str, service: &str) -> Res
         "listPorts",
         json!({ "projectName": project, "serviceName": service }),
     )?;
+    if output::json_output() {
+        output::print_json(&ports);
+        return Ok(());
+    }
     let arr = ports.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No exposed ports.");
@@ -444,6 +464,10 @@ pub fn mounts_list(client: &EasypanelClient, project: &str, service: &str) -> Re
         "listMounts",
         json!({ "projectName": project, "serviceName": service }),
     )?;
+    if output::json_output() {
+        output::print_json(&mounts);
+        return Ok(());
+    }
     let arr = mounts.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No mounts.");
@@ -519,6 +543,10 @@ pub fn domains_list(client: &EasypanelClient, project: &str, service: &str) -> R
         "listDomains",
         json!({ "projectName": project, "serviceName": service }),
     )?;
+    if output::json_output() {
+        output::print_json(&domains);
+        return Ok(());
+    }
     let arr = domains.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No domains.");
@@ -624,6 +652,10 @@ fn confirm(prompt: &str, yes: bool) -> Result<bool> {
 
 pub fn certificate_list(client: &EasypanelClient) -> Result<()> {
     let certs = client.call("certificates", "listCertificates", Value::Null)?;
+    if output::json_output() {
+        output::print_json(&certs);
+        return Ok(());
+    }
     let arr = certs.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No certificates.");
@@ -648,6 +680,10 @@ pub fn certificate_remove(client: &EasypanelClient, domain: &str) -> Result<()> 
 
 pub fn notification_list(client: &EasypanelClient) -> Result<()> {
     let res = client.call("notifications", "listNotificationChannels", Value::Null)?;
+    if output::json_output() {
+        output::print_json(&res);
+        return Ok(());
+    }
     let arr = res
         .get("notificationChannels")
         .and_then(Value::as_array)
@@ -683,6 +719,10 @@ pub fn service_databases(client: &EasypanelClient, project: &str, service: &str)
         "getServiceDatabases",
         json!({ "projectName": project, "serviceName": service }),
     )?;
+    if output::json_output() {
+        output::print_json(&dbs);
+        return Ok(());
+    }
     let arr = dbs.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No databases.");
@@ -702,6 +742,10 @@ pub fn db_backup_list(client: &EasypanelClient, project: &str, service: &str) ->
         "listDatabaseBackups",
         json!({ "projectName": project, "serviceName": service }),
     )?;
+    if output::json_output() {
+        output::print_json(&res);
+        return Ok(());
+    }
     let arr = res.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No database backups.");
@@ -744,6 +788,10 @@ pub fn volume_backup_list(client: &EasypanelClient, project: &str, service: &str
         "listVolumeBackups",
         json!({ "projectName": project, "serviceName": service }),
     )?;
+    if output::json_output() {
+        output::print_json(&res);
+        return Ok(());
+    }
     let arr = res.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No volume backups.");
@@ -835,6 +883,10 @@ pub fn action_list(
 ) -> Result<()> {
     let input = actions_input(limit, &project, &service, &atype);
     let actions = client.call("actions", "listActions", input)?;
+    if output::json_output() {
+        output::print_json(&actions);
+        return Ok(());
+    }
     let arr = actions.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No actions.");
@@ -904,6 +956,10 @@ pub const MONITOR_HEADERS: [&str; 5] =
 
 pub fn monitor_services(client: &EasypanelClient) -> Result<()> {
     let data = client.call("metrics", "getAllServicesStats", json!({}))?;
+    if output::json_output() {
+        output::print_json(&data);
+        return Ok(());
+    }
     let arr = data.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No running services.");
@@ -932,6 +988,10 @@ pub const STORAGE_HEADERS: [&str; 4] = ["Project", "Service", "Size", "Path"];
 
 pub fn monitor_storage(client: &EasypanelClient) -> Result<()> {
     let data = client.call("monitorOld", "getStorageStats", Value::Null)?;
+    if output::json_output() {
+        output::print_json(&data);
+        return Ok(());
+    }
     let arr = data.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No storage data.");
@@ -987,6 +1047,10 @@ pub fn domain_row(d: &Value) -> Vec<String> {
 
 pub fn domain_list_all(client: &EasypanelClient) -> Result<()> {
     let domains = client.call("domains", "listDomains", json!({}))?;
+    if output::json_output() {
+        output::print_json(&domains);
+        return Ok(());
+    }
     let arr = domains.as_array().cloned().unwrap_or_default();
     if arr.is_empty() {
         println!("No domains.");

@@ -190,6 +190,24 @@ easypanel notification list|delete
 `--type` defaults to `app`; other types (mysql, postgres, redis, mongo, mariadb,
 wordpress, compose) match your EasyPanel services.
 
+### Scripting with `--json`
+
+Add `--json` to any read-only command and it prints **EasyPanel's own JSON** instead of
+a table — the exact response the server sent, not a schema this tool invented, so it
+tracks the API rather than drifting from it. An empty result is `[]`, not a human
+message, so `jq` never chokes.
+
+```bash
+easypanel project list --json | jq -r '.[].name'
+easypanel stats --json | jq '.memory'
+easypanel monitor services --json | jq 'map(select(.cpu > 50))'
+easypanel service ports web api --json
+```
+
+Works on `project list`/`inspect`, `stats`, `node list`, `monitor services`/`storage`,
+`domain list`, `service ports`/`mounts`/`domains`/`databases`/`backups`/`volume-backups`,
+`action list`, `certificate list`, and `notification list`. Mutating commands ignore it.
+
 ## Known limits
 
 Stated plainly, because a README that promises what the code doesn't do is a bug.

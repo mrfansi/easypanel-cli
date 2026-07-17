@@ -1,5 +1,38 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use comfy_table::{presets::UTF8_FULL, Table};
 use serde_json::Value;
+
+// Mode output dipilih sekali dari flag --json lalu dibaca banyak perintah
+// read-only. Sebuah flag proses (seperti verbositas logger) menghindari
+// menyelipkan `json: bool` ke ~16 signature + call-site — nilainya konfigurasi,
+// bukan argumen tiap fungsi.
+// ponytail: flag global; kalau nanti perlu dua output mode bersamaan, jadikan
+// parameter — tapi CLI ini satu proses satu perintah, jadi belum perlu.
+static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
+
+/// Aktifkan output JSON mentah untuk perintah read-only (dipanggil sekali di main).
+pub fn set_json_output(on: bool) {
+    JSON_OUTPUT.store(on, Ordering::Relaxed);
+}
+
+/// Apakah perintah read-only harus mencetak JSON API apa adanya, bukan tabel.
+pub fn json_output() -> bool {
+    JSON_OUTPUT.load(Ordering::Relaxed)
+}
+
+/// Cetak JSON API apa adanya (pretty). Bentuknya milik server, bukan skema kita:
+/// yang nge-script mendapat persis yang dikirim EasyPanel, termasuk `[]` kosong
+/// alih-alih pesan "No X." yang bukan JSON.
+pub fn print_json(value: &Value) {
+    println!("{}", json_string(value));
+}
+
+/// JSON pretty untuk sebuah Value; fallback ke bentuk kompak bila serialisasi
+/// pretty gagal (praktis tak pernah untuk Value yang sudah valid).
+pub fn json_string(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
 
 /// Cetak tabel sederhana ke stdout.
 pub fn table(headers: &[&str], rows: Vec<Vec<String>>) {
@@ -225,5 +258,19 @@ mod tests {
         assert_eq!(num(&v, "/a"), 5.0);
         assert_eq!(num(&v, "/b"), 842_787_864_576.0);
         assert_eq!(num(&v, "/c"), 0.0);
+    }
+
+    #[test]
+    fn json_string_is_pretty_and_preserves_the_api_shape() {
+        // --json harus mencetak apa yang server kirim, bukan skema kita — jadi
+        // yang penting: valid, ter-indentasi, dan tak kehilangan/menambah field.
+        let v = json!({ "name": "web", "members": [1, 2] });
+        let s = json_string(&v);
+        assert!(s.contains("\n  "), "harus pretty (ter-indentasi): {s}");
+        assert_eq!(serde_json::from_str::<Value>(&s).unwrap(), v);
+
+        // Array kosong dicetak sebagai `[]`, bukan pesan manusia — itu inti
+        // kelayakan-script: `[]` bisa dibaca `jq`, "No X." tidak.
+        assert_eq!(json_string(&json!([])), "[]");
     }
 }

@@ -87,9 +87,13 @@ no excuses. You are expected to finish one per run.
    else was already defensive: `output.rs` is `and_then`/`unwrap_or` throughout, layout
    `[n]` indices equal their constraint count, terminal arithmetic is `saturating_sub`,
    and API-driven indexing is guarded by `is_empty()`.
-9. **`--json` output** for the read-only commands (`stats`, `monitor services`,
-   `project list`, `domain list`, …) so people can script against it. Print the API's
-   own JSON; do not invent a schema.
+9. ~~**`--json` output.**~~ Done in v0.13.0. A global `--json` flag makes every
+   read-only command print the API's raw response (pretty) instead of a table — the
+   server's own shape, no invented schema, empty results as `[]` so `jq` works. One
+   process-level flag in `output.rs` gates it, so no `json: bool` was threaded through
+   ~16 signatures. Covers project list/inspect, stats, node list, monitor
+   services/storage, domain list, service ports/mounts/domains/databases/backups/
+   volume-backups, action list, certificate list, notification list. Verified live.
 10. **Test coverage for `src/config.rs` and `src/output.rs` edge cases** — malformed
    JSON, missing file, unreadable permissions, empty series, huge byte values.
 11. **Issue and PR templates** under `.github/`, plus README badges (CI, release,

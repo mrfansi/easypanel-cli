@@ -23,6 +23,10 @@ struct Cli {
     #[arg(long, global = true)]
     server: Option<String>,
 
+    /// Print the API's raw JSON instead of a table (read-only commands)
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -359,6 +363,7 @@ fn main() {
 }
 
 fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
+    output::set_json_output(cli.json);
     match cli.command {
         // Tak menyentuh jaringan maupun config: didahulukan supaya completion
         // tetap bisa dicetak sebelum ada server terdaftar sekalipun.

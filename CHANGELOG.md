@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-07-18
+
+### Added
+
+- **`--json` for read-only commands.** Add `--json` to `project list`/`inspect`,
+  `stats`, `node list`, `monitor services`/`storage`, `domain list`, `service`
+  `ports`/`mounts`/`domains`/`databases`/`backups`/`volume-backups`, `action list`,
+  `certificate list` or `notification list`, and it prints the response as JSON instead
+  of a table — so the CLI can be scripted, not just read.
+
+  It prints **EasyPanel's own JSON, verbatim**, rather than a shape this tool defines.
+  That is deliberate: a hand-rolled schema drifts from the API the moment the server
+  changes a field, whereas passing the raw response through cannot. An empty result
+  comes out as `[]`, not the human-readable "No X." line, because `[]` is what a
+  pipeline into `jq` expects. Verified against a live server across the list commands.
+
+  Implemented as one process-level output flag in `output.rs`, read where each command
+  already holds the raw API value — rather than threading a `json: bool` through some
+  sixteen function signatures and their call sites for what is really one global choice.
+
 ## [0.12.1] — 2026-07-17
 
 ### Fixed
