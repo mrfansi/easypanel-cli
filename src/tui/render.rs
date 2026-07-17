@@ -61,6 +61,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
         Screen::Projects => &[
             Key("/", "cari service"),
             Key("g", "cari kata di log SEMUA service"),
+            Key("t", "terminal ke dalam container"),
             Key("Enter", "logs"),
             Key("n", "service baru"),
             Key("x", "hapus service"),
@@ -87,6 +88,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("End", "ikuti baris terakhir lagi (log)"),
             Key("Esc", "kembali ke Services"),
         ],
+        Screen::Terminal => &[Key("Ctrl-Q", "keluar terminal (atau ketik `exit`)")],
     }
 }
 
@@ -122,6 +124,7 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
         Screen::Domains => render_domains(f, chunks[1], app),
         Screen::Projects => render_projects(f, chunks[1], app),
         Screen::Viewer => render_viewer(f, chunks[1], app),
+        Screen::Terminal => render_terminal(f, chunks[1], app),
     }
     render_status(f, chunks[2], app);
 
@@ -674,6 +677,75 @@ pub(super) fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
                 .style(Style::default().fg(color)),
             inner[2],
         );
+    }
+}
+
+/// Terminal container tertanam: gambar grid emulator vt100 di pane, dan jaga
+/// ukuran shell mengikuti ukuran pane (resize dua arah).
+pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
+    let block = Block::bordered().title(format!(" Terminal · {} · Ctrl-Q keluar ", app.term_title));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let (cols, rows) = (inner.width.max(1), inner.height.max(1));
+    let Some(parser) = app.term_parser.as_mut() else {
+        return;
+    };
+    // Selaraskan ukuran shell dengan pane. vt100 pakai (rows, cols).
+    if parser.screen().size() != (rows, cols) {
+        parser.set_size(rows, cols);
+        if let Some(tx) = app.term_input.as_ref() {
+            let _ = tx.send(super::terminal::TermMsg::Resize(cols, rows));
+        }
+    }
+
+    let screen = parser.screen();
+    let buf = f.buffer_mut();
+    for r in 0..rows {
+        for c in 0..cols {
+            let Some(cell) = screen.cell(r, c) else {
+                continue;
+            };
+            let x = inner.x + c;
+            let y = inner.y + r;
+            let contents = cell.contents();
+            let ch = if contents.is_empty() { " " } else { &contents };
+            let mut style = Style::default()
+                .fg(vt_color(cell.fgcolor()))
+                .bg(vt_color(cell.bgcolor()));
+            if cell.bold() {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if cell.italic() {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            if cell.underline() {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            if cell.inverse() {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            if let Some(target) = buf.cell_mut((x, y)) {
+                target.set_symbol(ch).set_style(style);
+            }
+        }
+    }
+
+    // Kursor shell (kalau tak disembunyikan).
+    if !screen.hide_cursor() {
+        let (cr, cc) = screen.cursor_position();
+        if cr < rows && cc < cols {
+            f.set_cursor_position((inner.x + cc, inner.y + cr));
+        }
+    }
+}
+
+/// vt100 → warna ratatui.
+fn vt_color(c: vt100::Color) -> Color {
+    match c {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(i) => Color::Indexed(i),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
 }
 

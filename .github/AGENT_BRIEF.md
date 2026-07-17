@@ -149,7 +149,7 @@ Every run should leave the project able to do something useful it could not do b
 or handle scale it could not handle before. Still one meaningful, verified change per
 run; still no invented features and no unverified claims.
 
-### Killer feature READY TO BUILD: remote container terminal
+### Killer feature DONE (v0.18.0): remote container terminal
 
 The protocol is **fully verified with a live WebSocket round-trip** (2026-07-18), not
 guessed. A shell into any container, on any host, from the TUI — using the API token the

@@ -26,6 +26,8 @@ pub(super) enum Screen {
     Domains,
     Projects,
     Viewer,
+    /// Terminal container tertanam; dibuka dari sebuah service.
+    Terminal,
 }
 
 /// Viewer sengaja TIDAK ada di sini: ia hasil dari membuka sesuatu pada sebuah
@@ -53,9 +55,9 @@ impl Screen {
             Screen::Monitor => 4,
             Screen::Domains => 5,
             Screen::Projects => 6,
-            // Viewer selalu dibuka dari Projects, jadi tab itu yang tetap
-            // tersorot — Viewer sendiri tak punya tab.
-            Screen::Viewer => 6,
+            // Viewer & Terminal selalu dibuka dari Projects, jadi tab itu yang
+            // tetap tersorot — keduanya tak punya tab sendiri.
+            Screen::Viewer | Screen::Terminal => 6,
         }
     }
     pub(super) fn next(self) -> Self {
@@ -67,7 +69,7 @@ impl Screen {
             Screen::Monitor => Screen::Domains,
             Screen::Domains => Screen::Projects,
             Screen::Projects => Screen::Dashboard,
-            Screen::Viewer => Screen::Dashboard,
+            Screen::Viewer | Screen::Terminal => Screen::Dashboard,
         }
     }
 }
@@ -126,6 +128,15 @@ pub(super) struct App {
     /// Indeks field form yang menunggu dibuka di $EDITOR; event_loop yang
     /// mengerjakannya — hanya ia yang memegang terminal.
     pub(super) edit_field: Option<usize>,
+    /// (project, service) yang menunggu dibukakan terminal container; event_loop
+    /// yang menyambungkannya (ia yang memegang ServerConfig).
+    pub(super) terminal_req: Option<(String, String)>,
+    /// Emulator layar terminal aktif (parser vt100 diisi output WebSocket).
+    pub(super) term_parser: Option<vt100::Parser>,
+    /// Kirim keystroke/resize ke thread WebSocket. Drop = tutup sesi.
+    pub(super) term_input: Option<Sender<super::terminal::TermMsg>>,
+    /// Judul pane terminal (project/service).
+    pub(super) term_title: String,
 
     pub(super) screen: Screen,
     pub(super) should_quit: bool,
@@ -189,6 +200,10 @@ impl App {
             server_action: None,
             edit_env: None,
             edit_field: None,
+            terminal_req: None,
+            term_parser: None,
+            term_input: None,
+            term_title: String::new(),
             screen: Screen::Dashboard,
             should_quit: false,
             refresh_inflight: false,
@@ -378,6 +393,20 @@ impl App {
                 self.viewer_scroll = 0;
                 self.screen = Screen::Viewer;
                 self.status = "Siap".into();
+            }
+            Resp::TermOutput(bytes) => {
+                if let Some(p) = self.term_parser.as_mut() {
+                    p.process(&bytes);
+                }
+            }
+            Resp::TermClosed => {
+                // Shell keluar / socket tutup: kembali ke Services.
+                self.term_parser = None;
+                self.term_input = None;
+                if self.screen == Screen::Terminal {
+                    self.screen = Screen::Projects;
+                    self.status = format!("Terminal {} ditutup", self.term_title);
+                }
             }
             Resp::Done(msg, what) => {
                 self.status = msg;
@@ -591,6 +620,15 @@ impl App {
     }
 
     /// Balik auto deploy service terpilih.
+    /// Tutup sesi terminal (Ctrl-Q). Drop channel input → thread WS menutup
+    /// socket; kembali ke Services segera.
+    pub(super) fn close_terminal(&mut self) {
+        self.term_input = None;
+        self.term_parser = None;
+        self.screen = Screen::Projects;
+        self.status = format!("Terminal {} ditutup", self.term_title);
+    }
+
     pub(super) fn toggle_auto_deploy(&mut self, req: &Sender<Req>) {
         let picked = self.selected_service().map(|s| {
             (
@@ -1044,6 +1082,7 @@ impl App {
                 let _ = req.send(Req::Storage);
             }
             Screen::Hosts => self.load_hosts = true,
+            Screen::Terminal => {}
             Screen::Maintenance => {
                 let _ = req.send(Req::MaintInfo);
             }

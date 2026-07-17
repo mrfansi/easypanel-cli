@@ -12,6 +12,7 @@ mod form;
 mod keys;
 mod render;
 mod table;
+mod terminal;
 mod worker;
 
 #[cfg(test)]
@@ -108,15 +109,37 @@ fn event_loop(
             last_stats = Instant::now();
         }
 
-        if event::poll(Duration::from_millis(120))? {
+        // Poll lebih rapat saat terminal terbuka: 120 ms terasa lag untuk ketikan.
+        let poll = if app.screen == Screen::Terminal {
+            15
+        } else {
+            120
+        };
+        if event::poll(Duration::from_millis(poll))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        break;
+                    if app.screen == Screen::Terminal {
+                        // Ctrl-Q menutup sesi; SEMUA tombol lain (termasuk Ctrl-C)
+                        // diteruskan ke shell.
+                        let ctrl_q = key.code == KeyCode::Char('q')
+                            && key.modifiers.contains(KeyModifiers::CONTROL);
+                        if ctrl_q {
+                            app.close_terminal();
+                        } else if let (Some(bytes), Some(tx)) =
+                            (terminal::encode_key(key), app.term_input.as_ref())
+                        {
+                            let _ = tx.send(terminal::TermMsg::Input(
+                                String::from_utf8_lossy(&bytes).into_owned(),
+                            ));
+                        }
+                    } else {
+                        if key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            break;
+                        }
+                        app.on_key(key.code, &w.user);
                     }
-                    app.on_key(key.code, &w.user);
                 }
             }
         }
@@ -179,6 +202,35 @@ fn event_loop(
                 }
                 Ok(None) => app.status = "Tidak berubah".into(),
                 Err(e) => app.status = format!("Error: {e}"),
+            }
+        }
+
+        // Terminal container: resolve URL WebSocket (butuh ServerConfig, hanya di
+        // sini), lalu jalankan sesi di thread. Output → Resp::TermOutput ke parser
+        // vt100; keystroke dikirim balik lewat channel. Tabs & status tetap tampil.
+        if let Some((project, service)) = app.terminal_req.take() {
+            match cfg.get(&app.server_name) {
+                Some(server) => {
+                    let client = EasypanelClient::new(&server.url, &server.token);
+                    match terminal::ws_url(&client, &project, &service) {
+                        Ok(url) => {
+                            let (cols, rows) =
+                                ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+                            // Pane konten kira-kira ukuran layar minus tabs+status;
+                            // render menyetel ulang persisnya.
+                            let (tcols, trows) = (cols, rows.saturating_sub(5).max(1));
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            app.term_parser = Some(vt100::Parser::new(trows, tcols, 0));
+                            app.term_input = Some(tx);
+                            app.term_title = format!("{project}/{service}");
+                            terminal::spawn_session(url, w.resp_tx.clone(), rx, tcols, trows);
+                            app.screen = Screen::Terminal;
+                            app.status = "Terminal — ketik `exit` atau Ctrl-Q untuk keluar".into();
+                        }
+                        Err(e) => app.status = format!("Error: {e}"),
+                    }
+                }
+                None => app.status = "Server aktif tak ditemukan".into(),
             }
         }
 

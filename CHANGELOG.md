@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-07-18
+
+### Added
+
+- **Remote terminal into any container — embedded right in the TUI.** Press `t` on a
+  service and an interactive shell to its running container opens **inside the content
+  pane** — the tabs and status bar stay put, so it feels like part of the app, not a
+  takeover. Type `exit` (or Ctrl-D) to close it; Ctrl-Q force-quits back to the table.
+  Ctrl-C, arrow keys, tab-completion and colours all work.
+
+  This is the feature that makes the tool more than a panel: a real shell into
+  production, across every host, without leaving the terminal or opening a browser. It
+  speaks EasyPanel's own WebSocket (`wss://{panel}/ws/containerShell`), authenticated
+  with the API token the tool already stores. The WebSocket runs on its own thread and
+  feeds a `vt100` terminal emulator that is painted into the pane; keystrokes are encoded
+  (xterm sequences) and sent back over the socket, and the shell is resized to match the
+  pane both ways.
+
+  The protocol was not guessed: it was pinned by reading the running server's handler and
+  proven with a live round-trip, and there is an (ignored) integration test that drives
+  the real Rust path — `ws_url` + the session thread + the vt100 parser — against a live
+  container and asserts a command's output comes back.
+
 ## [0.17.0] — 2026-07-18
 
 ### Added

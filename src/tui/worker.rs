@@ -188,6 +188,10 @@ pub(super) enum Resp {
         data: std::result::Result<Value, String>,
     },
     Viewer(String, Vec<String>),
+    /// Byte output dari sesi terminal container (diumpankan ke parser vt100).
+    TermOutput(Vec<u8>),
+    /// Sesi terminal berakhir (shell keluar / socket tutup).
+    TermClosed,
     /// Mutasi berhasil: pesan status + data mana yang perlu dimuat ulang.
     Done(String, Refresh),
     Err(String),

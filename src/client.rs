@@ -27,6 +27,15 @@ impl EasypanelClient {
     }
 
     /// Panggil endpoint dan kembalikan payload `.json` dari respons.
+    /// URL panel (tanpa trailing slash). Untuk membangun URL WebSocket terminal.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+    /// Token API. Dipakai sebagai query param `token` pada WebSocket terminal.
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
     pub fn call(&self, group: &str, op: &str, input: Value) -> Result<Value> {
         self.call_within(group, op, input, None)
     }

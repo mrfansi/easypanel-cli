@@ -1,6 +1,6 @@
 [package]
 name = "easypanel"
-version = "0.17.0"
+version = "0.18.0"
 edition = "2021"
 description = "Manage multiple EasyPanel hosts from your terminal — CLI + TUI"
 license = "MIT"
@@ -35,6 +35,12 @@ anyhow = "1"
 ratatui = "0.30"
 clap_complete = "4.6.7"
 clap_mangen = "0.3.0"
+# Terminal container: WebSocket ke /ws/containerShell. rustls agar cocok dengan
+# reqwest (satu tumpukan TLS). libc untuk stdin non-blocking (passthrough byte
+# mentah — crossterm mem-parse jadi KeyEvent, tak cocok untuk shell interaktif).
+tungstenite = { version = "0.24", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+libc = "0.2"
+vt100 = "0.15"
 
 [dev-dependencies]
 httpmock = "0.7"

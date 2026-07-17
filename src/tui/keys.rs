@@ -75,7 +75,9 @@ impl App {
                 Screen::Monitor => self.monitor_key(code, req),
                 Screen::Hosts => move_table(&mut self.hosts_state, code, self.hosts.len()),
                 Screen::Maintenance => self.maint_key(code),
-                Screen::Dashboard => {}
+                // Terminal ditangani langsung di event_loop (encode_key), bukan di
+                // sini. Dashboard tak punya tombol khusus.
+                Screen::Dashboard | Screen::Terminal => {}
             },
         }
     }
@@ -423,6 +425,15 @@ impl App {
             KeyCode::Char('U') => self.open_config_form(false, req),
             KeyCode::Char('B') => self.open_config_form(true, req),
             KeyCode::Char('E') => self.start_env_edit(),
+            KeyCode::Char('t') => {
+                // Terminal ke container: event_loop yang mengerjakannya (ia yang
+                // memegang terminal untuk serah-terima raw mode).
+                if let Some((project, service, _)) = self.selected_row() {
+                    self.terminal_req = Some((project, service));
+                } else {
+                    self.status = "Pilih sebuah service dulu".into();
+                }
+            }
             KeyCode::Char('g') => {
                 self.form = Some(Form::new(
                     FormKind::LogSearch,

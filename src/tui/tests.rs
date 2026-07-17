@@ -1122,3 +1122,60 @@ fn visible_follows_switch_and_multi_tag() {
     assert!(!shown(&f).contains(&"Path"));
     assert!(!shown(&f).contains(&"Branch"));
 }
+
+#[test]
+fn encode_key_matches_xterm() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let k = |code, m| super::terminal::encode_key(KeyEvent::new(code, m));
+    // Char biasa, Enter, Backspace, arrow, dan Ctrl-C (0x03).
+    assert_eq!(k(KeyCode::Char('a'), KeyModifiers::NONE), Some(vec![b'a']));
+    assert_eq!(k(KeyCode::Enter, KeyModifiers::NONE), Some(vec![b'\r']));
+    assert_eq!(k(KeyCode::Backspace, KeyModifiers::NONE), Some(vec![0x7f]));
+    assert_eq!(
+        k(KeyCode::Up, KeyModifiers::NONE),
+        Some(vec![0x1b, b'[', b'A'])
+    );
+    assert_eq!(
+        k(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        Some(vec![0x03])
+    );
+}
+
+/// Round-trip WebSocket terminal LEWAT KODE RUST (bukan python): ws_url +
+/// spawn_session + vt100. Butuh server hidup dan container zzz-emb/zzz-redis
+/// yang berjalan, jadi #[ignore] — jalankan manual dengan `--ignored`.
+#[test]
+#[ignore = "live: butuh zzz-emb/zzz-redis berjalan di server"]
+fn terminal_ws_roundtrip_live() {
+    use super::worker::Resp;
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+
+    let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
+    let srv = cfg.default().expect("ada server default");
+    let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
+    let url = super::terminal::ws_url(&client, "zzz-emb", "zzz-redis").expect("ws_url");
+
+    let (out_tx, out_rx) = channel::<Resp>();
+    let (in_tx, in_rx) = channel::<super::terminal::TermMsg>();
+    super::terminal::spawn_session(url, out_tx, in_rx, 80, 24);
+    std::thread::sleep(Duration::from_millis(900));
+    in_tx
+        .send(super::terminal::TermMsg::Input(
+            "echo RUSTPROOF_331\n".into(),
+        ))
+        .unwrap();
+
+    let mut parser = vt100::Parser::new(24, 80, 0);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if let Ok(Resp::TermOutput(b)) = out_rx.recv_timeout(Duration::from_millis(400)) {
+            parser.process(&b);
+        }
+        if parser.screen().contents().contains("RUSTPROOF_331") {
+            break; // shell mengeksekusi dan output kembali lewat kode Rust
+        }
+        assert!(Instant::now() < deadline, "tak ada output berisi bukti");
+    }
+    drop(in_tx); // tutup sesi
+}
