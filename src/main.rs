@@ -67,6 +67,8 @@ enum Command {
         /// Shell target; kosongkan untuk menebak dari $SHELL
         shell: Option<Shell>,
     },
+    /// Cetak man page (roff) ke stdout
+    Man,
     /// Menu interaktif
     Menu,
 }
@@ -367,6 +369,15 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
             Ok(())
         }
 
+        // Sama seperti completions: tak menyentuh jaringan maupun config.
+        Some(Command::Man) => {
+            let mut out = Vec::new();
+            clap_mangen::Man::new(Cli::command()).render(&mut out)?;
+            use std::io::Write;
+            std::io::stdout().write_all(&out)?;
+            Ok(())
+        }
+
         None | Some(Command::Menu) => {
             if cfg.all().is_empty() {
                 println!("Belum ada server. Jalankan: easypanel server add");
@@ -649,6 +660,27 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn man_page_renders_with_the_sections_man_expects() {
+        let mut out = Vec::new();
+        clap_mangen::Man::new(Cli::command())
+            .render(&mut out)
+            .expect("man page harus ter-render");
+        let roff = String::from_utf8(out).expect("man page harus UTF-8");
+        // Tanpa section ini, `man` menampilkan halaman yang rusak/kosong.
+        for section in ["NAME", "SYNOPSIS", "DESCRIPTION", "OPTIONS"] {
+            assert!(
+                roff.contains(section),
+                "man page tak punya section {section}"
+            );
+        }
+        // Subcommand nyata harus ikut, kalau tidak halamannya tak berguna.
+        assert!(
+            roff.contains("maintenance"),
+            "man page tak memuat subcommand"
+        );
     }
 
     #[test]

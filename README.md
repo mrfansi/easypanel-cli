@@ -38,6 +38,16 @@ easypanel completions fish > ~/.config/fish/completions/easypanel.fish
 `$SHELL`. `install.sh` installs zsh/bash/fish completions automatically when it can
 find the right directory.
 
+### Man page
+
+```bash
+easypanel man > ~/.local/share/man/man1/easypanel.1
+man easypanel
+```
+
+Release tarballs ship `easypanel.1` alongside the binary, and `install.sh` installs it
+when it finds a writable `man1` directory.
+
 ## Configure
 
 Credentials live in `~/.config/easypanel/servers.json`, mode `0600`.

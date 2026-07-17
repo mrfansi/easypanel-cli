@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-17
+
+### Added
+
+- **Man page** — `easypanel man` prints roff to stdout. Release tarballs now ship
+  `easypanel.1` next to the binary, and `install.sh` installs it into the first
+  writable `man1` directory it finds. Verified by actually rendering it with `man`,
+  not by counting bytes: NAME, SYNOPSIS, DESCRIPTION, OPTIONS, SUBCOMMANDS and
+  VERSION all appear.
+
+### Fixed
+
+- **Release packaging could have shipped an empty man page.** `> easypanel.1`
+  creates the file *before* the binary runs, so a cross-compiled target that cannot
+  execute would still leave a zero-byte file behind, and a `-f` check would happily
+  pack it. Now checked with `-s`, and skipped loudly when empty.
+
 ## [0.3.0] — 2026-07-17
 
 ### Added
@@ -94,7 +111,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.4.0
 [0.3.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.1.0

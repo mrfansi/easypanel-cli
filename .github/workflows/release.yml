@@ -33,7 +33,23 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
       - name: Package
-        run: tar -C target/${{ matrix.target }}/release -czf easypanel-${{ matrix.target }}.tar.gz easypanel
+        # Man page ikut di tarball supaya paket biner setara dengan `cargo install`.
+        # Dibuat oleh biner yang baru dibangun; untuk target silang biner itu tak
+        # bisa dijalankan, jadi man page dilewati alih-alih menggagalkan rilis.
+        run: |
+          cd target/${{ matrix.target }}/release
+          # `> file` membuat filenya SEBELUM biner jalan, jadi kegagalan tetap
+          # meninggalkan file kosong. -s (bukan -f) yang membedakan man page
+          # sungguhan dari cangkang nol byte; tanpa ini rilis mengirim man page
+          # kosong dan tak ada yang tahu sampai ada yang membukanya.
+          ./easypanel man > easypanel.1 2>/dev/null || true
+          if [ -s easypanel.1 ]; then
+            tar -czf "$GITHUB_WORKSPACE/easypanel-${{ matrix.target }}.tar.gz" easypanel easypanel.1
+          else
+            echo "man page dilewati (biner tak bisa dijalankan di runner ini)"
+            rm -f easypanel.1
+            tar -czf "$GITHUB_WORKSPACE/easypanel-${{ matrix.target }}.tar.gz" easypanel
+          fi
       # Selalu simpan hasilnya, supaya run manual tetap bisa diperiksa binernya.
       - uses: actions/upload-artifact@v4
         with:
