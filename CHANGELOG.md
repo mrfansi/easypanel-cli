@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.1] — 2026-07-18
+
+### Changed
+
+- **The status bar is a single line again — just the message.** The keybinding line was
+  removed: the full, always-current shortcut list already lives in the `?` help overlay, so
+  repeating it at the bottom was redundant and cost a row of the table. The status/result
+  message (with its spinner and error colouring) stays; the filter prompt still shows how to
+  apply or cancel while you type. Removed the now-dead width-fitting helper and its test.
+
 ## [0.30.0] — 2026-07-18
 
 ### Added

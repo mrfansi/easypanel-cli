@@ -290,38 +290,6 @@ fn replica_stats_distinguish_down_from_stopped() {
 }
 
 #[test]
-fn status_keys_fit_the_width_and_never_drop_help() {
-    let keys = screen_keys(Screen::Projects);
-
-    // Sempit: tombol layar menyerah, tapi "? bantuan · q keluar" TETAP ada dan
-    // baris tak melebihi lebar (tak meluber ke luar pane).
-    let narrow = fit_status_keys(keys, 30);
-    assert!(
-        narrow.contains("? bantuan") && narrow.contains("q keluar"),
-        "escape-hatch harus selalu tampil"
-    );
-    // render_status menggambar baris ini sebagai " {keys}", jadi ukur yang itu.
-    let rendered = format!(" {narrow}");
-    assert!(rendered.chars().count() <= 30, "baris meluber: {narrow:?}");
-
-    // Sangat sempit: tetap tak panik, minimal tail muncul.
-    let tiny = fit_status_keys(keys, 12);
-    assert!(tiny.contains("? bantuan"));
-
-    // Makin lebar makin banyak tombol muat (monotonik), tak pernah lebih sedikit.
-    let wide = fit_status_keys(keys, 900);
-    let count = |s: &str| s.matches(" · ").count();
-    assert!(count(&wide) >= count(&narrow));
-    // Cukup lebar -> tombol terakhir layar pun ikut (semua muat).
-    assert!(
-        wide.contains("hapus project"),
-        "layar sangat lebar harusnya memuat semua tombol"
-    );
-    // Menyerah di batas "·", bukan tengah kata: tak ada spasi ganda dari potongan.
-    assert!(!narrow.contains("  "));
-}
-
-#[test]
 fn context_menu_items_match_screen_and_selection() {
     let mut app = App::new("t".into(), vec![]);
     // Layar Domains tanpa baris terpilih -> tak ada menu.
