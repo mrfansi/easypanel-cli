@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] — 2026-07-18
+
+### Changed
+
+- **Service actions are now grouped into menus instead of ~25 scattered single
+  keys.** Related actions live under one entry: `e` → Env (view / edit / replace /
+  toggle .env file), `o` → Networking (domain / ports / redirects / basic auth),
+  `u` → Build & source (source / build / auto-deploy / resources), `m` → Storage
+  (mounts / backups), `d` → Lifecycle (deploy / restart / stop / start), `t` →
+  Shell (terminal / DB shell), `x` → Danger (delete service / project). This is
+  the fix for the UX complaint that having a separate shortcut for every action
+  (e.g. four just for env) is confusing and inefficient. The old leaf keys
+  (`E`/`w`/`.`/`P`/`f`/`F`/`H`/`U`/`B`/`A`/`L`/`M`/`R`/`S`/`T`/`X`/`y`) still work
+  for anyone with the muscle memory.
+- **Menus navigate with arrow keys.** `↑↓` move, `→` enters a submenu (or runs the
+  item), `←` goes back to the parent menu (or closes at the top level), `Enter`
+  runs, `Esc` closes. Works from both the keyboard openers and right-click.
+
+### Internal
+
+- Menu items now carry their action as a function, so the menu is a single
+  definition of each action rather than simulating a key press — this also removes
+  the previous drift where the right-click menu silently omitted ~13 actions the
+  keyboard had.
+
 ## [0.36.0] — 2026-07-18
 
 ### Added

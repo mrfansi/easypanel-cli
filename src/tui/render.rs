@@ -58,42 +58,34 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("P", "jadikan primary"),
             Key("↑↓", "pilih"),
         ],
+        // Aksi terkait dikelompokkan di MENU (satu tombol → daftar), bukan 25 tombol
+        // lepas. Di dalam menu: ↑↓ pilih, Enter jalankan, Esc tutup. Tombol leaf lama
+        // (E/w/./P/f/F/H/U/B/A/L/M/R/S/T/X) tetap berfungsi bila sudah hafal.
         Screen::Projects => &[
             Key("/", "cari service"),
-            Key("g", "cari kata di log SEMUA service"),
-            Key("t", "terminal ke dalam container"),
-            Key("y", "shell DB (login otomatis: mysql/postgres/mongo/redis)"),
             Key("Enter", "logs"),
-            Key("n", "service baru"),
-            Key("x", "hapus service"),
-            Key("d", "deploy"),
-            Key("R", "restart"),
-            Key("S", "stop"),
-            Key("T", "start"),
-            Key("e", "lihat env"),
-            Key("p", "lihat ports"),
-            Key("m", "lihat mounts (angka = hapus)"),
-            Key("M", "tambah mount (volume/bind/file)"),
-            Key("o", "kelola domain (buka tab Domains ter-filter)"),
-            Key("b", "lihat backups"),
-            Key("u", "lihat source & build"),
+            Key("e", "menu Env — lihat / edit / ganti / file .env"),
+            Key("o", "menu Jaringan — domain / port / redirect / auth"),
             Key(
-                "E",
-                "edit env di $EDITOR (ubah sebagian; env sekarang dimuat)",
+                "u",
+                "menu Build & source — source / build / auto / resource",
             ),
-            Key("w", "ganti SELURUH env (editor kosong; tempel env baru)"),
-            Key(".", "on/off file .env (tulis env sbg file; service app)"),
-            Key("A", "auto deploy on/off (source GitHub)"),
-            Key("P", "tambah port"),
-            Key("U", "atur source (service app)"),
-            Key("B", "atur build (service app)"),
-            Key("L", "atur limit resource (CPU/memory)"),
-            Key("H", "basic auth (proteksi user/password, service web)"),
-            Key("f", "lihat redirects (angka = hapus)"),
-            Key("F", "tambah redirect (regex → replacement)"),
+            Key("m", "menu Penyimpanan — mounts / backups"),
+            Key("d", "menu Siklus hidup — deploy / restart / stop / start"),
+            Key("t", "menu Shell — terminal / DB shell"),
+            Key("x", "menu Bahaya — hapus service / project"),
+            Key("p", "lihat ports"),
+            Key("b", "lihat backups"),
+            Key("y", "shell DB (login otomatis)"),
             Key("c", "clone service (config, bukan data)"),
+            Key("g", "cari kata di log SEMUA service"),
+            Key("n", "service baru"),
             Key("N", "project baru"),
-            Key("X", "hapus project"),
+            Key("↑↓ / klik kanan", "pilih baris / buka menu aksi"),
+            Key(
+                "di menu: ↑↓ →←",
+                "→ masuk submenu · ← kembali · Enter jalankan · Esc tutup",
+            ),
         ],
         Screen::Viewer => &[
             Key("↑↓ / PgUp/PgDn", "scroll (melepas ikut-baris-terakhir)"),
@@ -179,7 +171,7 @@ pub(super) fn render_menu(f: &mut Frame, app: &mut App) {
     let w = (menu
         .items
         .iter()
-        .map(|(l, _)| l.chars().count())
+        .map(|it| it.label.chars().count())
         .max()
         .unwrap_or(6) as u16
         + 4)
@@ -197,7 +189,7 @@ pub(super) fn render_menu(f: &mut Frame, app: &mut App) {
     let items: Vec<ListItem> = menu
         .items
         .iter()
-        .map(|(l, _)| ListItem::new(format!(" {l}")))
+        .map(|it| ListItem::new(format!(" {}", it.label)))
         .collect();
     let list = List::new(items)
         .block(

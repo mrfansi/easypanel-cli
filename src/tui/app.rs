@@ -238,11 +238,38 @@ pub(super) struct App {
     pub(super) menu: Option<Menu>,
 }
 
-/// Menu konteks klik-kanan: tiap item mengeksekusi aksi yang SAMA seperti sebuah
-/// tombol, jadi tak ada jalur aksi kedua yang bisa menyimpang dari keyboard.
+/// Aksi sebuah item menu: fungsi yang dijalankan saat item dipilih.
+///
+/// Closure TANPA tangkapan (parameter di-bake sebagai literal, mis. `View::Env`)
+/// otomatis jadi `fn`, jadi tak perlu Box. Menu memegang aksinya langsung — bukan
+/// mensimulasikan tombol — supaya satu tombol grup (mis. `e` → menu Env) tak
+/// memicu dirinya sendiri, dan menu menjadi SATU definisi aksi.
+pub(super) type MenuRun = fn(&mut App, &Sender<Req>);
+
+/// Satu item menu: label yang ditampilkan + aksi saat dipilih.
+pub(super) struct MenuItem {
+    pub(super) label: String,
+    pub(super) run: MenuRun,
+}
+
+impl MenuItem {
+    pub(super) fn new(label: impl Into<String>, run: MenuRun) -> Self {
+        Self {
+            label: label.into(),
+            run,
+        }
+    }
+}
+
+/// Menu konteks/aksi: popup daftar item; memilih item menjalankan `run`-nya, yang
+/// bisa pula membuka submenu (item ber-tanda ▸). Dibuka lewat klik-kanan atau
+/// tombol grup di keyboard.
 pub(super) struct Menu {
-    pub(super) items: Vec<(String, KeyCode)>,
+    pub(super) items: Vec<MenuItem>,
     pub(super) state: ListState,
+    /// Menu induk saat ini submenu (mis. Env dibuka dari menu service). `←`
+    /// kembali ke sini; None = menu teratas, `←` menutup.
+    pub(super) parent: Option<Box<Menu>>,
     /// Posisi kursor saat menu dibuka (sudut kiri-atas menu, sebelum dijepit layar).
     pub(super) col: u16,
     pub(super) row: u16,
@@ -359,50 +386,189 @@ impl App {
         }
     }
 
-    /// Item menu konteks untuk baris yang disorot di layar aktif. Kosong = tak ada
-    /// menu (mis. tak ada baris terpilih, atau layar tanpa aksi baris).
-    pub(super) fn context_items(&self) -> Vec<(String, KeyCode)> {
+    /// Menu aksi untuk baris yang disorot di layar aktif (dibuka klik-kanan atau
+    /// Enter). Kosong = tak ada baris terpilih / layar tanpa aksi baris.
+    ///
+    /// Di Projects ini adalah menu bertingkat: aksi terkait dikelompokkan
+    /// (Env/Jaringan/Build/…) supaya tak berserak jadi 25 tombol lepas.
+    pub(super) fn context_items(&self) -> Vec<MenuItem> {
         match self.screen {
-            Screen::Projects if self.selected_row().is_some() => {
-                let mut items = vec![
-                    ("Logs".into(), KeyCode::Enter),
-                    ("Terminal".into(), KeyCode::Char('t')),
-                ];
-                // Shell DB (login otomatis) hanya relevan untuk service database.
-                if matches!(
-                    self.selected_row().map(|(_, _, t)| t).as_deref(),
-                    Some("mysql" | "mariadb" | "postgres" | "mongo" | "redis")
-                ) {
-                    items.push(("DB shell (login otomatis)".into(), KeyCode::Char('y')));
-                }
-                items.extend([
-                    ("Deploy".into(), KeyCode::Char('d')),
-                    ("Restart".into(), KeyCode::Char('R')),
-                    ("Stop".into(), KeyCode::Char('S')),
-                    ("Start".into(), KeyCode::Char('T')),
-                    ("Lihat env".into(), KeyCode::Char('e')),
-                    ("Edit env (sebagian)".into(), KeyCode::Char('E')),
-                    ("Ganti seluruh env".into(), KeyCode::Char('w')),
-                    ("Toggle file .env".into(), KeyCode::Char('.')),
-                    ("Domain".into(), KeyCode::Char('o')),
-                    ("Mount baru".into(), KeyCode::Char('M')),
-                    ("Redirect baru".into(), KeyCode::Char('F')),
-                    ("Basic auth".into(), KeyCode::Char('H')),
-                    ("Resource".into(), KeyCode::Char('L')),
-                    ("Clone".into(), KeyCode::Char('c')),
-                    ("Hapus".into(), KeyCode::Char('x')),
-                ]);
-                items
-            }
+            Screen::Projects if self.selected_row().is_some() => self.service_menu(),
             Screen::Domains if self.domains_state.selected().is_some() => vec![
-                ("Edit".into(), KeyCode::Char('e')),
-                ("Jadikan primary".into(), KeyCode::Char('P')),
-                ("Hapus".into(), KeyCode::Char('x')),
+                MenuItem::new("Edit", |a, r| a.on_key(KeyCode::Char('e'), r)),
+                MenuItem::new("Jadikan primary", |a, r| a.on_key(KeyCode::Char('P'), r)),
+                MenuItem::new("Hapus", |a, r| a.on_key(KeyCode::Char('x'), r)),
             ],
             Screen::Actions if self.selected_action_id().is_some() => {
-                vec![("View detail".into(), KeyCode::Enter)]
+                vec![MenuItem::new("View detail", |a, r| {
+                    a.on_key(KeyCode::Enter, r)
+                })]
             }
             _ => vec![],
+        }
+    }
+
+    /// Menu aksi service (top-level): aksi umum + submenu per kelompok. Item ber-▸
+    /// membuka submenu-nya. Aksi yang tombolnya di-repurpose jadi opener menu
+    /// (Env `e`, Jaringan `o`, Build `u`, Penyimpanan `m`, Siklus `d`, Shell `t`,
+    /// Bahaya `x`) memanggil method langsung; sisanya lewat `on_key` tombol leaf-nya
+    /// yang masih hidup — tak ada jalur aksi kedua yang bisa menyimpang.
+    pub(super) fn service_menu(&self) -> Vec<MenuItem> {
+        vec![
+            MenuItem::new("Logs", |a, r| a.open_view(View::Logs, r)),
+            MenuItem::new("Env ▸", |a, _| {
+                let m = a.env_menu();
+                a.open_menu(m);
+            }),
+            MenuItem::new("Jaringan ▸", |a, _| {
+                let m = a.net_menu();
+                a.open_menu(m);
+            }),
+            MenuItem::new("Build & source ▸", |a, _| {
+                let m = a.build_menu();
+                a.open_menu(m);
+            }),
+            MenuItem::new("Penyimpanan ▸", |a, _| {
+                let m = a.store_menu();
+                a.open_menu(m);
+            }),
+            MenuItem::new("Siklus hidup ▸", |a, _| {
+                let m = a.life_menu();
+                a.open_menu(m);
+            }),
+            MenuItem::new("Shell ▸", |a, _| {
+                let m = a.shell_menu();
+                a.open_menu(m);
+            }),
+            MenuItem::new("Clone", |a, r| a.on_key(KeyCode::Char('c'), r)),
+            MenuItem::new("Bahaya ▸", |a, _| {
+                let m = a.danger_menu();
+                a.open_menu(m);
+            }),
+        ]
+    }
+
+    fn is_selected_type(&self, kinds: &[&str]) -> bool {
+        self.selected_row()
+            .map(|(_, _, t)| kinds.contains(&t.as_str()))
+            .unwrap_or(false)
+    }
+
+    pub(super) fn env_menu(&self) -> Vec<MenuItem> {
+        let mut v = vec![
+            MenuItem::new("Lihat env", |a, r| a.open_view(View::Env, r)),
+            MenuItem::new("Edit env (sebagian)", |a, r| {
+                a.on_key(KeyCode::Char('E'), r)
+            }),
+            MenuItem::new("Ganti seluruh env", |a, r| a.on_key(KeyCode::Char('w'), r)),
+        ];
+        // File .env hanya untuk service app (lihat handler `.`).
+        if self.is_selected_type(&["app"]) {
+            v.push(MenuItem::new("Toggle file .env", |a, r| {
+                a.on_key(KeyCode::Char('.'), r)
+            }));
+        }
+        v
+    }
+
+    pub(super) fn net_menu(&self) -> Vec<MenuItem> {
+        vec![
+            MenuItem::new("Domain", |a, r| a.open_service_domains(r)),
+            MenuItem::new("Lihat ports", |a, r| a.on_key(KeyCode::Char('p'), r)),
+            MenuItem::new("Tambah port", |a, r| a.on_key(KeyCode::Char('P'), r)),
+            MenuItem::new("Lihat redirects", |a, r| a.on_key(KeyCode::Char('f'), r)),
+            MenuItem::new("Tambah redirect", |a, r| a.on_key(KeyCode::Char('F'), r)),
+            MenuItem::new("Basic auth", |a, r| a.on_key(KeyCode::Char('H'), r)),
+        ]
+    }
+
+    pub(super) fn build_menu(&self) -> Vec<MenuItem> {
+        vec![
+            MenuItem::new("Lihat source & build", |a, r| a.open_view(View::Source, r)),
+            MenuItem::new("Atur source", |a, r| a.on_key(KeyCode::Char('U'), r)),
+            MenuItem::new("Atur build", |a, r| a.on_key(KeyCode::Char('B'), r)),
+            MenuItem::new("Auto deploy on/off", |a, r| a.on_key(KeyCode::Char('A'), r)),
+            MenuItem::new("Limit resource", |a, r| a.on_key(KeyCode::Char('L'), r)),
+        ]
+    }
+
+    pub(super) fn store_menu(&self) -> Vec<MenuItem> {
+        vec![
+            MenuItem::new("Lihat mounts", |a, r| a.open_view(View::Mounts, r)),
+            MenuItem::new("Tambah mount", |a, r| a.on_key(KeyCode::Char('M'), r)),
+            MenuItem::new("Backups", |a, r| a.on_key(KeyCode::Char('b'), r)),
+        ]
+    }
+
+    pub(super) fn life_menu(&self) -> Vec<MenuItem> {
+        vec![
+            MenuItem::new("Deploy", |a, _| a.ask_action("deploy")),
+            MenuItem::new("Restart", |a, _| a.ask_action("restart")),
+            MenuItem::new("Stop", |a, _| a.ask_action("stop")),
+            MenuItem::new("Start", |a, _| a.ask_action("start")),
+        ]
+    }
+
+    pub(super) fn shell_menu(&self) -> Vec<MenuItem> {
+        let mut v = vec![MenuItem::new("Terminal", |a, _| a.start_terminal())];
+        if self.is_selected_type(&["mysql", "mariadb", "postgres", "mongo", "redis"]) {
+            v.push(MenuItem::new("DB shell (login otomatis)", |a, _| {
+                a.start_db_shell()
+            }));
+        }
+        v
+    }
+
+    pub(super) fn danger_menu(&self) -> Vec<MenuItem> {
+        vec![
+            MenuItem::new("Hapus service", |a, _| a.ask_action("destroy")),
+            MenuItem::new("Hapus project", |a, r| a.on_key(KeyCode::Char('X'), r)),
+        ]
+    }
+
+    /// Buka menu di dekat tabel (untuk menu yang dibuka lewat keyboard). Menu yang
+    /// dibuka klik-kanan memakai posisi kursor (lihat on_right_click).
+    pub(super) fn open_menu(&mut self, items: Vec<MenuItem>) {
+        if items.is_empty() {
+            return;
+        }
+        let mut state = ListState::default();
+        state.select(Some(0));
+        let a = self.table_area;
+        self.menu = Some(Menu {
+            items,
+            state,
+            parent: None,
+            col: a.x.saturating_add(4),
+            row: a.y.saturating_add(2),
+            rect: Rect::default(),
+        });
+    }
+
+    /// Buka terminal shell ke container service terpilih (event_loop yang mengambil
+    /// alih terminal). None = shell biasa.
+    pub(super) fn start_terminal(&mut self) {
+        match self.selected_row() {
+            Some((project, service, _)) => self.terminal_req = Some((project, service, None)),
+            None => self.status = "Pilih sebuah service dulu".into(),
+        }
+    }
+
+    /// Shell database dengan login otomatis (mysql/mariadb/postgres/mongo/redis).
+    pub(super) fn start_db_shell(&mut self) {
+        match self.selected_row() {
+            Some((project, service, stype))
+                if matches!(
+                    stype.as_str(),
+                    "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
+                ) =>
+            {
+                self.terminal_req = Some((project, service, Some(stype)));
+            }
+            Some((_, _, stype)) => {
+                self.status = format!("Shell DB hanya untuk service database (ini {stype})");
+            }
+            None => self.status = "Pilih sebuah service dulu".into(),
         }
     }
 

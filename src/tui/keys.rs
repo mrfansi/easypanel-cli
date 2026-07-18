@@ -294,6 +294,7 @@ impl App {
             self.menu = Some(Menu {
                 items,
                 state,
+                parent: None,
                 col,
                 row,
                 rect: ratatui::layout::Rect::default(),
@@ -339,7 +340,12 @@ impl App {
                 let last = menu.items.len().saturating_sub(1);
                 menu.state.select(Some((i + 1).min(last)));
             }
-            KeyCode::Enter => self.activate_menu(req),
+            // → masuk submenu / jalankan (sama seperti Enter); ← kembali ke menu
+            // induk, atau tutup kalau sudah di menu teratas.
+            KeyCode::Enter | KeyCode::Right => self.activate_menu(req),
+            KeyCode::Left => {
+                self.menu = self.menu.take().and_then(|m| m.parent).map(|p| *p);
+            }
             _ => {}
         }
     }
@@ -378,18 +384,23 @@ impl App {
         }
     }
 
-    /// Jalankan item menu terpilih: mengeksekusi tombol yang SAMA seperti keyboard,
-    /// jadi tak ada jalur aksi kedua yang bisa menyimpang.
+    /// Jalankan item menu terpilih (fungsi aksinya). Item ber-▸ membuka submenu.
     fn activate_menu(&mut self, req: &Sender<Req>) {
-        let key = self.menu.as_ref().and_then(|menu| {
+        let run = self.menu.as_ref().and_then(|menu| {
             menu.state
                 .selected()
                 .and_then(|i| menu.items.get(i))
-                .map(|(_, k)| *k)
+                .map(|it| it.run)
         });
-        self.menu = None;
-        if let Some(k) = key {
-            self.on_key(k, req);
+        // Lepas menu kini; `run` boleh membuka submenu (item ▸) dengan set self.menu.
+        let parent = self.menu.take();
+        if let Some(run) = run {
+            run(self, req);
+        }
+        // Kalau `run` membuka submenu, catat menu tadi sebagai induknya supaya `←`
+        // bisa kembali. Kalau `run` aksi leaf (menu tetap None), induk dibuang.
+        if let (Some(child), Some(parent)) = (self.menu.as_mut(), parent) {
+            child.parent = Some(Box::new(parent));
         }
     }
 
@@ -763,12 +774,27 @@ impl App {
     pub(super) fn services_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
             KeyCode::Enter => self.open_view(View::Logs, req),
-            KeyCode::Char('e') => self.open_view(View::Env, req),
+            // Tujuh huruf ini membuka MENU kelompok (bukan satu aksi) — inti
+            // konsolidasi UX: aksi terkait tak lagi berserak jadi tombol lepas.
+            // Tombol leaf-nya (E/w/./p/P/f/F/H/b/U/B/A/L/M/y/R/S/T/X) tetap hidup.
+            KeyCode::Char('e') => {
+                let m = self.env_menu();
+                self.open_menu(m);
+            }
+            KeyCode::Char('o') => {
+                let m = self.net_menu();
+                self.open_menu(m);
+            }
+            KeyCode::Char('u') => {
+                let m = self.build_menu();
+                self.open_menu(m);
+            }
+            KeyCode::Char('m') => {
+                let m = self.store_menu();
+                self.open_menu(m);
+            }
             KeyCode::Char('p') => self.open_view(View::Ports, req),
-            KeyCode::Char('m') => self.open_view(View::Mounts, req),
-            KeyCode::Char('o') => self.open_service_domains(req),
             KeyCode::Char('b') => self.open_view(View::Backups, req),
-            KeyCode::Char('u') => self.open_view(View::Source, req),
             KeyCode::Char('A') => self.toggle_auto_deploy(req),
             KeyCode::Char('U') => self.open_config_form(false, req),
             KeyCode::Char('B') => self.open_config_form(true, req),
@@ -797,30 +823,12 @@ impl App {
                 None => self.status = "Pilih sebuah service dulu".into(),
             },
             KeyCode::Char('t') => {
-                // Terminal ke container: event_loop yang mengerjakannya (ia yang
-                // memegang terminal untuk serah-terima raw mode). None = shell biasa.
-                if let Some((project, service, _)) = self.selected_row() {
-                    self.terminal_req = Some((project, service, None));
-                } else {
-                    self.status = "Pilih sebuah service dulu".into();
-                }
+                let m = self.shell_menu();
+                self.open_menu(m);
             }
-            // Shell database: login otomatis ke klien DB pakai kredensial tersimpan
-            // (mysql/mariadb/postgres/mongo/redis). Fitur yang tak ada di dashboard web.
-            KeyCode::Char('y') => match self.selected_row() {
-                Some((project, service, stype))
-                    if matches!(
-                        stype.as_str(),
-                        "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
-                    ) =>
-                {
-                    self.terminal_req = Some((project, service, Some(stype)));
-                }
-                Some((_, _, stype)) => {
-                    self.status = format!("Shell DB hanya untuk service database (ini {stype})");
-                }
-                None => self.status = "Pilih sebuah service dulu".into(),
-            },
+            // Shell DB (login otomatis) tetap punya tombol langsung; juga tersedia
+            // di menu Shell (`t`). Fitur yang tak ada di dashboard web.
+            KeyCode::Char('y') => self.start_db_shell(),
             KeyCode::Char('g') => {
                 self.form = Some(Form::new(
                     FormKind::LogSearch,
@@ -840,7 +848,10 @@ impl App {
                 }
             }
             KeyCode::Char('n') => self.new_service_form(req),
-            KeyCode::Char('x') => self.ask_action("destroy"),
+            KeyCode::Char('x') => {
+                let m = self.danger_menu();
+                self.open_menu(m);
+            }
             // Panel Projects sudah tak ada, tapi project tetap harus bisa
             // dibuat/dihapus dari TUI.
             KeyCode::Char('N') => {
@@ -861,7 +872,10 @@ impl App {
                     });
                 }
             }
-            KeyCode::Char('d') => self.ask_action("deploy"),
+            KeyCode::Char('d') => {
+                let m = self.life_menu();
+                self.open_menu(m);
+            }
             KeyCode::Char('R') => self.ask_action("restart"),
             KeyCode::Char('S') => self.ask_action("stop"),
             KeyCode::Char('T') => self.ask_action("start"),

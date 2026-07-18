@@ -447,10 +447,71 @@ fn context_menu_items_match_screen_and_selection() {
     app.domains_state.select(Some(0));
     let items = app.context_items();
     assert_eq!(items.len(), 3);
-    assert!(items.iter().any(|(l, _)| l == "Hapus"));
+    assert!(items.iter().any(|i| i.label == "Hapus"));
     // Layar tanpa aksi baris (Dashboard) -> selalu kosong.
     app.screen = Screen::Dashboard;
     assert!(app.context_items().is_empty());
+}
+
+#[test]
+fn service_menu_groups_actions_and_respects_type() {
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["p".into()];
+    app.all_services = vec![
+        json!({ "projectName": "p", "name": "web", "type": "app" }),
+        json!({ "projectName": "p", "name": "db", "type": "mysql" }),
+    ];
+    app.screen = Screen::Projects;
+    // visible_rows terurut nama: [header "p", "db"(mysql), "web"(app)].
+    let has = |v: &[super::app::MenuItem], s: &str| v.iter().any(|i| i.label == s);
+
+    app.services_table.select(Some(2)); // web (app)
+    let top = app.service_menu();
+    let top: Vec<&str> = top.iter().map(|i| i.label.as_str()).collect();
+    assert!(top.contains(&"Env ▸") && top.contains(&"Jaringan ▸") && top.contains(&"Bahaya ▸"));
+    // app: file .env bisa di-toggle; shell TANPA DB shell.
+    assert!(has(&app.env_menu(), "Toggle file .env"));
+    assert!(!app
+        .shell_menu()
+        .iter()
+        .any(|i| i.label.contains("DB shell")));
+
+    app.services_table.select(Some(1)); // db (mysql)
+                                        // db: TANPA toggle .env; shell PUNYA DB shell (login otomatis).
+    assert!(!has(&app.env_menu(), "Toggle file .env"));
+    assert!(app
+        .shell_menu()
+        .iter()
+        .any(|i| i.label.contains("DB shell")));
+}
+
+#[test]
+fn menu_arrows_open_drill_and_go_back() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["p".into()];
+    app.all_services = vec![json!({ "projectName": "p", "name": "web", "type": "app" })];
+    app.screen = Screen::Projects;
+    app.services_table.select(Some(1)); // web
+
+    // Klik kanan membuka menu service (top-level), lalu → masuk submenu Env; ←
+    // mengembalikan ke menu service (induk), bukan menutup.
+    app.on_key(KeyCode::Char('e'), &tx); // opener keyboard: langsung menu Env (tanpa induk)
+    assert!(app.menu.is_some());
+    app.on_key(KeyCode::Left, &tx); // teratas → menutup
+    assert!(app.menu.is_none());
+
+    // Drill dua tingkat lewat item ▸ mempertahankan induk untuk ←.
+    let top = app.service_menu();
+    app.open_menu(top);
+    // pilih "Env ▸" (indeks 1) lalu → masuk submenu.
+    app.menu.as_mut().unwrap().state.select(Some(1));
+    app.on_key(KeyCode::Right, &tx);
+    // sekarang di submenu Env; item pertama "Lihat env".
+    assert_eq!(app.menu.as_ref().unwrap().items[0].label, "Lihat env");
+    // ← kembali ke menu service (induk), tidak menutup.
+    app.on_key(KeyCode::Left, &tx);
+    assert_eq!(app.menu.as_ref().unwrap().items[1].label, "Env ▸");
 }
 
 #[test]
@@ -886,13 +947,18 @@ fn every_interactive_screen_documents_its_keys() {
 
 #[test]
 fn help_lists_the_destructive_keys_that_exist() {
-    // Tombol destruktif paling perlu ditemukan sebelum ditekan, bukan sesudah.
-    let projects: Vec<&str> = screen_keys(Screen::Projects).iter().map(|k| k.0).collect();
-    for k in ["x", "X", "d", "R", "S", "T"] {
-        assert!(
-            projects.contains(&k),
-            "'{k}' tak terdokumentasi di Services"
-        );
+    // Tombol destruktif paling perlu ditemukan sebelum ditekan. Kini aksinya ada
+    // di menu grup, jadi opener-nya harus terdokumentasi DAN deskripsinya menyebut
+    // aksi destruktif/lifecycle-nya (hapus/deploy/restart/stop/start).
+    let projects = screen_keys(Screen::Projects);
+    let keys: Vec<&str> = projects.iter().map(|k| k.0).collect();
+    assert!(keys.contains(&"x"), "opener menu Bahaya tak terdokumentasi");
+    assert!(keys.contains(&"d"), "opener menu Siklus tak terdokumentasi");
+    let bahaya = projects.iter().find(|k| k.0 == "x").unwrap().1;
+    assert!(bahaya.contains("hapus"), "menu Bahaya harus menyebut hapus");
+    let siklus = projects.iter().find(|k| k.0 == "d").unwrap().1;
+    for word in ["deploy", "restart", "stop", "start"] {
+        assert!(siklus.contains(word), "menu Siklus harus menyebut '{word}'");
     }
     let maint: Vec<&str> = screen_keys(Screen::Maintenance)
         .iter()
