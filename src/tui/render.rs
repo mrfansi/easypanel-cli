@@ -82,6 +82,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
                 "edit env di $EDITOR (ubah sebagian; env sekarang dimuat)",
             ),
             Key("w", "ganti SELURUH env (editor kosong; tempel env baru)"),
+            Key(".", "on/off file .env (tulis env sbg file; service app)"),
             Key("A", "auto deploy on/off (source GitHub)"),
             Key("P", "tambah port"),
             Key("U", "atur source (service app)"),

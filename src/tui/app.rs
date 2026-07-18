@@ -383,6 +383,7 @@ impl App {
                     ("Lihat env".into(), KeyCode::Char('e')),
                     ("Edit env (sebagian)".into(), KeyCode::Char('E')),
                     ("Ganti seluruh env".into(), KeyCode::Char('w')),
+                    ("Toggle file .env".into(), KeyCode::Char('.')),
                     ("Domain".into(), KeyCode::Char('o')),
                     ("Mount baru".into(), KeyCode::Char('M')),
                     ("Redirect baru".into(), KeyCode::Char('F')),

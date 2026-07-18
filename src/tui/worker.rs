@@ -228,6 +228,14 @@ pub(super) enum Req {
         stype: String,
         env: String,
     },
+    /// Nyalakan/matikan penulisan env sebagai file `.env` (`dotEnvPath`). Baca
+    /// state sekarang lalu balik: kalau sudah aktif → matikan, kalau mati →
+    /// aktifkan di path `.env`.
+    EnvFileToggle {
+        project: String,
+        service: String,
+        stype: String,
+    },
 }
 
 pub(super) enum Resp {
@@ -868,14 +876,54 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
             service,
             stype,
             env,
-        } => match client.call(
-            &format!("services/{stype}"),
-            "updateEnv",
-            json!({ "projectName": project, "serviceName": service, "env": env }),
-        ) {
-            Ok(_) => Resp::Done(format!("Env {project}/{service} disimpan"), Refresh::None),
-            Err(e) => Resp::Err(e.to_string()),
-        },
+        } => {
+            let grp = format!("services/{stype}");
+            let ps = json!({ "projectName": project, "serviceName": service });
+            // updateEnv mengganti SELURUH konfigurasi env; tanpa menyertakan
+            // dotEnvPath yang ada, menyunting env akan diam-diam mematikan file
+            // .env. Baca dulu, pertahankan. Kalau inspect gagal, batalkan alih-alih
+            // menyimpan buta dan menghilangkan file-nya.
+            match client.call(&grp, "inspectService", ps) {
+                Ok(cur) => {
+                    let dot = cur.get("dotEnvPath").and_then(Value::as_str);
+                    match client.call(&grp, "updateEnv", env_body(&project, &service, &env, dot)) {
+                        Ok(_) => {
+                            Resp::Done(format!("Env {project}/{service} disimpan"), Refresh::None)
+                        }
+                        Err(e) => Resp::Err(e.to_string()),
+                    }
+                }
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::EnvFileToggle {
+            project,
+            service,
+            stype,
+        } => {
+            let grp = format!("services/{stype}");
+            let ps = json!({ "projectName": project, "serviceName": service });
+            match client.call(&grp, "inspectService", ps) {
+                Ok(cur) => {
+                    let env = cur.get("env").and_then(Value::as_str).unwrap_or("");
+                    let active = cur.get("dotEnvPath").and_then(Value::as_str).is_some();
+                    // Balik: aktif → matikan (dot None), mati → aktifkan di ".env".
+                    let dot = if active { None } else { Some(".env") };
+                    match client.call(&grp, "updateEnv", env_body(&project, &service, env, dot)) {
+                        Ok(_) => {
+                            let msg = if active {
+                                format!("File .env dimatikan untuk {project}/{service}")
+                            } else {
+                                format!("File .env aktif (.env) untuk {project}/{service}")
+                            };
+                            Resp::Done(msg, Refresh::None)
+                        }
+                        Err(e) => Resp::Err(e.to_string()),
+                    }
+                }
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
         Req::Action {
             project,
             service,
@@ -1160,6 +1208,17 @@ pub(super) fn github_repos(client: &EasypanelClient) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Body updateEnv. `dot` = path file `.env` (`dotEnvPath`): Some untuk menulis env
+/// sebagai file, None untuk tak ada file. Server menolak dotEnvPath null/kosong
+/// (min 1 char), jadi "tak ada file" berarti field-nya diomit sama sekali.
+pub(super) fn env_body(project: &str, service: &str, env: &str, dot: Option<&str>) -> Value {
+    let mut body = json!({ "projectName": project, "serviceName": service, "env": env });
+    if let Some(path) = dot {
+        body["dotEnvPath"] = json!(path);
+    }
+    body
 }
 
 /// Baca redirects sekarang, ubah lewat `transform`, lalu updateRedirects seluruh

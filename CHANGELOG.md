@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-07-18
+
+### Added
+
+- **Toggle file `.env` (`.`)** on app services. Nyalakan/matikan penulisan env
+  sebagai file `.env` di dalam container (`dotEnvPath`) — sebelumnya opsi ini
+  hanya bisa diatur sekali, saat membuat service. Tekan `.` untuk membalik:
+  aktifkan (ditulis ke `.env`) atau matikan. State dibaca lalu dibalik di server,
+  jadi env yang ada tak tersentuh.
+
+### Fixed
+
+- **Menyunting env tak lagi diam-diam mematikan file `.env`.** `updateEnv`
+  mengganti seluruh konfigurasi env; sebelumnya `E`/`w` mengirim env tanpa
+  `dotEnvPath`, sehingga service yang punya file `.env` kehilangan file itu tiap
+  kali env diedit. Sekarang `dotEnvPath` yang ada dipertahankan otomatis.
+
 ## [0.34.0] — 2026-07-18
 
 ### Added

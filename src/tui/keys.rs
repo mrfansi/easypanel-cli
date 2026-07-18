@@ -780,6 +780,22 @@ impl App {
             KeyCode::Char('c') => self.open_clone_form(),
             KeyCode::Char('E') => self.start_env_edit(),
             KeyCode::Char('w') => self.start_env_replace(),
+            // Nyalakan/matikan file .env (dotEnvPath). Hanya service app — hanya di
+            // situ EasyPanel menulis env sebagai file. Baca state & balik di worker.
+            KeyCode::Char('.') => match self.selected_row() {
+                Some((project, service, stype)) if stype == "app" => {
+                    let _ = req.send(Req::EnvFileToggle {
+                        project,
+                        service,
+                        stype,
+                    });
+                    self.status = "Toggle file .env...".into();
+                }
+                Some((_, _, stype)) => {
+                    self.status = format!("File .env hanya untuk service app (ini {stype})");
+                }
+                None => self.status = "Pilih sebuah service dulu".into(),
+            },
             KeyCode::Char('t') => {
                 // Terminal ke container: event_loop yang mengerjakannya (ia yang
                 // memegang terminal untuk serah-terima raw mode). None = shell biasa.

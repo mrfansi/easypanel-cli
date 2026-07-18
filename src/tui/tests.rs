@@ -225,6 +225,18 @@ fn db_command_per_type_uses_stored_credentials() {
 }
 
 #[test]
+fn env_body_omits_dot_env_path_when_disabled() {
+    // Aktif: dotEnvPath ikut. Server menolak null/kosong, jadi "mati" = field diomit.
+    let on = env_body("proj", "svc", "FOO=bar", Some(".env"));
+    assert_eq!(on["env"], json!("FOO=bar"));
+    assert_eq!(on["dotEnvPath"], json!(".env"));
+
+    let off = env_body("proj", "svc", "FOO=bar", None);
+    assert_eq!(off["env"], json!("FOO=bar"));
+    assert!(off.get("dotEnvPath").is_none());
+}
+
+#[test]
 fn redirect_body_builds_shape_and_requires_regex_replacement() {
     let set = |f: &mut Form, label: &str, val: &str| {
         f.fields
