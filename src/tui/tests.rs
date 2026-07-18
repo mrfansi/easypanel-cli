@@ -661,7 +661,7 @@ fn clone_body_drops_identity_and_source_but_keeps_config() {
         "rootPassword": "rpw", "user": "u", "databaseName": "app",
         "source": { "type": "github" }, "configFile": "[mysqld]\nserver-id=2"
     });
-    let body = clone_body(&inspect, "db", "mysql-replica");
+    let body = crate::migrate::service_body(&inspect, "db", "mysql-replica");
     for k in [
         "name",
         "type",
@@ -1988,5 +1988,99 @@ fn palette_says_so_when_nothing_matches() {
         app.status.contains("Nothing matches"),
         "the dead end must be visible, got: {}",
         app.status
+    );
+}
+
+#[test]
+fn form_hints_are_dropped_whole_never_truncated() {
+    use super::render::fit_hints;
+    let parts: Vec<String> = ["[Enter] save", "[Esc] cancel", "[Tab] move field"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    // Wide enough for everything.
+    assert_eq!(
+        fit_hints(&parts, 80),
+        "[Enter] save  [Esc] cancel  [Tab] move field"
+    );
+    // Room for two: the third is dropped WHOLE, not cut into "[Tab] move fi".
+    let narrow = fit_hints(&parts, 30);
+    assert_eq!(narrow, "[Enter] save  [Esc] cancel");
+    assert!(narrow.chars().count() <= 30);
+    // The escape hatch survives before the nice-to-haves.
+    assert!(fit_hints(&parts, 26).contains("[Esc] cancel"));
+    // Multi-byte arrows are measured in chars, so they don't over-count and
+    // wrongly drop a hint that fits.
+    let arrows = vec!["[Enter] next →".to_string(), "[Esc] ← back".to_string()];
+    assert_eq!(fit_hints(&arrows, 28), "[Enter] next →  [Esc] ← back");
+}
+
+#[test]
+fn a_project_row_offers_project_actions_not_a_dead_end() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![("s".into(), "u".into())]);
+    app.screen = Screen::Projects;
+    app.handle(
+        Resp::AllServices {
+            projects: vec!["proj".into()],
+            services: vec![json!({"projectName": "proj", "name": "web", "type": "app"})],
+        },
+        &tx,
+    );
+    // Row 0 is the project header: no service selected, but the project itself
+    // still has actions — this used to open nothing at all.
+    app.services_table.select(Some(0));
+    assert!(app.selected_row().is_none(), "row 0 must be the header");
+    let items = app.context_items();
+    assert!(
+        items
+            .iter()
+            .any(|i| i.label.contains("Migrate WHOLE project")),
+        "a project row must offer migrating the project, got: {:?}",
+        items.iter().map(|i| i.label.clone()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn migrating_needs_somewhere_to_migrate_to() {
+    // A single-host setup can't migrate anywhere. Saying so beats opening a form
+    // with an empty dropdown the user can't satisfy.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("only".into(), vec![("only".into(), "u".into())]);
+    app.screen = Screen::Projects;
+    app.handle(
+        Resp::AllServices {
+            projects: vec!["p".into()],
+            services: vec![json!({"projectName": "p", "name": "web", "type": "app"})],
+        },
+        &tx,
+    );
+    app.open_migrate_form(false);
+    assert!(app.form.is_none(), "no form without a destination");
+    assert!(
+        app.status.contains("No other server"),
+        "got: {}",
+        app.status
+    );
+}
+
+#[test]
+fn migrating_a_project_collects_every_service_in_it() {
+    let mut app = App::new(
+        "a".into(),
+        vec![("a".into(), "u".into()), ("b".into(), "u".into())],
+    );
+    app.screen = Screen::Projects;
+    app.all_services = vec![
+        json!({"projectName": "keep", "name": "web", "type": "app"}),
+        json!({"projectName": "keep", "name": "db", "type": "mysql"}),
+        json!({"projectName": "other", "name": "web", "type": "app"}),
+    ];
+    let got = app.project_services("keep");
+    assert_eq!(got.len(), 2, "only the project's own services");
+    assert!(got.iter().any(|(_, s, t)| s == "db" && t == "mysql"));
+    assert!(
+        !got.iter().any(|(p, _, _)| p == "other"),
+        "another project's service must not be swept in"
     );
 }

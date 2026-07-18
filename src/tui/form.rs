@@ -903,6 +903,12 @@ pub(super) enum FormKind {
         service: String,
         stype: String,
     },
+    /// Copy config to another host. `service` empty = the whole project.
+    Migrate {
+        project: String,
+        service: String,
+        stype: String,
+    },
 }
 
 pub(super) struct Form {

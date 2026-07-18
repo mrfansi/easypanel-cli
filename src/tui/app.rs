@@ -125,6 +125,15 @@ pub(super) struct Confirm {
     pub(super) label: String,
 }
 
+/// A migration waiting for its destination token, which only event_loop can look
+/// up (the App knows each server's name and url, never its token).
+pub(super) struct MigrateReq {
+    pub(super) target_server: String,
+    pub(super) target_project: String,
+    /// (project, service, type) — one entry for a service, many for a project.
+    pub(super) services: Vec<(String, String, String)>,
+}
+
 /// A server-list change: executed in event_loop, which holds the ServerConfig.
 pub(super) enum ServerAction {
     Save {
@@ -146,6 +155,9 @@ pub(super) struct App {
     pub(super) form: Option<Form>,
     pub(super) chooser: Option<Chooser>,
     pub(super) server_action: Option<ServerAction>,
+    /// Set by the migrate form; event_loop resolves the destination token and
+    /// hands the work to the worker.
+    pub(super) migrate_req: Option<MigrateReq>,
     /// (project, service, stype, replace) — awaiting an env edit in $EDITOR.
     /// `replace` = true opens an EMPTY editor (quick-replace: paste new env without
     /// waiting for a fetch or deleting the old one); false loads the current env.
@@ -369,6 +381,7 @@ impl App {
             form: None,
             chooser: None,
             server_action: None,
+            migrate_req: None,
             edit_env: None,
             edit_config: None,
             edit_field: None,
@@ -462,6 +475,17 @@ impl App {
     pub(super) fn context_items(&self) -> Vec<MenuItem> {
         match self.screen {
             Screen::Projects if self.selected_row().is_some() => self.service_menu(),
+            // A project header row: the actions that apply to the PROJECT. It used
+            // to open nothing at all, which made migrating a project unreachable
+            // from the row a user would naturally try it on.
+            Screen::Projects if self.selected_project().is_some() => vec![
+                MenuItem::new("Migrate WHOLE project to another server", |a, _| {
+                    a.open_migrate_form(true)
+                }),
+                MenuItem::new("New service", |a, r| a.on_key(KeyCode::Char('n'), r)),
+                MenuItem::new("New project", |a, r| a.on_key(KeyCode::Char('N'), r)),
+                MenuItem::new("Destroy project", |a, r| a.on_key(KeyCode::Char('X'), r)),
+            ],
             Screen::Domains if self.domains_state.selected().is_some() => vec![
                 MenuItem::new("Edit", |a, r| a.on_key(KeyCode::Char('e'), r)),
                 MenuItem::new("Set primary", |a, r| a.on_key(KeyCode::Char('P'), r)),
@@ -510,6 +534,10 @@ impl App {
                 a.open_menu(m);
             }),
             MenuItem::new("Clone", |a, r| a.on_key(KeyCode::Char('c'), r)),
+            MenuItem::new("Migrate to another server", |a, _| {
+                a.open_migrate_form(false)
+            }),
+            MenuItem::new("Migrate WHOLE project", |a, _| a.open_migrate_form(true)),
             MenuItem::new("Danger ▸", |a, _| {
                 let m = a.danger_menu();
                 a.open_menu(m);
@@ -660,6 +688,12 @@ impl App {
         v.extend(self.shell_menu());
         v.push(MenuItem::new("Clone", |a, r| {
             a.on_key(KeyCode::Char('c'), r)
+        }));
+        v.push(MenuItem::new("Migrate to another server", |a, _| {
+            a.open_migrate_form(false)
+        }));
+        v.push(MenuItem::new("Migrate WHOLE project", |a, _| {
+            a.open_migrate_form(true)
         }));
         v.extend(self.danger_menu());
         v
@@ -1508,6 +1542,88 @@ impl App {
         self.status = "Config copied (not data) · Enter clone · Esc cancel".into();
     }
 
+    /// Open the migrate form — one service, or every service in the highlighted
+    /// project when `whole_project`.
+    ///
+    /// Migration needs somewhere to migrate TO, so a single-host setup gets told
+    /// how to add one instead of an empty dropdown it can't act on.
+    pub(super) fn open_migrate_form(&mut self, whole_project: bool) {
+        let others: Vec<String> = self
+            .all_servers
+            .iter()
+            .map(|(n, _)| n.clone())
+            .filter(|n| *n != self.server_name)
+            .collect();
+        if others.is_empty() {
+            self.status =
+                "No other server configured — add one on the Hosts screen (h) first".into();
+            return;
+        }
+
+        let (title, project, service, stype, count) = if whole_project {
+            let Some(project) = self.selected_project() else {
+                self.status = "Select a project or a service first".into();
+                return;
+            };
+            let n = self.project_services(&project).len();
+            if n == 0 {
+                self.status = format!("'{project}' has no services to migrate");
+                return;
+            }
+            (
+                " Migrate project ".to_string(),
+                project,
+                String::new(),
+                String::new(),
+                n,
+            )
+        } else {
+            let Some((project, service, stype)) = self.selected_row() else {
+                self.status = "Select a service first".into();
+                return;
+            };
+            (" Migrate service ".to_string(), project, service, stype, 1)
+        };
+
+        let fields = vec![
+            Field::choice_owned("To server", others, ""),
+            // Free text, not a dropdown: the destination's projects live on
+            // another host that hasn't been contacted yet, and it's created there
+            // if it doesn't exist.
+            Field::text("Target project", &project),
+        ];
+        self.form = Some(Form::new(
+            FormKind::Migrate {
+                project,
+                service,
+                stype,
+            },
+            &title,
+            fields,
+        ));
+        let what = if count == 1 {
+            "1 service".to_string()
+        } else {
+            format!("{count} services")
+        };
+        self.status = format!("{what} · config only, NO data · Enter migrate · Esc cancel");
+    }
+
+    /// Every service belonging to `project`, as (project, service, type).
+    pub(super) fn project_services(&self, project: &str) -> Vec<(String, String, String)> {
+        self.all_services
+            .iter()
+            .filter(|s| field(s, "/projectName") == project)
+            .map(|s| {
+                (
+                    field(s, "/projectName"),
+                    field(s, "/name"),
+                    field(s, "/type"),
+                )
+            })
+            .collect()
+    }
+
     /// Open the add-redirect form for the highlighted web service.
     pub(super) fn open_redirect_form(&mut self) {
         let Some((project, service, stype)) = self.selected_row() else {
@@ -1761,6 +1877,35 @@ impl App {
                     stype: stype.clone(),
                     target,
                     new_name: new_name.to_string(),
+                });
+            }
+            FormKind::Migrate {
+                project,
+                service,
+                stype,
+            } => {
+                let target_server = form.by_label("To server");
+                let target_project = form.by_label("Target project");
+                let target_project = target_project.trim();
+                if target_server.is_empty() {
+                    self.status = "Choose the destination server first".into();
+                    return;
+                }
+                if target_project.is_empty() {
+                    self.status = "Enter the target project name first".into();
+                    return;
+                }
+                // Empty service = the whole project, which is the same operation
+                // over every service it holds.
+                let services = if service.is_empty() {
+                    self.project_services(project)
+                } else {
+                    vec![(project.clone(), service.clone(), stype.clone())]
+                };
+                self.migrate_req = Some(MigrateReq {
+                    target_server,
+                    target_project: target_project.to_string(),
+                    services,
                 });
             }
             FormKind::MountCreate { project, service } => match mount_body(form) {

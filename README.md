@@ -26,6 +26,15 @@ searchable table, and every domain on the box — without clicking through a hie
   resources, mounts, ports, and a database's advanced config file) into a new service, in
   any project. Config only, no data, no deploy. EasyPanel's own panel has no clone. The
   motivating case: standing up a **MySQL replica** without re-entering everything by hand.
+- **Migrate a service — or a whole project — to another EasyPanel host.** Pick the
+  destination server, name the target project (it's created there if missing), and the
+  config goes over: image/source, build, env, mounts, ports, resources, a database's
+  advanced config file and credentials, and the domains. Moving between hosts is
+  painful in the web panel, which has no export and no import — you retype everything.
+  **Config only, never data:** volume contents and database rows live on the origin
+  host's disk and the API does not expose them, so plan to move those yourself
+  (`mysqldump`, a volume copy). Domains come over pointing at their existing hostnames —
+  aim the DNS at the new host when you're ready to cut over.
 - **Search one keyword across every service's logs at once** (`g`) — a parallel fan-out
   over all services, grouped by where it hit. "Which service logged this error?" in one
   keystroke.
@@ -125,7 +134,7 @@ while dragging** to select/copy.)
 | **Actions** | Deploy/destroy/login history with status, target, duration, age. |
 | **Monitor** | Five history tiles (CPU, memory, disk, net in/out) plus per-service metrics and storage (`v` switches). |
 | **Domains** | Every domain on the host: source → destination (internal service or weighted custom servers), SSL resolver, wildcard. |
-| **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. A colored status dot reads at a glance: green `active`, yellow `stopped`, gray `disabled`, cyan `deploying` (a build is running), and a pulsing red **`down`** for a crashed/restart-looping service (its Swarm replicas are missing), counted in the title. From a selected service you can do the lot, grouped into menus — logs, terminal & DB shell, deploy/restart/stop/start, clone, env (view/edit/replace/`.env` file), ports, mounts, redirects, domains, resource limits, basic auth, and a database's config file. Selecting a project header targets the project (`n` new service, `x` → delete project). |
+| **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. A colored status dot reads at a glance: green `active`, yellow `stopped`, gray `disabled`, cyan `deploying` (a build is running), and a pulsing red **`down`** for a crashed/restart-looping service (its Swarm replicas are missing), counted in the title. From a selected service you can do the lot, grouped into menus — logs, terminal & DB shell, deploy/restart/stop/start, clone, env (view/edit/replace/`.env` file), ports, mounts, redirects, domains, resource limits, basic auth, and a database's config file. Selecting a project header targets the project and opens its own menu (`Space`): migrate the whole project to another host, new service, new project, destroy project. |
 | **Viewer** | Scrollable pane for logs, env, ports, mounts, redirects, backups, source & build. Reached from a service; `Esc` goes back. In the ports/mounts/redirects view, a digit key deletes that row. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. |
 
 ### Key bindings
@@ -164,6 +173,7 @@ Inside a menu: `↑↓` select · `→` enter a submenu · `←` back · `Enter`
 | `y` | **DB shell** — `mysql`/`psql`/`mongosh`/`redis-cli`, already logged in |
 | `g` | **search a keyword across every service's logs at once** |
 | `c` | **clone the service's config into a new service** (any project) |
+| `Space` | open the action menu for the selected row (a service, or a project header) |
 | `p` · `b` | view ports · backups |
 | `n` · `N` | new service · new project |
 

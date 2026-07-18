@@ -99,11 +99,12 @@ impl App {
             // nothing.
             KeyCode::Char(' ') => {
                 let items = self.context_items();
-                // On Services an empty menu means "no service selected" — say so
-                // rather than swallowing the key. Other screens have rows without
+                // On Services an empty menu means nothing is selected at all — say
+                // so rather than swallowing the key. (A project header row has its
+                // own menu, so it is NOT empty.) Other screens have rows without
                 // actions, where doing nothing is the honest answer.
-                if self.screen == Screen::Projects {
-                    self.open_service_menu(items);
+                if items.is_empty() && self.screen == Screen::Projects {
+                    self.status = "Select a row first".into();
                 } else {
                     self.open_menu(items);
                 }

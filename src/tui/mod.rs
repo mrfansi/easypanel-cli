@@ -209,6 +209,31 @@ fn event_loop(
             app.all_servers = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
         }
 
+        // Migration: the App knows the destination by name, but its token lives in
+        // the ServerConfig, which only exists here.
+        if let Some(m) = app.migrate_req.take() {
+            match cfg.get(&m.target_server) {
+                Some(server) => {
+                    app.status = format!(
+                        "Migrating {} service(s) to {}/{}…",
+                        m.services.len(),
+                        m.target_server,
+                        m.target_project
+                    );
+                    let _ = w.user.send(Req::Migrate {
+                        target_url: server.url,
+                        target_token: server.token,
+                        target_name: m.target_server,
+                        target_project: m.target_project,
+                        services: m.services,
+                    });
+                }
+                None => {
+                    app.status = format!("Server '{}' is no longer configured", m.target_server)
+                }
+            }
+        }
+
         // Edit a form field (Dockerfile) in $EDITOR. Unlike env: the contents are
         // already in the form, so there's nothing to fetch from the server.
         if let Some(idx) = app.edit_field.take() {

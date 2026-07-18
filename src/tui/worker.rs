@@ -180,6 +180,20 @@ pub(super) enum Req {
         target: String,
         new_name: String,
     },
+    /// Move service CONFIG (never data) to another EasyPanel host.
+    ///
+    /// The destination's url+token are resolved in event_loop, which is the only
+    /// place holding the ServerConfig; the worker is bound to one host.
+    Migrate {
+        target_url: String,
+        target_token: String,
+        /// The destination's configured name — for the status line, not the call.
+        target_name: String,
+        target_project: String,
+        /// What to move, as (project, service, type). One entry migrates a single
+        /// service; a whole project is the same operation over its service list.
+        services: Vec<(String, String, String)>,
+    },
     DomainSave {
         id: Option<String>,
         body: Value,
@@ -745,6 +759,56 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             target,
             new_name,
         } => clone_service(client, &project, &service, &stype, &target, &new_name),
+        Req::Migrate {
+            target_url,
+            target_token,
+            target_name,
+            target_project,
+            services,
+        } => {
+            let dst_client = EasypanelClient::new(&target_url, &target_token);
+            // The destination project usually doesn't exist yet — that IS the
+            // normal case when moving to a fresh host.
+            if let Err(e) = crate::migrate::ensure_project(&dst_client, &target_project) {
+                return Resp::Err(format!("Migration stopped: {e:#}"));
+            }
+            let total = services.len();
+            let (mut ok, mut notes, mut failed) = (0usize, Vec::new(), Vec::new());
+            for (project, service, stype) in services {
+                let dst = crate::migrate::Target {
+                    client: &dst_client,
+                    project: &target_project,
+                    service: &service,
+                };
+                // One service failing must not abandon the rest: a partial
+                // migration the user can see is more useful than an opaque stop.
+                match crate::migrate::migrate_service(
+                    client, &project, &service, &stype, &dst, true,
+                ) {
+                    Ok(mut n) => {
+                        ok += 1;
+                        notes.append(&mut n);
+                    }
+                    Err(e) => failed.push(format!("{service}: {e:#}")),
+                }
+            }
+            let mut msg = format!(
+                "Migrated {ok}/{total} to {target_name}/{target_project} — config only, NO data"
+            );
+            if !failed.is_empty() {
+                msg.push_str(&format!(" · failed: {}", failed.join("; ")));
+            }
+            if !notes.is_empty() {
+                msg.push_str(&format!(" · notes: {}", notes.join("; ")));
+            }
+            if ok == 0 && total > 0 {
+                Resp::Err(msg)
+            } else {
+                // The services landed on ANOTHER host, so this host's view is
+                // unchanged — refresh only so a same-host migration shows up.
+                Resp::Done(msg, Refresh::Projects)
+            }
+        }
         Req::DomainSave { id, body } => {
             // createDomain requires `id` but the server ignores it and makes its own
             // cuid, so a placeholder is enough for a new domain.
@@ -1296,43 +1360,9 @@ fn save_redirects(
     Ok(())
 }
 
-/// Fields NOT copied on a clone: identity & server-managed ones. `source` and
-/// `configFile` have their own endpoints (see clone_service), so they're blocked
-/// here too and applied separately.
-const CLONE_BLOCK: &[&str] = &[
-    "name",
-    "serviceName",
-    "projectName",
-    "type",
-    "enabled",
-    "token",
-    "primaryDomainId",
-    "deploymentUrl",
-    "commit",
-    "dbGateDomain",
-    "phpMyAdminDomain",
-    "source",
-    "configFile",
-];
-
-/// The createService body for a clone: the inspectService result minus the blocked
-/// fields, with projectName/serviceName pointed at the target.
-pub(super) fn clone_body(inspect: &Value, project: &str, new_name: &str) -> Value {
-    let mut body = inspect.clone();
-    if let Some(obj) = body.as_object_mut() {
-        for k in CLONE_BLOCK {
-            obj.remove(*k);
-        }
-        obj.insert("projectName".into(), json!(project));
-        obj.insert("serviceName".into(), json!(new_name));
-    }
-    body
-}
-
-/// Clone a service's CONFIG into `new_name` in the same project (not its data —
-/// volumes aren't copied). A composition: inspectService → createService (minus
-/// source, so no deploy) → updateSource* (app) / updateAdvanced (db, e.g. a
-/// replication configFile). Verified live for app and mysql.
+/// Clone a service's CONFIG into `new_name` (not its data — volumes aren't
+/// copied). Domains are NOT copied: the same host can't serve two identical
+/// hostnames, so a clone would only collide.
 fn clone_service(
     client: &EasypanelClient,
     project: &str,
@@ -1341,92 +1371,20 @@ fn clone_service(
     target: &str,
     new_name: &str,
 ) -> Resp {
-    let grp = format!("services/{stype}");
-    let ps = json!({ "projectName": project, "serviceName": service });
-    let inspect = match client.call(&grp, "inspectService", ps) {
-        Ok(v) => v,
-        Err(e) => return Resp::Err(format!("clone: couldn't read the source: {e}")),
+    let dst = crate::migrate::Target {
+        client,
+        project: target,
+        service: new_name,
     };
-    // 1) Create the service in the TARGET project with the config inline EXCEPT the
-    //    source.
-    if let Err(e) = client.call(
-        &grp,
-        "createService",
-        clone_body(&inspect, target, new_name),
-    ) {
-        return Resp::Err(format!("clone: couldn't create '{new_name}': {e}"));
-    }
-    // 2) The source (app/compose service) is applied separately so it doesn't
-    //    trigger a deploy.
-    if let Some(src) = inspect.get("source").filter(|s| s.get("type").is_some()) {
-        if let Err(e) = apply_clone_source(client, &grp, target, new_name, src) {
-            return Resp::Err(format!(
-                "Clone '{new_name}' created, but the source failed: {e}"
-            ));
-        }
-    }
-    // 3) configFile (db): updateAdvanced — this is what carries the advanced config
-    //    such as MySQL replication settings.
-    if inspect
-        .get("configFile")
-        .and_then(Value::as_str)
-        .is_some_and(|s| !s.is_empty())
-    {
-        let adv = json!({
-            "projectName": target, "serviceName": new_name,
-            "command": inspect.get("command").cloned().unwrap_or(Value::Null),
-            "configFile": inspect.get("configFile").cloned().unwrap_or(Value::Null),
-            "env": inspect.get("env").cloned().unwrap_or(Value::Null),
-            "image": inspect.get("image").cloned().unwrap_or(Value::Null),
-        });
-        if let Err(e) = client.call(&grp, "updateAdvanced", adv) {
-            return Resp::Err(format!(
-                "clone '{new_name}' created, advanced config failed: {e}"
-            ));
-        }
-    }
-    Resp::Done(
-        format!(
-            "'{service}' cloned into '{target}/{new_name}' — press d to deploy (data NOT included)"
+    match crate::migrate::migrate_service(client, project, service, stype, &dst, false) {
+        Ok(_) => Resp::Done(
+            format!(
+                "'{service}' cloned into '{target}/{new_name}' — press d to deploy (data NOT included)"
+            ),
+            Refresh::Projects,
         ),
-        Refresh::Projects,
-    )
-}
-
-/// Apply the inspected source to the cloned service (per source-type endpoint),
-/// then reapply autoDeploy for github (updateSourceGithub resets it).
-fn apply_clone_source(
-    client: &EasypanelClient,
-    grp: &str,
-    project: &str,
-    service: &str,
-    src: &Value,
-) -> Result<()> {
-    let with_id = |mut v: Value| -> Value {
-        v["projectName"] = json!(project);
-        v["serviceName"] = json!(service);
-        v
-    };
-    // Same rule as the create/edit form (see src/source.rs). This used to be a
-    // second copy, and it had already lost the registry credentials.
-    let Some((op, body)) = crate::source::source_call(src) else {
-        return Ok(());
-    };
-    client.call(grp, op, with_id(body))?;
-    // Auto deploy is orchestration, not payload shape, so it stays here.
-    if src.get("type").and_then(Value::as_str) == Some("github")
-        && src
-            .get("autoDeploy")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    {
-        client.call(
-            grp,
-            "enableGithubDeploy",
-            json!({ "projectName": project, "serviceName": service }),
-        )?;
+        Err(e) => Resp::Err(format!("clone: {e:#}")),
     }
-    Ok(())
 }
 
 /// Turn the map `{ "{project}_{service}": {actual, desired} }` from

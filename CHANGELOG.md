@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] — 2026-07-18
+
+### Added
+
+- **Migrate a service, or a whole project, to another EasyPanel host.** Moving
+  between hosts is the thing the web panel makes hardest: there is no export and
+  no import, so today it means retyping every service by hand. Pick a destination
+  server and a target project (created there if it doesn't exist) and the
+  configuration goes over — image/source and build settings, env, mounts, ports,
+  resources, a database's advanced config file and its credentials, and the
+  domains. Available on a service row, and on a project header row for every
+  service in it at once.
+
+  **It moves configuration, never data.** Volume contents and database rows live
+  on the origin host's disk and are not reachable through the API, so they stay
+  behind; move them yourself (`mysqldump`, a volume copy). Every message says so
+  rather than letting the word "migrate" imply more than happened. Domains are
+  recreated pointing at their existing hostnames — the DNS cutover stays yours to
+  time. One service failing does not abandon the others: the result reports what
+  landed, what failed, and why.
+
+- **A project header row now has its own action menu** (`Space`). It previously
+  opened nothing at all, which left project-wide migration unreachable from the
+  row users would naturally try it on. It offers migrate-whole-project, new
+  service, new project, and destroy project — surfacing `N` and `X`, which until
+  now existed only as undiscoverable keys.
+
+### Fixed
+
+- **Form footers no longer cut a keyboard hint mid-word.** The form is sized as a
+  percentage of the terminal, so on an 80-column screen the hint line overflowed
+  and rendered as `[Esc] can` — the escape hatch, mangled, for the user most
+  likely to need it. Hints are now dropped whole, most important first, so what is
+  shown is always complete.
+
+### Internal
+
+- The copy-a-service rule moved into a `migrate` domain module and now has one
+  definition instead of two. Cloning is migration with the same host on both
+  sides, so it delegates there. The duplicate had already drifted once, losing
+  registry credentials on one path but not the other.
+
 ## [0.43.3] — 2026-07-18
 
 ### Fixed

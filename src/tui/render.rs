@@ -1226,24 +1226,38 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
 
     // The footer adapts to the step: Enter "next" until the last step, and Esc
     // "back" until the first step.
-    let footer = if form.is_wizard() {
-        let enter = if form.next_present_step().is_some() {
-            "next →"
-        } else {
-            "create service"
-        };
-        let esc = if form.prev_present_step().is_some() {
-            "← back"
-        } else {
-            "cancel"
-        };
-        format!("[Enter] {enter}   [Esc] {esc}   [Tab] move field   [Space] choose")
+    // The form is a PERCENTAGE of the terminal, so the footer has to earn its
+    // width rather than assume it: on an 80-column terminal the full hint list
+    // doesn't fit, and a hint cut mid-word ("[Esc] can") reads as a broken UI.
+    let (enter, esc) = if form.is_wizard() {
+        (
+            if form.next_present_step().is_some() {
+                "next →"
+            } else {
+                "create service"
+            },
+            if form.prev_present_step().is_some() {
+                "← back"
+            } else {
+                "cancel"
+            },
+        )
     } else {
-        "[Space] choose   [Enter] save   [Tab] move field   [Esc] cancel".to_string()
+        ("save", "cancel")
     };
+    let slot = slots[visible.len()];
+    let footer = fit_hints(
+        &[
+            format!("[Enter] {enter}"),
+            format!("[Esc] {esc}"),
+            "[Tab] move field".into(),
+            "[Space] choose".into(),
+        ],
+        slot.width,
+    );
     f.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
-        slots[visible.len()],
+        slot,
     );
 }
 
@@ -1370,6 +1384,29 @@ pub(super) fn cap(s: &str) -> String {
 }
 
 /// An overlay with a percentage width and a fixed row height.
+/// Join the hints that FIT, most important first, and drop the rest.
+///
+/// Dropping a whole hint is honest; truncating one is not — "[Esc] can" looks
+/// like a rendering fault, and the key it names is the one a stuck user needs.
+/// Counted in chars, not bytes: the wizard's arrows are multi-byte.
+pub(super) fn fit_hints(parts: &[String], width: u16) -> String {
+    let mut out = String::new();
+    let mut used = 0usize;
+    for p in parts {
+        let len = p.chars().count();
+        let sep = if out.is_empty() { 0 } else { 2 };
+        if used + sep + len > width as usize {
+            break;
+        }
+        if sep > 0 {
+            out.push_str("  ");
+        }
+        out.push_str(p);
+        used += sep + len;
+    }
+    out
+}
+
 pub(super) fn centered_abs(pct_x: u16, height: u16, r: Rect) -> Rect {
     let pad = r.height.saturating_sub(height) / 2;
     let v = Layout::vertical([

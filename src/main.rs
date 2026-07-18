@@ -2,6 +2,7 @@ mod client;
 mod commands;
 mod config;
 mod logs;
+mod migrate;
 mod output;
 mod source;
 mod tui;
