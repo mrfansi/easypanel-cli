@@ -129,7 +129,12 @@ impl App {
                 Screen::Actions => self.actions_key(code, req),
                 Screen::Domains => self.domains_key(code, req),
                 Screen::Monitor => self.monitor_key(code, req),
-                Screen::Hosts => move_table(&mut self.hosts_state, code, self.hosts.len()),
+                Screen::Hosts => match code {
+                    // Hosts used to be the one screen with no row action at all —
+                    // you could see a host was DOWN and had no way to ask why.
+                    KeyCode::Enter => self.open_host_detail(),
+                    _ => move_table(&mut self.hosts_state, code, self.hosts.len()),
+                },
                 Screen::Maintenance => self.maint_key(code),
                 // Terminal is handled directly in event_loop (encode_key), not
                 // here. Dashboard has no dedicated keys.

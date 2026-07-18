@@ -2274,3 +2274,118 @@ fn nothing_reports_ready_while_a_request_is_still_running() {
         "a message with no request behind it must not stick"
     );
 }
+
+#[test]
+fn a_narrow_hosts_table_drops_columns_instead_of_halving_the_numbers() {
+    // Squeezed, ratatui shrinks every column proportionally, and
+    // "29.8 GB / 59.0 GB" became "29.8 GB" — a figure that reads as complete and
+    // is not. That is the "confidently wrong number" class, not a cosmetic cut.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let render_at = |w: u16| {
+        let mut app = App::new("s".into(), vec![]);
+        app.screen = Screen::Hosts;
+        app.hosts = vec![HostRow {
+            name: "prod".into(),
+            url: "https://panel.example.com".into(),
+            state: HostState::Ok(Box::new(json!({
+                "cpu": [[0, 12.0]],
+                "memoryUsedBytes": 32_000_000_000i64,
+                "memoryTotalBytes": 64_000_000_000i64,
+                "diskUsedBytes": 100_000_000_000i64,
+                "diskTotalBytes": 800_000_000_000i64,
+                "loadAvg": ["2.00", "3.02", "3.10"],
+            }))),
+        }];
+        let mut t = Terminal::new(TestBackend::new(w, 12)).unwrap();
+        t.draw(|f| ui(f, &mut app)).unwrap();
+        let buf = t.backend().buffer().clone();
+        buf.content()
+            .chunks(w as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // Narrow: the memory figure must be WHOLE or absent — never a half that
+    // reads as a total.
+    let narrow = render_at(80);
+    assert!(
+        narrow.contains("29.8 GB / 59.6 GB"),
+        "memory must keep both halves at 80 cols:\n{narrow}"
+    );
+    // The columns that made room are gone, not squeezed into slivers.
+    assert!(!narrow.contains("URL"), "URL is dropped first:\n{narrow}");
+    assert!(!narrow.contains("Load"), "Load goes next:\n{narrow}");
+    assert!(
+        !narrow.contains("Disk"),
+        "Disk goes rather than render half a figure:\n{narrow}"
+    );
+    // A width that fits Disk WHOLE must show it whole.
+    let mid = render_at(90);
+    assert!(
+        mid.contains("93.1 GB / 745.1 GB"),
+        "disk must keep both halves where it fits:\n{mid}"
+    );
+    // What matters most is still there.
+    assert!(narrow.contains("Status") && narrow.contains("prod"));
+
+    // Wide enough for the lot — 133 columns, counting spacing, the highlight
+    // symbol and the borders.
+    let wide = render_at(140);
+    for col in ["Server", "Status", "CPU", "Memory", "Disk", "Load", "URL"] {
+        assert!(wide.contains(col), "{col} missing at 140 cols:\n{wide}");
+    }
+    assert!(wide.contains("29.8 GB / 59.6 GB"));
+}
+
+#[test]
+fn an_unreachable_host_can_be_asked_why() {
+    // Hosts is the screen you are on when something is broken, and its Status cell
+    // cuts the reason to a few words ("DOWN — error sen"). It used to have no row
+    // action at all, so that truncated fragment was all you could ever see.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Hosts;
+    let long =
+        "error sending request for url (https://10.255.255.1/api/rpc/metrics/getSystemStats): \
+                connection timed out";
+    app.hosts = vec![HostRow {
+        name: "blackhole".into(),
+        url: "https://10.255.255.1".into(),
+        state: HostState::Err(long.into()),
+    }];
+    app.hosts_state.select(Some(0));
+    // The pane the detail will be drawn into (set by the last Hosts paint).
+    app.table_area = ratatui::layout::Rect::new(0, 0, 80, 20);
+
+    app.on_key(KeyCode::Enter, &tx);
+
+    assert!(
+        matches!(app.screen, Screen::Viewer),
+        "Enter on a host must open its detail"
+    );
+    // Wrapped, not cut: the viewer neither wraps nor scrolls sideways, so every
+    // line has to fit the pane on its own.
+    for l in &app.viewer_lines {
+        assert!(
+            l.chars().count() <= 78,
+            "line overflows the pane and would be cut: {l:?}"
+        );
+    }
+    // And nothing was LOST in the wrapping — the whole reason is recoverable.
+    let rejoined = app.viewer_lines.join(" ");
+    let flat: String = rejoined.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("connection timed out"),
+        "the WHOLE reason must survive, got:\n{flat}"
+    );
+    assert!(
+        flat.contains("getSystemStats"),
+        "including the failing endpoint"
+    );
+    assert!(flat.contains("blackhole") && flat.contains("10.255.255.1"));
+    // Esc goes back where you came from, not to some default screen.
+    assert!(matches!(app.viewer_from, Screen::Hosts));
+}

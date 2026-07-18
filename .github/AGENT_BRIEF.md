@@ -340,6 +340,39 @@ decremented when its `Resp` arrives, driving the spinner and gating the fade. Th
 cross-cutting change to ~50 send sites — a refactor of its own run, not a rider on a
 feature.
 
+### UI/UX critique findings — status
+
+From the 2026-07-19 critique pass. Fixed:
+
+- ~~Failures fade away after six seconds~~ — v0.45.1.
+- ~~Status reports "Ready" over an in-flight request; spinner inferred from text~~ — v0.46.1.
+- ~~Hosts table needs 123 columns with no narrow fallback~~ — v0.47.0. Note the critic
+  predicted zero-width columns; ratatui actually shrinks them proportionally, which is
+  WORSE than it sounds: "29.8 GB / 59.0 GB" rendered as "29.8 GB", a figure that reads as
+  complete. Verified on screen at 80 columns before fixing.
+- ~~Hosts has no row action, so a DOWN host cannot be investigated~~ — v0.47.0, `Enter`.
+
+Still open, in the order I would take them:
+
+1. **Viewer cuts long lines** — no wrap, no horizontal scroll (`render_viewer`,
+   `Paragraph::scroll((v, 0))`). It is the highest-traffic screen (Enter on a service =
+   logs), and log lines and JSON payloads routinely exceed the pane. The host-detail view
+   works around it by pre-wrapping its own text; the Viewer itself still cuts. Cheapest
+   correct fix is a horizontal scroll (`viewer_hscroll`, Left/Right), which leaves the
+   vertical scroll arithmetic intact — `Wrap` would break the follow-tail maths in
+   `render_viewer`.
+2. **Viewer scrolls past the end** into a blank pane; `viewer_scroll` is only clamped on
+   the follow path. `Home` is handled but never advertised in `screen_keys`.
+3. **`render_actions` is 80 columns + 2 for the symbol against 78 usable** — same class as
+   the Hosts bug, one column clipped. Now that Hosts has the pattern, this is a small
+   repeat of it.
+4. **Monitor tiles below ~100 columns** — five `Ratio(1,5)` tiles give 14 usable inner
+   columns against sub-lines like "12.3 GB / 16.0 GB" (17 chars). Same half-number failure
+   as Hosts. Not yet verified on screen.
+5. **Form instructions live in the fading status line** — "0 = unlimited", "delete a mount:
+   'm' then a digit" vanish after six seconds while the user is still in the form. The
+   status line is serving as both a transient toast and a persistent instruction panel.
+
 ### Scalability — the tool must not fold at real scale
 
 The owner runs hosts with hundreds of services and 700+ domains. Things to watch and

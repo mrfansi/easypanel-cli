@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0] — 2026-07-19
+
+### Added
+
+- **`Enter` on a host opens its detail.** Hosts was the one screen with no row
+  action at all: you could see that a server was `DOWN` and had no way to ask
+  why, because the Status cell has room for about a dozen characters of the
+  reason (`DOWN — error sen`). The detail view carries the whole thing, wrapped
+  to the pane, and `Esc` returns you to the list. For a healthy host it shows the
+  full figures — including the columns a narrow terminal has to drop.
+
+### Fixed
+
+- **The Hosts table no longer renders half a number as if it were whole.** The
+  columns needed 123 characters plus the highlight symbol, and below that ratatui
+  shrinks every column proportionally — so on an 80-column terminal
+  `29.8 GB / 59.0 GB` was drawn as `29.8 GB`. That is not a cosmetic truncation:
+  it reads as a complete memory figure and is off by half. Whole columns are now
+  dropped instead, least useful first (URL, then Load, then Disk), and Status —
+  which carries the failure reason — always survives and takes the freed space.
+
+  The thresholds count what is easy to forget: the space between each pair of
+  columns, the two-column highlight symbol, and the borders. The first attempt
+  used round numbers and still cut Disk to `194.7 GB / 784.9`; it was caught by
+  looking at the screen, not by the tests.
+
+- **Long words no longer overflow a wrapped pane.** The shared word-wrapper broke
+  on whitespace only, so a single long token — a URL, a stack frame — ran past
+  the edge and was cut. It is now split across lines.
+
 ## [0.46.1] — 2026-07-19
 
 ### Fixed

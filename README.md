@@ -129,7 +129,7 @@ while dragging** to select/copy.)
 | Screen | What it is |
 |---|---|
 | **Dashboard** | CPU/memory/disk gauges, CPU history, load average, cluster nodes — active server only. |
-| **Hosts** | **Every** configured server at once. Each host is fetched on its own thread, so a slow or dead one never blocks the rest; failures show red with the reason instead of failing the table. The one screen the web panel can't replace. |
+| **Hosts** | **Every** configured server at once. Each host is fetched on its own thread, so a slow or dead one never blocks the rest; failures show red with the reason instead of failing the table. **`Enter` opens a host's detail** — the full reason an unreachable one is unreachable (the table cell only has room for the first few words), or the complete figures for a healthy one. Columns drop as the terminal narrows rather than shrinking into half-numbers. The one screen the web panel can't replace. |
 | **Maintenance** | Docker version, server IP, update availability, plus system prune / image cleanup / builder cleanup — all behind confirmation. |
 | **Actions** | Deploy/destroy/login history with status, target, duration, age. |
 | **Monitor** | Five history tiles (CPU, memory, disk, net in/out) plus per-service metrics and storage (`v` switches). |

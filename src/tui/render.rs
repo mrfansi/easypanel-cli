@@ -38,7 +38,13 @@ pub(super) const GLOBAL_KEYS: &[Key] = &[
 pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
     match screen {
         Screen::Dashboard => &[],
-        Screen::Hosts => &[Key("↑↓", "select host")],
+        Screen::Hosts => &[
+            Key("↑↓", "select host"),
+            Key(
+                "Enter",
+                "host detail — the full reason a host is unreachable",
+            ),
+        ],
         Screen::Maintenance => &[
             Key("p", "prune Docker system"),
             Key("i", "remove unused images"),
@@ -262,10 +268,24 @@ pub(super) fn render_menu(f: &mut Frame, app: &mut App) {
 /// The help is a two-column table, so wrapping has to happen here rather than via
 /// `Paragraph::wrap`: that would restart the continuation at column 0 and lose the
 /// alignment that makes the list scannable.
-fn wrap_words(text: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(8);
     let mut out = Vec::new();
     let mut line = String::new();
     for word in text.split_whitespace() {
+        // A single token longer than the pane (a URL, a stack frame) has no space
+        // to break at, so it is cut into pieces rather than left to overflow the
+        // edge — which is the whole failure this wrapping exists to avoid.
+        if word.chars().count() > width {
+            if !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            let mut chars = word.chars().peekable();
+            while chars.peek().is_some() {
+                out.push(chars.by_ref().take(width).collect());
+            }
+            continue;
+        }
         if line.is_empty() {
             line = word.to_string();
         } else if line.chars().count() + 1 + word.chars().count() <= width {
@@ -742,6 +762,30 @@ pub(super) fn count_title(name: &str, shown: usize, total: usize, app: &App) -> 
 /// is spotting a troubled host at a glance — an error shown in the same color as
 /// ordinary text gets missed.
 pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
+    // The full set needs 123 columns plus the highlight symbol. Squeezed below
+    // that, ratatui shrinks every column proportionally — which turned
+    // "29.8 GB / 59.0 GB" into "29.8 GB", a figure that reads as complete and is
+    // not. Whole columns are dropped instead, least useful first: the URL is
+    // something you configured and already know, and Load is the least urgent
+    // metric. Status is never dropped — it carries the failure reason.
+    // Each threshold is the total area width the column needs, counting what is
+    // easy to forget: one space BETWEEN each pair of columns, the two-column
+    // highlight symbol, and the two border columns. Guessing these (the first
+    // attempt used round numbers) left Disk rendering as "194.7 GB / 784.9".
+    const HOST_COLS: &[(u16, Constraint)] = &[
+        (0, Constraint::Length(14)),   // Server
+        (0, Constraint::Min(16)),      // Status — carries the failure reason
+        (0, Constraint::Length(7)),    // CPU
+        (0, Constraint::Length(19)),   // Memory
+        (83, Constraint::Length(19)),  // Disk
+        (102, Constraint::Length(18)), // Load
+        (133, Constraint::Length(30)), // URL
+    ];
+    let cols = HOST_COLS
+        .iter()
+        .filter(|(min, _)| area.width >= *min)
+        .count();
+
     let rows: Vec<Row> = app
         .hosts
         .iter()
@@ -799,30 +843,27 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
                     )
                 }
             };
+            let mut cells = cells;
+            cells.truncate(cols);
             Row::new(cells).style(style)
         })
         .collect();
 
-    let header = Row::new(vec![
-        "Server", "Status", "CPU", "Memory", "Disk", "Load", "URL",
-    ])
-    .style(
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Green)
-            .add_modifier(Modifier::BOLD),
-    );
+    let header =
+        Row::new(["Server", "Status", "CPU", "Memory", "Disk", "Load", "URL"][..cols].to_vec())
+            .style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            );
     let table = Table::new(
         rows,
-        vec![
-            Constraint::Length(14),
-            Constraint::Min(16),
-            Constraint::Length(7),
-            Constraint::Length(19),
-            Constraint::Length(19),
-            Constraint::Length(18),
-            Constraint::Length(30),
-        ],
+        HOST_COLS
+            .iter()
+            .take(cols)
+            .map(|(_, c)| *c)
+            .collect::<Vec<_>>(),
     )
     .header(header)
     .block(Block::bordered().title(format!(" Hosts ({}) ", app.hosts.len())))

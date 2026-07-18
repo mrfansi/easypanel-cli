@@ -1587,6 +1587,70 @@ impl App {
         self.status = "Config copied (not data) · Enter clone · Esc cancel".into();
     }
 
+    /// Show everything known about the selected host — above all, the WHOLE reason
+    /// an unreachable one is unreachable.
+    ///
+    /// The Status cell truncates that reason to a few words, and Hosts is the
+    /// screen you are on precisely when something is broken: seeing "DOWN — error
+    /// sen" with no way to read the rest is a dead end at the worst moment.
+    pub(super) fn open_host_detail(&mut self) {
+        let Some(h) = self.hosts_state.selected().and_then(|i| self.hosts.get(i)) else {
+            self.status = "Select a host first".into();
+            return;
+        };
+        let mut lines = vec![
+            format!("Server    {}", h.name),
+            format!("URL       {}", h.url),
+            String::new(),
+        ];
+        match &h.state {
+            HostState::Loading => lines.push("Still loading…".into()),
+            HostState::Err(e) => {
+                lines.push("UNREACHABLE".into());
+                lines.push(String::new());
+                // Wrapped to the pane: the viewer neither wraps nor scrolls
+                // sideways, so an unwrapped error would be cut at the edge — the
+                // very thing this screen exists to undo.
+                // Floored, because table_area is zero until the first paint and a
+                // width of 0 would wrap every word onto its own line.
+                let w = (self.table_area.width as usize).saturating_sub(2).max(40);
+                for line in e.lines() {
+                    lines.extend(super::render::wrap_words(line, w));
+                }
+            }
+            HostState::Ok(v) => {
+                let pair = |used: &str, total: &str| {
+                    format!(
+                        "{} / {}",
+                        crate::output::format_bytes(crate::output::num(v, used)),
+                        crate::output::format_bytes(crate::output::num(v, total))
+                    )
+                };
+                lines.push("Reachable".into());
+                lines.push(String::new());
+                // The full figures, not the halves the narrow table has room for.
+                lines.push(format!(
+                    "CPU       {:.1}%",
+                    crate::output::series_last(v, "cpu")
+                ));
+                lines.push(format!(
+                    "Memory    {}",
+                    pair("/memoryUsedBytes", "/memoryTotalBytes")
+                ));
+                lines.push(format!(
+                    "Disk      {}",
+                    pair("/diskUsedBytes", "/diskTotalBytes")
+                ));
+                lines.push(format!("Load      {}", commands::load_avg(v)));
+            }
+        }
+        self.viewer_title = format!("Host · {}", h.name);
+        self.viewer_lines = lines;
+        self.viewer_scroll = 0;
+        self.viewer_from = Screen::Hosts;
+        self.screen = Screen::Viewer;
+    }
+
     /// Open the migrate form — one service, or every service in the highlighted
     /// project when `whole_project`.
     ///
