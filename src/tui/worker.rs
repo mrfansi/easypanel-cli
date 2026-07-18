@@ -40,6 +40,8 @@ pub(super) enum Req {
     Nodes,
     Projects,
     Actions,
+    /// Detail satu action (getAction): metadata + `log` (output deploy/aksi).
+    ActionDetail(String),
     MonitorData,
     /// Replika swarm per service (actual/desired) — ground truth "berjalan sesuai
     /// target?". Satu panggilan menutupi semua service; `actual < desired` = turun.
@@ -304,6 +306,32 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
         },
         Req::Actions => match client.call("actions", "listActions", json!({ "limit": 50 })) {
             Ok(v) => Resp::Actions(v.as_array().cloned().unwrap_or_default()),
+            Err(e) => Resp::Err(e.to_string()),
+        },
+        Req::ActionDetail(id) => match client.call("actions", "getAction", json!({ "id": id })) {
+            Ok(v) => {
+                let mut lines = vec![
+                    format!(
+                        "{} · {} · {}",
+                        field(&v, "/type"),
+                        field(&v, "/status"),
+                        field(&v, "/createdAt")
+                    ),
+                    format!(
+                        "{}/{}",
+                        field(&v, "/projectName"),
+                        field(&v, "/serviceName")
+                    ),
+                    String::new(),
+                ];
+                match v.get("log").and_then(Value::as_str) {
+                    Some(log) if !log.trim().is_empty() => {
+                        lines.extend(log.lines().map(String::from))
+                    }
+                    _ => lines.push("(tak ada log untuk action ini)".into()),
+                }
+                Resp::Viewer(format!("Action · {}", field(&v, "/description")), lines)
+            }
             Err(e) => Resp::Err(e.to_string()),
         },
         Req::MonitorData => match client.call("metrics", "getAllServicesStats", json!({})) {

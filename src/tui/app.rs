@@ -179,6 +179,9 @@ pub(super) struct App {
     pub(super) all_services: Vec<Value>,
     pub(super) services_table: TableState,
 
+    /// Layar tujuan saat Esc dari Viewer — viewer bisa dibuka dari Services
+    /// (kembali ke Services) atau dari Actions (kembali ke Actions).
+    pub(super) viewer_from: Screen,
     pub(super) viewer_title: String,
     pub(super) viewer_lines: Vec<String>,
     pub(super) viewer_scroll: u16,
@@ -234,8 +237,25 @@ pub(super) struct Menu {
     pub(super) col: u16,
     pub(super) row: u16,
     /// Kotak menu yang benar-benar digambar (setelah dijepit ke layar), diisi saat
-    /// render — dipakai memetakan klik item.
+    /// render — dipakai memetakan klik/hover item.
     pub(super) rect: Rect,
+}
+
+impl Menu {
+    /// Indeks item di bawah (col,row), atau None bila di luar area item. Item i
+    /// digambar di baris `rect.y + 1 + i` (baris pertama & terakhir = border).
+    pub(super) fn item_at(&self, col: u16, row: u16) -> Option<usize> {
+        let r = self.rect;
+        let inside = col >= r.x
+            && col < r.x.saturating_add(r.width)
+            && row > r.y
+            && row < r.y.saturating_add(r.height).saturating_sub(1);
+        if !inside {
+            return None;
+        }
+        let i = (row - r.y - 1) as usize;
+        (i < self.items.len()).then_some(i)
+    }
 }
 
 impl App {
@@ -272,6 +292,7 @@ impl App {
             projects: Vec::new(),
             all_services: Vec::new(),
             services_table: TableState::default(),
+            viewer_from: Screen::Projects,
             viewer_title: "Viewer".into(),
             viewer_lines: Vec::new(),
             viewer_scroll: 0,
@@ -347,8 +368,19 @@ impl App {
                 ("Jadikan primary".into(), KeyCode::Char('P')),
                 ("Hapus".into(), KeyCode::Char('x')),
             ],
+            Screen::Actions if self.selected_action_id().is_some() => {
+                vec![("View detail".into(), KeyCode::Enter)]
+            }
             _ => vec![],
         }
+    }
+
+    /// Id action yang disorot (dari daftar yang tampil, hormati filter). None =
+    /// tak ada yang dipilih.
+    pub(super) fn selected_action_id(&self) -> Option<String> {
+        self.actions_state
+            .selected()
+            .and_then(|i| self.visible_actions().get(i).map(|a| field(a, "/id")))
     }
 
     /// Deteksi ganti tab/seleksi (dipanggil tiap frame sebelum draw) untuk memicu
@@ -383,8 +415,15 @@ impl App {
 
     pub(super) fn reset_for_server(&mut self, name: String) {
         self.server_name = name;
-        self.screen = Screen::Dashboard;
         self.status = "Ganti server".into();
+        // Pertahankan layar aktif — ganti server tak boleh melempar user ke
+        // Dashboard. Layar turunan (Viewer/Terminal) isinya milik server lama,
+        // jadi jatuh ke Services.
+        if matches!(self.screen, Screen::Viewer | Screen::Terminal) {
+            self.screen = Screen::Projects;
+        }
+        self.term_input = None;
+        self.term_parser = None;
         self.stats = None;
         self.nodes.clear();
         self.actions.clear();
@@ -1095,6 +1134,7 @@ impl App {
                 self.log_cursor = None;
                 self.viewer_title = format!("Cari '{query}'");
                 self.viewer_ctx = None;
+                self.viewer_from = Screen::Projects;
                 self.screen = Screen::Viewer;
                 self.status = format!("Mencari '{query}' di semua service...");
                 let _ = req.send(Req::LogSearch { query });
@@ -1228,6 +1268,7 @@ impl App {
 
     pub(super) fn open_view(&mut self, view: View, req: &Sender<Req>) {
         if let Some((p, s, t)) = self.selected_row() {
+            self.viewer_from = Screen::Projects;
             self.viewer_ctx = Some((view, p.clone(), s.clone(), t.clone()));
             self.status = format!("Memuat {}...", view.title());
             // Log itu aliran, bukan dokumen: mulai dari kosong, tempel ke baris

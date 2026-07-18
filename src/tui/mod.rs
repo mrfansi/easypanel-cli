@@ -282,6 +282,10 @@ fn event_loop(
                 w = spawn_workers(EasypanelClient::new(&server.url, &server.token));
                 app.reset_for_server(name);
                 send_initial(&w.user);
+                // Muat data layar yang sedang dibuka (reset mengosongkannya), bukan
+                // hanya global — kalau tidak, tetap di Services tapi tabelnya kosong.
+                let screen = app.screen;
+                app.goto(screen, &w.user);
                 last_stats = Instant::now();
             }
         }

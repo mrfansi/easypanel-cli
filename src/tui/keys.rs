@@ -75,7 +75,7 @@ impl App {
             _ => match self.screen {
                 Screen::Projects => self.services_key(code, req),
                 Screen::Viewer => self.viewer_key(code),
-                Screen::Actions => move_table(&mut self.actions_state, code, self.actions.len()),
+                Screen::Actions => self.actions_key(code, req),
                 Screen::Domains => self.domains_key(code, req),
                 Screen::Monitor => self.monitor_key(code, req),
                 Screen::Hosts => move_table(&mut self.hosts_state, code, self.hosts.len()),
@@ -111,6 +111,12 @@ impl App {
             MouseEventKind::ScrollUp => self.on_key(KeyCode::Up, req),
             MouseEventKind::Down(MouseButton::Left) => self.on_click(m.column, m.row, req),
             MouseEventKind::Down(MouseButton::Right) => self.on_right_click(m.column, m.row),
+            // Sorotan mengikuti kursor: gerak mouse di atas baris memilihnya. Di
+            // luar area tabel select_row_at tak berbuat apa-apa, jadi seleksi
+            // terakhir tetap.
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                self.select_row_at(m.column, m.row);
+            }
             _ => {}
         }
     }
@@ -158,8 +164,9 @@ impl App {
     /// bila sebuah baris benar-benar terpilih.
     fn select_row_at(&mut self, col: u16, row: u16) -> bool {
         let a = self.table_area;
-        let first = a.y.saturating_add(2);
-        if col < a.x || col >= a.x.saturating_add(a.width) || row < first {
+        let first = a.y.saturating_add(2); // border atas + header
+        let last = a.y.saturating_add(a.height).saturating_sub(1); // border bawah (eksklusif)
+        if col < a.x || col >= a.x.saturating_add(a.width) || row < first || row >= last {
             return false;
         }
         let vis = (row - first) as usize;
@@ -211,24 +218,20 @@ impl App {
                 let last = menu.items.len().saturating_sub(1);
                 menu.state.select(Some((i + 1).min(last)));
             }
-            MouseEventKind::Down(_) => {
-                // Item i digambar di baris menu.rect.y + 1 + i (di dalam border).
-                let r = menu.rect;
-                let inside = m.column >= r.x
-                    && m.column < r.x.saturating_add(r.width)
-                    && m.row > r.y
-                    && m.row < r.y.saturating_add(r.height).saturating_sub(1);
-                if inside {
-                    let i = (m.row - r.y - 1) as usize;
-                    if i < menu.items.len() {
-                        menu.state.select(Some(i));
-                        self.activate_menu(req);
-                        return;
-                    }
+            // Sorotan mengikuti kursor di dalam menu.
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                if let Some(i) = menu.item_at(m.column, m.row) {
+                    menu.state.select(Some(i));
+                }
+            }
+            MouseEventKind::Down(_) => match menu.item_at(m.column, m.row) {
+                Some(i) => {
+                    menu.state.select(Some(i));
+                    self.activate_menu(req);
                 }
                 // Klik di luar menu -> tutup tanpa aksi.
-                self.menu = None;
-            }
+                None => self.menu = None,
+            },
             _ => {}
         }
     }
@@ -245,6 +248,26 @@ impl App {
         self.menu = None;
         if let Some(k) = key {
             self.on_key(k, req);
+        }
+    }
+
+    /// Actions: Enter (atau View di menu konteks) membuka detail action —
+    /// metadata + log deploy/aksi — di viewer. Sisanya navigasi tabel.
+    pub(super) fn actions_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        match code {
+            KeyCode::Enter => {
+                if let Some(id) = self.selected_action_id() {
+                    self.viewer_from = Screen::Actions;
+                    // Bukan tampilan log-tail: pastikan poll log tak menyambungnya.
+                    self.viewer_ctx = None;
+                    self.status = "Memuat detail action...".into();
+                    let _ = req.send(Req::ActionDetail(id));
+                }
+            }
+            _ => {
+                let n = self.visible_actions().len();
+                move_table(&mut self.actions_state, code, n);
+            }
         }
     }
 
@@ -661,8 +684,9 @@ impl App {
 
     pub(super) fn viewer_key(&mut self, code: KeyCode) {
         match code {
-            // Viewer dimasuki dari sebuah service, jadi Esc mengembalikan ke sana.
-            KeyCode::Esc => self.screen = Screen::Projects,
+            // Esc kembali ke layar asal viewer (Services untuk log/env/dst.,
+            // Actions untuk detail action).
+            KeyCode::Esc => self.screen = self.viewer_from,
             // Menggulung ke atas melepas tempelan: kalau tidak, baris log yang
             // baru datang akan menyeret layar kembali ke bawah persis saat user
             // sedang membaca sesuatu di atas.

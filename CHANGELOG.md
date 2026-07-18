@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-07-18
+
+### Added
+
+- **Action detail view.** Press `Enter` on a row in Actions (or right-click → View detail)
+  to open its full record — type, status, target, timestamp, and the **deploy/action log**
+  — in the viewer, the same way the web panel's "View" button works. `Esc` returns to
+  Actions (not Services). Backed by `getAction`, whose `log` field carries the output.
+
+### Fixed
+
+- **Switching servers no longer throws you back to Dashboard.** It now keeps you on the
+  screen you were on (e.g. Services) and reloads that screen's data for the new host. Only
+  the derived Viewer/Terminal screens fall back to Services, since their content belonged to
+  the old server.
+- **Mouse selection now follows the cursor.** Moving the mouse over a table highlights the
+  row under it (not only on click), and hovering the right-click context menu highlights the
+  item under the cursor — previously the highlight didn't track the pointer. Row hit-testing
+  is also bounded on all sides now, so a hover on the border or just outside a table no
+  longer selects a stray row.
+
 ## [0.24.0] — 2026-07-18
 
 ### Added
