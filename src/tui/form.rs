@@ -772,6 +772,12 @@ pub(super) enum FormKind {
         service: String,
         stype: String,
     },
+    /// Clone config sebuah service jadi service baru (nama diisi user).
+    CloneService {
+        project: String,
+        service: String,
+        stype: String,
+    },
 }
 
 pub(super) struct Form {

@@ -81,6 +81,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("U", "atur source (service app)"),
             Key("B", "atur build (service app)"),
             Key("L", "atur limit resource (CPU/memory)"),
+            Key("c", "clone service (config, bukan data)"),
             Key("N", "project baru"),
             Key("X", "hapus project"),
         ],

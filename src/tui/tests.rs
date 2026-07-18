@@ -311,6 +311,43 @@ fn spinner_shows_only_while_loading() {
 }
 
 #[test]
+fn clone_body_drops_identity_and_source_but_keeps_config() {
+    // Bentuk field diverifikasi ke server hidup (mysql). Clone menyalin config,
+    // membuang identitas/token, dan menerapkan source/configFile TERPISAH — jadi
+    // keduanya harus absen dari body createService.
+    let inspect = json!({
+        "name": "mysql", "serviceName": "mysql", "projectName": "db", "type": "mysql",
+        "enabled": true, "token": "secret", "primaryDomainId": "d1",
+        "image": "mysql:8.0", "env": "TZ=Asia/Jakarta", "password": "pw",
+        "rootPassword": "rpw", "user": "u", "databaseName": "app",
+        "source": { "type": "github" }, "configFile": "[mysqld]\nserver-id=2"
+    });
+    let body = clone_body(&inspect, "db", "mysql-replica");
+    for k in [
+        "name",
+        "type",
+        "enabled",
+        "token",
+        "primaryDomainId",
+        "source",
+        "configFile",
+    ] {
+        assert!(
+            body.get(k).is_none(),
+            "'{k}' harusnya dibuang dari body clone"
+        );
+    }
+    // Config sungguhan (termasuk kredensial) ikut tersalin.
+    assert_eq!(body["image"], json!("mysql:8.0"));
+    assert_eq!(body["env"], json!("TZ=Asia/Jakarta"));
+    assert_eq!(body["rootPassword"], json!("rpw"));
+    assert_eq!(body["databaseName"], json!("app"));
+    // Diarahkan ke target.
+    assert_eq!(body["projectName"], json!("db"));
+    assert_eq!(body["serviceName"], json!("mysql-replica"));
+}
+
+#[test]
 fn task_stats_parse_matches_server_shape() {
     // Bentuk terverifikasi ke server hidup: objek { "{proj}_{svc}": {actual,desired} }.
     let v = json!({

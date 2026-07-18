@@ -173,6 +173,15 @@ initial `resize` from the real terminal size. Verified live: connecting with
 `command=base64("sh")`, sending an `input` of `echo …`, the `output` came back with the
 shell prompt and the command result. This is the flagship feature — do it well.
 
+### Killer feature DONE (v0.26.0): clone a service — not in the web panel
+
+`c` on a service composes a copy from `inspectService` → `createService` (everything inline
+except `source`, which would deploy) → `updateSource*` (app) / `updateAdvanced` (db). Config
+only, no data, same project, no deploy. Verified live field-by-field for `app` and `mysql`
+(image, env, credentials, and the replication `configFile` all matched). The user's driving
+case is MySQL replica setup. If extending: an option to target a different project (mind the
+new-project Docker-network race — create the project as a separate step first).
+
 ### Other killer features — what the server's reality says matters most
 
 Prioritised from a read-only look at the live host (42 swarm services, Grafana Loki

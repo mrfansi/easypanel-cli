@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-07-18
+
+### Added
+
+- **Clone a service — a feature EasyPanel's own web panel does not have.** Press `c` on a
+  service (or right-click → Clone) to create a new service with the **same configuration**:
+  image/source, build, env (including credentials), resources, mounts, ports, deploy
+  settings, and — for databases — the advanced config file. You name the copy; it lands in
+  the same project and does **not** deploy or copy any data, so it is instant and safe.
+
+  The motivating case is spinning up a **MySQL replica for replication**: cloning carries
+  over the image, env, root/user passwords, and the `my.cnf` advanced config (server-id,
+  log-bin, etc.) in one step, instead of re-entering all of it by hand.
+
+  EasyPanel has no clone endpoint, so this is composed from ones it does have —
+  `inspectService` → `createService` (with everything inline except the source, which would
+  trigger a deploy) → `updateSource*` for app services / `updateAdvanced` for databases. The
+  composition was verified field-by-field against the live server for both an `app` service
+  (source, build, env matched) and a `mysql` service (image, env, passwords, and the
+  replication `configFile` matched), using throwaway targets that were then cleaned up.
+
 ## [0.25.0] — 2026-07-18
 
 ### Added

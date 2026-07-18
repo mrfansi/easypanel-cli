@@ -361,6 +361,7 @@ impl App {
                 ("Start".into(), KeyCode::Char('T')),
                 ("Env".into(), KeyCode::Char('e')),
                 ("Resource".into(), KeyCode::Char('L')),
+                ("Clone".into(), KeyCode::Char('c')),
                 ("Hapus".into(), KeyCode::Char('x')),
             ],
             Screen::Domains if self.domains_state.selected().is_some() => vec![
@@ -940,6 +941,25 @@ impl App {
         self.status = "Memuat...".into();
     }
 
+    /// Buka form clone untuk service yang disorot. Nama baru diusulkan "{svc}-copy".
+    pub(super) fn open_clone_form(&mut self) {
+        let Some((project, service, stype)) = self.selected_row() else {
+            self.status = "Pilih sebuah service dulu".into();
+            return;
+        };
+        let suggested = format!("{service}-copy");
+        self.form = Some(Form::new(
+            FormKind::CloneService {
+                project,
+                service,
+                stype,
+            },
+            " Clone service ",
+            vec![Field::text("Nama baru", &suggested)],
+        ));
+        self.status = "Config disalin (bukan data) · Enter clone · Esc batal".into();
+    }
+
     /// Buka form limit resource untuk service yang disorot (semua tipe punya).
     pub(super) fn open_resource_form(&mut self, req: &Sender<Req>) {
         let Some((project, service, stype)) = self.selected_row() else {
@@ -1121,6 +1141,28 @@ impl App {
                     return;
                 }
             },
+            FormKind::CloneService {
+                project,
+                service,
+                stype,
+            } => {
+                let new_name = form.by_label("Nama baru");
+                let new_name = new_name.trim();
+                if new_name.is_empty() {
+                    self.status = "Isi nama service baru dulu".into();
+                    return;
+                }
+                if new_name == service {
+                    self.status = "Nama baru harus beda dari service sumber".into();
+                    return;
+                }
+                let _ = req.send(Req::CloneService {
+                    project: project.clone(),
+                    service: service.clone(),
+                    stype: stype.clone(),
+                    new_name: new_name.to_string(),
+                });
+            }
             FormKind::LogSearch => {
                 let query = form.by_label("Kata kunci");
                 if query.is_empty() {

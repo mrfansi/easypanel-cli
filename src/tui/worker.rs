@@ -150,6 +150,15 @@ pub(super) enum Req {
         /// inline-nya memicu deploy 100 detik. (op, body, auto_deploy).
         source: Option<super::form::SourceCall>,
     },
+    /// Clone sebuah service — config saja, TANPA data — ke `new_name` di project
+    /// yang sama. Fitur killer: EasyPanel tak punya endpoint clone; ini komposisi
+    /// inspectService → createService (minus source) → updateSource*/updateAdvanced.
+    CloneService {
+        project: String,
+        service: String,
+        stype: String,
+        new_name: String,
+    },
     DomainSave {
         id: Option<String>,
         body: Value,
@@ -623,6 +632,12 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
+        Req::CloneService {
+            project,
+            service,
+            stype,
+            new_name,
+        } => clone_service(client, &project, &service, &stype, &new_name),
         Req::DomainSave { id, body } => {
             // createDomain mewajibkan `id` tapi server mengabaikannya dan membuat
             // cuid sendiri, jadi placeholder cukup untuk domain baru.
@@ -968,6 +983,161 @@ pub(super) fn github_repos(client: &EasypanelClient) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Field yang TAK disalin saat clone: identitas & yang dikelola server. `source`
+/// dan `configFile` punya endpoint sendiri (lihat clone_service), jadi ikut diblok
+/// di sini dan diterapkan terpisah.
+const CLONE_BLOCK: &[&str] = &[
+    "name",
+    "serviceName",
+    "projectName",
+    "type",
+    "enabled",
+    "token",
+    "primaryDomainId",
+    "deploymentUrl",
+    "commit",
+    "dbGateDomain",
+    "phpMyAdminDomain",
+    "source",
+    "configFile",
+];
+
+/// Body createService untuk clone: hasil inspectService minus field terlarang,
+/// dengan projectName/serviceName diarahkan ke target.
+pub(super) fn clone_body(inspect: &Value, project: &str, new_name: &str) -> Value {
+    let mut body = inspect.clone();
+    if let Some(obj) = body.as_object_mut() {
+        for k in CLONE_BLOCK {
+            obj.remove(*k);
+        }
+        obj.insert("projectName".into(), json!(project));
+        obj.insert("serviceName".into(), json!(new_name));
+    }
+    body
+}
+
+/// Clone CONFIG sebuah service ke `new_name` di project yang sama (bukan datanya —
+/// volume tak disalin). Komposisi: inspectService → createService (minus source,
+/// jadi tak deploy) → updateSource* (app) / updateAdvanced (db, mis. configFile
+/// replikasi). Terverifikasi live untuk app dan mysql.
+fn clone_service(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    stype: &str,
+    new_name: &str,
+) -> Resp {
+    let grp = format!("services/{stype}");
+    let ps = json!({ "projectName": project, "serviceName": service });
+    let inspect = match client.call(&grp, "inspectService", ps) {
+        Ok(v) => v,
+        Err(e) => return Resp::Err(format!("clone: gagal membaca sumber: {e}")),
+    };
+    // 1) Buat service dengan seluruh config inline KECUALI source.
+    if let Err(e) = client.call(
+        &grp,
+        "createService",
+        clone_body(&inspect, project, new_name),
+    ) {
+        return Resp::Err(format!("clone: gagal membuat '{new_name}': {e}"));
+    }
+    // 2) Source (service app/compose) diterapkan terpisah agar tak memicu deploy.
+    if let Some(src) = inspect.get("source").filter(|s| s.get("type").is_some()) {
+        if let Err(e) = apply_clone_source(client, &grp, project, new_name, src) {
+            return Resp::Err(format!("clone '{new_name}' dibuat, source gagal: {e}"));
+        }
+    }
+    // 3) configFile (db): updateAdvanced — inilah yang membawa konfig lanjutan
+    //    seperti setelan replikasi MySQL.
+    if inspect
+        .get("configFile")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+    {
+        let adv = json!({
+            "projectName": project, "serviceName": new_name,
+            "command": inspect.get("command").cloned().unwrap_or(Value::Null),
+            "configFile": inspect.get("configFile").cloned().unwrap_or(Value::Null),
+            "env": inspect.get("env").cloned().unwrap_or(Value::Null),
+            "image": inspect.get("image").cloned().unwrap_or(Value::Null),
+        });
+        if let Err(e) = client.call(&grp, "updateAdvanced", adv) {
+            return Resp::Err(format!(
+                "clone '{new_name}' dibuat, config lanjutan gagal: {e}"
+            ));
+        }
+    }
+    Resp::Done(
+        format!("'{service}' di-clone jadi '{new_name}' — tekan d untuk deploy (data TAK ikut)"),
+        Refresh::Projects,
+    )
+}
+
+/// Terapkan source hasil inspect ke service clone (endpoint per tipe source),
+/// lalu pasang ulang autoDeploy untuk github (updateSourceGithub meresetnya).
+fn apply_clone_source(
+    client: &EasypanelClient,
+    grp: &str,
+    project: &str,
+    service: &str,
+    src: &Value,
+) -> Result<()> {
+    let with_id = |mut v: Value| -> Value {
+        v["projectName"] = json!(project);
+        v["serviceName"] = json!(service);
+        v
+    };
+    let path = src.get("path").cloned().unwrap_or_else(|| json!("/"));
+    match src.get("type").and_then(Value::as_str).unwrap_or("") {
+        "github" => {
+            client.call(
+                grp,
+                "updateSourceGithub",
+                with_id(json!({
+                    "owner": field(src, "/owner"), "repo": field(src, "/repo"),
+                    "ref": field(src, "/ref"), "path": path,
+                })),
+            )?;
+            if src
+                .get("autoDeploy")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                client.call(
+                    grp,
+                    "enableGithubDeploy",
+                    json!({ "projectName": project, "serviceName": service }),
+                )?;
+            }
+        }
+        "git" => {
+            client.call(
+                grp,
+                "updateSourceGit",
+                with_id(
+                    json!({ "repo": field(src, "/repo"), "ref": field(src, "/ref"), "path": path }),
+                ),
+            )?;
+        }
+        "image" => {
+            client.call(
+                grp,
+                "updateSourceImage",
+                with_id(json!({ "image": field(src, "/image") })),
+            )?;
+        }
+        "dockerfile" => {
+            client.call(
+                grp,
+                "updateSourceDockerfile",
+                with_id(json!({ "dockerfile": field(src, "/dockerfile") })),
+            )?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Peta `{ "{project}_{service}": {actual, desired} }` dari getDockerTaskStats

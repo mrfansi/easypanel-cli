@@ -621,6 +621,7 @@ impl App {
             KeyCode::Char('U') => self.open_config_form(false, req),
             KeyCode::Char('B') => self.open_config_form(true, req),
             KeyCode::Char('L') => self.open_resource_form(req),
+            KeyCode::Char('c') => self.open_clone_form(),
             KeyCode::Char('E') => self.start_env_edit(),
             KeyCode::Char('t') => {
                 // Terminal ke container: event_loop yang mengerjakannya (ia yang
