@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] — 2026-07-19
+
+### Fixed
+
+- **GUI editors no longer discard your edit.** Setting `EDITOR=code` (or Cursor,
+  Zed, Sublime, VSCodium, Windsurf, or a JetBrains IDE) looked supported but
+  quietly threw work away: those editors hand the file to an already-running
+  window and exit immediately, so the TUI read the temp file back before a single
+  keystroke was typed, found it unchanged, reported "Unchanged", and deleted it.
+  The flag that makes them block until the file is closed is now added
+  automatically — `EDITOR=code` runs as `code --wait`. An editor that already has
+  it (`EDITOR="code -w"`) is left alone, and terminal editors, which block on
+  their own, are untouched.
+
+### Added
+
+- **`EASYPANEL_EDITOR`** — checked before `$VISUAL` and `$EDITOR`, so you can use a
+  terminal editor here without changing the editor the rest of your machine uses.
+- While a GUI editor is open, the terminal now says what it is waiting for. The TUI
+  is torn down for the hand-off, and a blank screen with no explanation reads as a
+  hang.
+
 ## [0.44.0] — 2026-07-18
 
 ### Added

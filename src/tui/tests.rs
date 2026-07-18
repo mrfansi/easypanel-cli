@@ -2084,3 +2084,39 @@ fn migrating_a_project_collects_every_service_in_it() {
         "another project's service must not be swept in"
     );
 }
+
+#[test]
+fn gui_editors_are_made_to_wait_so_the_edit_is_not_lost() {
+    use super::with_editor_wait;
+    let cmd = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+
+    // Without the flag VS Code hands off and exits at once; the temp file would be
+    // read back unchanged and deleted, throwing the user's edit away.
+    let (got, gui) = with_editor_wait(&cmd("code"));
+    assert_eq!(got, cmd("code --wait"));
+    assert!(gui);
+
+    // A full path and a Windows launcher resolve the same as a bare name.
+    let (got, _) = with_editor_wait(&cmd("/usr/local/bin/code"));
+    assert_eq!(got, cmd("/usr/local/bin/code --wait"));
+    let (got, _) = with_editor_wait(&cmd("code.cmd"));
+    assert_eq!(got, cmd("code.cmd --wait"));
+
+    // Already correct: don't pass it twice.
+    for already in ["code -w", "code --wait", "gvim -f"] {
+        let (got, gui) = with_editor_wait(&cmd(already));
+        assert_eq!(got, cmd(already), "{already} must be left alone");
+        assert!(gui);
+    }
+
+    // Terminal editors block on their own — adding a flag would break them.
+    for term in ["vi", "nano", "nvim", "vim", "emacs", "helix", "micro"] {
+        let (got, gui) = with_editor_wait(&cmd(term));
+        assert_eq!(got, cmd(term), "{term} must be untouched");
+        assert!(!gui, "{term} is not a GUI editor");
+    }
+
+    // Existing user arguments survive; the flag goes after them.
+    let (got, _) = with_editor_wait(&cmd("code --new-window"));
+    assert_eq!(got, cmd("code --new-window --wait"));
+}

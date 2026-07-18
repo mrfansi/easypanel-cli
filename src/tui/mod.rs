@@ -513,17 +513,92 @@ fn edit_text_in_editor(
     Ok((edited.trim_end() != current.trim_end()).then_some(edited))
 }
 
+/// GUI editors and the flag that makes them BLOCK until the file is closed.
+///
+/// Without it they hand the file to an already-running window and exit at once.
+/// The TUI would then read the temp file before a single keystroke was typed,
+/// find it unchanged, and delete it — the user's edit silently thrown away, with
+/// the UI reporting "Unchanged". Terminal editors (vi, nano, nvim, emacs, helix,
+/// micro) already block, so they aren't listed.
+const EDITOR_WAIT_FLAGS: &[(&str, &str)] = &[
+    ("code", "--wait"),
+    ("code-insiders", "--wait"),
+    ("codium", "--wait"),
+    ("vscodium", "--wait"),
+    ("cursor", "--wait"),
+    ("windsurf", "--wait"),
+    ("positron", "--wait"),
+    ("zed", "--wait"),
+    ("subl", "--wait"),
+    ("sublime_text", "--wait"),
+    ("mate", "--wait"),
+    ("atom", "--wait"),
+    ("gvim", "-f"),
+    ("kate", "--block"),
+    // JetBrains launchers all take the same flag.
+    ("idea", "--wait"),
+    ("webstorm", "--wait"),
+    ("pycharm", "--wait"),
+    ("phpstorm", "--wait"),
+    ("goland", "--wait"),
+    ("rustrover", "--wait"),
+    ("clion", "--wait"),
+    ("rubymine", "--wait"),
+];
+
+/// The wait flag for `prog`, if it's a GUI editor that needs one.
+///
+/// Matched on the file name so a full path (`/usr/local/bin/code`) and a Windows
+/// launcher (`code.cmd`) resolve the same as a bare name.
+fn editor_wait_flag(prog: &str) -> Option<&'static str> {
+    let name = std::path::Path::new(prog)
+        .file_stem()?
+        .to_str()?
+        .to_ascii_lowercase();
+    EDITOR_WAIT_FLAGS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, f)| *f)
+}
+
+/// Make a GUI editor wait, unless the user already said so.
+///
+/// Returns the command to run and whether it's a GUI editor — the caller says
+/// what it's waiting for, because the TUI is torn down at that point and an
+/// otherwise-blank terminal looks like a hang.
+pub(super) fn with_editor_wait(cmd: &[String]) -> (Vec<String>, bool) {
+    let Some((prog, args)) = cmd.split_first() else {
+        return (cmd.to_vec(), false);
+    };
+    let Some(flag) = editor_wait_flag(prog) else {
+        return (cmd.to_vec(), false);
+    };
+    // `EDITOR="code -w"` is already correct; don't pass the flag twice.
+    let already = args
+        .iter()
+        .any(|a| matches!(a.as_str(), "-w" | "--wait" | "-f" | "--block"));
+    if already {
+        return (cmd.to_vec(), true);
+    }
+    let mut out = cmd.to_vec();
+    out.push(flag.to_string());
+    (out, true)
+}
+
 /// Editor candidates: the user's choice first, then fallbacks that are sure to
 /// exist on Unix.
 ///
 /// Each entry is split into program + arguments, so `EDITOR="code -w"` works and
-/// isn't looked up as a single binary named "code -w".
+/// isn't looked up as a single binary named "code -w". `EASYPANEL_EDITOR` wins
+/// over the global $EDITOR, so a terminal editor can be used here without
+/// changing the editor everything else on the machine uses.
 fn editor_candidates() -> Vec<Vec<String>> {
-    let mut out: Vec<Vec<String>> = ["VISUAL", "EDITOR"]
+    let mut out: Vec<Vec<String>> = ["EASYPANEL_EDITOR", "VISUAL", "EDITOR"]
         .iter()
         .filter_map(|k| std::env::var(k).ok())
         .map(|v| v.split_whitespace().map(String::from).collect::<Vec<_>>())
         .filter(|v| !v.is_empty())
+        .map(|v| with_editor_wait(&v).0)
         .collect();
     out.push(vec!["vi".into()]);
     out.push(vec!["nano".into()]);
@@ -540,6 +615,12 @@ fn open_in_editor(path: &std::path::Path) -> Result<()> {
     let mut missing = Vec::new();
     for cand in editor_candidates() {
         let (prog, args) = cand.split_first().expect("candidate is never empty");
+        // The TUI is torn down while the editor runs. A terminal editor fills that
+        // blank screen itself; a GUI one leaves it empty, which reads as a hang —
+        // so say what we're waiting for.
+        if editor_wait_flag(prog).is_some() {
+            println!("Waiting for {prog} — save and close the file there to come back.");
+        }
         match std::process::Command::new(prog)
             .args(args)
             .arg(path)

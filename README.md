@@ -194,6 +194,31 @@ A Dockerfile is not a single-line value, and `updateSourceDockerfile` takes its 
 inline rather than a path — so pretending otherwise would send one long line that never
 builds.
 
+### Your editor
+
+Env files, Dockerfiles and database config files open in your own editor. The first
+of `$EASYPANEL_EDITOR`, `$VISUAL`, `$EDITOR` that is actually installed wins, falling
+back to `vi` then `nano`. `EASYPANEL_EDITOR` exists so you can use a terminal editor
+here without changing the editor the rest of your machine uses.
+
+**GUI editors work — including VS Code, Cursor, Zed, Sublime and the JetBrains IDEs.**
+They need a flag to block until you close the file, and it's added for you:
+
+```bash
+export EDITOR=code          # runs as: code --wait <file>
+export EDITOR="code -w"     # already correct, left alone
+export EDITOR=nvim          # terminal editors block anyway, untouched
+```
+
+Without that flag these editors hand the file to an already-open window and exit
+immediately — the TUI would read the file back before you typed anything, see no
+change, and discard your edit. While a GUI editor is open the terminal says what it's
+waiting for, so the blank screen doesn't look like a hang.
+
+If your `code` is a shell alias rather than a real command (common on macOS), point
+`$EDITOR` at the binary itself — in VS Code, run **Shell Command: Install 'code'
+command in PATH** from the command palette.
+
 **`n` opens a creation wizard that follows the EasyPanel dashboard's flow:**
 **Basics → Source → Build → Environment → Domains.** `Enter` advances a step, `Esc` goes
 back, and the title shows where you are (`2/5 Source`). A database is a single step —
