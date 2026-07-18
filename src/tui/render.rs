@@ -72,7 +72,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("e", "lihat env"),
             Key("p", "lihat ports"),
             Key("m", "lihat mounts"),
-            Key("o", "lihat domains"),
+            Key("o", "kelola domain (buka tab Domains ter-filter)"),
             Key("b", "lihat backups"),
             Key("u", "lihat source & build"),
             Key("E", "edit env di $EDITOR"),

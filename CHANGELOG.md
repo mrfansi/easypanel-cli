@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-07-18
+
+### Changed
+
+- **Manage a service's domains, not just view them.** `o` on a service (or right-click →
+  Domain) now opens the Domains tab filtered to that service, where the full domain toolset
+  already lives — `n` add, `e` edit, `x` delete, `P` set primary — instead of the old
+  read-only list. The filter matches the domain's destination (`…{project}_{service}…`), so
+  you see exactly that service's domains and can act on them. This closes the gap where a
+  service could only *show* its domains with no way to add, edit, or remove one.
+
 ## [0.28.1] — 2026-07-18
 
 ### Added

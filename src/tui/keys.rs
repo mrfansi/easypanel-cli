@@ -730,7 +730,7 @@ impl App {
             KeyCode::Char('e') => self.open_view(View::Env, req),
             KeyCode::Char('p') => self.open_view(View::Ports, req),
             KeyCode::Char('m') => self.open_view(View::Mounts, req),
-            KeyCode::Char('o') => self.open_view(View::Domains, req),
+            KeyCode::Char('o') => self.open_service_domains(req),
             KeyCode::Char('b') => self.open_view(View::Backups, req),
             KeyCode::Char('u') => self.open_view(View::Source, req),
             KeyCode::Char('A') => self.toggle_auto_deploy(req),

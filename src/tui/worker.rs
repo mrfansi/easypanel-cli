@@ -16,7 +16,6 @@ pub(super) enum View {
     Env,
     Ports,
     Mounts,
-    Domains,
     Backups,
     Source,
 }
@@ -28,7 +27,6 @@ impl View {
             View::Env => "Env",
             View::Ports => "Ports",
             View::Mounts => "Mounts",
-            View::Domains => "Domains",
             View::Backups => "Database backups",
             View::Source => "Source & build",
         }
@@ -899,22 +897,6 @@ pub(super) fn fetch_view(
                     _ => field(m, "/mountPath"),
                 };
                 format!("[{i}] {}  {detail}", field(m, "/type"))
-            })
-        }
-        View::Domains => {
-            let v = client.call("domains", "listDomains", ps)?;
-            list_or_empty(&v, "Tidak ada domain", |_, d| {
-                let scheme = if d.get("https").and_then(Value::as_bool).unwrap_or(false) {
-                    "https"
-                } else {
-                    "http"
-                };
-                format!(
-                    "{} ({scheme})  port {}  [{}]",
-                    field(d, "/host"),
-                    field(d, "/serviceDestination/port"),
-                    field(d, "/id")
-                )
             })
         }
         View::Source => {

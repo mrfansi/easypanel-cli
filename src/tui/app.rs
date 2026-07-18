@@ -360,6 +360,7 @@ impl App {
                 ("Stop".into(), KeyCode::Char('S')),
                 ("Start".into(), KeyCode::Char('T')),
                 ("Env".into(), KeyCode::Char('e')),
+                ("Domain".into(), KeyCode::Char('o')),
                 ("Resource".into(), KeyCode::Char('L')),
                 ("Clone".into(), KeyCode::Char('c')),
                 ("Hapus".into(), KeyCode::Char('x')),
@@ -939,6 +940,20 @@ impl App {
             build,
         });
         self.status = "Memuat...".into();
+    }
+
+    /// Kelola domain sebuah service: buka tab Domains ter-filter ke service itu.
+    /// Reuse CRUD domain penuh (n baru · e edit · x hapus · P primary) alih-alih
+    /// viewer read-only. Filter cocok ke destination "protocol://{project}_{service}:…".
+    pub(super) fn open_service_domains(&mut self, req: &Sender<Req>) {
+        let Some((project, service, _)) = self.selected_row() else {
+            self.status = "Pilih sebuah service dulu".into();
+            return;
+        };
+        // goto mengosongkan filter lebih dulu, jadi set filter SESUDAHnya.
+        self.goto(Screen::Domains, req);
+        self.filter = format!("{project}_{service}");
+        self.status = format!("Domain {project}/{service} · n baru · e edit · x hapus · P primary");
     }
 
     /// Buka form clone untuk service yang disorot. Nama baru diusulkan "{svc}-copy".
