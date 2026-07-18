@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.1] — 2026-07-19
+
+### Fixed
+
+- **The status line no longer reports "Ready" over a request that is still
+  running.** "Is anything happening?" was inferred from the message text ending
+  in `...`, and a six-second timer rewrote that text to "Ready" whether or not
+  the reply had arrived. The worst case was `systemPrune` — a host-wide,
+  irreversible Docker prune whose only feedback is "Sending..."; six seconds
+  later the bar claimed it was done while the request was still in flight, and
+  re-running it is the obvious next move.
+
+  The worker's user lane now counts what it is actually working on, and both the
+  spinner and the fade read that count. The periodic metrics lane is deliberately
+  not counted: it refetches every two seconds and would pin a spinner on screen
+  permanently while telling you nothing about the action you asked for.
+
+  Seen against an unreachable host: `⠧ Loading…` held for 27 seconds without
+  fading, then the connection error appeared and stayed. Before, the bar read
+  "Ready" with no spinner while three requests hung.
+
+- **The spinner stopped guessing.** It ran whenever the message happened to end
+  in `...` — so it kept spinning after a reply had come back, and stopped the
+  moment an unrelated message replaced the text. It now runs exactly while
+  something is in flight.
+
+- **"Ready" no longer appears next to a running spinner.** During the initial
+  load the resting message sat beside a spinning indicator, each contradicting
+  the other; the line now reads "Loading…" while that first fetch is out.
+
+### Internal
+
+None of the ~68 request dispatch sites changed. Counting inside the worker,
+which is the only place that knows when work actually ends, kept this to one
+file's plumbing instead of a rewrite of every call site.
+
 ## [0.46.0] — 2026-07-19
 
 ### Added

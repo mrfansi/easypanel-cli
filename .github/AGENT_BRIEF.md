@@ -305,10 +305,20 @@ Fill out the management surface. Verify live with a `zzz-*` target and clean up.
       does **not** return the current env at top level, so prefill needs another source
       (maybe `project.env`) — verify before building or it edits blind.
 
-### Open UX defect: the status line cannot tell "working" from "finished"
+### ~~Open UX defect: the status line cannot tell "working" from "finished"~~
 
-Half-fixed in v0.45.1 — failures no longer fade away. The other half is still open and
-needs a real change, not a heuristic:
+**Done.** Failures stopped fading in v0.45.1; in-flight tracking landed in v0.46.1. The
+worker's user lane now counts what it is working on (`spawn_worker` takes an
+`Option<Arc<AtomicUsize>>`; only the user lane is counted, because the poll lane refetches
+every two seconds and would pin a spinner permanently). The App reads that counter, so the
+spinner reflects real work and the fade cannot report "Ready" over a running request.
+Verified on screen against a black-holed host: `⠧ Loading…` held for 27 s without fading,
+then the timeout error appeared and stuck; on Dashboard, where refresh sends nothing, there
+is no spinner and the notice still fades at six seconds.
+
+No send site changed. Counting in the worker rather than at the ~68 `req.send()` calls kept
+this to one file's plumbing. The original analysis below is kept because the rejected fix
+is still the tempting one:
 
 **There is no in-flight tracking.** The spinner and the "is something happening?" signal
 are both derived from the status *string* ending in `...` (`app.rs`, `spinner()`), and the

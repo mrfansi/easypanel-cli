@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 
 use anyhow::Result;
@@ -338,12 +340,32 @@ pub(super) enum Refresh {
 }
 
 /// One worker lane: processes requests in order and sends the results to `resp_tx`.
-pub(super) fn spawn_worker(client: EasypanelClient, resp_tx: Sender<Resp>) -> Sender<Req> {
+/// Spawn a lane. `busy`, when given, counts what this lane is working on RIGHT
+/// NOW — the honest answer to "is the user waiting for something?".
+///
+/// It is the worker that counts, not the sender, because only the worker knows
+/// when the work is actually over. The alternative — inferring it from the status
+/// text ending in "..." — was what the UI used to do, and it could not tell a
+/// finished request from an abandoned message.
+pub(super) fn spawn_worker(
+    client: EasypanelClient,
+    resp_tx: Sender<Resp>,
+    busy: Option<Arc<AtomicUsize>>,
+) -> Sender<Req> {
     let (req_tx, req_rx) = mpsc::channel::<Req>();
 
     thread::spawn(move || {
         while let Ok(req) = req_rx.recv() {
+            if let Some(b) = &busy {
+                b.fetch_add(1, Ordering::Relaxed);
+            }
             let resp = handle_req(&client, req, &resp_tx);
+            // Cleared BEFORE the reply is posted, so by the time the UI handles the
+            // response the lane already reads idle — otherwise the spinner would
+            // survive one extra frame past the answer.
+            if let Some(b) = &busy {
+                b.fetch_sub(1, Ordering::Relaxed);
+            }
             if resp_tx.send(resp).is_err() {
                 break;
             }
@@ -364,17 +386,25 @@ pub(super) struct Workers {
     /// For the Hosts screen fan-out: each host gets its own thread, so its result
     /// doesn't go through the user/poll lane bound to a single client.
     pub(super) resp_tx: Sender<Resp>,
+    /// How many user-initiated requests are in flight. Shared with the App, which
+    /// uses it to decide whether anything is actually happening.
+    pub(super) busy: Arc<AtomicUsize>,
 }
 
 pub(super) fn spawn_workers(client: EasypanelClient) -> Workers {
     let (resp_tx, resp) = mpsc::channel::<Resp>();
-    let user = spawn_worker(client.clone(), resp_tx.clone());
-    let poll = spawn_worker(client, resp_tx.clone());
+    let busy = Arc::new(AtomicUsize::new(0));
+    // Only the user lane is counted. The poll lane refetches metrics every two
+    // seconds; counting it would leave a spinner running permanently and tell the
+    // user nothing about the action they actually asked for.
+    let user = spawn_worker(client.clone(), resp_tx.clone(), Some(busy.clone()));
+    let poll = spawn_worker(client, resp_tx.clone(), None);
     Workers {
         user,
         poll,
         resp,
         resp_tx,
+        busy,
     }
 }
 

@@ -1134,8 +1134,8 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     };
     // A spinner while an operation is running: signals "working", not frozen.
     let head = match app.spinner() {
-        Some(c) => format!(" {c} {} ", app.status),
-        None => format!(" {} ", app.status),
+        Some(c) => format!(" {c} {} ", app.status_line()),
+        None => format!(" {} ", app.status_line()),
     };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(head, status_style))).style(bar),

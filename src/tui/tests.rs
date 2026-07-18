@@ -636,17 +636,30 @@ fn palette_filters_then_jumps_to_service() {
 
 #[test]
 fn spinner_shows_only_while_loading() {
-    // The spinner = "working" feedback. It shows while the status ends with "..." /
-    // "…" (Loading…/Sending…/Searching…), and is quiet on an ordinary status.
+    // The spinner = "working" feedback, driven by REAL in-flight work rather than
+    // by the message ending in "...". The text was only ever a guess: it kept
+    // spinning after the reply arrived, and went quiet the moment an unrelated
+    // message replaced it.
+    use std::sync::atomic::Ordering;
     let mut app = App::new("t".into(), vec![]);
+
     app.status = "Ready".into();
-    assert!(app.spinner().is_none());
+    assert!(app.spinner().is_none(), "idle lane, no spinner");
+
+    // The wording no longer decides anything — the lane does.
     app.status = "Loading...".into();
-    assert!(app.spinner().is_some());
-    app.status = "Searching 'x' across all services…".into();
-    assert!(app.spinner().is_some());
+    assert!(app.spinner().is_none(), "nothing is actually running");
+
+    app.busy.store(1, Ordering::Relaxed);
+    assert!(app.spinner().is_some(), "a request is in flight");
     app.status = "Domain deleted".into();
-    assert!(app.spinner().is_none());
+    assert!(
+        app.spinner().is_some(),
+        "still working, whatever the message says"
+    );
+
+    app.busy.store(0, Ordering::Relaxed);
+    assert!(app.spinner().is_none(), "the work finished");
 }
 
 #[test]
@@ -2135,19 +2148,19 @@ fn a_failure_is_never_faded_away() {
         "Migrated 0/2 · failed: db: couldn't create",
     ] {
         assert!(
-            !status_should_fade(err, long),
+            !status_should_fade(err, long, 0),
             "a failure must survive: {err}"
         );
     }
 
     // Routine notices still fade, so they don't linger forever.
     for notice in ["Deploy started", "Env saved", "Refreshing..."] {
-        assert!(status_should_fade(notice, long), "should fade: {notice}");
-        assert!(!status_should_fade(notice, short), "not before its time");
+        assert!(status_should_fade(notice, long, 0), "should fade: {notice}");
+        assert!(!status_should_fade(notice, short, 0), "not before its time");
     }
 
     // "Ready" is already the resting state; there is nothing to revert to.
-    assert!(!status_should_fade("Ready", long));
+    assert!(!status_should_fade("Ready", long, 0));
 }
 
 #[test]
@@ -2166,7 +2179,7 @@ fn render_and_the_fade_agree_on_what_counts_as_a_failure() {
     ] {
         assert_eq!(
             status_is_error(s),
-            !status_should_fade(s, long) && s != "Ready",
+            !status_should_fade(s, long, 0) && s != "Ready",
             "the colour rule and the fade rule disagree about: {s}"
         );
     }
@@ -2232,4 +2245,32 @@ fn force_rebuild_is_offered_and_actually_turns_the_cache_off() {
         }
         _ => panic!("expected Req::Action"),
     }
+}
+
+#[test]
+fn nothing_reports_ready_while_a_request_is_still_running() {
+    use super::{status_should_fade, STATUS_IDLE};
+    let long = STATUS_IDLE + std::time::Duration::from_secs(60);
+
+    // The case that made this worth fixing: `systemPrune` is a host-wide,
+    // irreversible Docker prune whose only feedback is "Sending...". Fading that
+    // to "Ready" after six seconds claims a destructive action finished when it
+    // has not — and re-running it is the obvious next move.
+    assert!(
+        !status_should_fade("Sending...", long, 1),
+        "a running request must never be reported as finished"
+    );
+    // Not about the wording: a message with no "..." is equally protected.
+    assert!(!status_should_fade("Pruning the host", long, 1));
+
+    // Once the lane goes idle the same notice is free to fade.
+    assert!(status_should_fade("Sending...", long, 0));
+
+    // A screen that refreshes WITHOUT sending anything (Dashboard, Terminal) must
+    // still fade — the naive fix for this bug (never fade a "..." message) left a
+    // spinner running forever there, which is why it was rejected.
+    assert!(
+        status_should_fade("Refreshing...", long, 0),
+        "a message with no request behind it must not stick"
+    );
 }

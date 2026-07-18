@@ -168,6 +168,10 @@ pub(super) struct App {
     /// Set by the migrate form; event_loop resolves the destination token and
     /// hands the work to the worker.
     pub(super) migrate_req: Option<MigrateReq>,
+    /// Shared with the worker's user lane: non-zero while a request the user asked
+    /// for is still running. Owned as an Arc so the worker can clear it from its
+    /// own thread the instant the work ends.
+    pub(super) busy: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// (project, service, stype, replace) — awaiting an env edit in $EDITOR.
     /// `replace` = true opens an EMPTY editor (quick-replace: paste new env without
     /// waiting for a fetch or deleting the old one); false loads the current env.
@@ -392,6 +396,7 @@ impl App {
             chooser: None,
             server_action: None,
             migrate_req: None,
+            busy: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             edit_env: None,
             edit_config: None,
             edit_field: None,
@@ -896,10 +901,30 @@ impl App {
         status_is_error(&self.status)
     }
 
+    /// How many user-initiated requests are still in flight.
+    pub(super) fn busy(&self) -> usize {
+        self.busy.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The words to put on the status line.
+    ///
+    /// "Ready" is the resting message, so it must not sit next to a running
+    /// spinner claiming the tool is idle while it waits on the server — which is
+    /// exactly what the first paint does while the initial load is in flight.
+    pub(super) fn status_line(&self) -> &str {
+        if self.busy() > 0 && self.status == "Ready" {
+            "Loading…"
+        } else {
+            &self.status
+        }
+    }
+
     pub(super) fn spinner(&self) -> Option<char> {
         const F: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let loading = self.status.ends_with("...") || self.status.ends_with('…');
-        loading.then(|| F[((self.anim.elapsed().as_millis() / 90) % 10) as usize])
+        // Driven by real in-flight work, not by the message ending in "...". The
+        // text was only ever a guess: it kept spinning after a reply had come back
+        // and stopped the moment an unrelated message replaced it.
+        (self.busy() > 0).then(|| F[((self.anim.elapsed().as_millis() / 90) % 10) as usize])
     }
 
     /// Is any animation active? Used by the event loop to tighten redraws (smoother)

@@ -80,8 +80,8 @@ const STATUS_IDLE: Duration = Duration::from_secs(6);
 /// - A failure — it is the ONLY copy the user gets. There is no log and no
 ///   history to scroll back to, so erasing it after six seconds loses the message
 ///   for good AND replaces it with a claim that everything is fine.
-pub(super) fn status_should_fade(status: &str, idle: Duration) -> bool {
-    status != "Ready" && !app::status_is_error(status) && idle >= STATUS_IDLE
+pub(super) fn status_should_fade(status: &str, idle: Duration, busy: usize) -> bool {
+    status != "Ready" && !app::status_is_error(status) && busy == 0 && idle >= STATUS_IDLE
 }
 
 fn event_loop(
@@ -91,6 +91,9 @@ fn event_loop(
     client: EasypanelClient,
 ) -> Result<()> {
     let mut w = spawn_workers(client);
+    // The App decides what to draw; the worker knows what is running. One shared
+    // counter joins them.
+    app.busy = w.busy.clone();
     send_initial(&w.user);
     let mut last_stats = Instant::now();
     let mut last_status = app.status.clone();
@@ -104,7 +107,7 @@ fn event_loop(
         if app.status != last_status {
             last_status = app.status.clone();
             status_since = Instant::now();
-        } else if status_should_fade(&app.status, status_since.elapsed()) {
+        } else if status_should_fade(&app.status, status_since.elapsed(), app.busy()) {
             app.status = "Ready".into();
             last_status = app.status.clone();
         }
