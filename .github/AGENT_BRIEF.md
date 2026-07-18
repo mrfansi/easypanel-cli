@@ -356,6 +356,94 @@ Measurement lied more often than the code did in this project's history:
 
 When a check says something is broken, first ask whether the *check* is broken.
 
+## Code health — audit and refactor to stop the codebase bloating (standing)
+
+A run may spend itself paying down code weight instead of shipping a feature — and
+*should*, when the code is visibly bloating. This is real work, not filler. It is held to
+one hard bar: **behaviour-preserving, and proven so.**
+
+**What counts as bloat here — hunt these:**
+
+- **Files that outgrew one sitting.** `app.rs`, `render.rs`, `keys.rs` are the largest.
+  When a file passes ~1,000 lines or mixes several concerns, split it along the boundaries
+  the project already set — `worker` (I/O), `app` (state + selectors), `keys` (key/mouse →
+  action), `form`/`table` (shared vocabulary), `render` (draws, decides nothing) — the way
+  the 5,000-line `src/tui.rs` was split into `tui/`.
+- **Duplicated flows.** The per-service edit forms (Source / Build / Resource) and the
+  `fetch → form → save` round-trips share one shape; the `Req`/`Resp` match arms rhyme. If
+  a *fourth* copy of a shape appears, extract the shape — don't paste it a fourth time.
+- **Dead weight.** Unused fields/functions, stale `#[allow(...)]`, commented-out blocks,
+  a `View`/`FormKind` variant nothing constructs.
+- **Over-long functions and deep nesting** a small helper would flatten.
+- **Over-abstraction is also bloat.** An interface with one impl, a config for a value that
+  never changes, a generic used once. Remove these; never add them (ponytail: the best code
+  is the code never written).
+
+**How — non-negotiable:**
+
+- **Prove it changed nothing.** The test suite stays green *and* the list of test names is
+  identical before and after (the `tui/` split used exactly this as its proof: same 83
+  tests, diffed identical). If a refactor forces a test to change, it is not a pure refactor
+  — say so, and treat it as behaviour change.
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all clean.
+- **One coherent refactor per run** — a diff a reviewer can follow in a single pass, not a
+  scattershot sweep across the tree.
+- **Never mix a refactor with a feature in the same commit.** The "nothing else moved" proof
+  only holds if nothing else moved.
+- **No behaviour change → no release, no version bump, no tag.** Just commit it, with a
+  message stating what moved and why. This is the *one* kind of run that ships without a
+  release — it does not contradict "every change ships a release" below, because there is no
+  user-visible change to release. Still update `CHANGELOG.md`? No — a pure internal refactor
+  has no Keep-a-Changelog entry; leave the changelog alone.
+
+**Do not refactor for its own sake.** Clean code that isn't bloating is *done*; touching it
+to "improve" it manufactures the very churn this guards against and risks a regression a
+behaviour-neutral diff was supposed to avoid. Refactor when there is measurable weight to
+remove, and leave it alone otherwise. A run that audits, finds the code healthy, and changes
+nothing is a success — report the audit and stop.
+
+## Feature consistency & gaps — hunt asymmetries (standing)
+
+A run may spend itself finding and closing places where the tool is *inconsistent with
+itself* — a capability offered in one place but not its sibling. These are often the highest
+"feels finished" wins, and several real ones were found exactly this way (ports could be
+*added* but not *deleted* until v0.21.0; click-to-select worked only on Services until
+v0.23.0). Look at the tool the way a user does: "I can do X here, why not there?"
+
+**Asymmetries to hunt — each is a real pattern this repo has hit:**
+
+- **CLI vs TUI parity.** A capability exists in the CLI but not the TUI, or vice versa.
+  (The CLI has `mount-add`; the TUI's Mounts view is still read-only — a live gap.)
+- **Add/edit without delete, or list without act.** If you can create a thing, you should be
+  able to remove it from the same surface (ports were add-only). If a view lists rows, ask
+  whether the obvious action on a row exists.
+- **Sibling screens that drifted.** Two screens with the same shape but different
+  affordances for no reason — the same key doing different things, one confirming a
+  destructive action while the other doesn't, one clickable while the other isn't. Domains
+  has full create/edit/delete/primary; compare every other per-service resource against it.
+- **Partially-covered endpoint groups.** A `backend.js` group where the tool uses some
+  operations but not the natural companions (delete present, update absent; `getX` used but
+  the paired `setX` never wired).
+- **Inconsistent language for one concept.** The same state labelled differently in two
+  places, a status phrased one way in the table and another in the viewer. Pick one.
+- **Wizard vs edit drift.** A field editable after creation but not offerable at creation
+  (or the reverse) when the API accepts it inline — the create wizard's still-open steps
+  (ports, resources) are exactly this.
+
+**How to act on a finding:**
+
+- If it is implementable and live-verifiable now, **close it** — one per run, held to the
+  same Definition of done as any feature (verify against the server with a `zzz-*` target,
+  ship a release).
+- If it needs the live server or a shape you can't confirm, **write it into the backlog
+  above** (or open an issue) with the exact asymmetry, and stop — do not guess.
+- A pure inconsistency in *labels/affordances* with no API involved is still worth fixing,
+  and is often a small, safe diff.
+
+Report the asymmetries you found even when you only close one — the list is the map for the
+next run. And do not manufacture asymmetry: two things that are *meant* to differ (a
+read-only history screen vs. an actionable table) are not a gap.
+
 ## Every change ships a release
 
 Non-negotiable, per the project owner:
