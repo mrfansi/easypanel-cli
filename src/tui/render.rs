@@ -407,8 +407,15 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
                     Some(app.metric_for(&project, &service).is_some())
                 };
                 let replicas = app.replicas(&project, &service);
-                let is_down = matches!(replicas, Some((a, d)) if d > 0 && a < d);
+                let deploying = app.is_deploying(&project, &service);
+                // Deploy sedang jalan menang atas "turun": container lama masih
+                // ada, ini keadaan yang diharapkan, bukan insiden — jangan denyut
+                // merah. Status col (indeks 3 di baris penuh) ditimpa "deploying".
+                let is_down = !deploying && matches!(replicas, Some((a, d)) if d > 0 && a < d);
                 let mut row = service_row(s, running, replicas);
+                if deploying {
+                    row[3] = "deploying".into();
+                }
                 // Kolom Project dilebur ke header; service cukup menjorok di bawahnya.
                 let name = format!("  {}", row.remove(1));
                 row.remove(0);
@@ -425,6 +432,10 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     let down = app.down_count();
     if down > 0 {
         title.push_str(&format!(" · ⚠ {down} turun"));
+    }
+    let deploying = app.deploying_count();
+    if deploying > 0 {
+        title.push_str(&format!(" · ⚙ {deploying} deploying"));
     }
 
     let widths = [
@@ -492,6 +503,8 @@ fn status_cell(text: &str, is_down: bool) -> Cell<'static> {
         "aktif" => Some(Color::Indexed(2)),
         "berhenti" => Some(Color::Indexed(3)),
         "mati" => Some(Color::Indexed(8)),
+        // "deploying": biru-cyan, beda dari state jalan/mati — sedang berproses.
+        "deploying" => Some(Color::Indexed(6)),
         _ => None,
     };
     if color.is_none() && text != "turun" {

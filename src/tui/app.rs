@@ -875,6 +875,28 @@ impl App {
             .count()
     }
 
+    /// Apakah service ini punya deployment yang SEDANG berjalan (pending/running),
+    /// dari listActions. Kolom Status memakainya untuk menampilkan "deploying" —
+    /// tanpa ini, container lama tetap jalan jadi baris terbaca "aktif" dan user
+    /// menekan deploy berulang tanpa tahu yang sebelumnya belum selesai.
+    /// Status terverifikasi live: pending → running → done/error.
+    pub(super) fn is_deploying(&self, project: &str, service: &str) -> bool {
+        self.actions.iter().any(|a| {
+            field(a, "/type") == "deployment"
+                && matches!(field(a, "/status").as_str(), "pending" | "running")
+                && field(a, "/projectName") == project
+                && field(a, "/serviceName") == service
+        })
+    }
+
+    /// Jumlah service dengan deployment sedang berjalan (untuk judul tabel).
+    pub(super) fn deploying_count(&self) -> usize {
+        self.all_services
+            .iter()
+            .filter(|s| self.is_deploying(&field(s, "/projectName"), &field(s, "/name")))
+            .count()
+    }
+
     pub(super) fn metric_for(&self, project: &str, service: &str) -> Option<&Value> {
         self.monitor.iter().find(|m| {
             m.get("projectName").and_then(Value::as_str) == Some(project)
@@ -1539,12 +1561,18 @@ impl App {
 
     pub(super) fn ask_action(&mut self, action: &str) {
         if let Some((p, s, t)) = self.selected_row() {
+            // Debounce deploy: kalau satu deployment masih pending/running, katakan
+            // di dialog konfirmasi supaya user tak memicu build kedua tanpa sadar.
+            let mut label = format!("{} service '{}'?", cap(action), s);
+            if action == "deploy" && self.is_deploying(&p, &s) {
+                label.push_str(" ⚠ deploy sebelumnya masih berjalan");
+            }
             self.confirm = Some(Confirm {
                 action: action.to_string(),
                 project: p,
                 service: s.clone(),
                 stype: t,
-                label: format!("{} service '{}'?", cap(action), s),
+                label,
             });
         }
     }

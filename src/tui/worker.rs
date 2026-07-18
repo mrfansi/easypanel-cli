@@ -315,7 +315,7 @@ pub(super) fn spawn_worker(client: EasypanelClient, resp_tx: Sender<Resp>) -> Se
 
     thread::spawn(move || {
         while let Ok(req) = req_rx.recv() {
-            let resp = handle_req(&client, req);
+            let resp = handle_req(&client, req, &resp_tx);
             if resp_tx.send(resp).is_err() {
                 break;
             }
@@ -350,7 +350,7 @@ pub(super) fn spawn_workers(client: EasypanelClient) -> Workers {
     }
 }
 
-pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
+pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Resp>) -> Resp {
     match req {
         Req::Stats => match client.call("metrics", "getSystemStats", json!({})) {
             Ok(v) => Resp::Stats(v),
@@ -942,8 +942,17 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                     format!("services/{stype}"),
                     json!({ "projectName": project, "serviceName": service, "forceRebuild": false }),
                 );
+                // Penolakan langsung (config salah, 400, service tak bisa deploy)
+                // dulu ditelan `let _ =` — UI sudah bilang "dimulai" padahal server
+                // menolak seketika. Sekarang thread melaporkan kegagalan lewat
+                // resp_tx supaya sampai ke baris status. Build yang benar-benar jalan
+                // tetap tak ditunggu (bisa menit, melebihi batas proxy).
+                let tx = resp_tx.clone();
+                let (p, s) = (project.clone(), service.clone());
                 std::thread::spawn(move || {
-                    let _ = c.call(&grp, "deployService", input);
+                    if let Err(e) = c.call(&grp, "deployService", input) {
+                        let _ = tx.send(Resp::Err(format!("Deploy {p}/{s} gagal: {e}")));
+                    }
                 });
                 return Resp::Done(
                     format!("Deploy {project}/{service} dimulai — pantau di Logs (Enter)"),

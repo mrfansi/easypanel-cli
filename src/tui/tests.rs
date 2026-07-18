@@ -410,6 +410,34 @@ fn replica_stats_distinguish_down_from_stopped() {
 }
 
 #[test]
+fn is_deploying_tracks_running_deployment_actions_only() {
+    let mut app = App::new("s".into(), vec![]);
+    app.all_services = vec![
+        json!({ "projectName": "p", "name": "web", "type": "app" }),
+        json!({ "projectName": "p", "name": "db", "type": "mysql" }),
+    ];
+    // running = sedang berjalan; done = selesai (tidak); status live-verified
+    // pending → running → done/error.
+    app.actions = vec![
+        json!({ "type": "deployment", "status": "running", "projectName": "p", "serviceName": "web" }),
+        json!({ "type": "deployment", "status": "done", "projectName": "p", "serviceName": "db" }),
+    ];
+    assert!(app.is_deploying("p", "web"));
+    assert!(!app.is_deploying("p", "db"));
+    assert!(!app.is_deploying("p", "absent"));
+    assert_eq!(app.deploying_count(), 1);
+
+    // pending juga "sedang berjalan"; type non-deployment (backup) diabaikan.
+    app.actions = vec![
+        json!({ "type": "deployment", "status": "pending", "projectName": "p", "serviceName": "web" }),
+        json!({ "type": "backup", "status": "running", "projectName": "p", "serviceName": "db" }),
+    ];
+    assert!(app.is_deploying("p", "web"));
+    assert!(!app.is_deploying("p", "db"));
+    assert_eq!(app.deploying_count(), 1);
+}
+
+#[test]
 fn context_menu_items_match_screen_and_selection() {
     let mut app = App::new("t".into(), vec![]);
     // Layar Domains tanpa baris terpilih -> tak ada menu.

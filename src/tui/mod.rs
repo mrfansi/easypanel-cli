@@ -112,6 +112,11 @@ fn event_loop(
             if app.screen == Screen::Projects {
                 let _ = w.poll.send(Req::TaskStats);
             }
+            // Deploy in-progress live di kolom Status (Projects) dan tab Actions
+            // tetap fresh (dulu beku sampai `r`). Satu panggilan listActions.
+            if matches!(app.screen, Screen::Projects | Screen::Actions) {
+                let _ = w.poll.send(Req::Actions);
+            }
             // Log ikut hidup selama viewer-nya terbuka. Di lajur poll, bukan
             // lajur user: tail tiap dua detik tak boleh mengantre di belakang
             // (atau di depan) aksi yang ditekan user.

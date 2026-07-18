@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-07-18
+
+### Added
+
+- **Deploy visibility.** The Services table now shows a **`deploying`** status
+  (cyan) for any service with a deployment in progress, and the title counts them
+  (`· ⚙ 2 deploying`). Before this, a running deploy left the old container up, so
+  the row read `aktif` — indistinguishable from idle — and the "Deploy dimulai"
+  message vanished after ~6s. An operator could re-trigger the same build over and
+  over with no sign it was already running. The state is joined live from
+  `listActions` (status verified against the server: `pending → running →
+  done/error`).
+- **Deploy debounce hint.** The deploy confirmation now warns
+  (`⚠ deploy sebelumnya masih berjalan`) when a deployment for that service is
+  still pending/running, so a second build is a deliberate choice, not an accident.
+
+### Fixed
+
+- **Immediate deploy failures are no longer swallowed.** `deployService` is
+  dispatched off-thread (builds exceed proxy timeouts), but its result was
+  discarded — an instant rejection (bad config, 400, non-deployable service) never
+  reached the screen while the UI already said "dimulai". The worker thread now
+  reports such failures to the status bar.
+- **The Actions tab refreshes live.** It used to load once and then freeze until
+  `r`; it is now polled while open (and while the Services table is shown), so
+  deploy/action state you switch over to check is current.
+
 ## [0.35.0] — 2026-07-18
 
 ### Added
