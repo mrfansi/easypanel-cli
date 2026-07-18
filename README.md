@@ -31,8 +31,16 @@ searchable table, and every domain on the box — without clicking through a hie
   keystroke.
 - **A real shell inside any container** (`t`), embedded right in the pane — colours,
   arrows, tab-completion, resize, all of it, over EasyPanel's own WebSocket.
+- **One-key database shell** (`y`) — `mysql`, `psql`, `mongosh` or `redis-cli` already
+  logged in with that service's own stored credentials. You never type a password, and
+  it never appears in `ps`. Nothing like it in the panel.
 - **Crash visibility** — a service whose Swarm replicas are missing shows a pulsing red
-  `turun`, counted in the title, so "what's broken right now?" is answered at a glance.
+  `down`, counted in the title, so "what's broken right now?" is answered at a glance.
+- **Deploy visibility** — a service that is building shows `deploying` (and a count in
+  the title), so you can see a deploy is still running instead of re-triggering it
+  blindly. Immediate rejections surface instead of being swallowed.
+- **Global search / command palette** (`:`) — jump to any service or tab by typing, and
+  run any action on the selected row from the same box (`deploy karir`, `logs api`).
 - **Mouse and keyboard** — click tabs and rows, right-click for a context menu, scroll,
   hover to highlight; every action also has a key.
 
@@ -96,11 +104,18 @@ easypanel                 # default server
 easypanel --server prod   # a specific host
 ```
 
-Press **`?`** at any time for every shortcut on the current screen. The TUI is also
-**mouse-driven**: click a tab to switch, click any table row to select it, **right-click a
-row for a context menu** of its actions, and scroll to move through tables or the viewer.
-(Mouse capture disables the terminal's own text selection — hold **Shift while dragging**
-to select/copy.)
+Press **`?`** at any time for every shortcut on the current screen.
+
+You don't have to memorise keys. Related actions live in **grouped menus** — one key opens
+a list you arrow through (`e` Env, `o` Networking, `u` Build & source, `m` Storage, `d`
+Lifecycle, `t` Shell, `x` Danger) — and **`Space`** opens the full action menu for the
+selected row. **`:`** opens a **global search**: type to jump to any service or tab, or to
+run an action on the row you're on.
+
+The TUI is also **mouse-driven**: click a tab to switch, click any table row to select it,
+**right-click a row for a context menu** of its actions, and scroll to move through tables
+or the viewer. (Mouse capture disables the terminal's own text selection — hold **Shift
+while dragging** to select/copy.)
 
 | Screen | What it is |
 |---|---|
@@ -110,33 +125,57 @@ to select/copy.)
 | **Actions** | Deploy/destroy/login history with status, target, duration, age. |
 | **Monitor** | Five history tiles (CPU, memory, disk, net in/out) plus per-service metrics and storage (`v` switches). |
 | **Domains** | Every domain on the host: source → destination (internal service or weighted custom servers), SSL resolver, wildcard. |
-| **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. A colored status dot reads at a glance: green `aktif`, yellow `berhenti`, gray `mati`, and a pulsing red **`turun`** for a crashed/restart-looping service (its Swarm replicas are missing), counted in the title. From a selected service you can do the lot — logs, terminal, deploy/restart/stop/start, clone, env, ports, mounts, redirects, domains, resource limits, basic auth. Selecting a project header targets the project (`n` new service, `X` destroy). |
+| **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. A colored status dot reads at a glance: green `active`, yellow `stopped`, gray `disabled`, cyan `deploying` (a build is running), and a pulsing red **`down`** for a crashed/restart-looping service (its Swarm replicas are missing), counted in the title. From a selected service you can do the lot, grouped into menus — logs, terminal & DB shell, deploy/restart/stop/start, clone, env (view/edit/replace/`.env` file), ports, mounts, redirects, domains, resource limits, basic auth, and a database's config file. Selecting a project header targets the project (`n` new service, `x` → delete project). |
 | **Viewer** | Scrollable pane for logs, env, ports, mounts, redirects, backups, source & build. Reached from a service; `Esc` goes back. In the ports/mounts/redirects view, a digit key deletes that row. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. |
 
 ### Key bindings
 
+**Anywhere**
+
 | Key | Action |
 |---|---|
 | `?` | every shortcut for the current screen |
-| `1`–`7`, `Tab` | switch tabs (`2` = Hosts) |
+| `:` | **global search** — jump to any service or tab, or run an action on the selected row |
+| `1`–`7`, `Tab`, `←`/`→` | switch tabs (`2` = Hosts) |
 | `/` | filter (Services, Domains, Actions, Monitor) · `Esc` clears |
-| `Enter` | logs for the selected service (**live**; `End` re-follows) · on **Actions**, the action's detail + deploy log |
-| `g` | **search a keyword across every service's logs at once** |
-| `t` | **open a shell inside the running container** (Ctrl-Q to force-quit) |
-| `c` | **clone the service's config into a new service** (any project) |
-| `e` `p` `m` `b` `u` | view env · ports · mounts · backups · source & build |
-| `f` | view redirects · in the ports/mounts/redirects view, `[0]`–`[9]` **deletes** that row |
-| `o` | manage the service's **domains** (opens the Domains tab filtered to it) |
-| `E` | edit env in `$EDITOR` |
-| `U` · `B` | configure source · build (app services) |
-| `A` | turn auto deploy on/off (GitHub sources only) |
-| `P` · `M` · `F` | add a **port** · **mount** (volume/bind/file) · **redirect** (regex→replacement) |
-| `L` · `H` | set **resource limits** (CPU/memory) · **basic auth** (web services) |
-| `d` `R` `S` `T` | deploy · restart · stop · start (confirmed) |
-| `n` · `x` | new · delete service (Domains: `n` `e` `x` `P` add/edit/delete/primary) |
-| `N` · `X` | new · delete project |
 | `s` | server list: `Enter` switch · `n` add · `e` edit · `x` delete |
 | `r` · `q` | refresh · quit (`Esc` **cancels**, it does not quit) |
+
+**Services — one key opens a menu of related actions**
+
+| Key | Opens |
+|---|---|
+| `Space` / right-click | the full action menu for the selected row |
+| `e` | **Env** — view · edit in `$EDITOR` · replace all · toggle the `.env` file |
+| `o` | **Networking** — domains · ports · redirects · basic auth |
+| `u` | **Build & source** — source · build · auto deploy · resource limits · a database's **config file** |
+| `m` | **Storage** — mounts · backups |
+| `d` | **Lifecycle** — deploy · restart · stop · start (each confirmed) |
+| `t` | **Shell** — container shell · DB shell |
+| `x` | **Danger** — delete service · delete project |
+
+Inside a menu: `↑↓` select · `→` enter a submenu · `←` back · `Enter` run · `Esc` close.
+
+**Services — direct keys**
+
+| Key | Action |
+|---|---|
+| `Enter` | logs for the selected service (**live**; `End` re-follows) · on **Actions**, the action's detail + deploy log |
+| `y` | **DB shell** — `mysql`/`psql`/`mongosh`/`redis-cli`, already logged in |
+| `g` | **search a keyword across every service's logs at once** |
+| `c` | **clone the service's config into a new service** (any project) |
+| `p` · `b` | view ports · backups |
+| `n` · `N` | new service · new project |
+
+The pre-menu keys still work if you have the muscle memory: `E` `w` `.` (edit env,
+replace env, toggle `.env` file), `P` `M` `F` (add port, mount, redirect), `f` (view
+redirects), `U` `B` `A` `L` `H` (source, build, auto deploy, resource limits, basic
+auth), `R` `S` `T` (restart, stop, start), `X` (delete project).
+
+**Viewer** — `↑↓`/`PgUp`/`PgDn` scroll · `End` re-follow the log tail · `[0]`–`[9]`
+deletes that row (ports/mounts/redirects) · `Esc` back.
+**Domains** — `n` new · `e` edit · `x` delete · `P` set primary.
+**Terminal** — `Ctrl-Q` to leave (or type `exit`).
 
 **Dockerfile sources open in `$EDITOR`.** Pick `dockerfile` as the source and the field
 shows how many lines it holds; `Space` opens the content in `$VISUAL`/`$EDITOR` (the
@@ -146,10 +185,10 @@ inline rather than a path — so pretending otherwise would send one long line t
 builds.
 
 **`n` opens a creation wizard that follows the EasyPanel dashboard's flow:**
-**Dasar → Source → Build → Environment → Domains.** `Enter` advances a step, `Esc` goes
+**Basics → Source → Build → Environment → Domains.** `Enter` advances a step, `Esc` goes
 back, and the title shows where you are (`2/5 Source`). A database is a single step —
 it has no source or build to configure. Every field is optional except the name; leave
-source empty for a bare app you'll configure later, and the *Buat file .env* toggle in
+source empty for a bare app you'll configure later, and the *Create .env file* toggle in
 Environment writes the vars as a `.env` file (the dashboard's "Create env file").
 
 Creating the service does **not** deploy it. It appears in the table in about a second,
