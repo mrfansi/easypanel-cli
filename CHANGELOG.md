@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-07-18
+
+### Added
+
+- **Clone can target a different parent project.** The clone form now has a Project dropdown
+  (defaulting to the source's project) alongside the new name, so you can copy a service
+  into any existing project — not only the one it came from. Only existing projects are
+  offered, since a brand-new project's Docker network isn't ready the instant it's created;
+  make the project first, then clone into it. Verified live that a cross-project clone lands
+  in the chosen project with its config intact.
+
 ## [0.26.0] — 2026-07-18
 
 ### Added

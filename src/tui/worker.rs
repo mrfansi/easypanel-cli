@@ -157,6 +157,9 @@ pub(super) enum Req {
         project: String,
         service: String,
         stype: String,
+        /// Project tujuan clone (boleh beda dari sumber). Harus project yang SUDAH
+        /// ada — kalau tidak, network Docker-nya belum siap (race).
+        target: String,
         new_name: String,
     },
     DomainSave {
@@ -636,8 +639,9 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
             project,
             service,
             stype,
+            target,
             new_name,
-        } => clone_service(client, &project, &service, &stype, &new_name),
+        } => clone_service(client, &project, &service, &stype, &target, &new_name),
         Req::DomainSave { id, body } => {
             // createDomain mewajibkan `id` tapi server mengabaikannya dan membuat
             // cuid sendiri, jadi placeholder cukup untuk domain baru.
@@ -1027,6 +1031,7 @@ fn clone_service(
     project: &str,
     service: &str,
     stype: &str,
+    target: &str,
     new_name: &str,
 ) -> Resp {
     let grp = format!("services/{stype}");
@@ -1035,17 +1040,17 @@ fn clone_service(
         Ok(v) => v,
         Err(e) => return Resp::Err(format!("clone: gagal membaca sumber: {e}")),
     };
-    // 1) Buat service dengan seluruh config inline KECUALI source.
+    // 1) Buat service di project TUJUAN dengan config inline KECUALI source.
     if let Err(e) = client.call(
         &grp,
         "createService",
-        clone_body(&inspect, project, new_name),
+        clone_body(&inspect, target, new_name),
     ) {
         return Resp::Err(format!("clone: gagal membuat '{new_name}': {e}"));
     }
     // 2) Source (service app/compose) diterapkan terpisah agar tak memicu deploy.
     if let Some(src) = inspect.get("source").filter(|s| s.get("type").is_some()) {
-        if let Err(e) = apply_clone_source(client, &grp, project, new_name, src) {
+        if let Err(e) = apply_clone_source(client, &grp, target, new_name, src) {
             return Resp::Err(format!("clone '{new_name}' dibuat, source gagal: {e}"));
         }
     }
@@ -1057,7 +1062,7 @@ fn clone_service(
         .is_some_and(|s| !s.is_empty())
     {
         let adv = json!({
-            "projectName": project, "serviceName": new_name,
+            "projectName": target, "serviceName": new_name,
             "command": inspect.get("command").cloned().unwrap_or(Value::Null),
             "configFile": inspect.get("configFile").cloned().unwrap_or(Value::Null),
             "env": inspect.get("env").cloned().unwrap_or(Value::Null),
@@ -1070,7 +1075,9 @@ fn clone_service(
         }
     }
     Resp::Done(
-        format!("'{service}' di-clone jadi '{new_name}' — tekan d untuk deploy (data TAK ikut)"),
+        format!(
+            "'{service}' di-clone jadi '{target}/{new_name}' — tekan d untuk deploy (data TAK ikut)"
+        ),
         Refresh::Projects,
     )
 }

@@ -948,6 +948,14 @@ impl App {
             return;
         };
         let suggested = format!("{service}-copy");
+        // Project tujuan: dropdown project yang SUDAH ada (default: project sumber).
+        // Hanya yang sudah ada — project baru network-nya belum siap saat createService.
+        let mut projects = self.projects.clone();
+        projects.sort();
+        let fields = vec![
+            Field::choice_owned("Project", projects, &project),
+            Field::text("Nama baru", &suggested),
+        ];
         self.form = Some(Form::new(
             FormKind::CloneService {
                 project,
@@ -955,7 +963,7 @@ impl App {
                 stype,
             },
             " Clone service ",
-            vec![Field::text("Nama baru", &suggested)],
+            fields,
         ));
         self.status = "Config disalin (bukan data) · Enter clone · Esc batal".into();
     }
@@ -1148,18 +1156,26 @@ impl App {
             } => {
                 let new_name = form.by_label("Nama baru");
                 let new_name = new_name.trim();
+                let target = form.by_label("Project");
+                let target = if target.is_empty() {
+                    project.clone()
+                } else {
+                    target
+                };
                 if new_name.is_empty() {
                     self.status = "Isi nama service baru dulu".into();
                     return;
                 }
-                if new_name == service {
-                    self.status = "Nama baru harus beda dari service sumber".into();
+                // Nama boleh sama asal beda project; sama-persis (project+nama) = tabrakan.
+                if target == *project && new_name == service {
+                    self.status = "Beda project, atau beda nama — tak boleh sama persis".into();
                     return;
                 }
                 let _ = req.send(Req::CloneService {
                     project: project.clone(),
                     service: service.clone(),
                     stype: stype.clone(),
+                    target,
                     new_name: new_name.to_string(),
                 });
             }
