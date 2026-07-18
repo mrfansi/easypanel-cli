@@ -572,25 +572,56 @@ fn palette_filters_then_jumps_to_service() {
     app.open_palette();
     let l = labels(&app);
     // The FULL action list (not just lifecycle): lifecycle + env + networking + etc.
-    assert!(l.iter().any(|x| x == "Deploy  ·  proj/web"));
-    assert!(l.iter().any(|x| x == "View env  ·  proj/web"));
-    assert!(l.iter().any(|x| x == "Domain  ·  proj/web"));
-    assert!(l.iter().any(|x| x == "Basic auth  ·  proj/web"));
-    assert!(l.iter().any(|x| x == "Delete service  ·  proj/web"));
+    // Each row is JUST the action — the service was repeated on all thirty of them,
+    // which is what made the palette a wall of the same text.
+    for action in [
+        "Deploy",
+        "View env",
+        "Domain",
+        "Basic auth",
+        "Delete service",
+    ] {
+        assert!(l.iter().any(|x| x == action), "missing {action} in {l:?}");
+    }
+    // It appears ONCE — as the row that jumps to it. Not on all thirty actions.
+    assert_eq!(
+        l.iter().filter(|x| x.contains("proj/web")).count(),
+        1,
+        "the service must not be repeated down the action rows: {l:?}"
+    );
+    // It is named once, in the title.
+    assert_eq!(
+        app.palette.as_ref().and_then(|p| p.context.clone()),
+        Some("proj/web".into())
+    );
     assert!(!l.iter().any(|x| x.starts_with("DB shell"))); // app isn't a db
-    assert!(!l.iter().any(|x| x == "Deploy  ·  proj/db")); // only the selected service
+
+    // Dropping it from the LABEL must not drop it from the SEARCH: "deploy web"
+    // still has to find the deploy action on web.
+    if let Some(p) = app.palette.as_mut() {
+        p.query = "deploy web".into();
+        let hits: Vec<String> = p
+            .matches()
+            .into_iter()
+            .map(|i| p.items[i].label.clone())
+            .collect();
+        assert!(
+            hits.iter().any(|x| x == "Deploy"),
+            "multi-word search across the context is lost: {hits:?}"
+        );
+    }
     app.palette = None;
 
     // db (mysql) selected → its actions include DB shell + Config file (Advanced).
     app.services_table.select(Some(1)); // db
     app.open_palette();
     let ldb = labels(&app);
-    assert!(ldb
-        .iter()
-        .any(|x| x.starts_with("DB shell") && x.contains("proj/db")));
-    assert!(ldb
-        .iter()
-        .any(|x| x == "Config file (Advanced)  ·  proj/db"));
+    assert!(ldb.iter().any(|x| x.starts_with("DB shell")));
+    assert!(ldb.iter().any(|x| x == "Config file (Advanced)"));
+    assert_eq!(
+        app.palette.as_ref().and_then(|p| p.context.clone()),
+        Some("proj/db".into())
+    );
     app.palette = None;
 
     // Context also works for NON-service rows: Domains with a domain selected → the
@@ -599,7 +630,20 @@ fn palette_filters_then_jumps_to_service() {
     app.domains = vec![json!({ "host": "x.test", "id": "d1" })];
     app.domains_state.select(Some(0));
     app.open_palette();
-    assert!(labels(&app).iter().any(|x| x == "Domains: Delete"));
+    assert!(labels(&app).iter().any(|x| x == "Delete"));
+    // The screen names the context once, rather than prefixing every row with it.
+    assert_eq!(
+        app.palette.as_ref().and_then(|p| p.context.clone()),
+        Some("Domains".into())
+    );
+    // And it is still searchable that way.
+    if let Some(p) = app.palette.as_mut() {
+        p.query = "domains delete".into();
+        assert!(
+            !p.matches().is_empty(),
+            "searching by screen name must work"
+        );
+    }
     app.palette = None;
 
     // Back to Services to test running a service action.
@@ -614,14 +658,16 @@ fn palette_filters_then_jumps_to_service() {
     app.palette.as_mut().unwrap().query = "deploy web".into();
     let pal = app.palette.as_ref().unwrap();
     let m = pal.matches();
+    // Matching is on the SEARCH text, which still carries the context the label
+    // no longer repeats.
     assert!(m.iter().all(|&i| {
-        let l = pal.items[i].label.to_lowercase();
+        let l = pal.items[i].search.to_lowercase();
         l.contains("deploy") && l.contains("web")
     }));
     // Take the Deploy action entry (not "Auto deploy…") and run it.
     let pos = m
         .iter()
-        .position(|&i| pal.items[i].label.starts_with("Deploy  "))
+        .position(|&i| pal.items[i].label == "Deploy")
         .unwrap();
     app.palette.as_mut().unwrap().state.select(Some(pos));
     app.palette_run(&tx);

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.1] — 2026-07-19
+
+### Fixed
+
+- **The command palette was a wall of the same text.** Every action row carried
+  the service it applied to — so opening `:` on a service produced thirty rows
+  each ending in `·  harisenin-net/api`, and the actual action names were buried
+  in the repetition. The service is now named once, in the palette's title
+  (`Search: ▏ · actions for harisenin-net/api`), and each row is just the action:
+  `Deploy`, `View env`, `Basic auth`.
+
+  Searching is unchanged. The context moved out of the label but not out of the
+  match, so `deploy core` still narrows to `Deploy` and `Auto deploy on/off` on
+  that service even though "core" no longer appears in any row.
+
 ## [0.48.0] — 2026-07-19
 
 ### Added

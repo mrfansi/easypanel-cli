@@ -205,7 +205,11 @@ pub(super) fn render_palette(f: &mut Frame, app: &mut App) {
     let list = List::new(items)
         .block(
             Block::bordered()
-                .title(format!(" Search: {}▏ ", pal.query))
+                .title(match &pal.context {
+                    // Named once here, not on every row.
+                    Some(c) => format!(" Search: {}▏  ·  actions for {c} ", pal.query),
+                    None => format!(" Search: {}▏ ", pal.query),
+                })
                 .title_bottom(format!(" {count} results · Enter run/jump · Esc close "))
                 .border_style(Style::default().fg(Color::Cyan)),
         )

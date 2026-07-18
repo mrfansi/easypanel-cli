@@ -357,13 +357,22 @@ pub(super) enum PaletteAction {
 }
 
 pub(super) struct PaletteItem {
+    /// What is DRAWN. Kept short: an action's row says "Deploy", not
+    /// "Deploy  ·  project/service" repeated down thirty rows.
     pub(super) label: String,
+    /// What is SEARCHED. Carries the context the label no longer repeats, so
+    /// "deploy api" still finds the deploy action on api.
+    pub(super) search: String,
     pub(super) action: PaletteAction,
 }
 
 /// The command palette: a global search for quick navigation to a service/tab
 /// without browsing menus. Type to filter, ↑↓ select, Enter jump, Esc close.
 pub(super) struct Palette {
+    /// What the action entries apply to, shown ONCE in the title. It used to be
+    /// repeated on every row, which turned thirty actions into thirty copies of
+    /// the same service name.
+    pub(super) context: Option<String>,
     pub(super) query: String,
     pub(super) items: Vec<PaletteItem>,
     pub(super) state: ListState,
@@ -382,7 +391,7 @@ impl Palette {
             .iter()
             .enumerate()
             .filter(|(_, it)| {
-                let l = it.label.to_lowercase();
+                let l = it.search.to_lowercase();
                 terms.iter().all(|t| l.contains(t))
             })
             .map(|(i, _)| i)
@@ -730,7 +739,16 @@ impl App {
     /// (label, function). Services → the full list with an id suffix; other screens
     /// → their context-menu actions prefixed with the screen name. Empty when no
     /// row is selected.
-    fn palette_context_actions(&self) -> Vec<(String, MenuRun)> {
+    /// What the palette's action entries apply to, for the title.
+    fn palette_context_label(&self) -> Option<String> {
+        if self.screen == Screen::Projects {
+            let (project, service, _) = self.selected_row()?;
+            return Some(format!("{project}/{service}"));
+        }
+        (!self.context_items().is_empty()).then(|| TABS[self.screen.index()].to_string())
+    }
+
+    fn palette_context_actions(&self) -> Vec<(String, String, MenuRun)> {
         if self.screen == Screen::Projects {
             let Some((project, service, _)) = self.selected_row() else {
                 return vec![];
@@ -738,13 +756,19 @@ impl App {
             let id = format!("{project}/{service}");
             self.service_leaf_actions()
                 .into_iter()
-                .map(|it| (format!("{}  ·  {id}", it.label), it.run))
+                .map(|it| {
+                    let search = format!("{} {id}", it.label);
+                    (it.label, search, it.run)
+                })
                 .collect()
         } else {
             let scr = TABS[self.screen.index()];
             self.context_items()
                 .into_iter()
-                .map(|it| (format!("{scr}: {}", it.label), it.run))
+                .map(|it| {
+                    let search = format!("{scr} {}", it.label);
+                    (it.label, search, it.run)
+                })
                 .collect()
         }
     }
@@ -756,16 +780,19 @@ impl App {
         // are flattened — a service gets the full list (env/networking/build/mount/
         // lifecycle/shell/clone/delete), other screens get their context-menu
         // actions. With no row selected, the palette is pure navigation.
-        for (label, run) in self.palette_context_actions() {
+        for (label, search, run) in self.palette_context_actions() {
             items.push(PaletteItem {
                 label,
+                search,
                 action: PaletteAction::Run(run),
             });
         }
         // Navigation: switch tabs.
         for s in TAB_SCREENS {
+            let label = format!("⇥  Tab: {}", TABS[s.index()]);
             items.push(PaletteItem {
-                label: format!("⇥  Tab: {}", TABS[s.index()]),
+                search: label.clone(),
+                label,
                 action: PaletteAction::Tab(s),
             });
         }
@@ -778,14 +805,17 @@ impl App {
                 field(s, "/name"),
                 field(s, "/type"),
             );
+            let label = format!("Open  {project}/{service}  ·  {t}");
             items.push(PaletteItem {
-                label: format!("Open  {project}/{service}  ·  {t}"),
+                search: label.clone(),
+                label,
                 action: PaletteAction::Service { project, service },
             });
         }
         let mut state = ListState::default();
         state.select(Some(0));
         self.palette = Some(Palette {
+            context: self.palette_context_label(),
             query: String::new(),
             items,
             state,
