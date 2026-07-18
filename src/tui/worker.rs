@@ -84,6 +84,20 @@ pub(super) enum Req {
         stype: String,
         resources: Value,
     },
+    /// Buka form basic auth: inspectService untuk kredensial `basicAuth` sekarang.
+    BasicAuthForm {
+        project: String,
+        service: String,
+        stype: String,
+    },
+    /// Simpan basic auth (updateBasicAuth). Hanya service web (app/box/compose/
+    /// wordpress) yang punya endpoint ini.
+    BasicAuthSave {
+        project: String,
+        service: String,
+        stype: String,
+        basic_auth: Value,
+    },
     /// Info server untuk tab Maintenance (versi Docker, IP, ketersediaan update).
     MaintInfo,
     /// Pembersihan Docker: systemPrune / cleanupDockerImages / cleanupDockerBuilder.
@@ -217,6 +231,13 @@ pub(super) enum Resp {
     ServicesFor(String, Vec<String>),
     /// Data untuk membuka form limit resource: hasil inspectService.
     ResourceForm {
+        project: String,
+        service: String,
+        stype: String,
+        data: Value,
+    },
+    /// Data untuk membuka form basic auth: hasil inspectService.
+    BasicAuthForm {
         project: String,
         service: String,
         stype: String,
@@ -482,6 +503,38 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
+        Req::BasicAuthForm {
+            project,
+            service,
+            stype,
+        } => {
+            let ps = json!({ "projectName": project, "serviceName": service });
+            match client.call(&format!("services/{stype}"), "inspectService", ps) {
+                Ok(data) => Resp::BasicAuthForm {
+                    project,
+                    service,
+                    stype,
+                    data,
+                },
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::BasicAuthSave {
+            project,
+            service,
+            stype,
+            basic_auth,
+        } => match client.call(
+            &format!("services/{stype}"),
+            "updateBasicAuth",
+            json!({ "projectName": project, "serviceName": service, "basicAuth": basic_auth }),
+        ) {
+            Ok(_) => Resp::Done(
+                format!("Basic auth {project}/{service} tersimpan — deploy (d) untuk menerapkan"),
+                Refresh::None,
+            ),
+            Err(e) => Resp::Err(e.to_string()),
+        },
         Req::MaintInfo => {
             // Tiap baris berdiri sendiri: satu endpoint gagal tak boleh
             // mengosongkan seluruh tab.

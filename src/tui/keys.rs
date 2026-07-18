@@ -758,6 +758,7 @@ impl App {
             KeyCode::Char('B') => self.open_config_form(true, req),
             KeyCode::Char('L') => self.open_resource_form(req),
             KeyCode::Char('M') => self.open_mount_form(),
+            KeyCode::Char('H') => self.open_basic_auth_form(req),
             KeyCode::Char('c') => self.open_clone_form(),
             KeyCode::Char('E') => self.start_env_edit(),
             KeyCode::Char('t') => {

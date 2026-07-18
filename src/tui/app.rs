@@ -367,6 +367,7 @@ impl App {
                 ("Env".into(), KeyCode::Char('e')),
                 ("Domain".into(), KeyCode::Char('o')),
                 ("Mount baru".into(), KeyCode::Char('M')),
+                ("Basic auth".into(), KeyCode::Char('H')),
                 ("Resource".into(), KeyCode::Char('L')),
                 ("Clone".into(), KeyCode::Char('c')),
                 ("Hapus".into(), KeyCode::Char('x')),
@@ -501,6 +502,24 @@ impl App {
                     resource_fields(data.get("resources")),
                 ));
                 self.status = "Enter simpan · Esc batal · 0 = tak dibatasi".into();
+            }
+            Resp::BasicAuthForm {
+                project,
+                service,
+                stype,
+                data,
+            } => {
+                let title = format!("Basic auth · {project}/{service}");
+                self.form = Some(Form::new(
+                    FormKind::BasicAuthEdit {
+                        project,
+                        service,
+                        stype,
+                    },
+                    title,
+                    basic_auth_fields(Some(&data)),
+                ));
+                self.status = "Enter simpan · Esc batal · kosongkan keduanya = matikan".into();
             }
             Resp::ConfigForm {
                 project,
@@ -1008,6 +1027,25 @@ impl App {
         self.status = "Config disalin (bukan data) · Enter clone · Esc batal".into();
     }
 
+    /// Buka form basic auth untuk service yang disorot. Hanya service web
+    /// (app/box/compose/wordpress) yang punya endpoint ini; DB tak relevan.
+    pub(super) fn open_basic_auth_form(&mut self, req: &Sender<Req>) {
+        let Some((project, service, stype)) = self.selected_row() else {
+            self.status = "Pilih sebuah service dulu".into();
+            return;
+        };
+        if !matches!(stype.as_str(), "app" | "box" | "compose" | "wordpress") {
+            self.status = format!("Basic auth hanya untuk service web (ini {stype})");
+            return;
+        }
+        let _ = req.send(Req::BasicAuthForm {
+            project,
+            service,
+            stype,
+        });
+        self.status = "Memuat...".into();
+    }
+
     /// Buka form limit resource untuk service yang disorot (semua tipe punya).
     pub(super) fn open_resource_form(&mut self, req: &Sender<Req>) {
         let Some((project, service, stype)) = self.selected_row() else {
@@ -1225,6 +1263,24 @@ impl App {
                         project: project.clone(),
                         service: service.clone(),
                         values,
+                    });
+                }
+                Err(msg) => {
+                    self.status = msg;
+                    return;
+                }
+            },
+            FormKind::BasicAuthEdit {
+                project,
+                service,
+                stype,
+            } => match basic_auth_body(form) {
+                Ok(basic_auth) => {
+                    let _ = req.send(Req::BasicAuthSave {
+                        project: project.clone(),
+                        service: service.clone(),
+                        stype: stype.clone(),
+                        basic_auth,
                     });
                 }
                 Err(msg) => {

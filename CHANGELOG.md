@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-07-18
+
+### Added
+
+- **Basic auth — password-protect a web service from the TUI.** Press `H` on an app/box/
+  compose/wordpress service (or right-click → Basic auth) to set a username and password
+  behind which the service's HTTP endpoints sit; the form is pre-filled with the current
+  credential so you can change it, and clearing both fields removes the protection. Backed
+  by `updateBasicAuth`; verified live that both setting and clearing round-trip through
+  `inspectService`. (Database services don't have HTTP auth, so the key is a no-op there
+  with a note.)
+
 ## [0.30.1] — 2026-07-18
 
 ### Changed

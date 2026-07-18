@@ -233,15 +233,27 @@ Fill out the management surface. Verify live with a `zzz-*` target and clean up.
    works for every service type. Verified live: the endpoint round-trips the exact decimal
    numbers the tool sends. **Open:** a resources step in the create wizard (createService
    takes `resources` inline) — same shape, additive.
-7. **Templates** (`templates/createFromSchema`) — EasyPanel's one-click app catalogue;
-   scope a slice (list + deploy one) first.
+7. **Templates — the valuable half is NOT in the API (checked 2026-07-18).** The only
+   endpoint is `templates/createFromSchema`; there is **no `listTemplates`**. The one-click
+   catalogue (Ghost, WordPress, …) lives in an external source (EasyPanel's templates repo /
+   frontend CDN as TS files), not the backend API — so "browse catalogue + deploy" can't be
+   built from the API. `createFromSchema` only deploys a schema the user supplies, which is
+   niche without the catalogue. Like alerting: the useful part isn't exposed. Don't build a
+   paste-a-schema box and call it templates. If a catalogue JSON feed is ever found, reopen.
 8. **Middlewares editor** (`middlewares/listMiddlewares`, `createMiddleware`) — the group
    is real (4 endpoints); domains preserve the field but can't edit it.
 9. **Cloudflare Tunnel** (`cloudflareTunnel/*`, 11 endpoints) — expose services without a
    public IP; large but high-value for self-hosters.
-10. **Basic auth** (`updateBasicAuth`), **redirects** (`updateRedirects`),
-    **maintenance mode** (`updateMaintenanceMode`), **project env** (`updateProjectEnv`)
-    — small self-contained editors.
+10. Small self-contained editors:
+    - ~~**Basic auth**~~ done in v0.31.0. `H` on a web service (app/box/compose/wordpress)
+      → form (Username + Password, prefilled from current) → `updateBasicAuth`; empty both =
+      remove protection. Verified live: set and clear both round-trip via `inspectService`.
+    - **redirects** (`updateRedirects`) — array of rules; open.
+    - **maintenance mode** (`updateMaintenanceMode`) — **wordpress-only** endpoint (checked);
+      niche, skip unless a wordpress user needs it.
+    - **project env** (`updateProjectEnv`) — `{projectName, env}`. Note: `inspectProject`
+      does **not** return the current env at top level, so prefill needs another source
+      (maybe `project.env`) — verify before building or it edits blind.
 
 ### Scalability — the tool must not fold at real scale
 

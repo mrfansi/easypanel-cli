@@ -551,6 +551,34 @@ pub(super) fn port_fields() -> Vec<Field> {
     ]
 }
 
+/// Field form basic auth, terisi kredensial pertama yang ada (form ini mengelola
+/// SATU user — kasus umum "lindungi service ini"). Password ikut di-prefill supaya
+/// mengubah username saja tak mengosongkannya.
+pub(super) fn basic_auth_fields(data: Option<&Value>) -> Vec<Field> {
+    let first = data.and_then(|d| d.pointer("/basicAuth/0"));
+    let user = first.map(|c| field(c, "/username")).unwrap_or_default();
+    let pass = first.map(|c| field(c, "/password")).unwrap_or_default();
+    vec![
+        Field::text("Username", &user),
+        Field::secret_val("Password", &pass),
+    ]
+}
+
+/// Array `basicAuth` untuk updateBasicAuth. Kedua kosong = hapus proteksi ([]);
+/// salah satu kosong = error (setengah kredensial tak berguna).
+pub(super) fn basic_auth_body(form: &Form) -> std::result::Result<Value, String> {
+    let user = form.by_label("Username");
+    let pass = form.by_label("Password");
+    let (u, p) = (user.trim(), pass.trim());
+    if u.is_empty() && p.is_empty() {
+        return Ok(json!([])); // kosongkan = matikan proteksi
+    }
+    if u.is_empty() || p.is_empty() {
+        return Err("Isi Username DAN Password, atau kosongkan keduanya untuk mematikan".into());
+    }
+    Ok(json!([{ "username": u, "password": p }]))
+}
+
 /// Field form tambah mount. Tipe menentukan field yang tampil: volume→Name,
 /// bind→Host path, file→Content (isi berkas, dibuka di $EDITOR). Mount path selalu.
 pub(super) fn mount_fields() -> Vec<Field> {
@@ -828,6 +856,12 @@ pub(super) enum FormKind {
     MountCreate {
         project: String,
         service: String,
+    },
+    /// Atur basic auth (proteksi user/password) sebuah service web.
+    BasicAuthEdit {
+        project: String,
+        service: String,
+        stype: String,
     },
 }
 

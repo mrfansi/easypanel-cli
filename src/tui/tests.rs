@@ -175,6 +175,35 @@ fn resource_body_parses_numbers_defaults_zero_and_rejects_junk() {
 }
 
 #[test]
+fn basic_auth_body_sets_clears_and_rejects_half() {
+    let set = |f: &mut Form, label: &str, val: &str| {
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == label)
+            .unwrap()
+            .value = val.into();
+    };
+    // Prefill dari kredensial pertama yang ada (bentuk terverifikasi live).
+    let data = json!({ "basicAuth": [{ "username": "admin", "password": "s3cret" }] });
+    let f = form(basic_auth_fields(Some(&data)));
+    assert_eq!(f.by_label("Username"), "admin");
+    assert_eq!(f.by_label("Password"), "s3cret");
+    assert_eq!(
+        basic_auth_body(&f).unwrap(),
+        json!([{ "username": "admin", "password": "s3cret" }])
+    );
+
+    // Keduanya kosong -> array kosong (matikan proteksi).
+    let f = form(basic_auth_fields(None));
+    assert_eq!(basic_auth_body(&f).unwrap(), json!([]));
+
+    // Setengah (username tanpa password) -> error, bukan kredensial cacat.
+    let mut f = form(basic_auth_fields(None));
+    set(&mut f, "Username", "admin");
+    assert!(basic_auth_body(&f).is_err());
+}
+
+#[test]
 fn mount_body_builds_per_type_and_validates() {
     let set = |f: &mut Form, label: &str, val: &str| {
         f.fields
