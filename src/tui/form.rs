@@ -1,3 +1,4 @@
+use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
 use serde_json::{json, Value};
 
@@ -927,6 +928,8 @@ pub(super) struct Chooser {
     pub(super) options: Vec<String>,
     pub(super) filter: String,
     pub(super) state: ListState,
+    /// Kotak dropdown yang digambar (diisi saat render), untuk hit-test klik/hover.
+    pub(super) rect: Rect,
 }
 
 impl Chooser {
@@ -944,7 +947,23 @@ impl Chooser {
             options,
             filter: String::new(),
             state,
+            rect: Rect::default(),
         }
+    }
+
+    /// Indeks pilihan (dalam `matches()`) di bawah (col,row), None bila di luar.
+    /// Baris pertama & terakhir kotak = border; daftar bisa tergulung (offset).
+    pub(super) fn item_at(&self, col: u16, row: u16) -> Option<usize> {
+        let r = self.rect;
+        let inside = col >= r.x
+            && col < r.x.saturating_add(r.width)
+            && row > r.y
+            && row < r.y.saturating_add(r.height).saturating_sub(1);
+        if !inside {
+            return None;
+        }
+        let idx = (row - r.y - 1) as usize + self.state.offset();
+        (idx < self.matches().len()).then_some(idx)
     }
 
     /// Pilihan yang lolos filter (case-insensitive, substring).

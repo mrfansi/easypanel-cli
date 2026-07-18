@@ -1130,6 +1130,7 @@ pub(super) fn render_chooser(f: &mut Frame, ch: &mut Chooser) {
     let items = ch.matches();
     let height = (items.len() as u16 + 4).clamp(5, 16);
     let area = centered_abs(48, height, f.area());
+    ch.rect = area;
     f.render_widget(Clear, area);
 
     let title = if ch.filter.is_empty() {

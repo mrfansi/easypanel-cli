@@ -91,33 +91,120 @@ impl App {
     /// (form/picker/konfirmasi/dropdown/bantuan) menelannya — klik tak boleh
     /// diam-diam mengganti tab di belakang dialog. Sesi terminal mengabaikannya.
     pub(super) fn on_mouse(&mut self, m: MouseEvent, req: &Sender<Req>) {
+        // Menu konteks & dropdown menangkap mouse sendiri (hover/klik itemnya).
         if self.menu.is_some() {
             self.menu_mouse(m, req);
             return;
         }
+        if self.chooser.is_some() {
+            self.chooser_mouse(m, req);
+            return;
+        }
+        // Modal lain menelan mouse: klik tak boleh menembus ke belakang dialog.
         if self.screen == Screen::Terminal
             || self.help
             || self.form.is_some()
             || self.picker.is_some()
             || self.confirm.is_some()
-            || self.chooser.is_some()
         {
             return;
         }
         match m.kind {
-            // Scroll = panah: tiap layar sudah tahu artinya (viewer menggulung,
-            // tabel memindah seleksi).
-            MouseEventKind::ScrollDown => self.on_key(KeyCode::Down, req),
-            MouseEventKind::ScrollUp => self.on_key(KeyCode::Up, req),
+            // Scroll menggulung viewport; seleksi tetap di bawah kursor supaya tak
+            // bertabrakan dengan follow-cursor. Viewer menggulung teksnya.
+            MouseEventKind::ScrollDown => self.on_scroll(3),
+            MouseEventKind::ScrollUp => self.on_scroll(-3),
             MouseEventKind::Down(MouseButton::Left) => self.on_click(m.column, m.row, req),
             MouseEventKind::Down(MouseButton::Right) => self.on_right_click(m.column, m.row),
             // Sorotan mengikuti kursor: gerak mouse di atas baris memilihnya. Di
-            // luar area tabel select_row_at tak berbuat apa-apa, jadi seleksi
-            // terakhir tetap.
+            // luar area tabel select_row_at tak berbuat apa-apa, jadi seleksi tetap.
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 self.select_row_at(m.column, m.row);
             }
             _ => {}
+        }
+    }
+
+    /// Scroll: viewer menggulung teks; tabel menggeser viewport DAN seleksi
+    /// bersamaan, jadi sorotan tetap di baris layar yang sama (= tetap di bawah
+    /// kursor). Itu yang membuat scroll tak lagi bertabrakan dengan hover — gerak
+    /// mouse berikutnya memilih baris yang sama.
+    fn on_scroll(&mut self, delta: isize) {
+        if self.screen == Screen::Viewer {
+            let step = delta.unsigned_abs() as u16;
+            if delta < 0 {
+                self.viewer_follow = false;
+                self.viewer_scroll = self.viewer_scroll.saturating_sub(step);
+            } else {
+                self.viewer_scroll = self.viewer_scroll.saturating_add(step);
+            }
+            return;
+        }
+        let len = self.visible_table_len() as isize;
+        if len == 0 {
+            return;
+        }
+        if let Some(state) = self.active_table() {
+            let sel = state.selected().unwrap_or(0) as isize;
+            let off = state.offset() as isize;
+            state.select(Some((sel + delta).clamp(0, len - 1) as usize));
+            *state.offset_mut() = (off + delta).clamp(0, len - 1) as usize;
+        }
+    }
+
+    /// Mouse pada dropdown terbuka: hover menyorot pilihan di bawah kursor, klik
+    /// memilihnya (sama seperti Enter), klik di luar / scroll menavigasi.
+    fn chooser_mouse(&mut self, m: MouseEvent, req: &Sender<Req>) {
+        let Some(ch) = self.chooser.as_mut() else {
+            return;
+        };
+        match m.kind {
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                if let Some(i) = ch.item_at(m.column, m.row) {
+                    ch.state.select(Some(i));
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                let i = ch.state.selected().unwrap_or(0);
+                ch.state.select(Some(i.saturating_sub(1)));
+            }
+            MouseEventKind::ScrollDown => {
+                let last = ch.matches().len().saturating_sub(1);
+                let i = ch.state.selected().unwrap_or(0);
+                ch.state.select(Some((i + 1).min(last)));
+            }
+            MouseEventKind::Down(_) => match ch.item_at(m.column, m.row) {
+                Some(i) => {
+                    ch.state.select(Some(i));
+                    self.apply_chooser(req);
+                }
+                None => self.chooser = None,
+            },
+            _ => {}
+        }
+    }
+
+    /// Terapkan pilihan dropdown ke field form (sama untuk Enter maupun klik).
+    fn apply_chooser(&mut self, req: &Sender<Req>) {
+        let Some(ch) = self.chooser.as_ref() else {
+            return;
+        };
+        let picked = ch.selected();
+        let (idx, label) = (ch.field, ch.label);
+        self.chooser = None;
+        if let (Some(value), Some(form)) = (picked, self.form.as_mut()) {
+            form.fields[idx].value = value;
+            form.clamp_focus();
+            match label {
+                "Project" => self.load_form_services(req),
+                "Repo" => {
+                    if let Some(f) = form.fields.iter_mut().find(|f| f.label == "Branch") {
+                        f.value.clear();
+                    }
+                    self.load_form_branches(req);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -413,29 +500,7 @@ impl App {
                 ch.filter.push(c);
                 ch.clamp();
             }
-            KeyCode::Enter => {
-                let picked = ch.selected();
-                let (idx, label) = (ch.field, ch.label);
-                self.chooser = None;
-                if let (Some(value), Some(form)) = (picked, self.form.as_mut()) {
-                    form.fields[idx].value = value;
-                    // Ganti Tujuan/Tipe -> set field yang tampil ikut berubah.
-                    form.clamp_focus();
-                    // Ganti project/repo -> daftar turunannya ikut dimuat ulang.
-                    match label {
-                        "Project" => self.load_form_services(req),
-                        // Branch lama milik repo lain: kosongkan supaya
-                        // set_options tidak mempertahankannya.
-                        "Repo" => {
-                            if let Some(f) = form.fields.iter_mut().find(|f| f.label == "Branch") {
-                                f.value.clear();
-                            }
-                            self.load_form_branches(req);
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            KeyCode::Enter => self.apply_chooser(req),
             _ => {}
         }
     }

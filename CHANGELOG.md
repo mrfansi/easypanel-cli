@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-07-18
+
+### Fixed
+
+- **Scrolling a table no longer fights the follow-the-cursor selection.** The wheel now
+  scrolls the viewport and moves the highlight together, so the selected row stays under the
+  pointer instead of jumping — previously scroll moved the selection one way while the next
+  mouse motion snapped it back, which was especially jarring on a trackpad. Scrolling in the
+  log/detail viewer still scrolls its text.
+- **Dropdowns are now mouse-driven.** An open dropdown (project picker, service picker,
+  repo/branch, etc.) highlights the option under the cursor, selects on click, navigates on
+  scroll, and closes on a click outside — before, it only responded to the keyboard.
+
 ## [0.27.0] — 2026-07-18
 
 ### Added
