@@ -87,6 +87,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
         Screen::Viewer => &[
             Key("↑↓ / PgUp/PgDn", "scroll (melepas ikut-baris-terakhir)"),
             Key("End", "ikuti baris terakhir lagi (log)"),
+            Key("[0-9]", "hapus port itu (di tampilan Ports)"),
             Key("Esc", "kembali ke Services"),
         ],
         Screen::Terminal => &[Key("Ctrl-Q", "keluar terminal (atau ketik `exit`)")],

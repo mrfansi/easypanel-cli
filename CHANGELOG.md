@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-07-18
+
+### Added
+
+- **Delete a port from the TUI.** Open a service's ports (`p`) and press the port's number
+  (`[0]`–`[9]`) to remove it, after a confirmation. The list reloads in place, so the
+  deleted port disappears immediately instead of lingering until you reopen the view — the
+  same round-trip discipline the rest of the tool follows. This closes the port-management
+  gap: since v0.16.0 you could add a published port but had no way to remove one without
+  the web panel.
+
+  Verified live against the running server that `deletePort`'s index is the position shown
+  in the list: with ports `[0] 8080→80` and `[1] 9090→90`, deleting index 0 removed 8080
+  and left 9090 (which then renumbers to `[0]`, so consecutive deletes stay correct).
+  Tested with a throwaway `zzz-*` service, then cleaned up.
+
 ## [0.20.0] — 2026-07-18
 
 ### Added

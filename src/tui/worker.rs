@@ -158,6 +158,13 @@ pub(super) enum Req {
         service: String,
         values: Value,
     },
+    /// Hapus port berdasar indeks di listPorts (deletePort), lalu muat ulang
+    /// daftar port ke viewer supaya yang terhapus langsung hilang.
+    PortDelete {
+        project: String,
+        service: String,
+        index: usize,
+    },
     DomainDelete(String),
     DomainSetPrimary(String),
     EnvSave {
@@ -629,6 +636,26 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
+        Req::PortDelete {
+            project,
+            service,
+            index,
+        } => {
+            match client.call(
+                "ports",
+                "deletePort",
+                json!({ "projectName": project, "serviceName": service, "index": index }),
+            ) {
+                // Muat ulang daftar port ke viewer: yang terhapus harus langsung
+                // hilang, bukan menunggu user membuka ulang (kelas bug "baris
+                // terhapus tetap tampil" yang sudah berulang di proyek ini).
+                Ok(_) => match fetch_view(client, View::Ports, &project, &service, "") {
+                    Ok(lines) => Resp::Viewer(format!("Ports · {project}/{service}"), lines),
+                    Err(e) => Resp::Err(e.to_string()),
+                },
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
         Req::DomainDelete(id) => {
             match client.call("domains", "deleteDomain", json!({ "id": id })) {
                 Ok(_) => Resp::Done("Domain dihapus".into(), Refresh::Domains),
@@ -801,14 +828,20 @@ pub(super) fn fetch_view(
         }
         View::Ports => {
             let v = client.call("ports", "listPorts", ps)?;
-            list_or_empty(&v, "Tidak ada port", |i, p| {
+            let mut lines = list_or_empty(&v, "Tidak ada port", |i, p| {
                 format!(
                     "[{i}] {} {}->{}",
                     field(p, "/protocol"),
                     field(p, "/published"),
                     field(p, "/target")
                 )
-            })
+            });
+            // Hint hapus hanya bila ada port sungguhan (baris pertama mulai "[0]").
+            if lines.first().is_some_and(|l| l.starts_with("[0]")) {
+                lines.push(String::new());
+                lines.push("Tekan angka [0-9] untuk menghapus port itu.".into());
+            }
+            lines
         }
         View::Mounts => {
             let v = client.call("mounts", "listMounts", ps)?;

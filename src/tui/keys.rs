@@ -318,6 +318,13 @@ impl App {
         let _ = match c.action.as_str() {
             "destroy-project" => req.send(Req::ProjectDestroy(c.project.clone())),
             "domain-delete" => req.send(Req::DomainDelete(c.project.clone())),
+            // Indeks port dititipkan di `stype` (pola yang sama seperti id domain
+            // dititipkan di `project`).
+            "port-delete" => req.send(Req::PortDelete {
+                project: c.project.clone(),
+                service: c.service.clone(),
+                index: c.stype.parse().unwrap_or(0),
+            }),
             // Hapus server: perubahan config, bukan panggilan API.
             "server-remove" => {
                 self.server_action = Some(ServerAction::Remove(c.project));
@@ -507,6 +514,28 @@ impl App {
                 self.viewer_scroll = self.viewer_scroll.saturating_add(1)
             }
             KeyCode::PageDown => self.viewer_scroll = self.viewer_scroll.saturating_add(10),
+            // Di viewer Ports, angka memilih port itu untuk dihapus (deletePort by
+            // index). Cukup 0-9: satu service jarang punya >10 port. Hanya jika
+            // baris [idx] memang ada, jadi menekan angka acak tak melakukan apa pun.
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                if let Some((View::Ports, project, service, _)) = self.viewer_ctx.clone() {
+                    let idx = (c as u8 - b'0') as usize;
+                    let exists = self
+                        .viewer_lines
+                        .iter()
+                        .any(|l| l.starts_with(&format!("[{idx}]")));
+                    if exists {
+                        let label = format!("Hapus port [{idx}] dari {service}?");
+                        self.confirm = Some(Confirm {
+                            action: "port-delete".into(),
+                            project,
+                            service,
+                            stype: idx.to_string(),
+                            label,
+                        });
+                    }
+                }
+            }
             _ => {}
         }
     }

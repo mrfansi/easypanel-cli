@@ -209,8 +209,10 @@ Each is grounded in an endpoint confirmed to exist in `backend.js` 2.32.2.
 
 Fill out the management surface. Verify live with a `zzz-*` target and clean up.
 
-4. **Port management.** *Add* done in v0.16.0. Open: **delete** (`deletePort` by index)
-   and a **Ports step in the create wizard** (`createService` takes `ports` inline).
+4. ~~**Port management.**~~ Add done v0.16.0, **delete** done v0.21.0 (in the Ports viewer,
+   press `[0-9]` → confirm → `deletePort` by index; list reloads in place). Verified live
+   that the index equals the listed position. **Open:** a Ports step in the create wizard
+   (`createService` takes `ports` inline) — additive, low priority.
 5. **Mount management** (`mounts/createMount`, `updateMount`, `deleteMount`) — TUI viewer
    is read-only; the CLI already has `mount-add`.
 6. ~~**Resource limits**~~ TUI done in v0.20.0. `L` on a service opens a form (CPU/memory
