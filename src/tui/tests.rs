@@ -515,6 +515,22 @@ fn menu_arrows_open_drill_and_go_back() {
 }
 
 #[test]
+fn space_opens_the_row_action_menu() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["p".into()];
+    app.all_services = vec![json!({ "projectName": "p", "name": "web", "type": "app" })];
+    app.screen = Screen::Projects;
+    app.services_table.select(Some(1)); // web
+    app.on_key(KeyCode::Char(' '), &tx);
+    // Space = versi keyboard dari klik kanan: menu service top-level (punya Env ▸).
+    assert!(app
+        .menu
+        .as_ref()
+        .is_some_and(|m| m.items.iter().any(|i| i.label == "Env ▸")));
+}
+
+#[test]
 fn spinner_shows_only_while_loading() {
     // Spinner = umpan balik "sedang bekerja". Muncul saat status diakhiri "..." /
     // "…" (Memuat…/Mengirim…/Mencari…), diam saat status biasa.

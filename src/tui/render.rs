@@ -18,7 +18,7 @@ pub(super) struct Key(pub(super) &'static str, pub(super) &'static str);
 
 /// Tombol yang berlaku di layar mana pun.
 pub(super) const GLOBAL_KEYS: &[Key] = &[
-    Key("1-7 / Tab", "pindah tab"),
+    Key("1-7 / Tab / ←→", "pindah tab"),
     Key("?", "bantuan ini"),
     Key("s", "daftar server (pilih/tambah/edit/hapus)"),
     Key("r", "refresh"),
@@ -81,7 +81,8 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("g", "cari kata di log SEMUA service"),
             Key("n", "service baru"),
             Key("N", "project baru"),
-            Key("↑↓ / klik kanan", "pilih baris / buka menu aksi"),
+            Key("↑↓", "pilih baris"),
+            Key("Space / klik kanan", "buka menu aksi baris terpilih"),
             Key(
                 "di menu: ↑↓ →←",
                 "→ masuk submenu · ← kembali · Enter jalankan · Esc tutup",
@@ -216,10 +217,21 @@ pub(super) fn render_help(f: &mut Frame, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ))
     };
+    // Lebar kolom tombol = tombol terpanjang (lintas semua bagian) + 2, jadi
+    // deskripsi tak pernah menempel ke tombol (mis. "↑↓ / klik kanan").
+    let kw = rows
+        .iter()
+        .chain(GLOBAL_KEYS)
+        .chain(OVERLAY_KEYS)
+        .chain(MOUSE_KEYS)
+        .map(|Key(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(12)
+        + 2;
     let row = |Key(k, d): &Key| {
         Line::from(vec![
             Span::styled(
-                format!("   {k:<12}"),
+                format!("   {k:<kw$}", kw = kw),
                 Style::default().fg(Color::Indexed(252)),
             ),
             Span::styled((*d).to_string(), Style::default().fg(Color::Gray)),
@@ -1052,6 +1064,14 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
     rows.push(Constraint::Min(1));
     let slots = Layout::vertical(rows).split(inner);
 
+    // Lebar kolom label = label terpanjang + 2 spasi, jadi value tak pernah
+    // menempel ke label (mis. "Buat file .env" / "Install command").
+    let lw = visible
+        .iter()
+        .map(|&i| form.fields[i].label.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
     for (slot, &idx) in visible.iter().enumerate() {
         let field = &form.fields[idx];
         let focused = idx == form.focus;
@@ -1063,7 +1083,7 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
         };
         let line = Line::from(vec![
             Span::styled(
-                format!("{:<14}", field.label),
+                format!("{:<lw$}", field.label, lw = lw),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(

@@ -24,6 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Menus navigate with arrow keys.** `↑↓` move, `→` enters a submenu (or runs the
   item), `←` goes back to the parent menu (or closes at the top level), `Enter`
   runs, `Esc` closes. Works from both the keyboard openers and right-click.
+- **`←`/`→` switch tabs** (e.g. Services ↔ Domains), alongside `Tab` and `1`–`7`.
+- **`Space` opens the row action menu** — the keyboard equivalent of right-click,
+  so the full grouped menu is reachable without a mouse.
+
+### Fixed
+
+- **Keyboard-opened menus now appear at the selected row** instead of the top-left
+  corner of the table, so the menu shows up in the context of the row it acts on
+  (and no longer bleeds the underlying project names along its left edge).
+- **Form labels no longer collide with their values.** The label column was a fixed
+  width, so a long label (`Install command`, `Buat file .env`) ran straight into its
+  value with no gap; the column now sizes to the longest label in the form.
+- **The help overlay no longer jams the key against its description** for the same
+  reason — the key column now sizes to the widest key shown.
 
 ### Internal
 

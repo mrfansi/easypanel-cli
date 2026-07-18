@@ -87,6 +87,12 @@ impl Screen {
             Screen::Viewer | Screen::Terminal => Screen::Dashboard,
         }
     }
+    /// Tab sebelumnya (untuk ←). Berputar lewat TAB_SCREENS; Viewer/Terminal
+    /// dianggap di tab Projects (index 6).
+    pub(super) fn prev(self) -> Self {
+        let i = self.index();
+        TAB_SCREENS[(i + TAB_SCREENS.len() - 1) % TAB_SCREENS.len()]
+    }
 }
 
 /// Satu baris di layar Hosts. Host yang mati harus tampil sebagai baris error,
@@ -526,8 +532,9 @@ impl App {
         ]
     }
 
-    /// Buka menu di dekat tabel (untuk menu yang dibuka lewat keyboard). Menu yang
-    /// dibuka klik-kanan memakai posisi kursor (lihat on_right_click).
+    /// Buka menu untuk menu yang dibuka lewat keyboard. Dijangkarkan di BARIS yang
+    /// dipilih (bukan pojok kiri-atas) supaya muncul dalam konteks baris itu, seperti
+    /// klik-kanan. Menu klik-kanan memakai posisi kursor (lihat on_right_click).
     pub(super) fn open_menu(&mut self, items: Vec<MenuItem>) {
         if items.is_empty() {
             return;
@@ -535,12 +542,23 @@ impl App {
         let mut state = ListState::default();
         state.select(Some(0));
         let a = self.table_area;
+        // Baris terpilih di layar = area.y + border(1) + header(1) + (indeks - offset).
+        // Dari tabel AKTIF (Projects/Domains/Actions), jadi menu muncul di baris yang
+        // benar di layar mana pun.
+        let (sel, off) = self
+            .active_table()
+            .map(|t| (t.selected().unwrap_or(0), t.offset()))
+            .unwrap_or((0, 0));
+        let rel = sel.saturating_sub(off) as u16;
+        let row = a.y.saturating_add(2).saturating_add(rel);
         self.menu = Some(Menu {
             items,
             state,
             parent: None,
-            col: a.x.saturating_add(4),
-            row: a.y.saturating_add(2),
+            // +2: lewati border + indentasi service, jadi tepi kiri menu tak menimpa
+            // (dan tak dibocori) teks kolom pertama.
+            col: a.x.saturating_add(2),
+            row,
             rect: Rect::default(),
         });
     }

@@ -69,6 +69,17 @@ impl App {
             KeyCode::Char('6') => self.goto(Screen::Domains, req),
             KeyCode::Char('7') => self.goto(Screen::Projects, req),
             KeyCode::Tab => self.goto(self.screen.next(), req),
+            // ←/→ pindah antar tab (mis. Services ↔ Domains). Menu & form
+            // menangkap panah lebih dulu (di atas), jadi ini hanya berlaku di
+            // navigasi tabel biasa.
+            KeyCode::Right => self.goto(self.screen.next(), req),
+            KeyCode::Left => self.goto(self.screen.prev(), req),
+            // Space membuka menu aksi baris terpilih — versi keyboard dari klik
+            // kanan. Kosong (layar tanpa aksi baris) = tak melakukan apa-apa.
+            KeyCode::Char(' ') => {
+                let items = self.context_items();
+                self.open_menu(items);
+            }
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('r') => self.refresh(req),
