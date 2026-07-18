@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod logs;
 mod output;
+mod source;
 mod tui;
 
 use anyhow::Result;

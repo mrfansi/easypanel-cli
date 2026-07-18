@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.3] — 2026-07-18
+
+### Fixed
+
+- **Cloning a service silently dropped its registry credentials.** A service
+  pulling from a private registry carries `username`/`password` on its source; the
+  clone path sent only the image, so the clone could never pull — while the status
+  bar reported a successful clone. The failure only surfaced later, at deploy.
+  Verified end-to-end against a live server: the original kept its credentials, a
+  clone taken before this fix had none, a clone taken after has them.
+
+### Internal
+
+- The rule for *which `updateSource*` endpoint a source type uses and which keys its
+  body carries* now lives in one place (`src/source.rs`) instead of being duplicated
+  between the create/edit form and the clone path. The two copies had already
+  drifted — that drift is what lost the credentials. The form keeps its own
+  validation and field labels; only the payload shape is shared.
+
 ## [0.42.2] — 2026-07-18
 
 ### Fixed

@@ -362,7 +362,11 @@ pub(super) fn source_body(
         return Err("Path must start with /".into());
     }
 
-    match form.by_label("Source").as_str() {
+    // Validate what the user typed, then hand the shaping to `source::source_call`
+    // so the form and the clone path can't disagree about which keys an endpoint
+    // takes. Only auto deploy stays here — it is a form toggle, not payload shape.
+    let kind = form.by_label("Source");
+    let src = match kind.as_str() {
         "github" => {
             let full = form.by_label("Repo");
             if full.is_empty() {
@@ -375,53 +379,43 @@ pub(super) fn source_body(
             if owner.is_empty() || repo.is_empty() || branch.is_empty() {
                 return Err("Repo and Branch are required".into());
             }
-            Ok((
-                "updateSourceGithub",
-                json!({ "owner": owner, "repo": repo, "ref": branch, "path": path }),
-                Some(form.is_on_label("Auto deploy")),
-            ))
+            json!({ "type": "github", "owner": owner, "repo": repo, "ref": branch, "path": path })
         }
         "git" => {
             let (repo, git_ref) = (form.by_label("Git URL"), form.by_label("Ref"));
             if repo.is_empty() || git_ref.is_empty() {
                 return Err("Git URL and Ref are required".into());
             }
-            Ok((
-                "updateSourceGit",
-                json!({ "repo": repo, "ref": git_ref, "path": path }),
-                None,
-            ))
+            json!({ "type": "git", "repo": repo, "ref": git_ref, "path": path })
         }
         "dockerfile" => {
             let content = form.by_label("Dockerfile");
             if content.is_empty() {
                 return Err("Dockerfile is still empty — Space to open it in $EDITOR".into());
             }
-            Ok((
-                "updateSourceDockerfile",
-                json!({ "dockerfile": content }),
-                None,
-            ))
+            json!({ "type": "dockerfile", "dockerfile": content })
         }
         _ => {
             let image = form.by_label("Docker image");
             if image.is_empty() {
                 return Err("Docker image is required".into());
             }
-            let mut body = json!({ "image": image });
-            // username/password optional: empty = not sent, not sent as "".
+            let mut src = json!({ "type": "image", "image": image });
             for (label, key) in [
                 ("Registry user", "username"),
                 ("Registry password", "password"),
             ] {
                 let v = form.by_label(label);
                 if !v.is_empty() {
-                    body[key] = json!(v);
+                    src[key] = json!(v);
                 }
             }
-            Ok(("updateSourceImage", body, None))
+            src
         }
-    }
+    };
+    let (op, body) = crate::source::source_call(&src).ok_or("Unknown source type")?;
+    let auto = (kind == "github").then(|| form.is_on_label("Auto deploy"));
+    Ok((op, body, auto))
 }
 
 /// updateBuild body from the form.

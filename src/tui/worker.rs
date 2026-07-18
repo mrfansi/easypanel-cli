@@ -1407,53 +1407,24 @@ fn apply_clone_source(
         v["serviceName"] = json!(service);
         v
     };
-    let path = src.get("path").cloned().unwrap_or_else(|| json!("/"));
-    match src.get("type").and_then(Value::as_str).unwrap_or("") {
-        "github" => {
-            client.call(
-                grp,
-                "updateSourceGithub",
-                with_id(json!({
-                    "owner": field(src, "/owner"), "repo": field(src, "/repo"),
-                    "ref": field(src, "/ref"), "path": path,
-                })),
-            )?;
-            if src
-                .get("autoDeploy")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                client.call(
-                    grp,
-                    "enableGithubDeploy",
-                    json!({ "projectName": project, "serviceName": service }),
-                )?;
-            }
-        }
-        "git" => {
-            client.call(
-                grp,
-                "updateSourceGit",
-                with_id(
-                    json!({ "repo": field(src, "/repo"), "ref": field(src, "/ref"), "path": path }),
-                ),
-            )?;
-        }
-        "image" => {
-            client.call(
-                grp,
-                "updateSourceImage",
-                with_id(json!({ "image": field(src, "/image") })),
-            )?;
-        }
-        "dockerfile" => {
-            client.call(
-                grp,
-                "updateSourceDockerfile",
-                with_id(json!({ "dockerfile": field(src, "/dockerfile") })),
-            )?;
-        }
-        _ => {}
+    // Same rule as the create/edit form (see src/source.rs). This used to be a
+    // second copy, and it had already lost the registry credentials.
+    let Some((op, body)) = crate::source::source_call(src) else {
+        return Ok(());
+    };
+    client.call(grp, op, with_id(body))?;
+    // Auto deploy is orchestration, not payload shape, so it stays here.
+    if src.get("type").and_then(Value::as_str) == Some("github")
+        && src
+            .get("autoDeploy")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        client.call(
+            grp,
+            "enableGithubDeploy",
+            json!({ "projectName": project, "serviceName": service }),
+        )?;
     }
     Ok(())
 }
