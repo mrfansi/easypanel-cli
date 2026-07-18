@@ -280,6 +280,22 @@ fn status_keys_fit_the_width_and_never_drop_help() {
 }
 
 #[test]
+fn context_menu_items_match_screen_and_selection() {
+    let mut app = App::new("t".into(), vec![]);
+    // Layar Domains tanpa baris terpilih -> tak ada menu.
+    app.screen = Screen::Domains;
+    assert!(app.context_items().is_empty());
+    // Baris domain terpilih -> aksi domain (edit/primary/hapus).
+    app.domains_state.select(Some(0));
+    let items = app.context_items();
+    assert_eq!(items.len(), 3);
+    assert!(items.iter().any(|(l, _)| l == "Hapus"));
+    // Layar tanpa aksi baris (Dashboard) -> selalu kosong.
+    app.screen = Screen::Dashboard;
+    assert!(app.context_items().is_empty());
+}
+
+#[test]
 fn spinner_shows_only_while_loading() {
     // Spinner = umpan balik "sedang bekerja". Muncul saat status diakhiri "..." /
     // "…" (Memuat…/Mengirim…/Mencari…), diam saat status biasa.

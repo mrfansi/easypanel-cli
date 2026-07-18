@@ -7,10 +7,11 @@
 use std::sync::mpsc::Sender;
 
 use ratatui::crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::widgets::ListState;
 
 use crate::output::field;
 
-use super::app::{App, Confirm, MonitorView, Screen, ServerAction, TAB_SCREENS};
+use super::app::{App, Confirm, Menu, MonitorView, Screen, ServerAction, TAB_SCREENS};
 use super::form::*;
 use super::table::*;
 use super::worker::{Req, View};
@@ -21,6 +22,10 @@ impl App {
         // bukan untuk menghafal cara keluar.
         if self.help {
             self.help = false;
+            return;
+        }
+        if self.menu.is_some() {
+            self.menu_key(code, req);
             return;
         }
         if self.filter_input {
@@ -82,10 +87,14 @@ impl App {
         }
     }
 
-    /// Klik & scroll. Modal terbuka (form/picker/konfirmasi/dropdown/bantuan)
-    /// menelan mouse: sebuah klik tak boleh diam-diam mengganti tab di belakang
-    /// dialog. Sesi terminal juga mengabaikannya (shell tak menerima mouse dari sini).
+    /// Klik & scroll. Menu konteks menangkap mouse selama terbuka; modal lain
+    /// (form/picker/konfirmasi/dropdown/bantuan) menelannya — klik tak boleh
+    /// diam-diam mengganti tab di belakang dialog. Sesi terminal mengabaikannya.
     pub(super) fn on_mouse(&mut self, m: MouseEvent, req: &Sender<Req>) {
+        if self.menu.is_some() {
+            self.menu_mouse(m, req);
+            return;
+        }
         if self.screen == Screen::Terminal
             || self.help
             || self.form.is_some()
@@ -101,6 +110,7 @@ impl App {
             MouseEventKind::ScrollDown => self.on_key(KeyCode::Down, req),
             MouseEventKind::ScrollUp => self.on_key(KeyCode::Up, req),
             MouseEventKind::Down(MouseButton::Left) => self.on_click(m.column, m.row, req),
+            MouseEventKind::Down(MouseButton::Right) => self.on_right_click(m.column, m.row),
             _ => {}
         }
     }
@@ -119,18 +129,122 @@ impl App {
             }
             return;
         }
-        // Klik baris tabel Services -> pilih baris itu. Dua baris teratas (border +
-        // header) bukan data; offset menampung daftar yang tergulung.
-        if self.screen == Screen::Projects {
-            let a = self.services_area;
-            let first = a.y.saturating_add(2);
-            let in_x = col >= a.x && col < a.x.saturating_add(a.width);
-            if in_x && row >= first {
-                let idx = (row - first) as usize + self.services_table.offset();
-                if idx < self.visible_rows().len() {
-                    self.services_table.select(Some(idx));
-                }
+        self.select_row_at(col, row);
+    }
+
+    /// Klik kanan sebuah baris memilihnya lalu membuka menu aksinya. Tanpa aksi
+    /// untuk baris/layar itu, tak ada menu yang muncul.
+    fn on_right_click(&mut self, col: u16, row: u16) {
+        if row == self.tab_row {
+            return;
+        }
+        self.select_row_at(col, row);
+        let items = self.context_items();
+        if !items.is_empty() {
+            let mut state = ListState::default();
+            state.select(Some(0));
+            self.menu = Some(Menu {
+                items,
+                state,
+                col,
+                row,
+                rect: ratatui::layout::Rect::default(),
+            });
+        }
+    }
+
+    /// Pilih baris di bawah (col,row) pada tabel layar aktif. Dua baris teratas
+    /// (border + header) bukan data; offset menampung daftar yang tergulung. True
+    /// bila sebuah baris benar-benar terpilih.
+    fn select_row_at(&mut self, col: u16, row: u16) -> bool {
+        let a = self.table_area;
+        let first = a.y.saturating_add(2);
+        if col < a.x || col >= a.x.saturating_add(a.width) || row < first {
+            return false;
+        }
+        let vis = (row - first) as usize;
+        let len = self.visible_table_len();
+        if let Some(state) = self.active_table() {
+            let idx = vis + state.offset();
+            if idx < len {
+                state.select(Some(idx));
+                return true;
             }
+        }
+        false
+    }
+
+    /// Navigasi menu konteks lewat keyboard.
+    fn menu_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        let Some(menu) = self.menu.as_mut() else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Up | KeyCode::Char('k') => {
+                let i = menu.state.selected().unwrap_or(0);
+                menu.state.select(Some(i.saturating_sub(1)));
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let i = menu.state.selected().unwrap_or(0);
+                let last = menu.items.len().saturating_sub(1);
+                menu.state.select(Some((i + 1).min(last)));
+            }
+            KeyCode::Enter => self.activate_menu(req),
+            _ => {}
+        }
+    }
+
+    /// Mouse saat menu terbuka: scroll menavigasi, klik pada item mengaktifkannya,
+    /// klik di luar menutup menu.
+    fn menu_mouse(&mut self, m: MouseEvent, req: &Sender<Req>) {
+        let Some(menu) = self.menu.as_mut() else {
+            return;
+        };
+        match m.kind {
+            MouseEventKind::ScrollUp => {
+                let i = menu.state.selected().unwrap_or(0);
+                menu.state.select(Some(i.saturating_sub(1)));
+            }
+            MouseEventKind::ScrollDown => {
+                let i = menu.state.selected().unwrap_or(0);
+                let last = menu.items.len().saturating_sub(1);
+                menu.state.select(Some((i + 1).min(last)));
+            }
+            MouseEventKind::Down(_) => {
+                // Item i digambar di baris menu.rect.y + 1 + i (di dalam border).
+                let r = menu.rect;
+                let inside = m.column >= r.x
+                    && m.column < r.x.saturating_add(r.width)
+                    && m.row > r.y
+                    && m.row < r.y.saturating_add(r.height).saturating_sub(1);
+                if inside {
+                    let i = (m.row - r.y - 1) as usize;
+                    if i < menu.items.len() {
+                        menu.state.select(Some(i));
+                        self.activate_menu(req);
+                        return;
+                    }
+                }
+                // Klik di luar menu -> tutup tanpa aksi.
+                self.menu = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Jalankan item menu terpilih: mengeksekusi tombol yang SAMA seperti keyboard,
+    /// jadi tak ada jalur aksi kedua yang bisa menyimpang.
+    fn activate_menu(&mut self, req: &Sender<Req>) {
+        let key = self.menu.as_ref().and_then(|menu| {
+            menu.state
+                .selected()
+                .and_then(|i| menu.items.get(i))
+                .map(|(_, k)| *k)
+        });
+        self.menu = None;
+        if let Some(k) = key {
+            self.on_key(k, req);
         }
     }
 

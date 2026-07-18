@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
@@ -217,8 +218,24 @@ pub(super) struct App {
     /// Hitbox klik per tab (start,end kolom), diisi saat render_tabs. Baris tab-nya.
     pub(super) tab_spans: Vec<(u16, u16)>,
     pub(super) tab_row: u16,
-    /// Area tabel Services, diisi saat render — untuk memetakan klik ke baris.
-    pub(super) services_area: Rect,
+    /// Area tabel layar aktif, diisi saat render — memetakan klik ke baris. Hanya
+    /// satu layar dirender per frame, jadi satu field cukup untuk semua tabel.
+    pub(super) table_area: Rect,
+    /// Menu konteks (klik kanan). Item = (label, tombol yang disimulasikan).
+    pub(super) menu: Option<Menu>,
+}
+
+/// Menu konteks klik-kanan: tiap item mengeksekusi aksi yang SAMA seperti sebuah
+/// tombol, jadi tak ada jalur aksi kedua yang bisa menyimpang dari keyboard.
+pub(super) struct Menu {
+    pub(super) items: Vec<(String, KeyCode)>,
+    pub(super) state: ListState,
+    /// Posisi kursor saat menu dibuka (sudut kiri-atas menu, sebelum dijepit layar).
+    pub(super) col: u16,
+    pub(super) row: u16,
+    /// Kotak menu yang benar-benar digambar (setelah dijepit ke layar), diisi saat
+    /// render — dipakai memetakan klik item.
+    pub(super) rect: Rect,
 }
 
 impl App {
@@ -276,7 +293,61 @@ impl App {
             last_sel: None,
             tab_spans: Vec::new(),
             tab_row: 0,
-            services_area: Rect::default(),
+            table_area: Rect::default(),
+            menu: None,
+        }
+    }
+
+    /// Jumlah baris yang SEDANG dirender di tabel layar aktif (setelah filter).
+    /// Dipakai klik: indeks yang diklik harus dalam rentang yang benar-benar tampil.
+    pub(super) fn visible_table_len(&self) -> usize {
+        match self.screen {
+            Screen::Projects => self.visible_rows().len(),
+            Screen::Actions => self.visible_actions().len(),
+            Screen::Domains => self.visible_domains().len(),
+            Screen::Hosts => self.hosts.len(),
+            Screen::Monitor => match self.monitor_view {
+                MonitorView::Services => self.visible_monitor_rows().len(),
+                MonitorView::Storage => self.storage.len(),
+            },
+            _ => 0,
+        }
+    }
+
+    /// TableState tabel layar aktif (untuk memilih baris dari klik). None = layar
+    /// tanpa tabel yang bisa dipilih.
+    pub(super) fn active_table(&mut self) -> Option<&mut TableState> {
+        match self.screen {
+            Screen::Projects => Some(&mut self.services_table),
+            Screen::Actions => Some(&mut self.actions_state),
+            Screen::Domains => Some(&mut self.domains_state),
+            Screen::Hosts => Some(&mut self.hosts_state),
+            Screen::Monitor => Some(&mut self.monitor_state),
+            _ => None,
+        }
+    }
+
+    /// Item menu konteks untuk baris yang disorot di layar aktif. Kosong = tak ada
+    /// menu (mis. tak ada baris terpilih, atau layar tanpa aksi baris).
+    pub(super) fn context_items(&self) -> Vec<(String, KeyCode)> {
+        match self.screen {
+            Screen::Projects if self.selected_row().is_some() => vec![
+                ("Logs".into(), KeyCode::Enter),
+                ("Terminal".into(), KeyCode::Char('t')),
+                ("Deploy".into(), KeyCode::Char('d')),
+                ("Restart".into(), KeyCode::Char('R')),
+                ("Stop".into(), KeyCode::Char('S')),
+                ("Start".into(), KeyCode::Char('T')),
+                ("Env".into(), KeyCode::Char('e')),
+                ("Resource".into(), KeyCode::Char('L')),
+                ("Hapus".into(), KeyCode::Char('x')),
+            ],
+            Screen::Domains if self.domains_state.selected().is_some() => vec![
+                ("Edit".into(), KeyCode::Char('e')),
+                ("Jadikan primary".into(), KeyCode::Char('P')),
+                ("Hapus".into(), KeyCode::Char('x')),
+            ],
+            _ => vec![],
         }
     }
 

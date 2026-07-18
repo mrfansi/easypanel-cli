@@ -94,6 +94,14 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
     }
 }
 
+/// Aksi mouse (ditampilkan di overlay bantuan supaya ketahuan).
+pub(super) const MOUSE_KEYS: &[Key] = &[
+    Key("Klik tab", "pindah ke tab itu"),
+    Key("Klik baris", "pilih baris"),
+    Key("Klik kanan", "menu aksi untuk baris itu"),
+    Key("Scroll", "gulung tabel / viewer"),
+];
+
 /// Tombol di dalam overlay; berlaku di form dan dropdown mana pun.
 pub(super) const OVERLAY_KEYS: &[Key] = &[
     Key("Tab / ↑↓", "pindah field"),
@@ -147,6 +155,49 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
     if app.help {
         render_help(f, app);
     }
+    if app.menu.is_some() {
+        render_menu(f, app);
+    }
+}
+
+/// Menu konteks klik-kanan: popup kecil di kursor, dijepit agar tetap di layar.
+pub(super) fn render_menu(f: &mut Frame, app: &mut App) {
+    let full = f.area();
+    let Some(menu) = app.menu.as_mut() else {
+        return;
+    };
+    let w = (menu
+        .items
+        .iter()
+        .map(|(l, _)| l.chars().count())
+        .max()
+        .unwrap_or(6) as u16
+        + 4)
+    .min(full.width);
+    let h = (menu.items.len() as u16 + 2).min(full.height);
+    let x = menu.col.min(full.width.saturating_sub(w));
+    let y = menu.row.min(full.height.saturating_sub(h));
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    menu.rect = rect;
+    let items: Vec<ListItem> = menu
+        .items
+        .iter()
+        .map(|(l, _)| ListItem::new(format!(" {l}")))
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .title(" Aksi ")
+                .border_style(Style::default().fg(Color::Yellow)),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_widget(Clear, rect);
+    f.render_stateful_widget(list, rect, &mut menu.state);
 }
 
 /// Overlay bantuan: tombol global, tombol layar aktif, dan tombol di dalam form.
@@ -184,6 +235,11 @@ pub(super) fn render_help(f: &mut Frame, app: &App) {
     lines.push(Line::from(""));
     lines.push(head("Di dalam form & dropdown"));
     lines.extend(OVERLAY_KEYS.iter().map(row));
+    lines.push(Line::from(""));
+    lines.push(head("Mouse"));
+    for m in MOUSE_KEYS {
+        lines.push(row(m));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "   tekan tombol apa saja untuk menutup",
@@ -398,7 +454,7 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         Style::default().add_modifier(Modifier::REVERSED)
     };
-    app.services_area = area;
+    app.table_area = area;
     let table = Table::new(body, widths)
         .header(header)
         .block(Block::bordered().title(title))
@@ -576,6 +632,7 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
     .block(Block::bordered().title(format!(" Hosts ({}) ", app.hosts.len())))
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
     .highlight_symbol("› ");
+    app.table_area = area;
     f.render_stateful_widget(table, area, &mut app.hosts_state);
 }
 
@@ -586,6 +643,7 @@ pub(super) fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|a| commands::action_row(a, commands::ACTION_DESC_TUI))
         .collect();
     let title = count_title("Actions", rows.len(), app.actions.len(), app);
+    app.table_area = area;
     render_table(
         f,
         area,
@@ -610,6 +668,7 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|d| commands::domain_row(d))
         .collect();
     let title = count_title("Domains", rows.len(), app.domains.len(), app);
+    app.table_area = area;
     render_table(
         f,
         area,
@@ -628,6 +687,7 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
 pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
     let rows = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(area);
     render_tiles(f, rows[0], app);
+    app.table_area = rows[1];
 
     match app.monitor_view {
         MonitorView::Services => {

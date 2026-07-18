@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-07-18
+
+### Added
+
+- **Click any table row, not just Services.** Row selection by click now works on every
+  table screen — Services, Domains, Actions, Monitor, and Hosts — matching where the
+  keyboard already lets you select. (v0.22.0 shipped click-to-select on Services only.)
+- **Right-click context menu.** Right-click a row to select it and open a small menu of the
+  actions available for it — on a service: Logs, Terminal, Deploy, Restart, Stop, Start,
+  Env, Resource, Delete; on a domain: Edit, Set primary, Delete. Navigate with the mouse or
+  arrows, activate with click or Enter, dismiss by clicking away or Esc. Each item runs the
+  exact same code path as its keyboard shortcut, so there is no second action path that can
+  drift from the keys — and every action keeps its usual confirmation (delete still asks
+  first). The overlay (`?`) now lists the mouse actions too.
+
+### Changed
+
+- The stored table area is now generic across screens (one field, since only one screen
+  renders per frame), so click-to-select and the context menu work uniformly without
+  per-screen bookkeeping.
+
 ## [0.22.0] — 2026-07-18
 
 ### Added
