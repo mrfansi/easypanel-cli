@@ -779,6 +779,7 @@ impl App {
             KeyCode::Char('H') => self.open_basic_auth_form(req),
             KeyCode::Char('c') => self.open_clone_form(),
             KeyCode::Char('E') => self.start_env_edit(),
+            KeyCode::Char('w') => self.start_env_replace(),
             KeyCode::Char('t') => {
                 // Terminal ke container: event_loop yang mengerjakannya (ia yang
                 // memegang terminal untuk serah-terima raw mode). None = shell biasa.

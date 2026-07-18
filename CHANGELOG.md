@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.33.0] — 2026-07-18
+## [0.34.0] — 2026-07-18
+
+### Added
+
+- **Fast wholesale env replace (`w`)**, alongside the existing edit. Two clear paths now:
+  `E` **edits** a service's env — it loads the current variables into your `$EDITOR` so you
+  can change a few and save — and `w` **replaces the whole env** by opening an *empty*
+  editor to paste a fresh `.env` into, skipping both the fetch and the "clear the old
+  content first" step. Saving an empty replace is treated as cancel, so `w` can't wipe your
+  env by accident. Both save through `updateEnv` (which replaces the full env string); pick
+  the one that matches the task.
+
+
 
 ### Added
 

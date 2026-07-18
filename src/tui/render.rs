@@ -77,7 +77,11 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("o", "kelola domain (buka tab Domains ter-filter)"),
             Key("b", "lihat backups"),
             Key("u", "lihat source & build"),
-            Key("E", "edit env di $EDITOR"),
+            Key(
+                "E",
+                "edit env di $EDITOR (ubah sebagian; env sekarang dimuat)",
+            ),
+            Key("w", "ganti SELURUH env (editor kosong; tempel env baru)"),
             Key("A", "auto deploy on/off (source GitHub)"),
             Key("P", "tambah port"),
             Key("U", "atur source (service app)"),

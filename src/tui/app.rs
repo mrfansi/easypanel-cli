@@ -139,7 +139,10 @@ pub(super) struct App {
     pub(super) form: Option<Form>,
     pub(super) chooser: Option<Chooser>,
     pub(super) server_action: Option<ServerAction>,
-    pub(super) edit_env: Option<(String, String, String)>,
+    /// (project, service, stype, replace) — menunggu suntingan env di $EDITOR.
+    /// `replace` = true membuka editor KOSONG (ganti-cepat: tempel env baru tanpa
+    /// menunggu fetch atau menghapus yang lama); false memuat env sekarang.
+    pub(super) edit_env: Option<(String, String, String, bool)>,
     /// Indeks field form yang menunggu dibuka di $EDITOR; event_loop yang
     /// mengerjakannya — hanya ia yang memegang terminal.
     pub(super) edit_field: Option<usize>,
@@ -377,7 +380,9 @@ impl App {
                     ("Restart".into(), KeyCode::Char('R')),
                     ("Stop".into(), KeyCode::Char('S')),
                     ("Start".into(), KeyCode::Char('T')),
-                    ("Env".into(), KeyCode::Char('e')),
+                    ("Lihat env".into(), KeyCode::Char('e')),
+                    ("Edit env (sebagian)".into(), KeyCode::Char('E')),
+                    ("Ganti seluruh env".into(), KeyCode::Char('w')),
                     ("Domain".into(), KeyCode::Char('o')),
                     ("Mount baru".into(), KeyCode::Char('M')),
                     ("Redirect baru".into(), KeyCode::Char('F')),
@@ -788,7 +793,14 @@ impl App {
 
     pub(super) fn start_env_edit(&mut self) {
         if let Some((p, s, t)) = self.selected_row() {
-            self.edit_env = Some((p, s, t));
+            self.edit_env = Some((p, s, t, false));
+        }
+    }
+
+    /// Ganti-cepat env: buka $EDITOR KOSONG untuk menempel env baru wholesale.
+    pub(super) fn start_env_replace(&mut self) {
+        if let Some((p, s, t)) = self.selected_row() {
+            self.edit_env = Some((p, s, t, true));
         }
     }
 

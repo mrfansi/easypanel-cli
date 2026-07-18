@@ -286,8 +286,15 @@ fn event_loop(
         }
 
         // Edit env: lepas terminal, buka $EDITOR, lalu ambil alih lagi.
-        if let Some((project, service, stype)) = app.edit_env.take() {
-            match edit_env_in_editor(&w.user, &w.resp, terminal, &project, &service, &stype) {
+        if let Some((project, service, stype, replace)) = app.edit_env.take() {
+            // Ganti-cepat (replace): editor kosong, tanpa fetch. Simpan hanya kalau
+            // user mengetik sesuatu — kosong berarti batal, BUKAN menghapus env.
+            let edited = if replace {
+                edit_text_in_editor(terminal, &format!("easypanel-{project}-{service}.env"), "")
+            } else {
+                edit_env_in_editor(&w.user, &w.resp, terminal, &project, &service, &stype)
+            };
+            match edited {
                 Ok(Some(env)) => {
                     let _ = w.user.send(Req::EnvSave {
                         project,
@@ -297,6 +304,7 @@ fn event_loop(
                     });
                     app.status = "Menyimpan env...".into();
                 }
+                Ok(None) if replace => app.status = "Kosong — env tidak diubah".into(),
                 Ok(None) => app.status = "Env tidak berubah".into(),
                 Err(e) => app.status = format!("Error: {e}"),
             }
