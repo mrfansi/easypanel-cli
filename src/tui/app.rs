@@ -134,6 +134,16 @@ pub(super) struct MigrateReq {
     pub(super) services: Vec<(String, String, String)>,
 }
 
+/// Does this status line report a failure?
+///
+/// ONE definition, because two consumers must agree: `render` colours it, and the
+/// event loop refuses to fade it. They used to each carry their own copy of the
+/// rule, so a message could be painted as an error and then quietly erased as if
+/// it were a routine notice.
+pub(super) fn status_is_error(status: &str) -> bool {
+    status.starts_with("Error") || status.contains("failed")
+}
+
 /// A server-list change: executed in event_loop, which holds the ServerConfig.
 pub(super) enum ServerAction {
     Save {
@@ -876,6 +886,10 @@ impl App {
 
     /// The spinner frame while an operation is running (status ends with "..."),
     /// else None.
+    pub(super) fn status_is_error(&self) -> bool {
+        status_is_error(&self.status)
+    }
+
     pub(super) fn spinner(&self) -> Option<char> {
         const F: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let loading = self.status.ends_with("...") || self.status.ends_with('…');

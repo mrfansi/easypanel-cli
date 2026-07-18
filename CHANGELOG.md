@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.1] — 2026-07-19
+
+### Fixed
+
+- **A failure no longer erases itself six seconds later.** The status line is the
+  only place an error is ever shown — there is no log and no history to scroll
+  back to — and a blanket timer replaced every message with "Ready" once it had
+  been on screen for six seconds. Look away while a request is in flight and the
+  reason it failed is gone for good, replaced by a claim that everything is fine.
+  Errors now stay until your next action replaces them; routine notices ("Deploy
+  started", "Env saved") still fade as before.
+
+  Seen on a live host: `Error: [400] Project already exists.` was on screen at two
+  seconds and gone at eight.
+
+- The rule for what counts as a failure now has **one definition** instead of two.
+  The renderer used its own copy to pick the error colour and the event loop used
+  another to decide what to erase, so a message could be painted red as an error
+  and then quietly discarded as if it were a routine notice.
+
+### Known limitation
+
+The status line still cannot distinguish "working" from "finished": the spinner is
+derived from the message text rather than from a real in-flight count, so a
+long-running action can report "Ready" before its request comes back. Fixing that
+properly needs request tracking across every dispatch site and is tracked in
+`.github/AGENT_BRIEF.md` rather than patched with a heuristic — the obvious
+heuristic was tried and leaves a spinner running forever on screens that refresh
+without sending anything.
+
 ## [0.45.0] — 2026-07-19
 
 ### Fixed

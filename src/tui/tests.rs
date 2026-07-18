@@ -2120,3 +2120,54 @@ fn gui_editors_are_made_to_wait_so_the_edit_is_not_lost() {
     let (got, _) = with_editor_wait(&cmd("code --new-window"));
     assert_eq!(got, cmd("code --new-window --wait"));
 }
+
+#[test]
+fn a_failure_is_never_faded_away() {
+    use super::{status_should_fade, STATUS_IDLE};
+    let long = STATUS_IDLE + std::time::Duration::from_secs(5);
+    let short = std::time::Duration::from_secs(1);
+
+    // The status line is the only place a failure is ever shown — no log, no
+    // history. Fading it both destroys the message and claims all is well.
+    for err in [
+        "Error: [400] Project already exists.",
+        "Error: connection refused",
+        "Migrated 0/2 · failed: db: couldn't create",
+    ] {
+        assert!(
+            !status_should_fade(err, long),
+            "a failure must survive: {err}"
+        );
+    }
+
+    // Routine notices still fade, so they don't linger forever.
+    for notice in ["Deploy started", "Env saved", "Refreshing..."] {
+        assert!(status_should_fade(notice, long), "should fade: {notice}");
+        assert!(!status_should_fade(notice, short), "not before its time");
+    }
+
+    // "Ready" is already the resting state; there is nothing to revert to.
+    assert!(!status_should_fade("Ready", long));
+}
+
+#[test]
+fn render_and_the_fade_agree_on_what_counts_as_a_failure() {
+    // These two used to carry separate copies of the rule, so a message could be
+    // painted red as an error and then quietly erased as a routine notice.
+    use super::app::status_is_error;
+    use super::{status_should_fade, STATUS_IDLE};
+    let long = STATUS_IDLE + std::time::Duration::from_secs(5);
+    for s in [
+        "Error: boom",
+        "clone: failed",
+        "Ready",
+        "Env saved",
+        "Deploy started",
+    ] {
+        assert_eq!(
+            status_is_error(s),
+            !status_should_fade(s, long) && s != "Ready",
+            "the colour rule and the fade rule disagree about: {s}"
+        );
+    }
+}

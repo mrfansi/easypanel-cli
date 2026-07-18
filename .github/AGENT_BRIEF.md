@@ -220,10 +220,25 @@ Each is grounded in an endpoint confirmed to exist in `backend.js` 2.32.2.
    `berhenti`) — the two used to be indistinguishable. Verified live: the `{project}_
    {service}` join matches the replica map for all 33 services, and a deliberately
    crash-looping throwaway reported `actual=0, desired=1` → `turun`, then cleaned up.
-   **Still open (optional depth):** exit *reason* and *restart count* per container need
-   the per-service `getDockerContainers` `Status` string ("Restarting (1)…"/"Exited (1)…")
-   — 33 calls, too costly for the poll lane; best as an on-demand drill-down on the
-   selected service, not a column.
+   **Optional depth — DISPROVEN, do not attempt as described (checked 2026-07-19).**
+   The plan was to read exit reason and restart count from the per-service
+   `getDockerContainers` `Status` string ("Restarting (1)…"/"Exited (1)…"). Verified
+   live against a deliberately crash-looping `zzz-*` service: `getDockerTaskStats`
+   correctly reported `{actual: 0, desired: 1}`, and `getDockerContainers` returned
+   **`[]` — an empty list — for the whole crash loop**. On Swarm the task container is
+   removed as soon as it exits and a replacement is scheduled, so there is no container
+   to inspect at exactly the moment you want to inspect it. The `Status` string is only
+   ever observable for a service that is already *healthy* ("Up 11 hours"), which is
+   when nobody needs it.
+
+   What DOES answer "why is it down", verified in the same run: **the logs**. Loki keeps
+   the dead container's output (the test service's `FATAL: cannot reach database` came
+   back across several restart attempts, each under its own `container_name`), and the
+   Logs viewer already shows it. So the useful half of this item is shipped and the
+   proposed half is not buildable. Do not add a drill-down that renders an empty list.
+
+   Worth knowing, same check: a service can crash-loop while its deploy action reads
+   `status: "done"`. Deploy success does not mean the service runs.
 3. **Alerting — not buildable as an in-tool feature (checked 2026-07-18).** The
    `notifications/*` group is only channel CRUD + `sendTestNotification`; there is **no
    endpoint to send a custom alert/message**. EasyPanel fires notifications from its own
@@ -289,6 +304,31 @@ Fill out the management surface. Verify live with a `zzz-*` target and clean up.
     - **project env** (`updateProjectEnv`) — `{projectName, env}`. Note: `inspectProject`
       does **not** return the current env at top level, so prefill needs another source
       (maybe `project.env`) — verify before building or it edits blind.
+
+### Open UX defect: the status line cannot tell "working" from "finished"
+
+Half-fixed in v0.45.1 — failures no longer fade away. The other half is still open and
+needs a real change, not a heuristic:
+
+**There is no in-flight tracking.** The spinner and the "is something happening?" signal
+are both derived from the status *string* ending in `...` (`app.rs`, `spinner()`), and the
+6-second fade rewrites that string to "Ready" regardless of whether the request came back.
+So a dispatched action reports completion it cannot know about. The worst case is
+`maint:systemPrune` (`keys.rs`) — a host-wide, irreversible Docker prune whose only
+feedback is `"Sending..."`; six seconds later the bar says "Ready" while the request is
+still running, and re-running it is a plausible next move.
+
+The obvious fix (don't fade a status ending in `...`) is WRONG and was tried and rejected
+on 2026-07-19: `refresh()` sets `"Refreshing..."` even on `Screen::Dashboard` and
+`Screen::Terminal`, which send **no request at all**, and the data handlers
+(`Resp::Projects`, `Resp::AllServices`, `Resp::Stats`) never touch the status — so today
+that message is cleared *only* by the fade. Make it sticky and every `r` leaves a spinner
+running forever.
+
+The honest fix is a pending-request count on `App`, incremented where a `Req` is sent and
+decremented when its `Resp` arrives, driving the spinner and gating the fade. That is a
+cross-cutting change to ~50 send sites — a refactor of its own run, not a rider on a
+feature.
 
 ### Scalability — the tool must not fold at real scale
 

@@ -1126,8 +1126,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
 
     // A single line: just the status message. The key list is removed from here —
     // it's fully in the "?" overlay (and that extra line cost one table row).
-    let is_error = app.status.starts_with("Error") || app.status.contains("failed");
-    let status_style = if is_error {
+    let status_style = if app.status_is_error() {
         // Palette pink: contrasts on top of the gray, theme-independent.
         bar.fg(Color::Indexed(210)).add_modifier(Modifier::BOLD)
     } else {

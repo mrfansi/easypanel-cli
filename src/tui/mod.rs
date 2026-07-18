@@ -67,6 +67,23 @@ fn disable_mouse() {
     let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
 }
 
+/// How long a transient notice stays before the status line returns to "Ready".
+const STATUS_IDLE: Duration = Duration::from_secs(6);
+
+/// Should the status line revert to "Ready" now?
+///
+/// Tracked centrally rather than in every scattered `self.status = …`, so a
+/// notice like "Deploy started" doesn't linger forever. Two things are never
+/// faded:
+///
+/// - "Ready" itself — there is nothing to revert to.
+/// - A failure — it is the ONLY copy the user gets. There is no log and no
+///   history to scroll back to, so erasing it after six seconds loses the message
+///   for good AND replaces it with a claim that everything is fine.
+pub(super) fn status_should_fade(status: &str, idle: Duration) -> bool {
+    status != "Ready" && !app::status_is_error(status) && idle >= STATUS_IDLE
+}
+
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
@@ -76,11 +93,6 @@ fn event_loop(
     let mut w = spawn_workers(client);
     send_initial(&w.user);
     let mut last_stats = Instant::now();
-    // Status fade: tracked here, not in every scattered `self.status = …`. The
-    // timer resets when the message changes; if it's been idle ≥ IDLE seconds and
-    // isn't "Ready", revert to "Ready" so a transient notice (e.g. "Deploy
-    // started") doesn't linger forever.
-    const STATUS_IDLE: Duration = Duration::from_secs(6);
     let mut last_status = app.status.clone();
     let mut status_since = Instant::now();
 
@@ -92,7 +104,7 @@ fn event_loop(
         if app.status != last_status {
             last_status = app.status.clone();
             status_since = Instant::now();
-        } else if app.status != "Ready" && status_since.elapsed() >= STATUS_IDLE {
+        } else if status_should_fade(&app.status, status_since.elapsed()) {
             app.status = "Ready".into();
             last_status = app.status.clone();
         }
