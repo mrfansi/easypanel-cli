@@ -46,6 +46,23 @@ was checked against it — not guessed. Keep this even after the access is gone:
   is whether the container is `Up` — which the API exposes only as "does it have metrics
   in `getAllServicesStats`". That is exactly what the Status column now uses (v0.15.0).
 
+### Deploy timing and error shapes (verified 2026-07-19)
+
+- **`deployService` blocks until the build finishes.** Measured 51 s for a trivial
+  Dockerfile (`RUN sleep 50`); real services take far longer. The client's 30 s timeout
+  therefore trips on essentially every real deploy, and a proxy in front gives up around
+  125 s with a 524.
+- **A dropped connection does NOT cancel the deploy.** Both halves proven: the TUI
+  reported "Deploy … failed: error sending request" at 30 s, and `listActions` recorded
+  the same deployment as `done` 50 s in, with the service `active`. Never treat a timeout
+  or a gateway 5xx as a deploy verdict — it is the opposite of the truth, and the natural
+  user response is to deploy again.
+- **A real refusal is a 4xx**: deploying a service that does not exist answers
+  `400 {"message":"Invariant failed"}`; a wrong service type answers `404 {"error":"Not
+  found"}`. Those must keep surfacing. `client::gave_up_waiting` draws exactly this line.
+- Deploying an app service with **no source at all** is NOT an error — it answers 200 in
+  0.2 s.
+
 ### When the owner provides SSH (read-only only)
 
 If a run has SSH to the host, it may **read** to validate direction — `docker ps`,

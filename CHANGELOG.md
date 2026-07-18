@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.1] — 2026-07-19
+
+### Fixed
+
+- **A deploy that was working reported itself as failed.** Roughly thirty seconds
+  into any real deploy, the status line announced
+  `Error: Deploy <project>/<service> failed: error sending request for url …`
+  while the table showed that same service as `deploying` and the server built on
+  to a successful finish. The tool contradicted itself at the exact moment you
+  most need to trust it, and the obvious response — deploy again — is the wrong
+  one.
+
+  The cause was a request timeout being read as a verdict. `deployService` blocks
+  until the build ends (measured: 51 seconds for a trivial Dockerfile, far longer
+  for anything real), the client gives up at 30 seconds, and a proxy in front
+  gives up around 125 seconds with a 524 — none of which cancels the deploy.
+
+  A failure is now only reported when the server actually refused: a timeout or a
+  gateway 5xx no longer produces a message, because the deploy is still running
+  and the status column already tracks it. Genuine rejections still surface —
+  deploying a nonexistent service (`400 Invariant failed`) or the wrong service
+  type (`404`) reports exactly as before.
+
+### Internal
+
+- Server errors are now a typed `ApiError { status, message }` rather than a
+  formatted string, so callers can tell a refusal from a gateway timing out
+  without parsing the status back out of the message. The text users see is
+  unchanged.
+
 ## [0.47.0] — 2026-07-19
 
 ### Added

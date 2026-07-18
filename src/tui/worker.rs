@@ -1079,7 +1079,18 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 let (p, s) = (project.clone(), service.clone());
                 std::thread::spawn(move || {
                     if let Err(e) = c.call(&grp, "deployService", input) {
-                        let _ = tx.send(Resp::Err(format!("Deploy {p}/{s} failed: {e}")));
+                        // Only a REFUSAL is a failure. The build outliving our
+                        // connection is the normal case for anything real, and
+                        // reporting that as "deploy failed" contradicted the table
+                        // — which showed the very same service as `deploying` —
+                        // and invited the user to deploy a second time.
+                        //
+                        // Nothing is said in that case: the status line already
+                        // reported the deploy as started, the Status column tracks
+                        // it live, and the Actions tab carries the outcome.
+                        if !crate::client::gave_up_waiting(&e) {
+                            let _ = tx.send(Resp::Err(format!("Deploy {p}/{s} failed: {e}")));
+                        }
                     }
                 });
                 return Resp::Done(
