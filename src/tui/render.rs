@@ -147,7 +147,7 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
     if app.picker.is_some() {
         render_picker(f, app);
     }
-    if let Some(form) = &app.form {
+    if let Some(form) = app.form.as_mut() {
         render_form(f, form);
     }
     if let Some(ch) = app.chooser.as_mut() {
@@ -1032,7 +1032,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-pub(super) fn render_form(f: &mut Frame, form: &Form) {
+pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
     // Hanya field langkah sekarang yang tampil (satu-halaman = semuanya).
     let visible = form.visible_here();
     let height = (visible.len() as u16 + 5).min(f.area().height);
@@ -1070,6 +1070,7 @@ pub(super) fn render_form(f: &mut Frame, form: &Form) {
     );
 
     let inner = area.inner(Margin::new(2, 1));
+    form.rect = inner;
     let mut rows = vec![Constraint::Length(1); visible.len()];
     rows.push(Constraint::Min(1));
     let slots = Layout::vertical(rows).split(inner);

@@ -100,10 +100,13 @@ impl App {
             self.chooser_mouse(m, req);
             return;
         }
+        if self.form.is_some() {
+            self.form_mouse(m);
+            return;
+        }
         // Modal lain menelan mouse: klik tak boleh menembus ke belakang dialog.
         if self.screen == Screen::Terminal
             || self.help
-            || self.form.is_some()
             || self.picker.is_some()
             || self.confirm.is_some()
         {
@@ -144,11 +147,59 @@ impl App {
         if len == 0 {
             return;
         }
+        // Baris data yang muat = tinggi area - border atas/bawah - header.
+        let visible = (self.table_area.height as isize - 3).max(0);
+        // Offset maksimum: berhenti saat halaman terakhir penuh. Kalau seluruh
+        // daftar muat (max_off = 0), tak ada yang bisa digulung.
+        let max_off = (len - visible).max(0);
         if let Some(state) = self.active_table() {
-            let sel = state.selected().unwrap_or(0) as isize;
             let off = state.offset() as isize;
-            state.select(Some((sel + delta).clamp(0, len - 1) as usize));
-            *state.offset_mut() = (off + delta).clamp(0, len - 1) as usize;
+            let new_off = (off + delta).clamp(0, max_off);
+            let applied = new_off - off;
+            if applied == 0 {
+                return; // tak ada ruang gulung -> seleksi TAK bergeser
+            }
+            // Geser seleksi sebanyak offset benar-benar bergerak: sorotan tetap di
+            // baris layar yang sama (= tetap di bawah kursor).
+            let sel = state.selected().unwrap_or(0) as isize;
+            state.select(Some((sel + applied).clamp(0, len - 1) as usize));
+            *state.offset_mut() = new_off as usize;
+        }
+    }
+
+    /// Mouse pada form: klik sebuah field memfokuskannya, lalu — untuk Bool/Choice/
+    /// Editor — langsung mengaktifkannya (toggle / buka dropdown / buka $EDITOR).
+    /// Field teks cukup difokus; user lalu mengetik.
+    fn form_mouse(&mut self, m: MouseEvent) {
+        if !matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return;
+        }
+        let idx = {
+            let Some(form) = self.form.as_ref() else {
+                return;
+            };
+            let r = form.rect;
+            if m.column < r.x || m.column >= r.x.saturating_add(r.width) || m.row < r.y {
+                return;
+            }
+            let slot = (m.row - r.y) as usize;
+            match form.visible_here().get(slot) {
+                Some(&i) => i,
+                None => return,
+            }
+        };
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        form.focus = idx;
+        match form.fields[idx].kind {
+            FieldKind::Bool => {
+                form.fields[idx].cycle();
+                form.clamp_focus();
+            }
+            FieldKind::Editor => self.edit_field = Some(idx),
+            FieldKind::Choice(_) => self.open_chooser(),
+            _ => {}
         }
     }
 

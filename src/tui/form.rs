@@ -792,6 +792,8 @@ pub(super) struct Form {
     pub(super) original: Option<Value>,
     /// Langkah wizard yang sedang tampil. 0 untuk form satu halaman biasa.
     pub(super) step: usize,
+    /// Area baris field (diisi saat render), untuk memetakan klik ke field.
+    pub(super) rect: Rect,
 }
 
 impl Form {
@@ -803,6 +805,7 @@ impl Form {
             focus: 0,
             original: None,
             step: 0,
+            rect: Rect::default(),
         }
     }
     pub(super) fn with_original(mut self, original: Value) -> Self {

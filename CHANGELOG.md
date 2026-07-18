@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.1] — 2026-07-18
+
+### Added
+
+- **Form fields are clickable.** Click a field to focus it; clicking a yes/no field toggles
+  it, a dropdown field opens its list, and an editor field opens `$EDITOR` — text fields
+  just take focus so you can type.
+
+### Fixed
+
+- **Scrolling no longer nudges the selection when the whole list already fits on screen.**
+  The earlier scroll fix moved the highlight even when there was nothing to scroll (a list
+  shorter than the pane), so scrolling near the bottom shifted the selected row. Scroll now
+  moves the selection only by however far the view actually scrolls — none, when everything
+  is already visible.
+
 ## [0.28.0] — 2026-07-18
 
 ### Fixed
