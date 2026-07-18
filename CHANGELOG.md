@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.2] — 2026-07-18
+
+### Fixed
+
+- **The help overlay hid most of itself on a short terminal.** At 80x24 it simply
+  stopped at the bottom border: the *Anywhere*, *Inside forms & dropdowns* and
+  *Mouse* sections were entirely invisible, with nothing on screen to suggest more
+  existed — and every description was cut mid-word (`Env menu — view / edit / r`),
+  including the one documenting `:`, the newest feature. Help that lies by omission
+  is worse than no help. It now wraps instead of truncating (continuation lines stay
+  aligned under the description), scrolls with `↑↓`/`PgUp`/`PgDn`/`Home`/`End`, and
+  its border shows the position and how to leave — any other key still closes it.
+  The key column is also capped, so one long entry no longer squeezes every
+  description into a narrow gutter.
+
 ## [0.43.1] — 2026-07-18
 
 ### Fixed

@@ -246,9 +246,37 @@ pub(super) fn render_menu(f: &mut Frame, app: &mut App) {
 }
 
 /// Help overlay: global keys, the active screen's keys, and the keys inside forms.
-pub(super) fn render_help(f: &mut Frame, app: &App) {
+/// Break `text` into lines of at most `width` columns, never mid-word.
+///
+/// The help is a two-column table, so wrapping has to happen here rather than via
+/// `Paragraph::wrap`: that would restart the continuation at column 0 and lose the
+/// alignment that makes the list scannable.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if line.is_empty() {
+            line = word.to_string();
+        } else if line.chars().count() + 1 + word.chars().count() <= width {
+            line.push(' ');
+            line.push_str(word);
+        } else {
+            out.push(std::mem::take(&mut line));
+            line = word.to_string();
+        }
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     let rows = screen_keys(app.screen);
-    let area = centered(66, 92, f.area());
+    let area = centered(72, 92, f.area());
     f.render_widget(Clear, area);
 
     let head = |t: &str| {
@@ -269,43 +297,67 @@ pub(super) fn render_help(f: &mut Frame, app: &App) {
         .map(|Key(k, _)| k.chars().count())
         .max()
         .unwrap_or(12)
+        // Capped: one long key ("Space / right click") used to push every
+        // description into a ~26-column gutter where they all truncated.
+        .min(16)
         + 2;
-    let row = |Key(k, d): &Key| {
-        Line::from(vec![
-            Span::styled(
-                format!("   {k:<kw$}", kw = kw),
-                Style::default().fg(Color::Indexed(252)),
-            ),
-            Span::styled((*d).to_string(), Style::default().fg(Color::Gray)),
-        ])
+    let desc_w = (area.width as usize).saturating_sub(3 + kw + 2).max(12);
+    let row = move |Key(k, d): &Key| -> Vec<Line<'static>> {
+        wrap_words(d, desc_w)
+            .into_iter()
+            .enumerate()
+            .map(|(i, part)| {
+                // Continuation lines sit under the description, not under the key.
+                let head = if i == 0 {
+                    format!("   {k:<kw$}", kw = kw)
+                } else {
+                    " ".repeat(3 + kw)
+                };
+                Line::from(vec![
+                    Span::styled(head, Style::default().fg(Color::Indexed(252))),
+                    Span::styled(part, Style::default().fg(Color::Gray)),
+                ])
+            })
+            .collect()
     };
 
     let mut lines = vec![head(&format!("{} — this screen", TABS[app.screen.index()]))];
     if rows.is_empty() {
         lines.push(Line::from("   (no dedicated keys)"));
     }
-    lines.extend(rows.iter().map(row));
+    lines.extend(rows.iter().flat_map(&row));
     lines.push(Line::from(""));
     lines.push(head("Anywhere"));
-    lines.extend(GLOBAL_KEYS.iter().map(row));
+    lines.extend(GLOBAL_KEYS.iter().flat_map(&row));
     lines.push(Line::from(""));
     lines.push(head("Inside forms & dropdowns"));
-    lines.extend(OVERLAY_KEYS.iter().map(row));
+    lines.extend(OVERLAY_KEYS.iter().flat_map(&row));
     lines.push(Line::from(""));
     lines.push(head("Mouse"));
-    for m in MOUSE_KEYS {
-        lines.push(row(m));
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "   press any key to close",
-        Style::default().fg(Color::DarkGray),
-    )));
+    lines.extend(MOUSE_KEYS.iter().flat_map(&row));
+
+    // The help is taller than a short terminal. It used to simply stop at the
+    // bottom border — the Anywhere, form and Mouse sections were invisible at 80x24
+    // with nothing to say so. Scroll instead, and keep the how-to-leave line in the
+    // border where it can't scroll away.
+    let inner_h = area.height.saturating_sub(2);
+    let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
+    app.help_scroll = app.help_scroll.min(max_scroll);
+    let hint = if max_scroll > 0 {
+        format!(
+            " ↑↓ scroll · {}/{} · any other key closes ",
+            app.help_scroll + 1,
+            max_scroll + 1
+        )
+    } else {
+        " press any key to close ".to_string()
+    };
 
     f.render_widget(
-        Paragraph::new(lines).block(
+        Paragraph::new(lines).scroll((app.help_scroll, 0)).block(
             Block::bordered()
                 .title(" Help ")
+                .title_bottom(hint)
                 .border_style(Style::default().fg(Color::Yellow)),
         ),
         area,

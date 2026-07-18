@@ -1924,3 +1924,48 @@ fn a_confirmation_never_hides_the_question_or_the_keys() {
         "the blast radius must stay on screen:\n{screen}"
     );
 }
+
+#[test]
+fn help_shows_everything_it_has_even_on_a_short_terminal() {
+    // At 80x24 the help used to stop at the bottom border: the Anywhere, form and
+    // Mouse sections were invisible with nothing on screen to say so, and every
+    // description was cut mid-word. Help that lies by omission is worse than none.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Projects;
+    app.help = true;
+
+    let paint = |app: &mut App| -> String {
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| super::render::ui(f, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .chunks(80)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let top = paint(&mut app);
+    assert!(
+        top.contains("↑↓ scroll"),
+        "overflow must be signalled, not hidden:\n{top}"
+    );
+    // Long descriptions wrap instead of truncating: the Env menu entry spills onto a
+    // continuation line rather than ending mid-word.
+    assert!(
+        top.contains(".env file"),
+        "descriptions must wrap, not truncate:\n{top}"
+    );
+
+    // Scrolling to the end reaches the sections that used to be unreachable.
+    app.help_scroll = u16::MAX;
+    let bottom = paint(&mut app);
+    assert!(
+        bottom.contains("Mouse") && bottom.contains("Right click"),
+        "the last section must be reachable:\n{bottom}"
+    );
+}

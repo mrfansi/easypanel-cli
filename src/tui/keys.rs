@@ -21,8 +21,25 @@ impl App {
     pub(super) fn on_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         // Help closes on any key: the user opened it to read, not to memorize how
         // to get out.
+        // Help still closes on any key the user might reach for — except the ones
+        // that scroll it. It is longer than a short terminal, and a reader who
+        // presses ↓ to see the rest should not have it slam shut instead.
         if self.help {
-            self.help = false;
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.help_scroll = self.help_scroll.saturating_add(1)
+                }
+                KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+                KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(10),
+                KeyCode::Home => self.help_scroll = 0,
+                // Render clamps this to the real end; reaching for End must not
+                // slam the help shut.
+                KeyCode::End => self.help_scroll = u16::MAX,
+                _ => self.help = false,
+            }
             return;
         }
         if self.palette.is_some() {
@@ -95,7 +112,10 @@ impl App {
             // without menus. A keyboard alternative for those who dislike browsing
             // menus.
             KeyCode::Char(':') => self.open_palette(),
-            KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('?') => {
+                self.help = true;
+                self.help_scroll = 0;
+            }
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('r') => self.refresh(req),
             KeyCode::Char('/') if self.filterable() => {

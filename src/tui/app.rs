@@ -220,6 +220,9 @@ pub(super) struct App {
     pub(super) filter_input: bool,
     /// The help overlay is open.
     pub(super) help: bool,
+    /// Scroll offset of the help overlay. The help is longer than a short terminal,
+    /// and silently hiding half of it is worse than no help at all.
+    pub(super) help_scroll: u16,
     /// The Maintenance tab info rows: (label, value).
     pub(super) maint: Vec<(String, String)>,
     pub(super) hosts: Vec<HostRow>,
@@ -402,6 +405,7 @@ impl App {
             filter: String::new(),
             filter_input: false,
             help: false,
+            help_scroll: 0,
             maint: Vec::new(),
             hosts: Vec::new(),
             hosts_state: TableState::default(),
