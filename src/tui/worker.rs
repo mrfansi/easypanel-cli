@@ -19,6 +19,7 @@ pub(super) enum View {
     Redirects,
     Backups,
     Source,
+    ConfigFile,
 }
 
 impl View {
@@ -31,6 +32,7 @@ impl View {
             View::Redirects => "Redirects",
             View::Backups => "Database backups",
             View::Source => "Source & build",
+            View::ConfigFile => "Config file",
         }
     }
 }
@@ -235,6 +237,13 @@ pub(super) enum Req {
         project: String,
         service: String,
         stype: String,
+    },
+    /// Simpan Config File (Advanced db) lewat updateAdvanced. `config` = isi baru.
+    ConfigFileSave {
+        project: String,
+        service: String,
+        stype: String,
+        config: String,
     },
 }
 
@@ -924,6 +933,40 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
+        Req::ConfigFileSave {
+            project,
+            service,
+            stype,
+            config,
+        } => {
+            let grp = format!("services/{stype}");
+            let ps = json!({ "projectName": project, "serviceName": service });
+            // updateAdvanced mengganti seluruh blok Advanced; image & command WAJIB
+            // string (terverifikasi: null/omit ditolak). Baca yang ada, pertahankan,
+            // ganti hanya configFile. env disertakan kalau ada agar tak terhapus.
+            match client.call(&grp, "inspectService", ps) {
+                Ok(cur) => {
+                    let mut body = json!({
+                        "projectName": project,
+                        "serviceName": service,
+                        "image": cur.get("image").and_then(Value::as_str).unwrap_or(""),
+                        "command": cur.get("command").and_then(Value::as_str).unwrap_or(""),
+                        "configFile": config,
+                    });
+                    if let Some(env) = cur.get("env").and_then(Value::as_str) {
+                        body["env"] = json!(env);
+                    }
+                    match client.call(&grp, "updateAdvanced", body) {
+                        Ok(_) => Resp::Done(
+                            format!("Config file {project}/{service} disimpan"),
+                            Refresh::None,
+                        ),
+                        Err(e) => Resp::Err(e.to_string()),
+                    }
+                }
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
         Req::Action {
             project,
             service,
@@ -1170,6 +1213,13 @@ pub(super) fn fetch_view(
                 out.push(String::new());
             }
             out
+        }
+        View::ConfigFile => {
+            // configFile (Advanced) ada di inspectService. Dikembalikan apa adanya
+            // untuk disunting di $EDITOR (lihat edit_config_in_editor).
+            let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
+            let cf = v.get("configFile").and_then(Value::as_str).unwrap_or("");
+            cf.lines().map(String::from).collect()
         }
         View::Backups => {
             let v = client.call("databaseBackups", "listDatabaseBackups", ps)?;

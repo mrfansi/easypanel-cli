@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0] — 2026-07-18
+
+### Added
+
+- **Edit a database service's Config File** (the dashboard's Advanced → Config
+  File — e.g. a MySQL `[mysqld]` block for replication). On a db service, the
+  Build & source menu (`u`) now has **Config file (Advanced)**, which opens the
+  current `configFile` in `$EDITOR` and saves it via `updateAdvanced`. Previously
+  this was only reachable from the web panel. The save is read-modify-write: the
+  required `image`/`command` and any existing `env` are preserved (verified live
+  against the server), so editing the config never wipes the rest of the Advanced
+  block.
+
 ## [0.37.0] — 2026-07-18
 
 ### Changed

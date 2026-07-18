@@ -149,6 +149,9 @@ pub(super) struct App {
     /// `replace` = true membuka editor KOSONG (ganti-cepat: tempel env baru tanpa
     /// menunggu fetch atau menghapus yang lama); false memuat env sekarang.
     pub(super) edit_env: Option<(String, String, String, bool)>,
+    /// (project, service, stype) — menunggu suntingan Config File (Advanced db) di
+    /// $EDITOR; isinya diambil dari inspectService lalu disimpan via updateAdvanced.
+    pub(super) edit_config: Option<(String, String, String)>,
     /// Indeks field form yang menunggu dibuka di $EDITOR; event_loop yang
     /// mengerjakannya — hanya ia yang memegang terminal.
     pub(super) edit_field: Option<usize>,
@@ -312,6 +315,7 @@ impl App {
             chooser: None,
             server_action: None,
             edit_env: None,
+            edit_config: None,
             edit_field: None,
             terminal_req: None,
             term_parser: None,
@@ -489,13 +493,21 @@ impl App {
     }
 
     pub(super) fn build_menu(&self) -> Vec<MenuItem> {
-        vec![
+        let mut v = vec![
             MenuItem::new("Lihat source & build", |a, r| a.open_view(View::Source, r)),
             MenuItem::new("Atur source", |a, r| a.on_key(KeyCode::Char('U'), r)),
             MenuItem::new("Atur build", |a, r| a.on_key(KeyCode::Char('B'), r)),
             MenuItem::new("Auto deploy on/off", |a, r| a.on_key(KeyCode::Char('A'), r)),
             MenuItem::new("Limit resource", |a, r| a.on_key(KeyCode::Char('L'), r)),
-        ]
+        ];
+        // Config File (Advanced) hanya ada di service database — di situlah
+        // EasyPanel memakai `configFile` (mis. konfigurasi replikasi MySQL).
+        if self.is_selected_type(&["mysql", "mariadb", "postgres", "mongo", "redis"]) {
+            v.push(MenuItem::new("Config file (Advanced)", |a, _| {
+                a.start_config_edit()
+            }));
+        }
+        v
     }
 
     pub(super) fn store_menu(&self) -> Vec<MenuItem> {
@@ -561,6 +573,25 @@ impl App {
             row,
             rect: Rect::default(),
         });
+    }
+
+    /// Sunting Config File (Advanced) service database terpilih di $EDITOR.
+    /// event_loop yang mengambil isinya, membuka editor, lalu menyimpan.
+    pub(super) fn start_config_edit(&mut self) {
+        match self.selected_row() {
+            Some((p, s, t))
+                if matches!(
+                    t.as_str(),
+                    "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
+                ) =>
+            {
+                self.edit_config = Some((p, s, t));
+            }
+            Some((_, _, t)) => {
+                self.status = format!("Config file hanya untuk service database (ini {t})");
+            }
+            None => self.status = "Pilih sebuah service dulu".into(),
+        }
     }
 
     /// Buka terminal shell ke container service terpilih (event_loop yang mengambil

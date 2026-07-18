@@ -315,6 +315,23 @@ fn event_loop(
             }
         }
 
+        // Sunting Config File (Advanced db) di $EDITOR, lalu simpan via updateAdvanced.
+        if let Some((project, service, stype)) = app.edit_config.take() {
+            match edit_config_in_editor(&w.user, &w.resp, terminal, &project, &service, &stype) {
+                Ok(Some(config)) => {
+                    let _ = w.user.send(Req::ConfigFileSave {
+                        project,
+                        service,
+                        stype,
+                        config,
+                    });
+                    app.status = "Menyimpan config file...".into();
+                }
+                Ok(None) => app.status = "Config file tidak berubah".into(),
+                Err(e) => app.status = format!("Error: {e}"),
+            }
+        }
+
         // Ganti server: bangun worker baru (yang lama berhenti saat sender-nya di-drop).
         if let Some(name) = app.switch_to.take() {
             if let Some(server) = cfg.get(&name) {
@@ -395,6 +412,51 @@ fn edit_env_in_editor(
     edit_text_in_editor(
         terminal,
         &format!("easypanel-{project}-{service}.env"),
+        &current,
+    )
+}
+
+/// Ambil Config File (Advanced) service, buka di `$EDITOR`, kembalikan bila berubah.
+/// Sama seperti edit_env_in_editor tapi memuat `configFile`.
+fn edit_config_in_editor(
+    req: &Sender<Req>,
+    resp: &Receiver<Resp>,
+    terminal: &mut ratatui::DefaultTerminal,
+    project: &str,
+    service: &str,
+    stype: &str,
+) -> Result<Option<String>> {
+    req.send(Req::Fetch {
+        view: View::ConfigFile,
+        project: project.to_string(),
+        service: service.to_string(),
+        stype: stype.to_string(),
+    })?;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let current = loop {
+        match resp.recv_timeout(Duration::from_millis(200)) {
+            // fetch_view mengembalikan "(kosong)" untuk config kosong — jangan
+            // memuatnya sebagai isi awal editor.
+            Ok(Resp::Viewer(_, lines)) => {
+                break if lines == ["(kosong)"] {
+                    String::new()
+                } else {
+                    lines.join("\n")
+                }
+            }
+            Ok(Resp::Err(e)) => return Err(anyhow::anyhow!(e)),
+            Ok(_) => {}
+            Err(_) if Instant::now() > deadline => {
+                return Err(anyhow::anyhow!("timeout mengambil config file"))
+            }
+            Err(_) => {}
+        }
+    };
+
+    edit_text_in_editor(
+        terminal,
+        &format!("easypanel-{project}-{service}.conf"),
         &current,
     )
 }

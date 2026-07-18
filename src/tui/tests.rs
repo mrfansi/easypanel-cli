@@ -483,6 +483,12 @@ fn service_menu_groups_actions_and_respects_type() {
         .shell_menu()
         .iter()
         .any(|i| i.label.contains("DB shell")));
+    // db punya Config file (Advanced) di menu Build.
+    assert!(has(&app.build_menu(), "Config file (Advanced)"));
+
+    app.services_table.select(Some(2)); // web (app)
+                                        // app TANPA Config file (Advanced) — configFile hanya untuk service database.
+    assert!(!has(&app.build_menu(), "Config file (Advanced)"));
 }
 
 #[test]
