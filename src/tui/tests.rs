@@ -1880,3 +1880,47 @@ fn narrow_terminals_drop_the_metric_columns_not_the_identity_ones() {
         "a wide terminal keeps the metrics: {wide}"
     );
 }
+
+#[test]
+fn a_confirmation_never_hides_the_question_or_the_keys() {
+    // At 80x24 the percentage-sized box was 41x5 for six lines: the question was cut
+    // mid-word and "[y] Yes [n] Cancel" fell off the bottom, so an irreversible
+    // host-wide action was confirmed blind.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("s".into(), vec![]);
+    app.confirm = Some(Confirm {
+        action: "maint:systemPrune".into(),
+        project: String::new(),
+        service: String::new(),
+        stype: String::new(),
+        label: "Prune the Docker system? Unused containers, networks, images, \
+                and build cache will be removed."
+            .into(),
+    });
+
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(80)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        screen.contains("[y] Yes"),
+        "the confirming key must be visible:\n{screen}"
+    );
+    assert!(
+        screen.contains("removed."),
+        "the question must wrap, not truncate:\n{screen}"
+    );
+    assert!(
+        screen.contains("ENTIRE host"),
+        "the blast radius must stay on screen:\n{screen}"
+    );
+}

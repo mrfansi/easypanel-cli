@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.1] — 2026-07-18
+
+### Fixed
+
+- **Confirmation dialogs hid what you were confirming.** The box was sized as a
+  percentage of the screen, so on an 80x24 terminal it came out 41x5 for six lines
+  of text — and the paragraph never wrapped. The prune confirmation rendered as
+  `Prune the Docker system? Unused containe`, cut mid-word, and the
+  `[y] Yes  [n] Cancel` line fell off the bottom entirely: an irreversible,
+  host-wide action approved without being able to read it or see which key
+  confirms. The dialog is now sized from its own content and wraps instead of
+  truncating, so the question, the blast radius and the keys are always visible.
+
 ## [0.43.0] — 2026-07-18
 
 ### Added

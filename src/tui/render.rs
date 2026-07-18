@@ -1,6 +1,6 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Sparkline, Table, TableState,
+    Block, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Sparkline, Table, TableState, Wrap,
 };
 use serde_json::Value;
 
@@ -1208,7 +1208,20 @@ pub(super) fn render_chooser(f: &mut Frame, ch: &mut Chooser) {
 }
 
 pub(super) fn render_confirm(f: &mut Frame, c: &Confirm) {
-    let area = centered(52, 22, f.area());
+    // Sized from the content, not from a percentage of the screen. At 80x24 the old
+    // 52%x22% box was 41x5 for six lines of text: the question was cut mid-word and
+    // the "[y] Yes [n] Cancel" line fell off the bottom entirely — the operator was
+    // asked to approve an irreversible, host-wide action without being able to read
+    // it or see which key confirms.
+    let full = f.area();
+    let w = 60.min(full.width.saturating_sub(4)).max(24);
+    let inner = w.saturating_sub(2).max(1) as usize;
+    // Word wrapping can break earlier than a hard division, so round up and add a
+    // line: a dialog one row too tall is harmless, one row too short hides the keys.
+    let label_lines = c.label.chars().count().div_ceil(inner) as u16 + 1;
+    // blank + label + blank + target + blank + keys, plus the two borders.
+    let h = (label_lines + 7).min(full.height);
+    let area = centered_abs(w, h, full);
     f.render_widget(Clear, area);
     // Name the actual target. The line "Affects a real service" used to be shown on
     // every confirmation — wrong for a maintenance action, which affects the whole
@@ -1224,6 +1237,9 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm) {
             c.label
         ))
         .alignment(Alignment::Center)
+        // Wrap, never truncate: a half-read question about deleting things is worse
+        // than a taller dialog.
+        .wrap(Wrap { trim: false })
         .block(
             Block::bordered()
                 .title(" Confirm ")
