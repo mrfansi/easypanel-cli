@@ -491,6 +491,9 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
         Constraint::Length(8),
         // 11: fits "● stopped" (dot + space + 7 letters) without truncation.
         Constraint::Length(11),
+        // 5: fits "12/12"; the header is abbreviated because this table is already
+        // wide and the column is a short number.
+        Constraint::Length(5),
         Constraint::Min(16),
         Constraint::Length(5),
         Constraint::Length(8),
@@ -498,7 +501,18 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
         Constraint::Length(11),
         Constraint::Length(11),
     ];
-    let header = Row::new(SERVICE_HEADERS.to_vec()).style(
+    // Under ~120 columns the four metric columns collapse into unreadable slivers
+    // ("0.", "77", "2.") and squeeze the identity columns with them — "Status"
+    // became "Statu", "● active" became "● act". Drop them instead: who and what
+    // state stays here, the numbers already live on the Monitor tab. Only trailing
+    // columns go, so the per-cell colour indices below are unaffected.
+    let cols = if area.width < 120 {
+        SERVICE_HEADERS.len() - 4
+    } else {
+        SERVICE_HEADERS.len()
+    };
+    let widths = &widths[..cols];
+    let header = Row::new(SERVICE_HEADERS[..cols].to_vec()).style(
         Style::default()
             .fg(Color::Black)
             .bg(Color::Green)
@@ -510,13 +524,14 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     // The status dot (column 2) & the Auto mark (column 4) get their own per-cell
     // color: the state reads at a glance. "down" rows are left to inherit the red
     // pulse.
-    let body = rows.into_iter().map(|(cells, is_down)| {
+    let body = rows.into_iter().map(|(mut cells, is_down)| {
+        cells.truncate(cols);
         let cells: Vec<Cell> = cells
             .into_iter()
             .enumerate()
             .map(|(i, c)| match i {
                 2 => status_cell(&c, is_down),
-                4 => auto_cell(&c, is_down),
+                5 => auto_cell(&c, is_down),
                 _ => Cell::from(c),
             })
             .collect();

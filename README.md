@@ -203,6 +203,17 @@ SSE route on the whole API and it is for the Actions list — so the tail polls
 shown, which fetches only what is new rather than re-pulling 200 lines. It runs on the
 metrics lane, so it never queues behind a key you pressed.
 
+The Services table has a **Repl** column: how many replicas the service runs. While
+Swarm's live count matches the target it is just the number; when they differ it
+shows both — `0/1` for replicas that never came up, `1/3` mid-rollout — which is
+exactly when the number matters. It falls back to the configured `deploy.replicas`,
+and shows `-` for a service with no deploy block.
+
+**The table adapts to the terminal.** Under ~120 columns the four metric columns
+(CPU, memory, net in/out) are dropped rather than squeezed into unreadable slivers;
+identity, status, replicas, source and auto deploy always survive. The numbers are on
+the Monitor tab either way.
+
 The Services table has an **Auto** column: `✓` auto deploy on, `✗` off, `-` not
 applicable. Only GitHub sources have auto deploy at all — it works by creating a
 webhook — so a database or an image-sourced app shows `-`, never `✗`. `✗` would claim

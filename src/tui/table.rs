@@ -4,10 +4,11 @@ use serde_json::Value;
 
 use crate::output::{field, format_bytes, format_rate, num};
 
-pub(super) const SERVICE_HEADERS: [&str; 9] = [
+pub(super) const SERVICE_HEADERS: [&str; 10] = [
     "Project / Service",
     "Type",
     "Status",
+    "Repl",
     "Source",
     "Auto",
     "CPU %",
@@ -54,6 +55,7 @@ pub(super) fn service_row(
         field(s, "/name"),
         field(s, "/type"),
         service_status(s, running, replicas).into(),
+        replicas_cell(s, replicas),
         source,
         auto_deploy_cell(s).into(),
     ]
@@ -103,6 +105,27 @@ pub(super) fn service_status(
     }
 }
 
+/// Repl column: how many replicas this service runs.
+///
+/// Swarm's live count wins when it is loaded — and while `actual` differs from
+/// `desired` it shows both (`0/1`, `2/3`), which is exactly when the number matters:
+/// a rollout in progress, or replicas that never came up. Otherwise it is just the
+/// count. Falls back to the configured `deploy.replicas`, and "-" for a service with
+/// no deploy block at all (databases).
+pub(super) fn replicas_cell(s: &Value, replicas: Option<(i64, i64)>) -> String {
+    if let Some((actual, desired)) = replicas {
+        return if actual == desired {
+            desired.to_string()
+        } else {
+            format!("{actual}/{desired}")
+        };
+    }
+    match s.pointer("/deploy/replicas").and_then(Value::as_i64) {
+        Some(n) => n.to_string(),
+        None => "-".to_string(),
+    }
+}
+
 /// Auto column: only a github source has auto deploy.
 ///
 /// Three states, not two. The server doesn't send `autoDeploy` for image sources
@@ -129,7 +152,9 @@ pub(super) fn auto_deploy_cell(s: &Value) -> &'static str {
 /// identity is -0.0) prints "-0.0 %": a convincing-looking negative CPU.
 pub(super) fn project_row(name: &str, count: usize, mets: &[&Value]) -> Vec<String> {
     let mut row: Vec<String> = vec![format!("{name} ({count})")];
-    row.extend(["-", "-", "-", "-"].map(String::from));
+    // Type / Status / Repl / Source / Auto: a project header aggregates metrics, not
+    // per-service state.
+    row.extend(["-", "-", "-", "-", "-"].map(String::from));
     if mets.is_empty() {
         row.extend(metric_cols(None));
         return row;

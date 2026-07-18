@@ -105,18 +105,18 @@ fn service_row_summarises_source_without_opening_anything() {
         "projectName": "p", "name": "api", "type": "app", "enabled": true,
         "source": { "type": "github", "owner": "acme", "repo": "web", "ref": "dev" }
     });
-    assert_eq!(service_row(&github, None, None)[4], "acme/web#dev");
+    assert_eq!(service_row(&github, None, None)[5], "acme/web#dev");
 
     let image = json!({
         "projectName": "p", "name": "cache", "type": "redis", "enabled": false,
         "source": { "type": "image", "image": "redis:7" }
     });
     let row = service_row(&image, None, None);
-    assert_eq!(row[4], "redis:7");
+    assert_eq!(row[5], "redis:7");
     assert_eq!(row[3], "disabled");
 
     // A service with no source (just created) must not panic.
-    assert_eq!(service_row(&svc("p", "empty", "app"), None, None)[4], "-");
+    assert_eq!(service_row(&svc("p", "empty", "app"), None, None)[5], "-");
 }
 
 #[test]
@@ -724,8 +724,8 @@ fn auto_deploy_column_separates_off_from_not_applicable() {
 
     // service_row still keeps project and name separate; render folds them, so the
     // index shifts by one against the header.
-    assert_eq!(service_row(&on, None, None)[5], "✓");
-    assert_eq!(SERVICE_HEADERS[4], "Auto");
+    assert_eq!(service_row(&on, None, None)[6], "✓");
+    assert_eq!(SERVICE_HEADERS[5], "Auto");
 }
 
 #[test]
@@ -973,7 +973,7 @@ fn empty_project_shows_no_metrics_not_negative_zero() {
     // builder that render uses.
     let row = project_row("empty", 0, &[]);
     assert_eq!(row[0], "empty (0)");
-    assert_eq!(&row[5..], ["-", "-", "-", "-"], "nothing measured");
+    assert_eq!(&row[6..], ["-", "-", "-", "-"], "nothing measured");
     assert!(
         !row.iter().any(|c| c.contains("-0.0")),
         "the Sum f64 identity is -0.0; it must not leak to the screen: {row:?}"
@@ -982,7 +982,7 @@ fn empty_project_shows_no_metrics_not_negative_zero() {
     // With metrics -> actually summed, not "-".
     let m = json!({ "cpu": 1.5, "memory": 2048.0, "networkIn": 0.0, "networkOut": 0.0 });
     let row = project_row("filled", 1, &[&m]);
-    assert_eq!(row[5], "1.5 %");
+    assert_eq!(row[6], "1.5 %");
 
     assert_eq!(metric_cols(None), vec!["-", "-", "-", "-"]);
 }
@@ -1812,5 +1812,71 @@ fn services_screen_highlights_a_service_row_on_first_paint() {
     assert!(
         !marked.contains("proj ("),
         "the highlight must not sit on the project header, got: {marked:?}"
+    );
+}
+
+#[test]
+fn repl_column_shows_the_live_count_and_flags_a_shortfall() {
+    let app = json!({ "projectName": "p", "name": "web", "type": "app",
+                      "deploy": { "replicas": 3 } });
+    // Swarm agrees with the target: just the number.
+    assert_eq!(replicas_cell(&app, Some((3, 3))), "3");
+    // Short of target: show both — this is the moment the number matters.
+    assert_eq!(replicas_cell(&app, Some((1, 3))), "1/3");
+    assert_eq!(replicas_cell(&app, Some((0, 1))), "0/1");
+    // Swarm not loaded yet: fall back to the configured count, never a guess.
+    assert_eq!(replicas_cell(&app, None), "3");
+    // A database has no deploy block at all.
+    let db = json!({ "projectName": "p", "name": "mysql", "type": "mysql" });
+    assert_eq!(replicas_cell(&db, None), "-");
+
+    // The column sits between Status and Source, and the header matches.
+    assert_eq!(SERVICE_HEADERS[3], "Repl");
+    assert_eq!(service_row(&app, None, Some((1, 3)))[4], "1/3");
+}
+
+#[test]
+fn narrow_terminals_drop_the_metric_columns_not_the_identity_ones() {
+    // At 80 columns the ten-column table squeezed "Status" into "Statu" and the
+    // metrics into slivers like "0." and "77". Identity and state must survive; the
+    // numbers already have a home on the Monitor tab.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Projects;
+    app.handle(
+        Resp::AllServices {
+            projects: vec!["proj".into()],
+            services: vec![json!({ "projectName": "proj", "name": "web", "type": "app" })],
+        },
+        &tx,
+    );
+
+    let paint = |app: &mut App, w: u16| -> String {
+        let mut term = Terminal::new(TestBackend::new(w, 12)).unwrap();
+        term.draw(|f| super::render::ui(f, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .chunks(w as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let narrow = paint(&mut app, 80);
+    assert!(narrow.contains("Status"), "state must survive: {narrow}");
+    assert!(narrow.contains("Repl"), "replicas must survive: {narrow}");
+    assert!(
+        !narrow.contains("Net Out"),
+        "metrics must be dropped: {narrow}"
+    );
+
+    let wide = paint(&mut app, 140);
+    assert!(
+        wide.contains("Net Out"),
+        "a wide terminal keeps the metrics: {wide}"
     );
 }

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] — 2026-07-18
+
+### Added
+
+- **A `Repl` column in the Services table** — how many replicas each service runs,
+  the number the web panel keeps behind Deploy → Replicas. It shows Swarm's live
+  count, and while that count differs from the target it shows both (`0/1` for
+  replicas that never came up, `1/3` mid-rollout), which is the moment the number is
+  worth looking at. Falls back to the configured `deploy.replicas`; `-` for a service
+  with no deploy block. No extra API call — the data was already being polled.
+
+### Changed
+
+- **The Services table now adapts to the terminal width.** Below ~120 columns the
+  four metric columns are dropped instead of squeezed: at 80 columns the table used
+  to render `Statu`, `● act` and metric slivers like `0.` and `77`, which is worse
+  than not showing them. Identity, status, replicas, source and auto deploy always
+  survive; the metrics remain on the Monitor tab.
+
 ## [0.42.3] — 2026-07-18
 
 ### Fixed
