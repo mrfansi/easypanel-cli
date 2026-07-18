@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0] — 2026-07-19
+
+### Added
+
+- **`←`/`→` scroll the viewer sideways.** Logs, action output and config files
+  open in a pane that neither wraps nor reflows, so anything past the right edge
+  was simply unreachable — on the screen you spend the most time in. A log line
+  reading `Running ['artisan' notifica` had the rest of it on the server and no
+  way to see it. `Home` now returns to the first line *and* the left edge, and
+  the pane says `← col 25 · Home to return` once you have moved, so a view
+  missing its left edge can't be mistaken for content that starts there.
+
+  **This changes what `←`/`→` do in the viewer.** They used to switch tabs — and
+  that was the real trap: reaching for the rest of a cut line threw you out of
+  the logs onto an unrelated screen, losing your place to reach text that was
+  already there. `Esc` still returns to where you came from and `1`–`7` still
+  jump to any tab, so nothing became unreachable.
+
+### Fixed
+
+- **The viewer no longer scrolls past its last line.** `Down` and `PageDown` had
+  no upper bound, so holding either carried you into a blank bordered box that
+  reads exactly like an empty log. The scroll position is now clamped on every
+  path, not only while following a live tail.
+
 ## [0.47.1] — 2026-07-19
 
 ### Fixed

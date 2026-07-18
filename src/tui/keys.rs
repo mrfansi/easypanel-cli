@@ -92,6 +92,19 @@ impl App {
             // ←/→ move between tabs (e.g. Services ↔ Domains). Menus & forms grab
             // the arrows first (above), so this only applies in ordinary table
             // navigation.
+            // In the viewer these scroll sideways instead of switching tab. A
+            // full-screen reader is not a tab, and pressing → to see the rest of a
+            // cut log line used to throw you out of the logs onto another screen —
+            // losing your place to reach content that was there all along. Esc and
+            // 1-7 still leave, so nothing became unreachable.
+            KeyCode::Left | KeyCode::Right if self.screen == Screen::Viewer => {
+                const STEP: u16 = 8;
+                self.viewer_hscroll = if code == KeyCode::Right {
+                    self.viewer_hscroll.saturating_add(STEP)
+                } else {
+                    self.viewer_hscroll.saturating_sub(STEP)
+                };
+            }
             KeyCode::Right => self.goto(self.screen.next(), req),
             KeyCode::Left => self.goto(self.screen.prev(), req),
             // Space opens the action menu for the selected row — the keyboard
@@ -1005,7 +1018,12 @@ impl App {
                 self.viewer_follow = false;
                 let step = if code == KeyCode::PageUp { 10 } else { 1 };
                 self.viewer_scroll = match code {
-                    KeyCode::Home => 0,
+                    KeyCode::Home => {
+                        // Home means "back to the start" — both ways, or a line
+                        // scrolled right still hides its own beginning.
+                        self.viewer_hscroll = 0;
+                        0
+                    }
                     _ => self.viewer_scroll.saturating_sub(step),
                 };
             }

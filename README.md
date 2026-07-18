@@ -135,7 +135,7 @@ while dragging** to select/copy.)
 | **Monitor** | Five history tiles (CPU, memory, disk, net in/out) plus per-service metrics and storage (`v` switches). |
 | **Domains** | Every domain on the host: source → destination (internal service or weighted custom servers), SSL resolver, wildcard. |
 | **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. A colored status dot reads at a glance: green `active`, yellow `stopped`, gray `disabled`, cyan `deploying` (a build is running), and a pulsing red **`down`** for a crashed/restart-looping service (its Swarm replicas are missing), counted in the title. From a selected service you can do the lot, grouped into menus — logs, terminal & DB shell, deploy/restart/stop/start, clone, env (view/edit/replace/`.env` file), ports, mounts, redirects, domains, resource limits, basic auth, and a database's config file. Selecting a project header targets the project and opens its own menu (`Space`): migrate the whole project to another host, new service, new project, destroy project. |
-| **Viewer** | Scrollable pane for logs, env, ports, mounts, redirects, backups, source & build. Reached from a service; `Esc` goes back. In the ports/mounts/redirects view, a digit key deletes that row. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. |
+| **Viewer** | Scrollable pane for logs, env, ports, mounts, redirects, backups, source & build. Reached from a service; `Esc` goes back. In the ports/mounts/redirects view, a digit key deletes that row. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. Long lines are not wrapped — `←→` scroll sideways, and the pane shows which column you are on. |
 
 ### Key bindings
 
@@ -182,8 +182,9 @@ replace env, toggle `.env` file), `P` `M` `F` (add port, mount, redirect), `f` (
 redirects), `U` `B` `A` `L` `H` (source, build, auto deploy, resource limits, basic
 auth), `R` `S` `T` (restart, stop, start), `X` (delete project).
 
-**Viewer** — `↑↓`/`PgUp`/`PgDn` scroll · `End` re-follow the log tail · `[0]`–`[9]`
-deletes that row (ports/mounts/redirects) · `Esc` back.
+**Viewer** — `↑↓`/`PgUp`/`PgDn` scroll · `←→` scroll sideways (lines are not wrapped) ·
+`Home` first line and left edge · `End` re-follow the log tail · `[0]`–`[9]` deletes that
+row (ports/mounts/redirects) · `Esc` back.
 **Domains** — `n` new · `e` edit · `x` delete · `P` set primary.
 **Terminal** — `Ctrl-Q` to leave (or type `exit`).
 

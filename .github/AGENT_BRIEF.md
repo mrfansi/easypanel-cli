@@ -369,18 +369,19 @@ From the 2026-07-19 critique pass. Fixed:
   complete. Verified on screen at 80 columns before fixing.
 - ~~Hosts has no row action, so a DOWN host cannot be investigated~~ — v0.47.0, `Enter`.
 
+Fixed since:
+
+- ~~Viewer cuts long lines~~ — v0.48.0. Horizontal scroll (`viewer_hscroll`, ←/→),
+  keeping the vertical arithmetic intact; `Wrap` would have broken the follow-tail maths.
+  Driving it turned up something the critique missed: → was swallowed by the GLOBAL tab
+  handler, so reaching for the rest of a cut line threw you out of the logs onto another
+  screen. ←/→ are now intercepted for `Screen::Viewer` before that arm.
+- ~~Viewer scrolls past the end~~ — v0.48.0, clamped on every path rather than only while
+  following. `Home` now also returns to the left edge, and both are advertised.
+
 Still open, in the order I would take them:
 
-1. **Viewer cuts long lines** — no wrap, no horizontal scroll (`render_viewer`,
-   `Paragraph::scroll((v, 0))`). It is the highest-traffic screen (Enter on a service =
-   logs), and log lines and JSON payloads routinely exceed the pane. The host-detail view
-   works around it by pre-wrapping its own text; the Viewer itself still cuts. Cheapest
-   correct fix is a horizontal scroll (`viewer_hscroll`, Left/Right), which leaves the
-   vertical scroll arithmetic intact — `Wrap` would break the follow-tail maths in
-   `render_viewer`.
-2. **Viewer scrolls past the end** into a blank pane; `viewer_scroll` is only clamped on
-   the follow path. `Home` is handled but never advertised in `screen_keys`.
-3. **`render_actions` is 80 columns + 2 for the symbol against 78 usable** — same class as
+1. **`render_actions` is 80 columns + 2 for the symbol against 78 usable** — same class as
    the Hosts bug, one column clipped. Now that Hosts has the pattern, this is a small
    repeat of it.
 4. **Monitor tiles below ~100 columns** — five `Ratio(1,5)` tiles give 14 usable inner

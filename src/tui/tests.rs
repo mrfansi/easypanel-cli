@@ -2389,3 +2389,92 @@ fn an_unreachable_host_can_be_asked_why() {
     // Esc goes back where you came from, not to some default screen.
     assert!(matches!(app.viewer_from, Screen::Hosts));
 }
+
+#[test]
+fn the_viewer_can_reach_the_end_of_a_long_line() {
+    // Logs open here and lines are neither wrapped nor reflowed, so anything past
+    // the pane used to be unreachable. Worse, → was swallowed by the global tab
+    // handler: reaching for the rest of a line threw you off the screen entirely.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer_from = Screen::Projects;
+    app.viewer_title = "Logs".into();
+    app.viewer_lines = vec![format!("{}THE-END", "x".repeat(70))];
+
+    let draw = |app: &mut App| {
+        let mut t = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        t.draw(|f| ui(f, app)).unwrap();
+        let buf = t.backend().buffer().clone();
+        buf.content()
+            .chunks(40)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    assert!(
+        !draw(&mut app).contains("THE-END"),
+        "the tail starts out beyond the pane"
+    );
+
+    // → scrolls sideways and must NOT leave the viewer.
+    for _ in 0..8 {
+        app.on_key(KeyCode::Right, &tx);
+    }
+    assert!(
+        matches!(app.screen, Screen::Viewer),
+        "→ must scroll, not switch tab"
+    );
+    let scrolled = draw(&mut app);
+    assert!(
+        scrolled.contains("THE-END"),
+        "the end of the line must be reachable:\n{scrolled}"
+    );
+    // And you can tell you are no longer at the left edge.
+    assert!(
+        scrolled.contains("col"),
+        "the offset must be shown:\n{scrolled}"
+    );
+
+    // Home returns to the left edge, not just the first line.
+    app.on_key(KeyCode::Home, &tx);
+    assert_eq!(app.viewer_hscroll, 0);
+    assert!(!draw(&mut app).contains("THE-END"));
+}
+
+#[test]
+fn the_viewer_cannot_scroll_past_its_last_line() {
+    // Down/PageDown add without an upper bound, so holding either used to scroll
+    // into a blank bordered box that reads as an empty log.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer_from = Screen::Projects;
+    app.viewer_title = "Logs".into();
+    app.viewer_lines = (1..=12).map(|i| format!("line-{i}")).collect();
+    app.viewer_follow = false;
+
+    for _ in 0..40 {
+        app.on_key(KeyCode::PageDown, &tx);
+    }
+    let mut t = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let buf = t.backend().buffer().clone();
+    let shown: String = buf
+        .content()
+        .chunks(40)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        shown.contains("line-12"),
+        "the last line must stay on screen however hard you scroll:\n{shown}"
+    );
+}

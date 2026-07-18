@@ -103,6 +103,8 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
         ],
         Screen::Viewer => &[
             Key("↑↓ / PgUp/PgDn", "scroll (releases follow-last-line)"),
+            Key("←→", "scroll sideways — long lines are not wrapped"),
+            Key("Home", "back to the first line and the left edge"),
             Key("End", "follow the last line again (logs)"),
             Key("[0-9]", "delete that line (Ports/Mounts/Redirects)"),
             Key("Esc", "back to Services"),
@@ -1122,24 +1124,40 @@ fn vt_color(c: vt100::Color) -> Color {
 pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
     // The height is only known at render, so the "stick to the bottom" position is
     // computed here — not in the handler, which doesn't know how big the screen is.
-    if app.viewer_follow {
-        let rows = area.height.saturating_sub(2);
-        app.viewer_scroll = (app.viewer_lines.len() as u16).saturating_sub(rows);
-    }
+    let rows = area.height.saturating_sub(2);
+    let max_scroll = (app.viewer_lines.len() as u16).saturating_sub(rows);
+    app.viewer_scroll = if app.viewer_follow {
+        max_scroll
+    } else {
+        // Clamped on EVERY path, not just while following: Down and PageDown add
+        // without an upper bound, so holding either used to scroll past the last
+        // line into a blank bordered box that looks like an empty log.
+        app.viewer_scroll.min(max_scroll)
+    };
     f.render_widget(
         Paragraph::new(app.viewer_lines.join("\n"))
-            .block(Block::bordered().title(format!(
-                " {}{} ",
-                app.viewer_title,
-                // Say so if it's really live. Without this, a quiet log can't be
-                // told apart from a dead tail.
-                match (app.log_cursor.is_some(), app.viewer_follow) {
-                    (true, true) => " · live",
-                    (true, false) => " · live (paused — End to follow again)",
-                    _ => "",
-                }
-            )))
-            .scroll((app.viewer_scroll, 0)),
+            .block(
+                Block::bordered()
+                    .title(format!(
+                        " {}{} ",
+                        app.viewer_title,
+                        // Say so if it's really live. Without this, a quiet log can't be
+                        // told apart from a dead tail.
+                        match (app.log_cursor.is_some(), app.viewer_follow) {
+                            (true, true) => " · live",
+                            (true, false) => " · live (paused — End to follow again)",
+                            _ => "",
+                        }
+                    ))
+                    .title_bottom(if app.viewer_hscroll > 0 {
+                        // Say where you are once scrolled: otherwise a view missing its
+                        // left edge looks like the content simply starts there.
+                        format!(" ← col {} · Home to return ", app.viewer_hscroll + 1)
+                    } else {
+                        String::new()
+                    }),
+            )
+            .scroll((app.viewer_scroll, app.viewer_hscroll)),
         area,
     );
 }

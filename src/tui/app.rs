@@ -232,6 +232,11 @@ pub(super) struct App {
     pub(super) viewer_title: String,
     pub(super) viewer_lines: Vec<String>,
     pub(super) viewer_scroll: u16,
+    /// How far right the viewer is scrolled, in columns.
+    ///
+    /// The viewer neither wraps nor reflows, so a line longer than the pane used
+    /// to be simply unreachable — and this is the screen logs open in.
+    pub(super) viewer_hscroll: u16,
     pub(super) viewer_ctx: Option<(View, String, String, String)>,
     /// The newest log timestamp already shown; the resume marker for the tail.
     /// Some = the tail is active (only for View::Logs).
@@ -427,6 +432,7 @@ impl App {
             viewer_title: "Viewer".into(),
             viewer_lines: Vec::new(),
             viewer_scroll: 0,
+            viewer_hscroll: 0,
             viewer_ctx: None,
             log_cursor: None,
             viewer_follow: false,
@@ -1137,6 +1143,7 @@ impl App {
                 self.viewer_title = title;
                 self.viewer_lines = lines;
                 self.viewer_scroll = 0;
+                self.viewer_hscroll = 0;
                 self.screen = Screen::Viewer;
                 self.status = "Ready".into();
             }
@@ -1647,6 +1654,7 @@ impl App {
         self.viewer_title = format!("Host · {}", h.name);
         self.viewer_lines = lines;
         self.viewer_scroll = 0;
+        self.viewer_hscroll = 0;
         self.viewer_from = Screen::Hosts;
         self.screen = Screen::Viewer;
     }
@@ -2075,6 +2083,7 @@ impl App {
                 // Open an empty Viewer; results follow once the fan-out finishes.
                 self.viewer_lines = vec!["Searching across all services...".into()];
                 self.viewer_scroll = 0;
+                self.viewer_hscroll = 0;
                 self.viewer_follow = false;
                 self.log_cursor = None;
                 self.viewer_title = format!("Search '{query}'");
@@ -2222,6 +2231,7 @@ impl App {
             if view == View::Logs {
                 self.viewer_lines.clear();
                 self.viewer_scroll = 0;
+                self.viewer_hscroll = 0;
                 self.log_cursor = None;
                 self.viewer_follow = true;
                 // Other views switch screens via Resp::Viewer; logs don't go through
