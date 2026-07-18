@@ -80,7 +80,10 @@ easypanel                 # default server
 easypanel --server prod   # a specific host
 ```
 
-Press **`?`** at any time for every shortcut on the current screen.
+Press **`?`** at any time for every shortcut on the current screen. The TUI is also
+**mouse-driven**: click a tab to switch, click a service row to select it, and scroll to
+move through tables or the viewer. (Mouse capture disables the terminal's own text
+selection — hold **Shift while dragging** to select/copy.)
 
 | Screen | What it is |
 |---|---|

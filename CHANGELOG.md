@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-07-18
+
+### Added
+
+- **The TUI is now clickable.** Click a tab to switch to it, click a service row to select
+  it, and use the scroll wheel to move through any table or scroll the log/detail viewer.
+  Mouse and keyboard work interchangeably — nothing that used to work by key stops working.
+  (Trade-off: capturing the mouse turns off the terminal's own click-drag text selection;
+  hold **Shift while dragging** to select/copy text in most terminals.)
+
+- **Motion that means something — four animations, each there to communicate, not decorate.**
+  - **Loading spinner** in the status bar whenever an operation is in flight (a fetch, a
+    save, a cross-service log search). A long wait now visibly *works* instead of looking
+    frozen — the problem the rest of the tool already guards against, now shown.
+  - **Down services pulse.** A service in `turun` (crashed / missing replicas) gently
+    pulses red so your eye lands on the incident immediately.
+  - **Tab switch flash** and **selection flash** give a brief, deliberate emphasis when you
+    change tabs or move the highlighted row, so the change registers. (A terminal is a cell
+    grid — highlights can't slide between cells, so these are honest short transitions, not
+    faked smooth motion.)
+
+  Animation only speeds up the redraw loop while something is actually animating; an idle,
+  healthy screen stays at its old cheap refresh rate.
+
 ## [0.21.0] — 2026-07-18
 
 ### Added

@@ -1,6 +1,6 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, Clear, Gauge, List, ListItem, Paragraph, Row, Sparkline, Table, TableState, Tabs,
+    Block, Clear, Gauge, List, ListItem, Paragraph, Row, Sparkline, Table, TableState,
 };
 use serde_json::Value;
 
@@ -200,16 +200,45 @@ pub(super) fn render_help(f: &mut Frame, app: &App) {
     );
 }
 
-pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
-    let tabs = Tabs::new(TABS.to_vec())
-        .select(app.screen.index())
-        .block(Block::bordered().title(format!(" EasyPanel — {} ", app.server_name)))
-        .highlight_style(
-            Style::default()
+pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) {
+    // Digambar manual (bukan widget Tabs) supaya tiap tab punya hitbox kolom yang
+    // pasti untuk klik mouse, dan tab aktif bisa "berkedip" sesaat saat berganti.
+    let block = Block::bordered().title(format!(" EasyPanel — {} ", app.server_name));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let active = app.screen.index();
+    let tab_fresh = app.tab_at.elapsed().as_millis() < 300;
+    let mut spans = Vec::new();
+    let mut hits = Vec::new();
+    let mut x = inner.x;
+    for (i, title) in TABS.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+            x += 1;
+        }
+        let label = format!(" {title} ");
+        let w = label.chars().count() as u16;
+        let style = if i == active {
+            let base = Style::default()
                 .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
-    f.render_widget(tabs, area);
+                .add_modifier(Modifier::BOLD);
+            // Kilat: tab yang baru dipilih membalik warna sebentar lalu tenang.
+            if tab_fresh {
+                base.add_modifier(Modifier::REVERSED)
+            } else {
+                base
+            }
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        spans.push(Span::styled(label, style));
+        hits.push((x, x + w));
+        x += w;
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), inner);
+    app.tab_spans = hits;
+    app.tab_row = inner.y;
 }
 
 pub(super) fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
@@ -350,9 +379,9 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
             .bg(Color::Green)
             .add_modifier(Modifier::BOLD),
     );
-    let down_style = Style::default()
-        .fg(Color::Indexed(9))
-        .add_modifier(Modifier::BOLD);
+    // Baris "turun" berdenyut (merah terang <-> salmon) supaya mata tertuju ke
+    // yang rusak; ini keadaan insiden, jadi menariknya perhatian itu pas.
+    let down_style = pulse_red(app.anim.elapsed().as_millis());
     let body = rows.into_iter().map(|(cells, is_down)| {
         let row = Row::new(cells);
         if is_down {
@@ -361,12 +390,31 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
             row
         }
     });
+    // Kilat seleksi: baris yang baru dipilih (klik/panah) dipertebal sesaat lalu
+    // tenang jadi sekadar terbalik. Grid sel tak bisa meluncur antar-baris, jadi
+    // "transisi" di terminal berupa penegasan singkat, bukan gerak mulus.
+    let hl = if app.nav_at.elapsed().as_millis() < 220 {
+        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::REVERSED)
+    };
+    app.services_area = area;
     let table = Table::new(body, widths)
         .header(header)
         .block(Block::bordered().title(title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .row_highlight_style(hl)
         .highlight_symbol("› ");
     f.render_stateful_widget(table, area, &mut app.services_table);
+}
+
+/// Warna denyut untuk baris "turun": siklus 4-langkah ~1,1 detik antara merah
+/// terang dan salmon. Indeks palet, bukan warna bernama (tema-proof).
+fn pulse_red(ms: u128) -> Style {
+    const SHADES: [u8; 4] = [196, 203, 210, 203];
+    let c = SHADES[((ms / 280) % 4) as usize];
+    Style::default()
+        .fg(Color::Indexed(c))
+        .add_modifier(Modifier::BOLD)
 }
 
 pub(super) fn render_table(
@@ -859,9 +907,14 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
         bar.add_modifier(Modifier::BOLD)
     };
     let keys = fit_status_keys(screen_keys(app.screen), area.width);
+    // Spinner saat ada operasi berjalan: menandakan "sedang bekerja", bukan freeze.
+    let head = match app.spinner() {
+        Some(c) => format!(" {c} {} ", app.status),
+        None => format!(" {} ", app.status),
+    };
     f.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled(format!(" {} ", app.status), status_style)),
+            Line::from(Span::styled(head, status_style)),
             Line::from(Span::styled(
                 format!(" {keys}"),
                 bar.fg(Color::Indexed(252)),

@@ -280,6 +280,21 @@ fn status_keys_fit_the_width_and_never_drop_help() {
 }
 
 #[test]
+fn spinner_shows_only_while_loading() {
+    // Spinner = umpan balik "sedang bekerja". Muncul saat status diakhiri "..." /
+    // "…" (Memuat…/Mengirim…/Mencari…), diam saat status biasa.
+    let mut app = App::new("t".into(), vec![]);
+    app.status = "Siap".into();
+    assert!(app.spinner().is_none());
+    app.status = "Memuat...".into();
+    assert!(app.spinner().is_some());
+    app.status = "Mencari 'x' di semua service…".into();
+    assert!(app.spinner().is_some());
+    app.status = "Domain dihapus".into();
+    assert!(app.spinner().is_none());
+}
+
+#[test]
 fn task_stats_parse_matches_server_shape() {
     // Bentuk terverifikasi ke server hidup: objek { "{proj}_{svc}": {actual,desired} }.
     let v = json!({

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
+use std::time::Instant;
 
+use ratatui::layout::Rect;
 use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
 
@@ -44,6 +46,17 @@ pub(super) const TABS: [&str; 7] = [
     // Layar ini mendaftar SERVICE lintas project, bukan project. Namanya masih
     // Screen::Projects di kode (sisa panel lama), tapi labelnya harus jujur.
     "Services",
+];
+
+/// Tab (urut label) → Screen, kebalikan dari Screen::index. Untuk klik tab.
+pub(super) const TAB_SCREENS: [Screen; 7] = [
+    Screen::Dashboard,
+    Screen::Hosts,
+    Screen::Maintenance,
+    Screen::Actions,
+    Screen::Monitor,
+    Screen::Domains,
+    Screen::Projects,
 ];
 
 impl Screen {
@@ -190,6 +203,22 @@ pub(super) struct App {
     pub(super) load_hosts: bool,
 
     pub(super) confirm: Option<Confirm>,
+
+    // ---- Animasi & mouse ----
+    /// Jam animasi global; fase spinner/denyut dihitung dari elapsed-nya.
+    pub(super) anim: Instant,
+    /// Kapan seleksi tabel Services terakhir berpindah (kilat sorot).
+    pub(super) nav_at: Instant,
+    /// Kapan tab terakhir berganti (kilat tab).
+    pub(super) tab_at: Instant,
+    /// Pembanding untuk mendeteksi perubahan tab/seleksi tanpa mengait tiap handler.
+    pub(super) last_screen: Screen,
+    pub(super) last_sel: Option<usize>,
+    /// Hitbox klik per tab (start,end kolom), diisi saat render_tabs. Baris tab-nya.
+    pub(super) tab_spans: Vec<(u16, u16)>,
+    pub(super) tab_row: u16,
+    /// Area tabel Services, diisi saat render — untuk memetakan klik ke baris.
+    pub(super) services_area: Rect,
 }
 
 impl App {
@@ -240,7 +269,45 @@ impl App {
             hosts_state: TableState::default(),
             load_hosts: false,
             confirm: None,
+            anim: Instant::now(),
+            nav_at: Instant::now(),
+            tab_at: Instant::now(),
+            last_screen: Screen::Dashboard,
+            last_sel: None,
+            tab_spans: Vec::new(),
+            tab_row: 0,
+            services_area: Rect::default(),
         }
+    }
+
+    /// Deteksi ganti tab/seleksi (dipanggil tiap frame sebelum draw) untuk memicu
+    /// kilat transisi — supaya tak perlu menyisipkan timestamp di tiap handler nav.
+    pub(super) fn tick_anim(&mut self) {
+        if self.screen != self.last_screen {
+            self.last_screen = self.screen;
+            self.tab_at = Instant::now();
+        }
+        let sel = self.services_table.selected();
+        if sel != self.last_sel {
+            self.last_sel = sel;
+            self.nav_at = Instant::now();
+        }
+    }
+
+    /// Frame spinner saat ada operasi berjalan (status diakhiri "..."), else None.
+    pub(super) fn spinner(&self) -> Option<char> {
+        const F: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let loading = self.status.ends_with("...") || self.status.ends_with('…');
+        loading.then(|| F[((self.anim.elapsed().as_millis() / 90) % 10) as usize])
+    }
+
+    /// Ada animasi aktif? Dipakai event loop untuk merapatkan redraw (lebih mulus)
+    /// hanya saat perlu, biar idle tetap murah.
+    pub(super) fn animating(&self) -> bool {
+        self.spinner().is_some()
+            || self.down_count() > 0
+            || self.nav_at.elapsed().as_millis() < 260
+            || self.tab_at.elapsed().as_millis() < 320
     }
 
     pub(super) fn reset_for_server(&mut self, name: String) {

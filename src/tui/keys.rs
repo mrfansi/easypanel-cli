@@ -6,11 +6,11 @@
 
 use std::sync::mpsc::Sender;
 
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::output::field;
 
-use super::app::{App, Confirm, MonitorView, Screen, ServerAction};
+use super::app::{App, Confirm, MonitorView, Screen, ServerAction, TAB_SCREENS};
 use super::form::*;
 use super::table::*;
 use super::worker::{Req, View};
@@ -79,6 +79,58 @@ impl App {
                 // sini. Dashboard tak punya tombol khusus.
                 Screen::Dashboard | Screen::Terminal => {}
             },
+        }
+    }
+
+    /// Klik & scroll. Modal terbuka (form/picker/konfirmasi/dropdown/bantuan)
+    /// menelan mouse: sebuah klik tak boleh diam-diam mengganti tab di belakang
+    /// dialog. Sesi terminal juga mengabaikannya (shell tak menerima mouse dari sini).
+    pub(super) fn on_mouse(&mut self, m: MouseEvent, req: &Sender<Req>) {
+        if self.screen == Screen::Terminal
+            || self.help
+            || self.form.is_some()
+            || self.picker.is_some()
+            || self.confirm.is_some()
+            || self.chooser.is_some()
+        {
+            return;
+        }
+        match m.kind {
+            // Scroll = panah: tiap layar sudah tahu artinya (viewer menggulung,
+            // tabel memindah seleksi).
+            MouseEventKind::ScrollDown => self.on_key(KeyCode::Down, req),
+            MouseEventKind::ScrollUp => self.on_key(KeyCode::Up, req),
+            MouseEventKind::Down(MouseButton::Left) => self.on_click(m.column, m.row, req),
+            _ => {}
+        }
+    }
+
+    fn on_click(&mut self, col: u16, row: u16, req: &Sender<Req>) {
+        // Klik tab -> pindah ke tab itu (sama seperti menekan angkanya).
+        if row == self.tab_row {
+            if let Some(i) = self
+                .tab_spans
+                .iter()
+                .position(|&(a, b)| col >= a && col < b)
+            {
+                if let Some(&screen) = TAB_SCREENS.get(i) {
+                    self.goto(screen, req);
+                }
+            }
+            return;
+        }
+        // Klik baris tabel Services -> pilih baris itu. Dua baris teratas (border +
+        // header) bukan data; offset menampung daftar yang tergulung.
+        if self.screen == Screen::Projects {
+            let a = self.services_area;
+            let first = a.y.saturating_add(2);
+            let in_x = col >= a.x && col < a.x.saturating_add(a.width);
+            if in_x && row >= first {
+                let idx = (row - first) as usize + self.services_table.offset();
+                if idx < self.visible_rows().len() {
+                    self.services_table.select(Some(idx));
+                }
+            }
         }
     }
 

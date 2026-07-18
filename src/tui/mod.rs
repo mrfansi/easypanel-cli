@@ -23,7 +23,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use serde_json::json;
 
 use crate::client::EasypanelClient;
@@ -48,9 +50,21 @@ pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> 
     let mut app = App::new(server_name, names);
 
     let mut terminal = ratatui::init();
+    enable_mouse();
     let result = event_loop(&mut terminal, &mut app, cfg, client);
+    disable_mouse();
     ratatui::restore();
     result
+}
+
+/// Tangkap event mouse (klik tab/baris, scroll). Efek samping: seleksi teks bawaan
+/// terminal jadi tak aktif — pakai Shift+drag di kebanyakan terminal untuk menyalin.
+fn enable_mouse() {
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+}
+
+fn disable_mouse() {
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
 }
 
 fn event_loop(
@@ -83,6 +97,7 @@ fn event_loop(
             last_status = app.status.clone();
         }
 
+        app.tick_anim();
         terminal.draw(|f| ui(f, app))?;
 
         // Metrik jalan di lajur poll. Guard in-flight menjaga agar ronde tak
@@ -113,15 +128,20 @@ fn event_loop(
             last_stats = Instant::now();
         }
 
-        // Poll lebih rapat saat terminal terbuka: 120 ms terasa lag untuk ketikan.
+        // Poll lebih rapat saat terminal terbuka (120 ms terasa lag untuk ketikan)
+        // atau saat ada animasi berjalan (spinner/denyut/kilat) supaya mulus; idle
+        // tanpa animasi tetap 120 ms agar murah.
         let poll = if app.screen == Screen::Terminal {
             15
+        } else if app.animating() {
+            70
         } else {
             120
         };
         if event::poll(Duration::from_millis(poll))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
+            match event::read()? {
+                Event::Mouse(m) => app.on_mouse(m, &w.user),
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if app.screen == Screen::Terminal {
                         // Ctrl-Q menutup sesi; SEMUA tombol lain (termasuk Ctrl-C)
                         // diteruskan ke shell.
@@ -145,6 +165,7 @@ fn event_loop(
                         app.on_key(key.code, &w.user);
                     }
                 }
+                _ => {}
             }
         }
 
@@ -347,9 +368,11 @@ fn edit_text_in_editor(
     let path = std::env::temp_dir().join(filename);
     std::fs::write(&path, current)?;
 
+    disable_mouse();
     ratatui::restore();
     let opened = open_in_editor(&path);
     *terminal = ratatui::init();
+    enable_mouse();
     terminal.clear()?;
     opened?;
 
