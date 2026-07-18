@@ -1,14 +1,17 @@
-//! Terminal ke dalam container — tertanam di pane TUI (bukan alih layar).
+//! A terminal inside the container — embedded in a TUI pane (not a full-screen
+//! takeover).
 //!
-//! Protokol diverifikasi dengan round-trip WebSocket hidup ke server:
+//! The protocol was verified with a live WebSocket round trip to the server:
 //! `wss://{panel}/ws/containerShell?container={id}&command={b64}&token={apiToken}`,
-//! bertukar JSON `{"input"}` / `{"resize":[cols,rows]}` (ke server) dan
-//! `{"output"}` (dari server). Auth memakai token API yang tool ini sudah simpan.
+//! exchanging JSON `{"input"}` / `{"resize":[cols,rows]}` (to the server) and
+//! `{"output"}` (from the server). Auth uses the API token this tool already
+//! has stored.
 //!
-//! WebSocket berjalan di thread sendiri: output-nya dikirim sebagai `Resp::TermOutput`
-//! untuk diumpankan ke parser vt100 (yang jadi grid di layar), dan keystroke dari
-//! event loop dikirim balik lewat channel. Jadi tabs & status bar tetap tampil —
-//! terminal hidup di dalam pane konten, seamless.
+//! The WebSocket runs on its own thread: its output is sent as `Resp::TermOutput`
+//! to be fed into the vt100 parser (which becomes the on-screen grid), and
+//! keystrokes from the event loop are sent back over a channel. So tabs & the
+//! status bar stay visible — the terminal lives inside the content pane,
+//! seamlessly.
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
@@ -23,16 +26,16 @@ use crate::client::EasypanelClient;
 
 use super::worker::Resp;
 
-/// Pesan dari event loop ke thread WebSocket.
+/// Message from the event loop to the WebSocket thread.
 pub(super) enum TermMsg {
     Input(String),
     Resize(u16, u16),
 }
 
-/// Resolve ID container yang berjalan untuk sebuah service (nama swarm
-/// "{project}_{service}"), lalu bangun URL WebSocket terminalnya. `command` = apa
-/// yang dijalankan di dalam container (mis. "sh" untuk shell, atau perintah mysql
-/// untuk shell database) — server membungkusnya `docker exec -it … /bin/sh -c`.
+/// Resolve the running container ID for a service (swarm name
+/// "{project}_{service}"), then build its terminal WebSocket URL. `command` is
+/// what to run inside the container (e.g. "sh" for a shell, or a mysql command
+/// for a database shell) — the server wraps it with `docker exec -it … /bin/sh -c`.
 pub(super) fn ws_url(
     client: &EasypanelClient,
     project: &str,
@@ -51,7 +54,7 @@ pub(super) fn ws_url(
                 .find(|c| c.get("State").and_then(Value::as_str) == Some("running"))
         })
         .and_then(|c| c.get("Id").and_then(Value::as_str))
-        .ok_or_else(|| anyhow!("Tak ada container berjalan untuk {project}/{service}"))?;
+        .ok_or_else(|| anyhow!("No running container for {project}/{service}"))?;
     let wss = client
         .url()
         .trim_end_matches('/')
@@ -64,8 +67,8 @@ pub(super) fn ws_url(
     ))
 }
 
-/// base64 standar (dengan padding). Ditulis tangan — encoding sepele, tak perlu
-/// menambah dependency. Dipakai untuk parameter `command` WebSocket terminal.
+/// Standard base64 (with padding). Hand-written — the encoding is trivial, no
+/// need to add a dependency. Used for the terminal WebSocket's `command` parameter.
 pub(super) fn base64(input: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
@@ -89,18 +92,19 @@ pub(super) fn base64(input: &[u8]) -> String {
     out
 }
 
-/// Perintah shell yang membuka klien database sebuah service memakai kredensial
-/// yang sudah tersimpan (root/superuser). Password lewat env var (tak muncul di
-/// `ps`, tak memicu peringatan "insecure"), dikutip aman untuk sh. None untuk tipe
-/// non-database. Bentuk tiap perintah diverifikasi live ke server.
+/// The shell command that opens a service's database client using its already
+/// stored credentials (root/superuser). The password is passed via an env var
+/// (doesn't show up in `ps`, doesn't trigger an "insecure" warning), safely
+/// quoted for sh. None for non-database types. Each command's shape was
+/// verified live against the server.
 ///
-/// - mysql/mariadb: `mysql -uroot` (klien `mysql` ada di kedua image)
+/// - mysql/mariadb: `mysql -uroot` (the `mysql` client is present in both images)
 /// - postgres: `psql -U <user>`
-/// - mongo: `mongosh` dengan auth (authSource admin, default EasyPanel)
+/// - mongo: `mongosh` with auth (authSource admin, EasyPanel's default)
 /// - redis: `redis-cli` (REDISCLI_AUTH)
 pub(super) fn db_command(stype: &str, inspect: &Value) -> Option<String> {
     let f = |k: &str| inspect.get(k).and_then(Value::as_str).unwrap_or("");
-    // Kutip single-quote untuk sh: ' -> '\'' agar kredensial apa pun aman.
+    // Single-quote for sh: ' -> '\'' so any credential is safe.
     let q = |s: &str| s.replace('\'', "'\\''");
     let db = f("databaseName");
     match stype {
@@ -141,8 +145,8 @@ pub(super) fn db_command(stype: &str, inspect: &Value) -> Option<String> {
     }
 }
 
-/// Jalankan sesi WebSocket di thread sendiri. Kembalikan pengirim untuk keystroke
-/// & resize; output dikirim sebagai `Resp::TermOutput`, akhir sesi `Resp::TermClosed`.
+/// Run the WebSocket session on its own thread. Returns a sender for keystrokes
+/// & resize events; output is sent as `Resp::TermOutput`, session end as `Resp::TermClosed`.
 pub(super) fn spawn_session(
     url: String,
     resp_tx: Sender<Resp>,
@@ -154,17 +158,17 @@ pub(super) fn spawn_session(
         let mut ws = match tungstenite::connect(&url) {
             Ok((ws, _)) => ws,
             Err(e) => {
-                let _ = resp_tx.send(Resp::Err(format!("terminal gagal tersambung: {e}")));
+                let _ = resp_tx.send(Resp::Err(format!("terminal failed to connect: {e}")));
                 let _ = resp_tx.send(Resp::TermClosed);
                 return;
             }
         };
-        // Read timeout kecil supaya loop juga sempat mengurus input & resize.
+        // A small read timeout so the loop also gets a chance to handle input & resize.
         set_read_timeout(&mut ws, Duration::from_millis(15));
         let _ = ws.send(resize_msg(cols, rows));
 
         loop {
-            // Kuras output yang ada.
+            // Drain any pending output.
             loop {
                 match ws.read() {
                     Ok(Message::Text(t)) => {
@@ -196,8 +200,8 @@ pub(super) fn spawn_session(
                 }
             }
 
-            // Teruskan input/resize yang tertunda. input_rx putus (app menutup
-            // terminal, mis. Ctrl-Q) → akhiri sesi.
+            // Forward any pending input/resize. If input_rx disconnects (the app
+            // closed the terminal, e.g. Ctrl-Q) → end the session.
             loop {
                 match input_rx.try_recv() {
                     Ok(msg) => {
@@ -242,15 +246,15 @@ fn set_read_timeout(
     }
 }
 
-/// Encode sebuah KeyEvent jadi byte yang dikirim ke shell (encoding xterm).
-/// None = tak dikirim (mis. tombol yang tak dipetakan).
+/// Encode a KeyEvent into bytes to send to the shell (xterm encoding).
+/// None = not sent (e.g. an unmapped key).
 pub(super) fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let bytes = match key.code {
         KeyCode::Char(c) => {
             if ctrl {
-                // Ctrl-A..Z → 0x01..0x1a; mengikuti terminal sungguhan.
+                // Ctrl-A..Z → 0x01..0x1a; matches a real terminal.
                 let b = (c.to_ascii_uppercase() as u8).wrapping_sub(b'@') & 0x7f;
                 vec![b]
             } else if alt {

@@ -16,12 +16,11 @@ pub(super) const SERVICE_HEADERS: [&str; 9] = [
     "Net Out",
 ];
 
-/// Satu baris tabel Services: header project, atau service di bawahnya.
+/// One row of the Services table: a project header, or a service beneath it.
 ///
-/// Hirarki dipertahankan tapi tetap satu tabel: drill-down memaksa membuka
-/// project satu per satu dan tak bisa dicari, sementara daftar datar tanpa
-/// header membuat project kosong hilang sama sekali — tak terlihat, tak bisa
-/// dipilih, tak bisa dihapus.
+/// The hierarchy is kept but stays a single table: drill-down forces opening
+/// projects one by one and can't be searched, while a flat list with no headers
+/// makes empty projects vanish entirely — invisible, unselectable, undeletable.
 pub(super) enum Line2<'a> {
     Project {
         name: &'a str,
@@ -30,10 +29,10 @@ pub(super) enum Line2<'a> {
     Service(&'a Value),
 }
 
-/// Satu baris tabel service datar.
+/// One row of the flat service table.
 ///
-/// `source` diringkas dari inspectService-nya listProjectsAndServices, jadi repo
-/// dan branch terlihat tanpa membuka apa pun.
+/// `source` is summarized from the inspectService bundled in
+/// listProjectsAndServices, so repo and branch show without opening anything.
 pub(super) fn service_row(
     s: &Value,
     running: Option<bool>,
@@ -60,26 +59,26 @@ pub(super) fn service_row(
     ]
 }
 
-/// Status jalan/mati sebuah service.
+/// Whether a service is up or down.
 ///
-/// `enabled` dari API cuma berarti "tidak di-disable user", BUKAN "container
-/// hidup" — service yang crash tetap enabled.
+/// `enabled` from the API only means "not disabled by the user", NOT "container
+/// alive" — a crashed service stays enabled.
 ///
-/// Ground truth terbaik adalah replika swarm (`replicas` = actual/desired dari
-/// getDockerTaskStats): swarm sendiri yang tahu berapa yang seharusnya jalan dan
-/// berapa yang benar-benar jalan. Kalau ada, ia menang atas tebakan metrik:
+/// The best ground truth is the swarm replicas (`replicas` = actual/desired from
+/// getDockerTaskStats): swarm itself knows how many should be running and how
+/// many actually are. When present, it wins over the metric guess:
 ///
-/// - "turun": desired>0 tapi actual<desired — container mati/crash-loop dan swarm
-///   belum berhasil menaikkannya lagi. Inilah yang dulu terlihat sama seperti
-///   "berhenti" (di-stop sengaja) padahal artinya "rusak sekarang".
-/// - "berhenti": desired=0 — memang di-scale ke nol / di-stop user.
-/// - "aktif": actual>=desired.
+/// - "down": desired>0 but actual<desired — the container is dead/crash-looping
+///   and swarm hasn't managed to bring it back up. This used to look identical to
+///   "stopped" (deliberately stopped) when it actually means "broken right now".
+/// - "stopped": desired=0 — deliberately scaled to zero / stopped by the user.
+/// - "active": actual>=desired.
 ///
-/// Tanpa replika (belum dimuat), jatuh ke sinyal metrik lama: `running`
-/// Some(true)=ada metrik, Some(false)=tak ada (padahal enabled → mati beneran),
-/// None=belum dimuat / konteks filter (jangan menuduh mati).
+/// Without replicas (not yet loaded), fall back to the old metric signal:
+/// `running` Some(true)=metrics exist, Some(false)=none (yet enabled → really
+/// dead), None=not loaded / filter context (don't accuse it of being dead).
 ///
-/// - "mati": di-disable user (enabled=false)
+/// - "disabled": disabled by the user (enabled=false)
 pub(super) fn service_status(
     s: &Value,
     running: Option<bool>,
@@ -87,30 +86,30 @@ pub(super) fn service_status(
 ) -> &'static str {
     let enabled = s.get("enabled").and_then(Value::as_bool).unwrap_or(true);
     if !enabled {
-        return "mati";
+        return "disabled";
     }
     if let Some((actual, desired)) = replicas {
         return if desired == 0 {
-            "berhenti"
+            "stopped"
         } else if actual < desired {
-            "turun"
+            "down"
         } else {
-            "aktif"
+            "active"
         };
     }
     match running {
-        Some(false) => "berhenti",
-        _ => "aktif",
+        Some(false) => "stopped",
+        _ => "active",
     }
 }
 
-/// Kolom Auto: hanya source github yang punya auto deploy.
+/// Auto column: only a github source has auto deploy.
 ///
-/// Tiga keadaan, bukan dua. Server tak mengirim `autoDeploy` untuk source image
-/// maupun database (diperiksa langsung ke API: hadir pada 15 dari 16 app, yang
-/// satu itu bersumber image). "✗" di baris MySQL akan berarti "belum" untuk
-/// sesuatu yang tak pernah bisa dinyalakan — persis jenis angka yang percaya
-/// diri tapi salah.
+/// Three states, not two. The server doesn't send `autoDeploy` for image sources
+/// or databases (checked directly against the API: present on 15 of 16 apps, the
+/// odd one out sourced from an image). A "✗" on a MySQL row would mean "not yet"
+/// for something that can never be turned on — exactly the kind of number that's
+/// confident but wrong.
 pub(super) fn auto_deploy_cell(s: &Value) -> &'static str {
     match (
         field(s, "/source/type").as_str(),
@@ -122,12 +121,12 @@ pub(super) fn auto_deploy_cell(s: &Value) -> &'static str {
     }
 }
 
-/// Baris header project: agregat metrik anak-anaknya.
+/// Project header row: aggregate of its children's metrics.
 ///
-/// `mets` sudah disaring: hanya service yang metriknya ada. Kalau kosong, tak
-/// ada yang diukur — jadi "-", bukan angka. "0.0 %" akan mengklaim sudah diukur
-/// dan hasilnya nol, dan tanpa penjaga ini `Sum` untuk f64 (identitasnya -0.0)
-/// mencetak "-0.0 %": CPU negatif yang tampak meyakinkan.
+/// `mets` is already filtered: only services whose metrics exist. If empty,
+/// nothing is measured — so "-", not a number. "0.0 %" would claim it was
+/// measured and came out zero, and without this guard `Sum` for f64 (whose
+/// identity is -0.0) prints "-0.0 %": a convincing-looking negative CPU.
 pub(super) fn project_row(name: &str, count: usize, mets: &[&Value]) -> Vec<String> {
     let mut row: Vec<String> = vec![format!("{name} ({count})")];
     row.extend(["-", "-", "-", "-"].map(String::from));
@@ -145,11 +144,11 @@ pub(super) fn project_row(name: &str, count: usize, mets: &[&Value]) -> Vec<Stri
     row
 }
 
-/// Kolom metrik untuk sebuah service; "-" bila metriknya belum/tak ada.
+/// Metric columns for a service; "-" when its metrics aren't (yet) available.
 ///
-/// Dipisah dari service_row() supaya filter hanya mencocokkan identitas
-/// (project/service/tipe/source) — mencari "1" tak seharusnya cocok ke setiap
-/// baris hanya karena angka CPU-nya.
+/// Split out from service_row() so the filter only matches identity
+/// (project/service/type/source) — searching for "1" shouldn't match every row
+/// just because of its CPU number.
 pub(super) fn metric_cols(m: Option<&Value>) -> Vec<String> {
     let Some(m) = m else {
         return vec!["-".into(), "-".into(), "-".into(), "-".into()];
@@ -162,10 +161,10 @@ pub(super) fn metric_cols(m: Option<&Value>) -> Vec<String> {
     ]
 }
 
-/// Apakah sebuah baris lolos filter.
+/// Whether a row passes the filter.
 ///
-/// Dicocokkan ke teks yang DITAMPILKAN, bukan ke JSON mentahnya: yang dicari user
-/// adalah yang terlihat di layar.
+/// Matched against the DISPLAYED text, not the raw JSON: what the user is looking
+/// for is what's on screen.
 pub(super) fn keep(row: &[String], filter: &str) -> bool {
     if filter.is_empty() {
         return true;
@@ -174,7 +173,7 @@ pub(super) fn keep(row: &[String], filter: &str) -> bool {
     row.iter().any(|c| c.to_lowercase().contains(&f))
 }
 
-/// Pilih baris pertama bila daftar terisi dan belum ada yang dipilih.
+/// Select the first row when the list is non-empty and nothing is selected yet.
 pub(super) fn select_first(state: &mut TableState, len: usize) {
     if len == 0 {
         state.select(None);
@@ -183,7 +182,7 @@ pub(super) fn select_first(state: &mut TableState, len: usize) {
     }
 }
 
-/// Navigasi tabel: panah/jk, PgUp/PgDn, Home/End.
+/// Table navigation: arrows/jk, PgUp/PgDn, Home/End.
 pub(super) fn move_table(state: &mut TableState, code: KeyCode, len: usize) {
     if len == 0 {
         return;
@@ -205,10 +204,10 @@ pub(super) fn move_table(state: &mut TableState, code: KeyCode, len: usize) {
 
 pub(super) fn short_reason(err: &str) -> &str {
     if err.contains("403") || err.contains("Forbidden") {
-        "GitHub menolak: 403"
+        "GitHub rejected: 403"
     } else if err.contains("401") || err.contains("Unauthorized") {
-        "GitHub menolak: token tidak valid"
+        "GitHub rejected: invalid token"
     } else {
-        "gagal"
+        "failed"
     }
 }

@@ -21,22 +21,22 @@ use super::LOG_BUFFER;
 #[derive(PartialEq, Clone, Copy)]
 pub(super) enum Screen {
     Dashboard,
-    /// Semua host sekaligus — satu-satunya layar yang tak bisa digantikan panel web.
+    /// Every host at once — the one screen a web panel can't replace.
     Hosts,
-    /// Info & pembersihan Docker pada server aktif.
+    /// Docker info & cleanup on the active server.
     Maintenance,
     Actions,
     Monitor,
     Domains,
     Projects,
     Viewer,
-    /// Terminal container tertanam; dibuka dari sebuah service.
+    /// An embedded container terminal; opened from a service.
     Terminal,
 }
 
-/// Viewer sengaja TIDAK ada di sini: ia hasil dari membuka sesuatu pada sebuah
-/// service, bukan tujuan tersendiri. Sebagai tab ia hanya kotak kosong sampai
-/// user datang dari Projects.
+/// Viewer is deliberately NOT here: it's the result of opening something on a
+/// service, not a destination of its own. As a tab it would just be an empty box
+/// until the user arrives from Projects.
 pub(super) const TABS: [&str; 7] = [
     "Dashboard",
     "Hosts",
@@ -44,12 +44,13 @@ pub(super) const TABS: [&str; 7] = [
     "Actions",
     "Monitor",
     "Domains",
-    // Layar ini mendaftar SERVICE lintas project, bukan project. Namanya masih
-    // Screen::Projects di kode (sisa panel lama), tapi labelnya harus jujur.
+    // This screen lists SERVICES across projects, not projects. It's still called
+    // Screen::Projects in the code (a leftover from the old panel), but the label
+    // must be honest.
     "Services",
 ];
 
-/// Tab (urut label) → Screen, kebalikan dari Screen::index. Untuk klik tab.
+/// Tab (by label order) → Screen, the inverse of Screen::index. For clicking a tab.
 pub(super) const TAB_SCREENS: [Screen; 7] = [
     Screen::Dashboard,
     Screen::Hosts,
@@ -70,8 +71,8 @@ impl Screen {
             Screen::Monitor => 4,
             Screen::Domains => 5,
             Screen::Projects => 6,
-            // Viewer & Terminal selalu dibuka dari Projects, jadi tab itu yang
-            // tetap tersorot — keduanya tak punya tab sendiri.
+            // Viewer & Terminal are always opened from Projects, so that tab stays
+            // highlighted — neither has its own tab.
             Screen::Viewer | Screen::Terminal => 6,
         }
     }
@@ -87,16 +88,16 @@ impl Screen {
             Screen::Viewer | Screen::Terminal => Screen::Dashboard,
         }
     }
-    /// Tab sebelumnya (untuk ←). Berputar lewat TAB_SCREENS; Viewer/Terminal
-    /// dianggap di tab Projects (index 6).
+    /// The previous tab (for ←). Wraps through TAB_SCREENS; Viewer/Terminal count
+    /// as being on the Projects tab (index 6).
     pub(super) fn prev(self) -> Self {
         let i = self.index();
         TAB_SCREENS[(i + TAB_SCREENS.len() - 1) % TAB_SCREENS.len()]
     }
 }
 
-/// Satu baris di layar Hosts. Host yang mati harus tampil sebagai baris error,
-/// bukan menggagalkan seluruh tabel.
+/// One row on the Hosts screen. A dead host must show as an error row, not fail
+/// the whole table.
 pub(super) struct HostRow {
     pub(super) name: String,
     pub(super) url: String,
@@ -109,7 +110,7 @@ pub(super) enum HostState {
     Err(String),
 }
 
-/// Sub-tab pada layar Monitor (mengikuti panel).
+/// A sub-tab on the Monitor screen (following the panel).
 #[derive(PartialEq, Clone, Copy)]
 pub(super) enum MonitorView {
     Services,
@@ -124,12 +125,12 @@ pub(super) struct Confirm {
     pub(super) label: String,
 }
 
-/// Perubahan daftar server: dieksekusi di event_loop yang memegang ServerConfig.
+/// A server-list change: executed in event_loop, which holds the ServerConfig.
 pub(super) enum ServerAction {
     Save {
         name: String,
         url: String,
-        /// None = pertahankan token yang tersimpan (form edit yang dibiarkan kosong).
+        /// None = keep the stored token (an edit form left blank).
         token: Option<String>,
     },
     Remove(String),
@@ -137,35 +138,35 @@ pub(super) enum ServerAction {
 
 pub(super) struct App {
     pub(super) server_name: String,
-    /// (nama, url) tiap server. URL ikut disimpan supaya form edit bisa
-    /// terisi nilai sekarang, bukan kosong seperti form tambah.
+    /// (name, url) for each server. The URL is stored too so the edit form can be
+    /// prefilled with the current value, not left blank like the add form.
     pub(super) all_servers: Vec<(String, String)>,
     pub(super) switch_to: Option<String>,
     pub(super) picker: Option<ListState>,
     pub(super) form: Option<Form>,
     pub(super) chooser: Option<Chooser>,
     pub(super) server_action: Option<ServerAction>,
-    /// (project, service, stype, replace) — menunggu suntingan env di $EDITOR.
-    /// `replace` = true membuka editor KOSONG (ganti-cepat: tempel env baru tanpa
-    /// menunggu fetch atau menghapus yang lama); false memuat env sekarang.
+    /// (project, service, stype, replace) — awaiting an env edit in $EDITOR.
+    /// `replace` = true opens an EMPTY editor (quick-replace: paste new env without
+    /// waiting for a fetch or deleting the old one); false loads the current env.
     pub(super) edit_env: Option<(String, String, String, bool)>,
-    /// (project, service, stype) — menunggu suntingan Config File (Advanced db) di
-    /// $EDITOR; isinya diambil dari inspectService lalu disimpan via updateAdvanced.
+    /// (project, service, stype) — awaiting a Config File (Advanced db) edit in
+    /// $EDITOR; its contents come from inspectService and are saved via updateAdvanced.
     pub(super) edit_config: Option<(String, String, String)>,
-    /// Indeks field form yang menunggu dibuka di $EDITOR; event_loop yang
-    /// mengerjakannya — hanya ia yang memegang terminal.
+    /// The index of the form field awaiting an $EDITOR open; event_loop does it —
+    /// only it holds the terminal.
     pub(super) edit_field: Option<usize>,
-    /// (project, service) yang menunggu dibukakan terminal container; event_loop
-    /// yang menyambungkannya (ia yang memegang ServerConfig).
-    /// (project, service, db) — permintaan membuka terminal container. `db` =
-    /// Some(stype) untuk shell database (mysql/mariadb, login root otomatis),
-    /// None untuk shell biasa (sh). event_loop yang menyambungkannya.
+    /// (project, service) awaiting a container terminal; event_loop connects it (it
+    /// holds the ServerConfig).
+    /// (project, service, db) — a request to open a container terminal. `db` =
+    /// Some(stype) for a database shell (mysql/mariadb, auto root login), None for
+    /// a plain shell (sh). event_loop connects it.
     pub(super) terminal_req: Option<(String, String, Option<String>)>,
-    /// Emulator layar terminal aktif (parser vt100 diisi output WebSocket).
+    /// The active terminal screen emulator (a vt100 parser fed by WebSocket output).
     pub(super) term_parser: Option<vt100::Parser>,
-    /// Kirim keystroke/resize ke thread WebSocket. Drop = tutup sesi.
+    /// Send keystrokes/resizes to the WebSocket thread. Dropping it = close the session.
     pub(super) term_input: Option<Sender<super::terminal::TermMsg>>,
-    /// Judul pane terminal (project/service).
+    /// The terminal pane title (project/service).
     pub(super) term_title: String,
 
     pub(super) screen: Screen,
@@ -180,84 +181,86 @@ pub(super) struct App {
     pub(super) actions_state: TableState,
     pub(super) monitor: Vec<Value>,
     pub(super) monitor_state: TableState,
-    /// Replika swarm per service (actual/desired), dikunci "{project}_{service}".
-    /// Sumber status "turun" di tabel Services. Kosong = belum dimuat.
+    /// Swarm replicas per service (actual/desired), keyed by "{project}_{service}".
+    /// The source of the "down" status in the Services table. Empty = not loaded yet.
     pub(super) task_stats: HashMap<String, (i64, i64)>,
     pub(super) storage: Vec<Value>,
     pub(super) monitor_view: MonitorView,
     pub(super) domains: Vec<Value>,
     pub(super) domains_state: TableState,
-    /// (project, service) asal saat masuk tab Domains lewat `o` dari sebuah
-    /// service — dipakai memprefill form "Domain baru" ke service itu. None = tab
-    /// Domains dibuka biasa.
+    /// The (project, service) origin when entering the Domains tab via `o` from a
+    /// service — used to prefill the "New domain" form to that service. None = the
+    /// Domains tab was opened normally.
     pub(super) domain_scope: Option<(String, String)>,
 
     pub(super) projects: Vec<String>,
-    /// Semua service lintas project. Daftar datar menggantikan hirarki
-    /// project -> service: drill-down tak bisa dicari dan runtuh di ratusan service.
+    /// All services across projects. A flat list replaces the project -> service
+    /// hierarchy: drill-down can't be searched and collapses under hundreds of
+    /// services.
     pub(super) all_services: Vec<Value>,
     pub(super) services_table: TableState,
 
-    /// Layar tujuan saat Esc dari Viewer — viewer bisa dibuka dari Services
-    /// (kembali ke Services) atau dari Actions (kembali ke Actions).
+    /// The destination screen when Esc'ing from the Viewer — the viewer can be
+    /// opened from Services (back to Services) or from Actions (back to Actions).
     pub(super) viewer_from: Screen,
     pub(super) viewer_title: String,
     pub(super) viewer_lines: Vec<String>,
     pub(super) viewer_scroll: u16,
     pub(super) viewer_ctx: Option<(View, String, String, String)>,
-    /// Timestamp log terbaru yang sudah tampil; penanda lanjut buat tail.
-    /// Some = tail aktif (hanya untuk View::Logs).
+    /// The newest log timestamp already shown; the resume marker for the tail.
+    /// Some = the tail is active (only for View::Logs).
     pub(super) log_cursor: Option<String>,
-    /// Viewer menempel di baris terakhir. Log tumbuh dari bawah, jadi tanpa ini
-    /// baris baru datang di luar layar dan tail-nya tampak mati.
+    /// The viewer sticks to the last line. Logs grow from the bottom, so without
+    /// this a new line arrives off-screen and the tail looks dead.
     pub(super) viewer_follow: bool,
 
-    /// Teks filter untuk tabel layar aktif ("" = tanpa filter).
+    /// The filter text for the active screen's table ("" = no filter).
     pub(super) filter: String,
-    /// Sedang mengetik filter (tombol masuk ke filter, bukan ke layar).
+    /// Currently typing a filter (keys go to the filter, not to the screen).
     pub(super) filter_input: bool,
-    /// Overlay bantuan sedang terbuka.
+    /// The help overlay is open.
     pub(super) help: bool,
-    /// Baris info tab Maintenance: (label, nilai).
+    /// The Maintenance tab info rows: (label, value).
     pub(super) maint: Vec<(String, String)>,
     pub(super) hosts: Vec<HostRow>,
     pub(super) hosts_state: TableState,
-    /// Diset saat layar Hosts perlu data; fan-out-nya dijalankan event_loop.
+    /// Set when the Hosts screen needs data; its fan-out is run by event_loop.
     pub(super) load_hosts: bool,
 
     pub(super) confirm: Option<Confirm>,
 
-    // ---- Animasi & mouse ----
-    /// Jam animasi global; fase spinner/denyut dihitung dari elapsed-nya.
+    // ---- Animation & mouse ----
+    /// The global animation clock; the spinner/pulse phase is computed from its elapsed.
     pub(super) anim: Instant,
-    /// Kapan seleksi tabel Services terakhir berpindah (kilat sorot).
+    /// When the Services table selection last moved (selection flash).
     pub(super) nav_at: Instant,
-    /// Kapan tab terakhir berganti (kilat tab).
+    /// When the tab last changed (tab flash).
     pub(super) tab_at: Instant,
-    /// Pembanding untuk mendeteksi perubahan tab/seleksi tanpa mengait tiap handler.
+    /// Comparators to detect a tab/selection change without hooking every handler.
     pub(super) last_screen: Screen,
     pub(super) last_sel: Option<usize>,
-    /// Hitbox klik per tab (start,end kolom), diisi saat render_tabs. Baris tab-nya.
+    /// Per-tab click hitboxes (start,end column), filled in during render_tabs. Plus its row.
     pub(super) tab_spans: Vec<(u16, u16)>,
     pub(super) tab_row: u16,
-    /// Area tabel layar aktif, diisi saat render — memetakan klik ke baris. Hanya
-    /// satu layar dirender per frame, jadi satu field cukup untuk semua tabel.
+    /// The active screen's table area, filled in during render — maps a click to a
+    /// row. Only one screen renders per frame, so one field covers every table.
     pub(super) table_area: Rect,
-    /// Menu konteks (klik kanan). Item = (label, tombol yang disimulasikan).
+    /// The context menu (right click). Each item = (label, action).
     pub(super) menu: Option<Menu>,
-    /// Command palette (global search) — navigasi cepat ke service/tab.
+    /// The command palette (global search) — quick navigation to a service/tab.
     pub(super) palette: Option<Palette>,
 }
 
-/// Aksi sebuah item menu: fungsi yang dijalankan saat item dipilih.
+/// A menu item's action: the function run when the item is chosen.
 ///
-/// Closure TANPA tangkapan (parameter di-bake sebagai literal, mis. `View::Env`)
-/// otomatis jadi `fn`, jadi tak perlu Box. Menu memegang aksinya langsung — bukan
-/// mensimulasikan tombol — supaya satu tombol grup (mis. `e` → menu Env) tak
-/// memicu dirinya sendiri, dan menu menjadi SATU definisi aksi.
+/// A closure with NO captures (its parameters baked in as literals, e.g.
+/// `View::Env`) becomes an `fn` automatically, so no Box is needed. The menu holds
+/// its action directly — rather than simulating a key — so that one group key
+/// (e.g. `e` → Env menu) doesn't trigger itself, and the menu becomes a SINGLE
+/// definition of the action.
 pub(super) type MenuRun = fn(&mut App, &Sender<Req>);
 
-/// Satu item menu: label yang ditampilkan + aksi saat dipilih.
+/// One menu item: the displayed label + the action when chosen.
 pub(super) struct MenuItem {
     pub(super) label: String,
     pub(super) run: MenuRun,
@@ -272,26 +275,27 @@ impl MenuItem {
     }
 }
 
-/// Menu konteks/aksi: popup daftar item; memilih item menjalankan `run`-nya, yang
-/// bisa pula membuka submenu (item ber-tanda ▸). Dibuka lewat klik-kanan atau
-/// tombol grup di keyboard.
+/// A context/action menu: a popup list of items; choosing one runs its `run`,
+/// which may in turn open a submenu (items marked ▸). Opened by right click or a
+/// group key on the keyboard.
 pub(super) struct Menu {
     pub(super) items: Vec<MenuItem>,
     pub(super) state: ListState,
-    /// Menu induk saat ini submenu (mis. Env dibuka dari menu service). `←`
-    /// kembali ke sini; None = menu teratas, `←` menutup.
+    /// The parent menu when this is a submenu (e.g. Env opened from the service
+    /// menu). `←` returns here; None = the top menu, `←` closes.
     pub(super) parent: Option<Box<Menu>>,
-    /// Posisi kursor saat menu dibuka (sudut kiri-atas menu, sebelum dijepit layar).
+    /// The cursor position when the menu opened (its top-left corner, before being
+    /// clamped to the screen).
     pub(super) col: u16,
     pub(super) row: u16,
-    /// Kotak menu yang benar-benar digambar (setelah dijepit ke layar), diisi saat
-    /// render — dipakai memetakan klik/hover item.
+    /// The menu box as actually drawn (after clamping to the screen), filled in
+    /// during render — used to map a click/hover to an item.
     pub(super) rect: Rect,
 }
 
 impl Menu {
-    /// Indeks item di bawah (col,row), atau None bila di luar area item. Item i
-    /// digambar di baris `rect.y + 1 + i` (baris pertama & terakhir = border).
+    /// The item index under (col,row), or None if outside the item area. Item i is
+    /// drawn on row `rect.y + 1 + i` (the first & last rows are the border).
     pub(super) fn item_at(&self, col: u16, row: u16) -> Option<usize> {
         let r = self.rect;
         let inside = col >= r.x
@@ -306,14 +310,15 @@ impl Menu {
     }
 }
 
-/// Aksi sebuah entri command palette (global search).
+/// A command palette (global search) entry's action.
 pub(super) enum PaletteAction {
-    /// Lompat ke sebuah service (pindah ke Services, sorot barisnya).
+    /// Jump to a service (switch to Services, highlight its row).
     Service { project: String, service: String },
-    /// Jalankan aksi kontekstual pada BARIS yang sedang dipilih (fungsi aksi dari
-    /// menu/leaf yang sama). Baris sudah tersorot, jadi aksi mengenai yang benar.
+    /// Run a contextual action on the CURRENTLY selected row (the same action
+    /// function from the menu/leaf). The row is already highlighted, so the action
+    /// hits the right one.
     Run(MenuRun),
-    /// Pindah ke sebuah tab.
+    /// Switch to a tab.
     Tab(Screen),
 }
 
@@ -322,19 +327,20 @@ pub(super) struct PaletteItem {
     pub(super) action: PaletteAction,
 }
 
-/// Command palette: pencarian global untuk navigasi cepat ke service/tab tanpa
-/// menyusuri menu. Ketik untuk memfilter, ↑↓ pilih, Enter lompat, Esc tutup.
+/// The command palette: a global search for quick navigation to a service/tab
+/// without browsing menus. Type to filter, ↑↓ select, Enter jump, Esc close.
 pub(super) struct Palette {
     pub(super) query: String,
     pub(super) items: Vec<PaletteItem>,
     pub(super) state: ListState,
-    /// Kotak yang digambar (untuk klik, diisi saat render).
+    /// The box as drawn (for clicks, filled in during render).
     pub(super) rect: Rect,
 }
 
 impl Palette {
-    /// Indeks item yang cocok query. Query dipecah per kata dan SEMUA kata harus
-    /// muncul (tak harus berurutan), jadi "deploy pay" cocok ke "Deploy …/pay".
+    /// The indices of items matching the query. The query is split into words and
+    /// ALL words must appear (not necessarily in order), so "deploy pay" matches
+    /// "Deploy …/pay".
     pub(super) fn matches(&self) -> Vec<usize> {
         let q = self.query.to_lowercase();
         let terms: Vec<&str> = q.split_whitespace().collect();
@@ -370,7 +376,7 @@ impl App {
             screen: Screen::Dashboard,
             should_quit: false,
             refresh_inflight: false,
-            status: "Siap".into(),
+            status: "Ready".into(),
             stats: None,
             nodes: Vec::new(),
             actions: Vec::new(),
@@ -414,8 +420,9 @@ impl App {
         }
     }
 
-    /// Jumlah baris yang SEDANG dirender di tabel layar aktif (setelah filter).
-    /// Dipakai klik: indeks yang diklik harus dalam rentang yang benar-benar tampil.
+    /// The number of rows CURRENTLY rendered in the active screen's table (after
+    /// filtering). Used by clicks: the clicked index must be within the range
+    /// actually on screen.
     pub(super) fn visible_table_len(&self) -> usize {
         match self.screen {
             Screen::Projects => self.visible_rows().len(),
@@ -430,8 +437,8 @@ impl App {
         }
     }
 
-    /// TableState tabel layar aktif (untuk memilih baris dari klik). None = layar
-    /// tanpa tabel yang bisa dipilih.
+    /// The active screen's table TableState (to select a row from a click). None =
+    /// a screen with no selectable table.
     pub(super) fn active_table(&mut self) -> Option<&mut TableState> {
         match self.screen {
             Screen::Projects => Some(&mut self.services_table),
@@ -443,18 +450,18 @@ impl App {
         }
     }
 
-    /// Menu aksi untuk baris yang disorot di layar aktif (dibuka klik-kanan atau
-    /// Enter). Kosong = tak ada baris terpilih / layar tanpa aksi baris.
+    /// The action menu for the highlighted row on the active screen (opened by
+    /// right click or Enter). Empty = no row selected / a screen with no row actions.
     ///
-    /// Di Projects ini adalah menu bertingkat: aksi terkait dikelompokkan
-    /// (Env/Jaringan/Build/…) supaya tak berserak jadi 25 tombol lepas.
+    /// On Projects this is a nested menu: related actions are grouped
+    /// (Env/Networking/Build/…) so they don't scatter into 25 loose keys.
     pub(super) fn context_items(&self) -> Vec<MenuItem> {
         match self.screen {
             Screen::Projects if self.selected_row().is_some() => self.service_menu(),
             Screen::Domains if self.domains_state.selected().is_some() => vec![
                 MenuItem::new("Edit", |a, r| a.on_key(KeyCode::Char('e'), r)),
-                MenuItem::new("Jadikan primary", |a, r| a.on_key(KeyCode::Char('P'), r)),
-                MenuItem::new("Hapus", |a, r| a.on_key(KeyCode::Char('x'), r)),
+                MenuItem::new("Set primary", |a, r| a.on_key(KeyCode::Char('P'), r)),
+                MenuItem::new("Delete", |a, r| a.on_key(KeyCode::Char('x'), r)),
             ],
             Screen::Actions if self.selected_action_id().is_some() => {
                 vec![MenuItem::new("View detail", |a, r| {
@@ -465,11 +472,12 @@ impl App {
         }
     }
 
-    /// Menu aksi service (top-level): aksi umum + submenu per kelompok. Item ber-▸
-    /// membuka submenu-nya. Aksi yang tombolnya di-repurpose jadi opener menu
-    /// (Env `e`, Jaringan `o`, Build `u`, Penyimpanan `m`, Siklus `d`, Shell `t`,
-    /// Bahaya `x`) memanggil method langsung; sisanya lewat `on_key` tombol leaf-nya
-    /// yang masih hidup — tak ada jalur aksi kedua yang bisa menyimpang.
+    /// The service action menu (top-level): common actions + a submenu per group.
+    /// A ▸ item opens its submenu. Actions whose key is repurposed into a menu
+    /// opener (Env `e`, Networking `o`, Build `u`, Storage `m`, Lifecycle `d`,
+    /// Shell `t`, Danger `x`) call the method directly; the rest go through
+    /// `on_key` on their still-live leaf key — there's no second action path that
+    /// could drift.
     pub(super) fn service_menu(&self) -> Vec<MenuItem> {
         vec![
             MenuItem::new("Logs", |a, r| a.open_view(View::Logs, r)),
@@ -477,7 +485,7 @@ impl App {
                 let m = a.env_menu();
                 a.open_menu(m);
             }),
-            MenuItem::new("Jaringan ▸", |a, _| {
+            MenuItem::new("Networking ▸", |a, _| {
                 let m = a.net_menu();
                 a.open_menu(m);
             }),
@@ -485,11 +493,11 @@ impl App {
                 let m = a.build_menu();
                 a.open_menu(m);
             }),
-            MenuItem::new("Penyimpanan ▸", |a, _| {
+            MenuItem::new("Storage ▸", |a, _| {
                 let m = a.store_menu();
                 a.open_menu(m);
             }),
-            MenuItem::new("Siklus hidup ▸", |a, _| {
+            MenuItem::new("Lifecycle ▸", |a, _| {
                 let m = a.life_menu();
                 a.open_menu(m);
             }),
@@ -498,7 +506,7 @@ impl App {
                 a.open_menu(m);
             }),
             MenuItem::new("Clone", |a, r| a.on_key(KeyCode::Char('c'), r)),
-            MenuItem::new("Bahaya ▸", |a, _| {
+            MenuItem::new("Danger ▸", |a, _| {
                 let m = a.danger_menu();
                 a.open_menu(m);
             }),
@@ -513,15 +521,13 @@ impl App {
 
     pub(super) fn env_menu(&self) -> Vec<MenuItem> {
         let mut v = vec![
-            MenuItem::new("Lihat env", |a, r| a.open_view(View::Env, r)),
-            MenuItem::new("Edit env (sebagian)", |a, r| {
-                a.on_key(KeyCode::Char('E'), r)
-            }),
-            MenuItem::new("Ganti seluruh env", |a, r| a.on_key(KeyCode::Char('w'), r)),
+            MenuItem::new("View env", |a, r| a.open_view(View::Env, r)),
+            MenuItem::new("Edit env (partial)", |a, r| a.on_key(KeyCode::Char('E'), r)),
+            MenuItem::new("Replace entire env", |a, r| a.on_key(KeyCode::Char('w'), r)),
         ];
-        // File .env hanya untuk service app (lihat handler `.`).
+        // The .env file is only for app services (see the `.` handler).
         if self.is_selected_type(&["app"]) {
-            v.push(MenuItem::new("Toggle file .env", |a, r| {
+            v.push(MenuItem::new("Toggle .env file", |a, r| {
                 a.on_key(KeyCode::Char('.'), r)
             }));
         }
@@ -531,24 +537,24 @@ impl App {
     pub(super) fn net_menu(&self) -> Vec<MenuItem> {
         vec![
             MenuItem::new("Domain", |a, r| a.open_service_domains(r)),
-            MenuItem::new("Lihat ports", |a, r| a.on_key(KeyCode::Char('p'), r)),
-            MenuItem::new("Tambah port", |a, r| a.on_key(KeyCode::Char('P'), r)),
-            MenuItem::new("Lihat redirects", |a, r| a.on_key(KeyCode::Char('f'), r)),
-            MenuItem::new("Tambah redirect", |a, r| a.on_key(KeyCode::Char('F'), r)),
+            MenuItem::new("View ports", |a, r| a.on_key(KeyCode::Char('p'), r)),
+            MenuItem::new("Add port", |a, r| a.on_key(KeyCode::Char('P'), r)),
+            MenuItem::new("View redirects", |a, r| a.on_key(KeyCode::Char('f'), r)),
+            MenuItem::new("Add redirect", |a, r| a.on_key(KeyCode::Char('F'), r)),
             MenuItem::new("Basic auth", |a, r| a.on_key(KeyCode::Char('H'), r)),
         ]
     }
 
     pub(super) fn build_menu(&self) -> Vec<MenuItem> {
         let mut v = vec![
-            MenuItem::new("Lihat source & build", |a, r| a.open_view(View::Source, r)),
-            MenuItem::new("Atur source", |a, r| a.on_key(KeyCode::Char('U'), r)),
-            MenuItem::new("Atur build", |a, r| a.on_key(KeyCode::Char('B'), r)),
+            MenuItem::new("View source & build", |a, r| a.open_view(View::Source, r)),
+            MenuItem::new("Set source", |a, r| a.on_key(KeyCode::Char('U'), r)),
+            MenuItem::new("Set build", |a, r| a.on_key(KeyCode::Char('B'), r)),
             MenuItem::new("Auto deploy on/off", |a, r| a.on_key(KeyCode::Char('A'), r)),
-            MenuItem::new("Limit resource", |a, r| a.on_key(KeyCode::Char('L'), r)),
+            MenuItem::new("Resource limit", |a, r| a.on_key(KeyCode::Char('L'), r)),
         ];
-        // Config File (Advanced) hanya ada di service database — di situlah
-        // EasyPanel memakai `configFile` (mis. konfigurasi replikasi MySQL).
+        // Config File (Advanced) only exists on database services — that's where
+        // EasyPanel uses `configFile` (e.g. MySQL replication config).
         if self.is_selected_type(&["mysql", "mariadb", "postgres", "mongo", "redis"]) {
             v.push(MenuItem::new("Config file (Advanced)", |a, _| {
                 a.start_config_edit()
@@ -559,9 +565,9 @@ impl App {
 
     pub(super) fn store_menu(&self) -> Vec<MenuItem> {
         vec![
-            MenuItem::new("Lihat mounts", |a, r| a.open_view(View::Mounts, r)),
-            MenuItem::new("Tambah mount", |a, r| a.on_key(KeyCode::Char('M'), r)),
-            MenuItem::new("Backups", |a, r| a.on_key(KeyCode::Char('b'), r)),
+            MenuItem::new("View mounts", |a, r| a.open_view(View::Mounts, r)),
+            MenuItem::new("Add mount", |a, r| a.on_key(KeyCode::Char('M'), r)),
+            MenuItem::new("Backups", |a, r| a.open_view(View::Backups, r)),
         ]
     }
 
@@ -577,7 +583,7 @@ impl App {
     pub(super) fn shell_menu(&self) -> Vec<MenuItem> {
         let mut v = vec![MenuItem::new("Terminal", |a, _| a.start_terminal())];
         if self.is_selected_type(&["mysql", "mariadb", "postgres", "mongo", "redis"]) {
-            v.push(MenuItem::new("DB shell (login otomatis)", |a, _| {
+            v.push(MenuItem::new("DB shell (auto login)", |a, _| {
                 a.start_db_shell()
             }));
         }
@@ -586,14 +592,14 @@ impl App {
 
     pub(super) fn danger_menu(&self) -> Vec<MenuItem> {
         vec![
-            MenuItem::new("Hapus service", |a, _| a.ask_action("destroy")),
-            MenuItem::new("Hapus project", |a, r| a.on_key(KeyCode::Char('X'), r)),
+            MenuItem::new("Delete service", |a, _| a.ask_action("destroy")),
+            MenuItem::new("Delete project", |a, r| a.on_key(KeyCode::Char('X'), r)),
         ]
     }
 
-    /// Buka menu untuk menu yang dibuka lewat keyboard. Dijangkarkan di BARIS yang
-    /// dipilih (bukan pojok kiri-atas) supaya muncul dalam konteks baris itu, seperti
-    /// klik-kanan. Menu klik-kanan memakai posisi kursor (lihat on_right_click).
+    /// Open a menu that was triggered by the keyboard. Anchored to the SELECTED row
+    /// (not the top-left corner) so it appears in that row's context, like a right
+    /// click. Right-click menus use the cursor position (see on_right_click).
     pub(super) fn open_menu(&mut self, items: Vec<MenuItem>) {
         if items.is_empty() {
             return;
@@ -601,9 +607,9 @@ impl App {
         let mut state = ListState::default();
         state.select(Some(0));
         let a = self.table_area;
-        // Baris terpilih di layar = area.y + border(1) + header(1) + (indeks - offset).
-        // Dari tabel AKTIF (Projects/Domains/Actions), jadi menu muncul di baris yang
-        // benar di layar mana pun.
+        // The selected row on screen = area.y + border(1) + header(1) + (index - offset).
+        // From the ACTIVE table (Projects/Domains/Actions), so the menu appears on
+        // the right row on any screen.
         let (sel, off) = self
             .active_table()
             .map(|t| (t.selected().unwrap_or(0), t.offset()))
@@ -614,18 +620,20 @@ impl App {
             items,
             state,
             parent: None,
-            // +2: lewati border + indentasi service, jadi tepi kiri menu tak menimpa
-            // (dan tak dibocori) teks kolom pertama.
+            // +2: skip the border + service indent, so the menu's left edge doesn't
+            // cover (or get bled through by) the first column's text.
             col: a.x.saturating_add(2),
             row,
             rect: Rect::default(),
         });
     }
 
-    /// Buka command palette (global search): semua service server ini + tab
-    /// sebagai entri. Alternatif menu konteks untuk navigasi cepat pakai keyboard.
-    /// SEMUA leaf action untuk service terpilih, diratakan dari builder submenu —
-    /// jadi palette punya aksi selengkap menu (bukan cuma lifecycle).
+    /// Open the command palette (global search): every service on this server + the
+    /// tabs as entries. A keyboard-friendly alternative to the context menu for
+    /// quick navigation.
+    /// ALL leaf actions for the selected service, flattened from the submenu
+    /// builders — so the palette has the menu's full set of actions (not just
+    /// lifecycle).
     fn service_leaf_actions(&self) -> Vec<MenuItem> {
         let mut v = vec![MenuItem::new("Logs", |a, r| a.open_view(View::Logs, r))];
         v.extend(self.env_menu());
@@ -641,9 +649,10 @@ impl App {
         v
     }
 
-    /// Aksi kontekstual untuk baris yang dipilih di layar aktif, sebagai
-    /// (label, fungsi). Services → daftar penuh dengan sufiks id; layar lain →
-    /// aksi menu konteksnya dengan awalan nama layar. Kosong bila tak ada baris.
+    /// Contextual actions for the selected row on the active screen, as
+    /// (label, function). Services → the full list with an id suffix; other screens
+    /// → their context-menu actions prefixed with the screen name. Empty when no
+    /// row is selected.
     fn palette_context_actions(&self) -> Vec<(String, MenuRun)> {
         if self.screen == Screen::Projects {
             let Some((project, service, _)) = self.selected_row() else {
@@ -665,25 +674,25 @@ impl App {
 
     pub(super) fn open_palette(&mut self) {
         let mut items = Vec::new();
-        // Aksi bersifat KONTEKSTUAL: hanya untuk BARIS yang sedang dipilih di layar
-        // aktif (mencegah ratusan entri/bloating). SEMUA aksi baris itu diratakan —
-        // service dapat daftar penuh (env/jaringan/build/mount/lifecycle/shell/
-        // clone/hapus), layar lain dapat aksi menu konteksnya. Tanpa baris terpilih
-        // = palette murni navigasi.
+        // Actions are CONTEXTUAL: only for the row currently selected on the active
+        // screen (preventing hundreds of entries / bloat). ALL of that row's actions
+        // are flattened — a service gets the full list (env/networking/build/mount/
+        // lifecycle/shell/clone/delete), other screens get their context-menu
+        // actions. With no row selected, the palette is pure navigation.
         for (label, run) in self.palette_context_actions() {
             items.push(PaletteItem {
                 label,
                 action: PaletteAction::Run(run),
             });
         }
-        // Navigasi: pindah tab.
+        // Navigation: switch tabs.
         for s in TAB_SCREENS {
             items.push(PaletteItem {
                 label: format!("⇥  Tab: {}", TABS[s.index()]),
                 action: PaletteAction::Tab(s),
             });
         }
-        // Navigasi: lompat ke service mana pun.
+        // Navigation: jump to any service.
         let mut svcs: Vec<&Value> = self.all_services.iter().collect();
         svcs.sort_by_key(|s| (field(s, "/projectName"), field(s, "/name")));
         for s in svcs {
@@ -693,7 +702,7 @@ impl App {
                 field(s, "/type"),
             );
             items.push(PaletteItem {
-                label: format!("Buka  {project}/{service}  ·  {t}"),
+                label: format!("Open  {project}/{service}  ·  {t}"),
                 action: PaletteAction::Service { project, service },
             });
         }
@@ -707,7 +716,7 @@ impl App {
         });
     }
 
-    /// Jalankan entri palette terpilih (dari daftar TER-FILTER), lalu tutup.
+    /// Run the selected palette entry (from the FILTERED list), then close.
     pub(super) fn palette_run(&mut self, req: &Sender<Req>) {
         let Some(pal) = self.palette.take() else {
             return;
@@ -726,7 +735,7 @@ impl App {
         }
     }
 
-    /// Pindah ke Services dan sorot service ini (navigasi cepat dari palette).
+    /// Switch to Services and highlight this service (quick navigation from the palette).
     fn jump_to_service(&mut self, project: &str, service: &str, req: &Sender<Req>) {
         self.goto(Screen::Projects, req);
         self.filter.clear();
@@ -740,12 +749,12 @@ impl App {
                 self.services_table.select(Some(i));
                 self.status = format!("→ {project}/{service}");
             }
-            None => self.status = format!("{project}/{service} tak ada di daftar sekarang"),
+            None => self.status = format!("{project}/{service} isn't in the current list"),
         }
     }
 
-    /// Sunting Config File (Advanced) service database terpilih di $EDITOR.
-    /// event_loop yang mengambil isinya, membuka editor, lalu menyimpan.
+    /// Edit the selected database service's Config File (Advanced) in $EDITOR.
+    /// event_loop fetches its contents, opens the editor, then saves.
     pub(super) fn start_config_edit(&mut self) {
         match self.selected_row() {
             Some((p, s, t))
@@ -757,22 +766,22 @@ impl App {
                 self.edit_config = Some((p, s, t));
             }
             Some((_, _, t)) => {
-                self.status = format!("Config file hanya untuk service database (ini {t})");
+                self.status = format!("Config file is only for database services (this is {t})");
             }
-            None => self.status = "Pilih sebuah service dulu".into(),
+            None => self.status = "Select a service first".into(),
         }
     }
 
-    /// Buka terminal shell ke container service terpilih (event_loop yang mengambil
-    /// alih terminal). None = shell biasa.
+    /// Open a shell terminal into the selected service's container (event_loop takes
+    /// over the terminal). None = a plain shell.
     pub(super) fn start_terminal(&mut self) {
         match self.selected_row() {
             Some((project, service, _)) => self.terminal_req = Some((project, service, None)),
-            None => self.status = "Pilih sebuah service dulu".into(),
+            None => self.status = "Select a service first".into(),
         }
     }
 
-    /// Shell database dengan login otomatis (mysql/mariadb/postgres/mongo/redis).
+    /// A database shell with auto login (mysql/mariadb/postgres/mongo/redis).
     pub(super) fn start_db_shell(&mut self) {
         match self.selected_row() {
             Some((project, service, stype))
@@ -784,22 +793,22 @@ impl App {
                 self.terminal_req = Some((project, service, Some(stype)));
             }
             Some((_, _, stype)) => {
-                self.status = format!("Shell DB hanya untuk service database (ini {stype})");
+                self.status = format!("DB shell is only for database services (this is {stype})");
             }
-            None => self.status = "Pilih sebuah service dulu".into(),
+            None => self.status = "Select a service first".into(),
         }
     }
 
-    /// Id action yang disorot (dari daftar yang tampil, hormati filter). None =
-    /// tak ada yang dipilih.
+    /// The id of the highlighted action (from the shown list, honoring the filter).
+    /// None = nothing selected.
     pub(super) fn selected_action_id(&self) -> Option<String> {
         self.actions_state
             .selected()
             .and_then(|i| self.visible_actions().get(i).map(|a| field(a, "/id")))
     }
 
-    /// Deteksi ganti tab/seleksi (dipanggil tiap frame sebelum draw) untuk memicu
-    /// kilat transisi — supaya tak perlu menyisipkan timestamp di tiap handler nav.
+    /// Detect a tab/selection change (called each frame before draw) to trigger the
+    /// transition flash — so there's no need to stamp a timestamp in every nav handler.
     pub(super) fn tick_anim(&mut self) {
         if self.screen != self.last_screen {
             self.last_screen = self.screen;
@@ -812,15 +821,16 @@ impl App {
         }
     }
 
-    /// Frame spinner saat ada operasi berjalan (status diakhiri "..."), else None.
+    /// The spinner frame while an operation is running (status ends with "..."),
+    /// else None.
     pub(super) fn spinner(&self) -> Option<char> {
         const F: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let loading = self.status.ends_with("...") || self.status.ends_with('…');
         loading.then(|| F[((self.anim.elapsed().as_millis() / 90) % 10) as usize])
     }
 
-    /// Ada animasi aktif? Dipakai event loop untuk merapatkan redraw (lebih mulus)
-    /// hanya saat perlu, biar idle tetap murah.
+    /// Is any animation active? Used by the event loop to tighten redraws (smoother)
+    /// only when needed, so idle stays cheap.
     pub(super) fn animating(&self) -> bool {
         self.spinner().is_some()
             || self.down_count() > 0
@@ -830,10 +840,10 @@ impl App {
 
     pub(super) fn reset_for_server(&mut self, name: String) {
         self.server_name = name;
-        self.status = "Ganti server".into();
-        // Pertahankan layar aktif — ganti server tak boleh melempar user ke
-        // Dashboard. Layar turunan (Viewer/Terminal) isinya milik server lama,
-        // jadi jatuh ke Services.
+        self.status = "Switching server".into();
+        // Keep the active screen — switching servers must not throw the user back to
+        // the Dashboard. Derived screens (Viewer/Terminal) hold the old server's
+        // content, so fall back to Services.
         if matches!(self.screen, Screen::Viewer | Screen::Terminal) {
             self.screen = Screen::Projects;
         }
@@ -907,7 +917,7 @@ impl App {
                     title,
                     resource_fields(data.get("resources")),
                 ));
-                self.status = "Enter simpan · Esc batal · 0 = tak dibatasi".into();
+                self.status = "Enter save · Esc cancel · 0 = unlimited".into();
             }
             Resp::BasicAuthForm {
                 project,
@@ -925,7 +935,7 @@ impl App {
                     title,
                     basic_auth_fields(Some(&data)),
                 ));
-                self.status = "Enter simpan · Esc batal · kosongkan keduanya = matikan".into();
+                self.status = "Enter save · Esc cancel · clear both = turn off".into();
             }
             Resp::ConfigForm {
                 project,
@@ -953,7 +963,7 @@ impl App {
                     )
                 };
                 self.form = Some(form);
-                self.status = "Enter simpan · Esc batal".into();
+                self.status = "Enter save · Esc cancel".into();
                 self.load_form_branches(req);
             }
             Resp::HostStat { name, data } => {
@@ -967,12 +977,12 @@ impl App {
             }
             Resp::MaintInfo(rows) => self.maint = rows,
             Resp::LogTail { lines, cursor } => {
-                // Batch pertama tiba ke viewer_lines yang kosong, jadi menambah
-                // = mengganti; ronde berikutnya menyambung. Tak perlu tahu yang
-                // mana: `since` yang menentukan apa yang dikirim server.
+                // The first batch arrives into an empty viewer_lines, so appending
+                // = replacing; later rounds append. No need to know which: `since`
+                // decides what the server sends.
                 if !lines.is_empty() {
                     self.viewer_lines.extend(lines);
-                    // Tail berjam-jam tak boleh menumpuk tanpa batas.
+                    // An hours-long tail must not pile up without bound.
                     let extra = self.viewer_lines.len().saturating_sub(LOG_BUFFER);
                     self.viewer_lines.drain(..extra);
                 }
@@ -987,10 +997,10 @@ impl App {
                     .and_then(|form| form.fields.iter_mut().find(|f| f.label == "Repo"))
                 {
                     let mut opts = repos;
-                    // Pilihan kosong wajib ada saat belum ada yang dipilih:
-                    // set_options() melompat ke opsi pertama kalau nilai sekarang
-                    // tak ada di daftar, jadi tanpa ini form baru diam-diam
-                    // menunjuk source ke repo acak.
+                    // An empty choice is required while nothing is selected:
+                    // set_options() jumps to the first option if the current value
+                    // isn't in the list, so without this a new form would silently
+                    // point the source at a random repo.
                     if f.value.is_empty() {
                         opts.insert(0, String::new());
                     }
@@ -1006,16 +1016,16 @@ impl App {
                 };
                 match result {
                     Ok(names) => f.set_options(names),
-                    // Tanpa daftar branch, dropdown hanya berisi nilai sekarang —
-                    // user terkunci di branch itu dan tak bisa menggantinya sama
-                    // sekali. Jatuh ke input teks: server tetap menolak branch yang
-                    // tak ada ("Branch not found"), jadi tak ada yang hilang selain
-                    // kenyamanan memilih.
+                    // Without a branch list, the dropdown only holds the current
+                    // value — the user is locked to that branch and can't change it
+                    // at all. Fall back to a text input: the server still rejects a
+                    // nonexistent branch ("Branch not found"), so nothing is lost
+                    // but the convenience of picking one.
                     Err(e) => {
                         f.kind = FieldKind::Text;
                         self.status = format!(
-                            "Daftar branch tak bisa dimuat ({}) — ketik nama branch manual. \
-                             Perbaiki token GitHub di EasyPanel > Settings.",
+                            "Branch list couldn't load ({}) — type the branch name manually. \
+                             Fix the GitHub token in EasyPanel > Settings.",
                             short_reason(&e)
                         );
                     }
@@ -1026,7 +1036,7 @@ impl App {
                 self.viewer_lines = lines;
                 self.viewer_scroll = 0;
                 self.screen = Screen::Viewer;
-                self.status = "Siap".into();
+                self.status = "Ready".into();
             }
             Resp::TermOutput(bytes) => {
                 if let Some(p) = self.term_parser.as_mut() {
@@ -1034,12 +1044,12 @@ impl App {
                 }
             }
             Resp::TermClosed => {
-                // Shell keluar / socket tutup: kembali ke Services.
+                // Shell exited / socket closed: back to Services.
                 self.term_parser = None;
                 self.term_input = None;
                 if self.screen == Screen::Terminal {
                     self.screen = Screen::Projects;
-                    self.status = format!("Terminal {} ditutup", self.term_title);
+                    self.status = format!("Terminal {} closed", self.term_title);
                 }
             }
             Resp::Done(msg, what) => {
@@ -1071,7 +1081,7 @@ impl App {
         self.clamp_filtered();
     }
 
-    /// Filter mengecilkan daftar, jadi baris terpilih bisa jatuh di luar batas.
+    /// The filter shrinks the list, so the selected row can fall out of bounds.
     pub(super) fn clamp_filtered(&mut self) {
         let len = match self.screen {
             Screen::Domains => self.visible_domains().len(),
@@ -1108,8 +1118,8 @@ impl App {
             .collect()
     }
 
-    /// monitor_rows() mengelompokkan seluruh daftar sekaligus, jadi filternya
-    /// diterapkan ke baris hasil, bukan ke item mentah.
+    /// monitor_rows() groups the whole list at once, so its filter is applied to
+    /// the resulting rows, not the raw items.
     pub(super) fn visible_monitor_rows(&self) -> Vec<Vec<String>> {
         commands::monitor_rows(self.monitor.clone())
             .into_iter()
@@ -1117,15 +1127,14 @@ impl App {
             .collect()
     }
 
-    /// Pindah layar dan muat datanya bila belum ada.
+    /// Switch screens and load its data if it isn't there yet.
     pub(super) fn goto(&mut self, screen: Screen, req: &Sender<Req>) {
-        // Filter milik layar tempat ia diketik. Membawanya ke layar lain berarti
-        // menyembunyikan baris tanpa sebab yang terlihat.
+        // The filter belongs to the screen it was typed on. Carrying it to another
+        // screen would hide rows for no visible reason.
         self.filter.clear();
         self.filter_input = false;
-        // Scope domain hanya berlaku untuk kunjungan `o` dari sebuah service;
-        // navigasi biasa mengosongkannya (open_service_domains menyetel ulang
-        // sesudah goto).
+        // The domain scope only applies to an `o` visit from a service; ordinary
+        // navigation clears it (open_service_domains sets it again after goto).
         self.domain_scope = None;
         self.screen = screen;
         match screen {
@@ -1133,11 +1142,12 @@ impl App {
                 if self.all_services.is_empty() {
                     let _ = req.send(Req::AllServices);
                 }
-                // Metrik per service dijoin ke tabel; tanpa ini kolomnya "-".
+                // Per-service metrics are joined into the table; without this its
+                // columns are "-".
                 if self.monitor.is_empty() {
                     let _ = req.send(Req::MonitorData);
                 }
-                // Replika swarm → kolom Status ("turun" untuk yang crash/down).
+                // Swarm replicas → the Status column ("down" for crashed/down ones).
                 if self.task_stats.is_empty() {
                     let _ = req.send(Req::TaskStats);
                 }
@@ -1168,7 +1178,7 @@ impl App {
         }
     }
 
-    /// (nama, url) server yang sedang disorot di picker.
+    /// The (name, url) of the server highlighted in the picker.
     pub(super) fn picker_selected(&self) -> Option<(String, String)> {
         self.picker
             .as_ref()
@@ -1182,17 +1192,17 @@ impl App {
         }
     }
 
-    /// Ganti-cepat env: buka $EDITOR KOSONG untuk menempel env baru wholesale.
+    /// Quick-replace env: open an EMPTY $EDITOR to paste a new env wholesale.
     pub(super) fn start_env_replace(&mut self) {
         if let Some((p, s, t)) = self.selected_row() {
             self.edit_env = Some((p, s, t, true));
         }
     }
 
-    /// Baris yang tampil: header project diikuti service-nya, terfilter.
+    /// The rows shown: a project header followed by its services, filtered.
     ///
-    /// Render DAN aksi wajib lewat sini. Kalau render difilter sementara aksi
-    /// memakai indeks daftar penuh, `x` akan menghapus service yang salah.
+    /// Render AND actions must both go through here. If render is filtered while
+    /// actions use full-list indices, `x` would delete the wrong service.
     pub(super) fn visible_rows(&self) -> Vec<Line2<'_>> {
         let f = self.filter.to_lowercase();
         let mut names: Vec<&String> = self.projects.iter().collect();
@@ -1200,8 +1210,8 @@ impl App {
 
         let mut out = Vec::new();
         for p in names {
-            // Nama project yang cocok menahan seluruh isinya: mencari
-            // "harisenin-net" harus memperlihatkan service-nya, bukan header kosong.
+            // A matching project name holds all its contents: searching for
+            // "harisenin-net" must show its services, not an empty header.
             let project_matches = f.is_empty() || p.to_lowercase().contains(&f);
             let mut kept: Vec<&Value> = self
                 .all_services
@@ -1223,10 +1233,10 @@ impl App {
         out
     }
 
-    /// Service yang lolos filter.
+    /// The services that pass the filter.
     ///
-    /// Render DAN aksi wajib lewat sini: kalau render difilter sementara aksi
-    /// memakai indeks daftar penuh, `x` akan menghapus service yang salah.
+    /// Render AND actions must both go through here: if render is filtered while
+    /// actions use full-list indices, `x` would delete the wrong service.
     pub(super) fn visible_services(&self) -> Vec<&Value> {
         self.all_services
             .iter()
@@ -1234,19 +1244,19 @@ impl App {
             .collect()
     }
 
-    /// Metrik untuk sebuah service, dijoin lewat (projectName, serviceName).
+    /// The metrics for a service, joined by (projectName, serviceName).
     ///
-    /// getAllServicesStats memuat lebih banyak entri daripada daftar service
-    /// (service sistem, sub-service compose), jadi yang tak cocok diabaikan.
-    /// (actual, desired) replika swarm sebuah service, dari getDockerTaskStats.
-    /// None = belum dimuat atau service tak punya swarm task.
+    /// getAllServicesStats carries more entries than the service list (system
+    /// services, compose sub-services), so ones that don't match are ignored.
+    /// (actual, desired) swarm replicas for a service, from getDockerTaskStats.
+    /// None = not loaded yet or the service has no swarm task.
     pub(super) fn replicas(&self, project: &str, service: &str) -> Option<(i64, i64)> {
         self.task_stats
             .get(&format!("{project}_{service}"))
             .copied()
     }
 
-    /// Jumlah service yang sedang turun (desired>0 tapi actual<desired).
+    /// The number of services currently down (desired>0 but actual<desired).
     pub(super) fn down_count(&self) -> usize {
         self.all_services
             .iter()
@@ -1259,11 +1269,11 @@ impl App {
             .count()
     }
 
-    /// Apakah service ini punya deployment yang SEDANG berjalan (pending/running),
-    /// dari listActions. Kolom Status memakainya untuk menampilkan "deploying" —
-    /// tanpa ini, container lama tetap jalan jadi baris terbaca "aktif" dan user
-    /// menekan deploy berulang tanpa tahu yang sebelumnya belum selesai.
-    /// Status terverifikasi live: pending → running → done/error.
+    /// Whether this service has a deployment CURRENTLY running (pending/running),
+    /// from listActions. The Status column uses it to show "deploying" — without
+    /// it, the old container keeps running so the row reads "active" and the user
+    /// presses deploy again without knowing the previous one hasn't finished.
+    /// A live-verified status: pending → running → done/error.
     pub(super) fn is_deploying(&self, project: &str, service: &str) -> bool {
         self.actions.iter().any(|a| {
             field(a, "/type") == "deployment"
@@ -1273,7 +1283,7 @@ impl App {
         })
     }
 
-    /// Jumlah service dengan deployment sedang berjalan (untuk judul tabel).
+    /// The number of services with a running deployment (for the table title).
     pub(super) fn deploying_count(&self) -> usize {
         self.all_services
             .iter()
@@ -1288,9 +1298,9 @@ impl App {
         })
     }
 
-    /// (project, service, tipe) — hanya bila baris yang disorot adalah SERVICE.
-    /// Header project mengembalikan None, jadi aksi service (logs/deploy/hapus)
-    /// tak pernah dijalankan pada service yang tak ada.
+    /// (project, service, type) — only when the highlighted row is a SERVICE. A
+    /// project header returns None, so service actions (logs/deploy/delete) are
+    /// never run on a nonexistent service.
     pub(super) fn selected_row(&self) -> Option<(String, String, String)> {
         match self.visible_rows().get(self.services_table.selected()?)? {
             Line2::Service(s) => Some((
@@ -1302,8 +1312,8 @@ impl App {
         }
     }
 
-    /// Service terpilih, utuh — selected_row() hanya memberi identitasnya, dan
-    /// beberapa aksi perlu isinya (mis. autoDeploy sekarang).
+    /// The selected service, whole — selected_row() only gives its identity, and
+    /// some actions need its contents (e.g. the current autoDeploy).
     pub(super) fn selected_service(&self) -> Option<&Value> {
         match self.visible_rows().get(self.services_table.selected()?)? {
             Line2::Service(s) => Some(*s),
@@ -1311,14 +1321,14 @@ impl App {
         }
     }
 
-    /// Balik auto deploy service terpilih.
-    /// Tutup sesi terminal (Ctrl-Q). Drop channel input → thread WS menutup
-    /// socket; kembali ke Services segera.
+    /// Flip the selected service's auto deploy.
+    /// Close the terminal session (Ctrl-Q). Dropping the input channel → the WS
+    /// thread closes the socket; back to Services immediately.
     pub(super) fn close_terminal(&mut self) {
         self.term_input = None;
         self.term_parser = None;
         self.screen = Screen::Projects;
-        self.status = format!("Terminal {} ditutup", self.term_title);
+        self.status = format!("Terminal {} closed", self.term_title);
     }
 
     pub(super) fn toggle_auto_deploy(&mut self, req: &Sender<Req>) {
@@ -1326,9 +1336,8 @@ impl App {
             (
                 field(s, "/projectName"),
                 field(s, "/name"),
-                // None = tak punya auto deploy sama sekali (database, source
-                // image), bukan "mati". Menawarkan toggle di sana cuma akan
-                // memancing error dari server.
+                // None = no auto deploy at all (database, image source), not "off".
+                // Offering a toggle there would only draw an error from the server.
                 match field(s, "/source/type").as_str() {
                     "github" => s.pointer("/source/autoDeploy").and_then(Value::as_bool),
                     _ => None,
@@ -1336,14 +1345,14 @@ impl App {
             )
         });
         match picked {
-            None => self.status = "Pilih sebuah service dulu".into(),
+            None => self.status = "Select a service first".into(),
             Some((_, _, None)) => {
-                self.status = "Auto deploy hanya ada pada service dengan source GitHub".into()
+                self.status = "Auto deploy only exists on services with a GitHub source".into()
             }
             Some((project, service, Some(on))) => {
                 self.status = format!(
-                    "{} auto deploy untuk {service}...",
-                    if on { "Mematikan" } else { "Menyalakan" }
+                    "{} auto deploy for {service}...",
+                    if on { "Turning off" } else { "Turning on" }
                 );
                 let _ = req.send(Req::AutoDeploy {
                     project,
@@ -1354,8 +1363,8 @@ impl App {
         }
     }
 
-    /// Nama project dari baris yang disorot, header maupun service. Dipakai aksi
-    /// yang bekerja pada PROJECT: buat service, hapus project.
+    /// The project name of the highlighted row, whether header or service. Used by
+    /// actions that work on a PROJECT: create a service, delete a project.
     pub(super) fn selected_project(&self) -> Option<String> {
         match self.visible_rows().get(self.services_table.selected()?)? {
             Line2::Project { name, .. } => Some((*name).to_string()),
@@ -1363,10 +1372,10 @@ impl App {
         }
     }
 
-    /// Domain yang lolos filter.
+    /// The domains that pass the filter.
     ///
-    /// Render DAN aksi (e/x/P) wajib lewat sini. Kalau render difilter sementara
-    /// aksi memakai indeks daftar penuh, `x` akan menghapus domain yang salah.
+    /// Render AND actions (e/x/P) must both go through here. If render is filtered
+    /// while actions use full-list indices, `x` would delete the wrong domain.
     pub(super) fn visible_domains(&self) -> Vec<&Value> {
         self.domains
             .iter()
@@ -1374,8 +1383,8 @@ impl App {
             .collect()
     }
 
-    /// Muat daftar service untuk project yang sedang dipilih di form, supaya
-    /// field Service jadi pilihan nyata dan bukan ketikan bebas.
+    /// Load the list of services for the project currently selected in the form, so
+    /// the Service field becomes a real choice rather than free text.
     pub(super) fn load_form_services(&mut self, req: &Sender<Req>) {
         if let Some(form) = self.form.as_ref() {
             let project = form.by_label("Project");
@@ -1385,17 +1394,17 @@ impl App {
         }
     }
 
-    /// Minta data untuk form source/build service yang sedang dipilih.
+    /// Request the data for the source/build form of the selected service.
     ///
-    /// Formnya baru terbuka setelah inspectService tiba (lihat Resp::ConfigForm),
-    /// karena nilai sekarang harus jadi isi awalnya.
+    /// The form only opens once inspectService arrives (see Resp::ConfigForm),
+    /// because the current values must be its initial contents.
     pub(super) fn open_config_form(&mut self, build: bool, req: &Sender<Req>) {
         let Some((project, service, stype)) = self.selected_row() else {
             return;
         };
-        // Source/build hanya ada di service tipe app; tipe lain tak punya konsep ini.
+        // Source/build only exists on app-type services; other types have no such concept.
         if stype != "app" {
-            self.status = format!("Source & build hanya untuk service app (ini {stype})");
+            self.status = format!("Source & build is only for app services (this is {stype})");
             return;
         }
         let _ = req.send(Req::ConfigForm {
@@ -1403,52 +1412,55 @@ impl App {
             service,
             build,
         });
-        self.status = "Memuat...".into();
+        self.status = "Loading...".into();
     }
 
-    /// Buka form tambah mount untuk service yang disorot.
+    /// Open the add-mount form for the highlighted service.
     pub(super) fn open_mount_form(&mut self) {
         let Some((project, service, _)) = self.selected_row() else {
-            self.status = "Pilih sebuah service dulu".into();
+            self.status = "Select a service first".into();
             return;
         };
         self.form = Some(Form::new(
             FormKind::MountCreate { project, service },
-            " Mount baru ",
+            " New mount ",
             mount_fields(),
         ));
-        self.status = "Enter tambah · Esc batal · hapus mount: 'm' lalu angka".into();
+        self.status = "Enter add · Esc cancel · delete a mount: 'm' then a digit".into();
     }
 
-    /// Kelola domain sebuah service: buka tab Domains ter-filter ke service itu.
-    /// Reuse CRUD domain penuh (n baru · e edit · x hapus · P primary) alih-alih
-    /// viewer read-only. Filter cocok ke destination "protocol://{project}_{service}:…".
+    /// Manage a service's domains: open the Domains tab filtered to that service.
+    /// Reuses the full domain CRUD (n new · e edit · x delete · P primary) instead
+    /// of a read-only viewer. The filter matches the destination
+    /// "protocol://{project}_{service}:…".
     pub(super) fn open_service_domains(&mut self, req: &Sender<Req>) {
         let Some((project, service, _)) = self.selected_row() else {
-            self.status = "Pilih sebuah service dulu".into();
+            self.status = "Select a service first".into();
             return;
         };
-        // goto mengosongkan filter & scope lebih dulu, jadi set keduanya SESUDAHnya.
+        // goto clears the filter & scope first, so set them AFTER it.
         self.goto(Screen::Domains, req);
         self.filter = format!("{project}_{service}");
         self.domain_scope = Some((project.clone(), service.clone()));
-        self.status = format!("Domain {project}/{service} · n baru · e edit · x hapus · P primary");
+        self.status = format!("Domain {project}/{service} · n new · e edit · x delete · P primary");
     }
 
-    /// Buka form clone untuk service yang disorot. Nama baru diusulkan "{svc}-copy".
+    /// Open the clone form for the highlighted service. The new name is suggested
+    /// as "{svc}-copy".
     pub(super) fn open_clone_form(&mut self) {
         let Some((project, service, stype)) = self.selected_row() else {
-            self.status = "Pilih sebuah service dulu".into();
+            self.status = "Select a service first".into();
             return;
         };
         let suggested = format!("{service}-copy");
-        // Project tujuan: dropdown project yang SUDAH ada (default: project sumber).
-        // Hanya yang sudah ada — project baru network-nya belum siap saat createService.
+        // Target project: a dropdown of EXISTING projects (default: the source
+        // project). Existing only — a brand-new project's network isn't ready at
+        // createService time.
         let mut projects = self.projects.clone();
         projects.sort();
         let fields = vec![
             Field::choice_owned("Project", projects, &project),
-            Field::text("Nama baru", &suggested),
+            Field::text("New name", &suggested),
         ];
         self.form = Some(Form::new(
             FormKind::CloneService {
@@ -1459,17 +1471,17 @@ impl App {
             " Clone service ",
             fields,
         ));
-        self.status = "Config disalin (bukan data) · Enter clone · Esc batal".into();
+        self.status = "Config copied (not data) · Enter clone · Esc cancel".into();
     }
 
-    /// Buka form tambah redirect untuk service web yang disorot.
+    /// Open the add-redirect form for the highlighted web service.
     pub(super) fn open_redirect_form(&mut self) {
         let Some((project, service, stype)) = self.selected_row() else {
-            self.status = "Pilih sebuah service dulu".into();
+            self.status = "Select a service first".into();
             return;
         };
         if !matches!(stype.as_str(), "app" | "box" | "compose" | "wordpress") {
-            self.status = format!("Redirect hanya untuk service web (ini {stype})");
+            self.status = format!("Redirect is only for web services (this is {stype})");
             return;
         }
         self.form = Some(Form::new(
@@ -1478,21 +1490,21 @@ impl App {
                 service,
                 stype,
             },
-            " Redirect baru ",
+            " New redirect ",
             redirect_fields(),
         ));
-        self.status = "Enter tambah · Esc batal · hapus: 'f' lalu angka".into();
+        self.status = "Enter add · Esc cancel · delete: 'f' then a digit".into();
     }
 
-    /// Buka form basic auth untuk service yang disorot. Hanya service web
-    /// (app/box/compose/wordpress) yang punya endpoint ini; DB tak relevan.
+    /// Open the basic auth form for the highlighted service. Only web services
+    /// (app/box/compose/wordpress) have this endpoint; DBs aren't relevant.
     pub(super) fn open_basic_auth_form(&mut self, req: &Sender<Req>) {
         let Some((project, service, stype)) = self.selected_row() else {
-            self.status = "Pilih sebuah service dulu".into();
+            self.status = "Select a service first".into();
             return;
         };
         if !matches!(stype.as_str(), "app" | "box" | "compose" | "wordpress") {
-            self.status = format!("Basic auth hanya untuk service web (ini {stype})");
+            self.status = format!("Basic auth is only for web services (this is {stype})");
             return;
         }
         let _ = req.send(Req::BasicAuthForm {
@@ -1500,13 +1512,13 @@ impl App {
             service,
             stype,
         });
-        self.status = "Memuat...".into();
+        self.status = "Loading...".into();
     }
 
-    /// Buka form limit resource untuk service yang disorot (semua tipe punya).
+    /// Open the resource limit form for the highlighted service (every type has one).
     pub(super) fn open_resource_form(&mut self, req: &Sender<Req>) {
         let Some((project, service, stype)) = self.selected_row() else {
-            self.status = "Pilih sebuah service dulu".into();
+            self.status = "Select a service first".into();
             return;
         };
         let _ = req.send(Req::ResourceForm {
@@ -1514,10 +1526,10 @@ impl App {
             service,
             stype,
         });
-        self.status = "Memuat...".into();
+        self.status = "Loading...".into();
     }
 
-    /// Muat branch repo yang sedang dipilih ke dropdown "Branch".
+    /// Load the currently selected repo's branches into the "Branch" dropdown.
     pub(super) fn load_form_branches(&mut self, req: &Sender<Req>) {
         let Some(form) = self.form.as_ref() else {
             return;
@@ -1531,7 +1543,7 @@ impl App {
         }
     }
 
-    /// Buka dropdown untuk field Choice yang sedang difokus.
+    /// Open the dropdown for the currently focused Choice field.
     pub(super) fn open_chooser(&mut self) {
         let Some(form) = self.form.as_ref() else {
             return;
@@ -1539,7 +1551,7 @@ impl App {
         let f = &form.fields[form.focus];
         if let FieldKind::Choice(opts) = &f.kind {
             if opts.is_empty() {
-                self.status = format!("{} belum ada pilihannya", f.label);
+                self.status = format!("{} has no options yet", f.label);
                 return;
             }
             self.chooser = Some(Chooser::new(form.focus, f.label, opts.clone(), &f.value));
@@ -1551,11 +1563,11 @@ impl App {
             return;
         };
 
-        // Validasi minimal di sini; sisanya biar server yang menolak.
+        // Minimal validation here; the server rejects the rest.
         match &form.kind {
             FormKind::ServerAdd | FormKind::ServerEdit { .. } => {
-                // Tambah: token wajib. Edit: token kosong = pertahankan yang lama,
-                // supaya mengganti URL saja tak memaksa mengetik ulang token.
+                // Add: token required. Edit: an empty token = keep the old one, so
+                // changing just the URL doesn't force retyping the token.
                 let (name, url, token) = match &form.kind {
                     FormKind::ServerAdd => (form.val(0), form.val(1), Some(form.val(2))),
                     FormKind::ServerEdit { name } => (
@@ -1569,15 +1581,15 @@ impl App {
                     _ => unreachable!(),
                 };
                 if name.is_empty() || url.is_empty() {
-                    self.status = "Nama dan URL wajib diisi".into();
+                    self.status = "Name and URL are required".into();
                     return;
                 }
                 if token.as_deref() == Some("") {
-                    self.status = "Token wajib diisi".into();
+                    self.status = "Token is required".into();
                     return;
                 }
                 if !commands::valid_name(&name) {
-                    self.status = "Nama server hanya boleh a-z, 0-9, -, _".into();
+                    self.status = "Server name may only contain a-z, 0-9, - and _".into();
                     return;
                 }
                 self.server_action = Some(ServerAction::Save {
@@ -1589,7 +1601,7 @@ impl App {
             FormKind::ProjectCreate => {
                 let name = form.val(0);
                 if !commands::valid_name(&name) {
-                    self.status = "Nama project hanya boleh a-z, 0-9, -, _".into();
+                    self.status = "Project name may only contain a-z, 0-9, - and _".into();
                     return;
                 }
                 let _ = req.send(Req::ProjectCreate(name));
@@ -1600,8 +1612,8 @@ impl App {
                     self.status = "Service names may only contain a-z, 0-9, - and _".into();
                     return;
                 }
-                // Source diterapkan terpisah (lihat create_source): inline-nya
-                // memicu deploy. build/env/domains aman inline — cepat, tak deploy.
+                // The source is applied separately (see create_source): inline it
+                // triggers a deploy. build/env/domains are safe inline — fast, no deploy.
                 let source = match create_source(form) {
                     Ok(s) => s,
                     Err(msg) => {
@@ -1615,9 +1627,9 @@ impl App {
                 }
                 if let Some(env) = create_env(form) {
                     extra["env"] = json!(env);
-                    // "Buat file .env" -> tulis env sebagai file di path ini.
-                    if form.is_on_label("Buat file .env") {
-                        let path = form.by_label("Path file .env");
+                    // "Create .env file" -> write env as a file at this path.
+                    if form.is_on_label("Create .env file") {
+                        let path = form.by_label(".env file path");
                         extra["dotEnvPath"] =
                             json!(if path.is_empty() { ".env".into() } else { path });
                     }
@@ -1625,7 +1637,7 @@ impl App {
                 if let Some(domains) = create_domains(form) {
                     extra["domains"] = domains;
                 }
-                self.status = format!("Membuat '{service}'...");
+                self.status = format!("Creating '{service}'...");
                 let _ = req.send(Req::ServiceCreate {
                     project,
                     service,
@@ -1689,7 +1701,7 @@ impl App {
                 service,
                 stype,
             } => {
-                let new_name = form.by_label("Nama baru");
+                let new_name = form.by_label("New name");
                 let new_name = new_name.trim();
                 let target = form.by_label("Project");
                 let target = if target.is_empty() {
@@ -1698,12 +1710,15 @@ impl App {
                     target
                 };
                 if new_name.is_empty() {
-                    self.status = "Isi nama service baru dulu".into();
+                    self.status = "Enter the new service name first".into();
                     return;
                 }
-                // Nama boleh sama asal beda project; sama-persis (project+nama) = tabrakan.
+                // The name may match as long as the project differs; identical
+                // (project+name) = a collision.
                 if target == *project && new_name == service {
-                    self.status = "Beda project, atau beda nama — tak boleh sama persis".into();
+                    self.status =
+                        "Use a different project, or a different name — they can't be identical"
+                            .into();
                     return;
                 }
                 let _ = req.send(Req::CloneService {
@@ -1764,21 +1779,21 @@ impl App {
                 }
             },
             FormKind::LogSearch => {
-                let query = form.by_label("Kata kunci");
+                let query = form.by_label("Keyword");
                 if query.is_empty() {
-                    self.status = "Isi kata kunci dulu".into();
+                    self.status = "Enter a keyword first".into();
                     return;
                 }
-                // Buka Viewer kosong; hasil menyusul saat fan-out selesai.
-                self.viewer_lines = vec!["Mencari di semua service...".into()];
+                // Open an empty Viewer; results follow once the fan-out finishes.
+                self.viewer_lines = vec!["Searching across all services...".into()];
                 self.viewer_scroll = 0;
                 self.viewer_follow = false;
                 self.log_cursor = None;
-                self.viewer_title = format!("Cari '{query}'");
+                self.viewer_title = format!("Search '{query}'");
                 self.viewer_ctx = None;
                 self.viewer_from = Screen::Projects;
                 self.screen = Screen::Viewer;
-                self.status = format!("Mencari '{query}' di semua service...");
+                self.status = format!("Searching '{query}' across all services...");
                 let _ = req.send(Req::LogSearch { query });
                 self.form = None;
                 return;
@@ -1811,14 +1826,14 @@ impl App {
             },
         }
         self.form = None;
-        self.status = "Mengirim...".into();
+        self.status = "Sending...".into();
     }
 
-    /// Buka daftar server (pilih / tambah / edit / hapus).
+    /// Open the server list (select / add / edit / delete).
     ///
-    /// Tidak boleh menolak saat cuma ada satu server: picker ini satu-satunya
-    /// jalan menambah server dari TUI, jadi menolaknya membuat server kedua
-    /// mustahil dibuat tanpa keluar ke CLI.
+    /// Must not refuse when there's only one server: this picker is the only way to
+    /// add a server from the TUI, so refusing it would make a second server
+    /// impossible to create without dropping to the CLI.
     pub(super) fn open_picker(&mut self) {
         let cur = self
             .all_servers
@@ -1830,69 +1845,69 @@ impl App {
         self.picker = Some(st);
     }
 
-    /// Form service baru. Project dipilih dari dropdown: daftar datar tak punya
-    /// "project yang sedang dibuka", jadi ia harus disebut eksplisit.
+    /// The new-service form. The project is chosen from a dropdown: a flat list has
+    /// no "currently open project", so it must be named explicitly.
     ///
-    /// Source ikut di sini, tidak menyusul lewat form edit: createService
-    /// menerima `source` inline dan hanya mewajibkan projectName + serviceName,
-    /// jadi create-lalu-edit selama ini batasan form ini — bukan batasan API.
+    /// The source is included here, not deferred to an edit form: createService
+    /// accepts an inline `source` and only requires projectName + serviceName, so
+    /// create-then-edit was all along a limit of this form — not a limit of the API.
     pub(super) fn new_service_form(&mut self, req: &Sender<Req>) {
         if self.projects.is_empty() {
-            self.status = "Daftar project belum termuat".into();
+            self.status = "Project list not loaded yet".into();
             return;
         }
         let project = self
             .selected_project()
             .unwrap_or_else(|| self.projects[0].clone());
-        // Field database mengikuti Tipe, seperti dialog panel. Semuanya opsional:
-        // kosong berarti server yang membuatkan (password acak, nama database =
-        // nama project, image resmi terbaru) — sama persis dengan panel.
+        // The database fields follow Kind, like the panel dialog. All optional:
+        // empty means the server creates them (a random password, a database named
+        // after the project, the latest official image) — exactly like the panel.
         let mut fields = vec![
             Field::choice_owned("Project", self.projects.clone(), &project),
-            Field::text("Nama", ""),
-            Field::choice("Tipe", SERVICE_TYPES, "app"),
-            Field::text("Database", "").when("Tipe", "mysql,mariadb,postgres"),
-            Field::text("User", "").when("Tipe", "mysql,mariadb,postgres,mongo"),
-            Field::secret("Password").when("Tipe", "mysql,mariadb,postgres,mongo,redis"),
-            Field::secret("Root password").when("Tipe", "mysql,mariadb"),
-            Field::text("Image", "").when("Tipe", "mysql,mariadb,postgres,mongo,redis"),
+            Field::text("Name", ""),
+            Field::choice("Kind", SERVICE_TYPES, "app"),
+            Field::text("Database", "").when("Kind", "mysql,mariadb,postgres"),
+            Field::text("User", "").when("Kind", "mysql,mariadb,postgres,mongo"),
+            Field::secret("Password").when("Kind", "mysql,mariadb,postgres,mongo,redis"),
+            Field::secret("Root password").when("Kind", "mysql,mariadb"),
+            Field::text("Image", "").when("Kind", "mysql,mariadb,postgres,mongo,redis"),
         ];
-        // Field source membawa syaratnya sendiri (Source=github/git/image);
-        // .when() menambah syarat, tidak menimpanya, jadi keduanya berlaku:
-        // tampil hanya bila tipe service = app DAN tipe source cocok.
+        // The source fields carry their own condition (Source=github/git/image);
+        // .when() adds a condition rather than replacing it, so both apply: shown
+        // only when service type = app AND the source type matches.
         //
-        // Daftar repo menyusul lewat Resp::Repos: menunggunya di sini akan
-        // membekukan TUI sampai searchRepos selesai.
-        // Wizard mengikuti alur dashboard EasyPanel: Dasar → Source → Build.
-        // Field source & build hanya untuk app (`.when("Tipe","app")`), jadi
-        // service database tetap satu langkah. `.step()` menaruhnya di halaman
-        // masing-masing; nilai submit tetap dibaca lintas-langkah.
+        // The repo list follows via Resp::Repos: waiting for it here would freeze
+        // the TUI until searchRepos finishes.
+        // The wizard follows the EasyPanel dashboard flow: Basics → Source → Build.
+        // The source & build fields are app-only (`.when("Kind","app")`), so a
+        // database service stays a single step. `.step()` puts them on their own
+        // pages; submit values are still read across steps.
         fields.extend(
             source_fields(None, Vec::new())
                 .into_iter()
-                .map(|f| f.when("Tipe", "app").step(1)),
+                .map(|f| f.when("Kind", "app").step(1)),
         );
         fields.extend(
             build_fields(None)
                 .into_iter()
-                .map(|f| f.when("Tipe", "app").step(2)),
+                .map(|f| f.when("Kind", "app").step(2)),
         );
-        // Lanjutan alur dashboard: Environment lalu Domains. Keduanya diterima
-        // createService inline (`env` string, `domains` array; hanya `host`
-        // wajib). Label domain diberi awalan "Domain " supaya "Path" tak
-        // bertabrakan dengan "Path" milik source — by_label() memakai find().
-        fields.push(Field::editor("Environment", "").when("Tipe", "app").step(3));
-        // "Create env file" di dashboard: menulis env sebagai file .env di path
-        // tsb (API: dotEnvPath). Path hanya tampil saat toggle-nya nyala.
+        // Continuing the dashboard flow: Environment then Domains. Both are accepted
+        // inline by createService (`env` string, `domains` array; only `host`
+        // required). The domain labels are prefixed with "Domain " so "Path" doesn't
+        // collide with the source's "Path" — by_label() uses find().
+        fields.push(Field::editor("Environment", "").when("Kind", "app").step(3));
+        // "Create env file" in the dashboard: write env as a .env file at that path
+        // (API: dotEnvPath). The path only shows when its toggle is on.
         fields.push(
-            Field::boolean("Buat file .env", false)
-                .when("Tipe", "app")
+            Field::boolean("Create .env file", false)
+                .when("Kind", "app")
                 .step(3),
         );
         fields.push(
-            Field::text("Path file .env", ".env")
-                .when("Tipe", "app")
-                .when("Buat file .env", "ya")
+            Field::text(".env file path", ".env")
+                .when("Kind", "app")
+                .when("Create .env file", "yes")
                 .step(3),
         );
         fields.extend(
@@ -1902,9 +1917,9 @@ impl App {
                 Field::boolean("Domain HTTPS", true),
                 Field::text("Domain path", "/"),
             ]
-            .map(|f| f.when("Tipe", "app").step(4)),
+            .map(|f| f.when("Kind", "app").step(4)),
         );
-        self.form = Some(Form::new(FormKind::ServiceCreate, " Service baru ", fields));
+        self.form = Some(Form::new(FormKind::ServiceCreate, " New service ", fields));
         let _ = req.send(Req::Repos);
     }
 
@@ -1912,18 +1927,18 @@ impl App {
         if let Some((p, s, t)) = self.selected_row() {
             self.viewer_from = Screen::Projects;
             self.viewer_ctx = Some((view, p.clone(), s.clone(), t.clone()));
-            self.status = format!("Memuat {}...", view.title());
-            // Log itu aliran, bukan dokumen: mulai dari kosong, tempel ke baris
-            // terakhir, dan biarkan lajur poll menyambungnya. Tampilan lain
-            // adalah snapshot dan tetap mulai dari atas.
+            self.status = format!("Loading {}...", view.title());
+            // A log is a stream, not a document: start empty, stick to the last
+            // line, and let the poll lane keep it going. Other views are snapshots
+            // and start at the top.
             if view == View::Logs {
                 self.viewer_lines.clear();
                 self.viewer_scroll = 0;
                 self.log_cursor = None;
                 self.viewer_follow = true;
-                // Tampilan lain berpindah layar lewat Resp::Viewer; log tak lewat
-                // sana, jadi perpindahannya harus di sini. Tanpa ini Enter tampak
-                // tak melakukan apa pun.
+                // Other views switch screens via Resp::Viewer; logs don't go through
+                // there, so the switch has to happen here. Without it, Enter would
+                // seem to do nothing.
                 self.viewer_title = format!("Logs · {p}/{s}");
                 self.screen = Screen::Viewer;
                 let _ = req.send(Req::LogTail {
@@ -1945,11 +1960,12 @@ impl App {
 
     pub(super) fn ask_action(&mut self, action: &str) {
         if let Some((p, s, t)) = self.selected_row() {
-            // Debounce deploy: kalau satu deployment masih pending/running, katakan
-            // di dialog konfirmasi supaya user tak memicu build kedua tanpa sadar.
+            // Debounce deploy: if a deployment is still pending/running, say so in
+            // the confirmation dialog so the user doesn't trigger a second build
+            // unknowingly.
             let mut label = format!("{} service '{}'?", cap(action), s);
             if action == "deploy" && self.is_deploying(&p, &s) {
-                label.push_str(" ⚠ deploy sebelumnya masih berjalan");
+                label.push_str(" ⚠ previous deploy still running");
             }
             self.confirm = Some(Confirm {
                 action: action.to_string(),
@@ -1996,6 +2012,6 @@ impl App {
             }
             Screen::Dashboard => {}
         }
-        self.status = "Refresh...".into();
+        self.status = "Refreshing...".into();
     }
 }

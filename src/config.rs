@@ -12,7 +12,7 @@ pub struct Server {
     pub default: bool,
 }
 
-/// Penyimpanan daftar host EasyPanel (servers.json), dikelola lewat command.
+/// Storage for the list of EasyPanel hosts (servers.json), managed via commands.
 pub struct ServerConfig {
     path: PathBuf,
 }
@@ -22,7 +22,7 @@ impl ServerConfig {
         Self { path }
     }
 
-    /// ~/.config/easypanel/servers.json (kompatibel dengan versi PHP sebelumnya).
+    /// ~/.config/easypanel/servers.json (compatible with the previous PHP version).
     pub fn default_path() -> PathBuf {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
@@ -33,26 +33,25 @@ impl ServerConfig {
             .join("servers.json")
     }
 
-    /// Server terkonfigurasi untuk jalur baca; kosong bila file rusak.
+    /// Configured servers for read paths; empty if the file is corrupt.
     ///
-    /// Aman untuk membaca (list/get/default): paling buruk user melihat daftar
-    /// kosong. TIDAK aman untuk jalur tulis — pakai `try_all()` di sana.
+    /// Safe for reading (list/get/default): worst case the user sees an empty
+    /// list. NOT safe for write paths — use `try_all()` there.
     pub fn all(&self) -> Vec<Server> {
         self.try_all().unwrap_or_default()
     }
 
-    /// Server terkonfigurasi, dengan error bila file ADA tapi tak terbaca.
+    /// Configured servers, erroring if the file EXISTS but can't be read.
     ///
-    /// Wajib dipakai oleh setiap jalur yang menyimpan: add/remove/set_default
-    /// membaca lalu menulis kembali hasilnya, jadi menganggap file rusak sebagai
-    /// "kosong" akan membuat perintah berikutnya menulis daftar baru dan
-    /// MENGHAPUS seluruh server — beserta tokennya, yang tak bisa dibaca balik
-    /// dari mana pun. File hilang memang berarti kosong; file rusak harus
-    /// menghentikan penulisan.
+    /// Must be used by every path that saves: add/remove/set_default read then
+    /// write back the result, so treating a corrupt file as "empty" would make
+    /// the next command write a fresh list and DELETE every server — along with
+    /// their tokens, which can't be recovered from anywhere. A missing file
+    /// really does mean empty; a corrupt file must stop the write.
     pub fn try_all(&self) -> Result<Vec<Server>> {
         let raw = match fs::read_to_string(&self.path) {
             Ok(raw) => raw,
-            // Belum pernah dipakai: itu bukan error.
+            // Never used before: that's not an error.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => {
                 return Err(anyhow::anyhow!(
@@ -90,8 +89,8 @@ impl ServerConfig {
             name: name.to_string(),
             url: url.to_string(),
             token: token.to_string(),
-            // Default bila: server pertama, ATAU tadinya default (rotasi token),
-            // ATAU tak ada server lain yang bertanda default.
+            // Default when: it's the first server, OR it was already the
+            // default (token rotation), OR no other server is marked default.
             default: is_first || was_default || !has_default,
         });
 
@@ -217,62 +216,67 @@ mod tests {
 
     #[test]
     fn corrupt_file_never_wipes_the_server_list() {
-        // Ini yang paling penting di berkas ini. add/remove/set_default membaca
-        // lalu menulis kembali hasilnya. Kalau file rusak dibaca sebagai "kosong",
-        // perintah berikutnya menyimpan daftar baru dan MENGHAPUS semua server —
-        // beserta tokennya, yang tak bisa dibaca balik dari mana pun.
+        // This is the most important test in this file. add/remove/set_default
+        // read then write back the result. If a corrupt file is read as "empty",
+        // the next command saves a fresh list and DELETES every server — along
+        // with their tokens, which can't be recovered from anywhere.
         let (dir, cfg) = temp_config();
-        cfg.add("prod", "https://prod.test", "tok-berharga")
+        cfg.add("prod", "https://prod.test", "secret-token")
             .unwrap();
-        fs::write(path_of(&dir), "{ ini bukan json").unwrap();
+        fs::write(path_of(&dir), "{ not valid json").unwrap();
 
         for result in [
-            cfg.add("baru", "https://x.test", "t"),
+            cfg.add("staging", "https://x.test", "t"),
             cfg.remove("prod"),
             cfg.set_default("prod"),
         ] {
-            assert!(result.is_err(), "jalur tulis harus menolak file rusak");
+            assert!(result.is_err(), "a write path must reject a corrupt file");
         }
 
-        // File asli harus tetap utuh, bukan tertimpa daftar baru.
+        // The original file must stay intact, not be overwritten by a fresh list.
         assert_eq!(
             fs::read_to_string(path_of(&dir)).unwrap(),
-            "{ ini bukan json"
+            "{ not valid json"
         );
     }
 
     #[test]
     fn unreadable_file_errors_and_never_wipes() {
         use std::os::unix::fs::PermissionsExt;
-        // Sama bahayanya dengan file rusak: kalau read gagal (izin dicabut) dibaca
-        // sebagai "kosong", perintah tulis berikutnya menghapus semua server. Read
-        // yang gagal selain NotFound harus jadi error, dan jalur tulis menolak.
+        // Just as dangerous as a corrupt file: if a failed read (permissions
+        // revoked) is treated as "empty", the next write command deletes every
+        // server. A read failure other than NotFound must become an error, and
+        // write paths must reject it.
         let (dir, cfg) = temp_config();
-        cfg.add("prod", "https://prod.test", "tok-berharga")
+        cfg.add("prod", "https://prod.test", "secret-token")
             .unwrap();
         let path = path_of(&dir);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
 
-        // Root menembus izin 0o000; kalau file masih terbaca, uji ini tak berlaku.
+        // Root bypasses 0o000 permissions; if the file is still readable, this
+        // test doesn't apply.
         if fs::read_to_string(&path).is_ok() {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
             return;
         }
 
-        assert!(cfg.try_all().is_err(), "read tak-terbaca harus error");
-        assert!(cfg.all().is_empty(), "jalur baca lunak tetap tak panik");
+        assert!(cfg.try_all().is_err(), "an unreadable read must error");
         assert!(
-            cfg.add("baru", "https://x.test", "t").is_err(),
-            "jalur tulis harus menolak, bukan menimpa"
+            cfg.all().is_empty(),
+            "the soft read path still doesn't panic"
+        );
+        assert!(
+            cfg.add("staging", "https://x.test", "t").is_err(),
+            "a write path must reject, not overwrite"
         );
 
-        // Kembalikan izin supaya tempdir bisa dibersihkan.
+        // Restore permissions so the tempdir can be cleaned up.
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
     #[test]
     fn missing_file_is_empty_not_an_error() {
-        // File hilang = belum pernah dipakai. Itu bukan kerusakan.
+        // A missing file = never used before. That's not corruption.
         let (_dir, cfg) = temp_config();
         assert!(cfg.try_all().unwrap().is_empty());
         assert!(cfg.add("prod", "https://prod.test", "t").is_ok());
@@ -280,10 +284,10 @@ mod tests {
 
     #[test]
     fn corrupt_file_reads_as_empty_but_does_not_throw() {
-        // Jalur baca tetap lunak: user melihat daftar kosong, bukan panik yang
-        // meninggalkan terminal dalam raw mode saat TUI terbuka.
+        // The read path stays soft: the user sees an empty list, not a panic
+        // that would leave the terminal in raw mode while the TUI is open.
         let (dir, cfg) = temp_config();
-        fs::write(path_of(&dir), "bukan json").unwrap();
+        fs::write(path_of(&dir), "not json").unwrap();
         assert!(cfg.all().is_empty());
         assert!(cfg.try_all().is_err());
     }

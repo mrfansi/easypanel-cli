@@ -11,115 +11,118 @@ use super::app::*;
 use super::form::*;
 use super::table::*;
 
-// ---------- Keybinding (satu sumber untuk baris status dan overlay bantuan) ----------
+// ---------- Keybindings (one source for the status bar and the help overlay) ----------
 
-/// Satu keybinding: tombol + artinya.
+/// One keybinding: the key + what it means.
 pub(super) struct Key(pub(super) &'static str, pub(super) &'static str);
 
-/// Tombol yang berlaku di layar mana pun.
+/// Keys that apply on any screen.
 pub(super) const GLOBAL_KEYS: &[Key] = &[
-    Key("1-7 / Tab / ←→", "pindah tab"),
-    Key("?", "bantuan ini"),
+    Key("1-7 / Tab / ←→", "switch tab"),
+    Key("?", "this help"),
     Key(
         ":",
-        "global search: lompat ke service/tab; aksi cepat (deploy/restart/logs/…) untuk service yang sedang dipilih",
+        "global search: jump to a service/tab; quick actions (deploy/restart/logs/…) for the selected service",
     ),
-    Key("s", "daftar server (pilih/tambah/edit/hapus)"),
+    Key("s", "server list (select/add/edit/delete)"),
     Key("r", "refresh"),
-    Key("Esc", "batal: tutup form/dropdown/konfirmasi/filter"),
-    Key("q / Ctrl-C", "keluar"),
+    Key("Esc", "cancel: close form/dropdown/confirmation/filter"),
+    Key("q / Ctrl-C", "quit"),
 ];
 
-/// Tombol khusus sebuah layar.
+/// Keys specific to a screen.
 ///
-/// Baris status memakai beberapa entri PERTAMA dari daftar yang sama, jadi ia
-/// tak bisa menyimpang dari bantuan: dua daftar terpisah pasti akan berbeda
-/// seiring waktu, dan bantuan yang berbohong lebih buruk daripada tak ada.
+/// The status bar uses the FIRST few entries of this same list, so it can't drift
+/// from the help: two separate lists would inevitably diverge over time, and help
+/// that lies is worse than no help.
 pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
     match screen {
         Screen::Dashboard => &[],
-        Screen::Hosts => &[Key("↑↓", "pilih host")],
+        Screen::Hosts => &[Key("↑↓", "select host")],
         Screen::Maintenance => &[
-            Key("p", "prune sistem Docker"),
-            Key("i", "hapus image tak terpakai"),
-            Key("c", "hapus build cache"),
+            Key("p", "prune Docker system"),
+            Key("i", "remove unused images"),
+            Key("c", "remove build cache"),
         ],
         Screen::Actions => &[
-            Key("/", "cari"),
-            Key("↑↓", "pilih"),
-            Key("PgUp/PgDn", "lompat"),
+            Key("/", "search"),
+            Key("↑↓", "select"),
+            Key("PgUp/PgDn", "jump"),
         ],
         Screen::Monitor => &[
-            Key("/", "cari"),
-            Key("v", "ganti Services / Storage"),
-            Key("↑↓", "pilih"),
+            Key("/", "search"),
+            Key("v", "switch Services / Storage"),
+            Key("↑↓", "select"),
         ],
         Screen::Domains => &[
-            Key("/", "cari"),
-            Key("n", "domain baru"),
+            Key("/", "search"),
+            Key("n", "new domain"),
             Key("e", "edit domain"),
-            Key("x", "hapus domain"),
-            Key("P", "jadikan primary"),
-            Key("↑↓", "pilih"),
+            Key("x", "delete domain"),
+            Key("P", "set primary"),
+            Key("↑↓", "select"),
         ],
-        // Aksi terkait dikelompokkan di MENU (satu tombol → daftar), bukan 25 tombol
-        // lepas. Di dalam menu: ↑↓ pilih, Enter jalankan, Esc tutup. Tombol leaf lama
-        // (E/w/./P/f/F/H/U/B/A/L/M/R/S/T/X) tetap berfungsi bila sudah hafal.
+        // Related actions are grouped into MENUS (one key → a list), not 25 loose
+        // keys. Inside a menu: ↑↓ select, Enter run, Esc close. The old leaf keys
+        // (E/w/./P/f/F/H/U/B/A/L/M/R/S/T/X) still work once you know them.
         Screen::Projects => &[
-            Key("/", "cari service"),
+            Key("/", "search services"),
             Key("Enter", "logs"),
-            Key("e", "menu Env — lihat / edit / ganti / file .env"),
-            Key("o", "menu Jaringan — domain / port / redirect / auth"),
+            Key("e", "Env menu — view / edit / replace / .env file"),
+            Key("o", "Networking menu — domain / port / redirect / auth"),
             Key(
                 "u",
-                "menu Build & source — source / build / auto / resource",
+                "Build & source menu — source / build / auto / resource",
             ),
-            Key("m", "menu Penyimpanan — mounts / backups"),
-            Key("d", "menu Siklus hidup — deploy / restart / stop / start"),
-            Key("t", "menu Shell — terminal / DB shell"),
-            Key("x", "menu Bahaya — hapus service / project"),
-            Key("p", "lihat ports"),
-            Key("b", "lihat backups"),
-            Key("y", "shell DB (login otomatis)"),
-            Key("c", "clone service (config, bukan data)"),
-            Key("g", "cari kata di log SEMUA service"),
-            Key("n", "service baru"),
-            Key("N", "project baru"),
-            Key("↑↓", "pilih baris"),
-            Key("Space / klik kanan", "buka menu aksi baris terpilih"),
+            Key("m", "Storage menu — mounts / backups"),
+            Key("d", "Lifecycle menu — deploy / restart / stop / start"),
+            Key("t", "Shell menu — terminal / DB shell"),
+            Key("x", "Danger menu — delete service / project"),
+            Key("p", "view ports"),
+            Key("b", "view backups"),
+            Key("y", "DB shell (auto login)"),
+            Key("c", "clone service (config, not data)"),
+            Key("g", "search a word in the logs of ALL services"),
+            Key("n", "new service"),
+            Key("N", "new project"),
+            Key("↑↓", "select row"),
             Key(
-                "di menu: ↑↓ →←",
-                "→ masuk submenu · ← kembali · Enter jalankan · Esc tutup",
+                "Space / right click",
+                "open the action menu for the selected row",
+            ),
+            Key(
+                "in a menu: ↑↓ →←",
+                "→ enter submenu · ← back · Enter run · Esc close",
             ),
         ],
         Screen::Viewer => &[
-            Key("↑↓ / PgUp/PgDn", "scroll (melepas ikut-baris-terakhir)"),
-            Key("End", "ikuti baris terakhir lagi (log)"),
-            Key("[0-9]", "hapus baris itu (Ports/Mounts/Redirects)"),
-            Key("Esc", "kembali ke Services"),
+            Key("↑↓ / PgUp/PgDn", "scroll (releases follow-last-line)"),
+            Key("End", "follow the last line again (logs)"),
+            Key("[0-9]", "delete that line (Ports/Mounts/Redirects)"),
+            Key("Esc", "back to Services"),
         ],
-        Screen::Terminal => &[Key("Ctrl-Q", "keluar terminal (atau ketik `exit`)")],
+        Screen::Terminal => &[Key("Ctrl-Q", "exit terminal (or type `exit`)")],
     }
 }
 
-/// Aksi mouse (ditampilkan di overlay bantuan supaya ketahuan).
+/// Mouse actions (shown in the help overlay so they're discoverable).
 pub(super) const MOUSE_KEYS: &[Key] = &[
-    Key("Klik tab", "pindah ke tab itu"),
-    Key("Klik baris", "pilih baris"),
-    Key("Klik kanan", "menu aksi untuk baris itu"),
-    Key("Scroll", "gulung tabel / viewer"),
+    Key("Click tab", "switch to that tab"),
+    Key("Click row", "select the row"),
+    Key("Right click", "action menu for that row"),
+    Key("Scroll", "scroll the table / viewer"),
 ];
 
-/// Tombol di dalam overlay; berlaku di form dan dropdown mana pun.
+/// Keys inside the overlay; apply in any form and dropdown.
 pub(super) const OVERLAY_KEYS: &[Key] = &[
-    Key("Tab / ↑↓", "pindah field"),
-    Key("Enter", "simpan"),
+    Key("Tab / ↑↓", "move between fields"),
+    Key("Enter", "save"),
     Key(
-        "Spasi / ←→",
-        "buka dropdown, ubah field ya/tidak, atau buka $EDITOR",
+        "Space / ←→",
+        "open a dropdown, toggle a yes/no field, or open $EDITOR",
     ),
-    Key("ketik", "saring isi dropdown"),
-    Key("Esc", "batal"),
+    Key("type", "filter the dropdown contents"),
+    Key("Esc", "cancel"),
 ];
 
 // ---------- Render ----------
@@ -128,7 +131,8 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(0),
-        // Satu baris status: cuma pesan. Tombol lengkap ada di overlay "?".
+        // A single status line: just the message. The full key list is in the "?"
+        // overlay.
         Constraint::Length(1),
     ])
     .split(f.area());
@@ -170,7 +174,7 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
     }
 }
 
-/// Command palette (global search): baris query + daftar ter-filter.
+/// Command palette (global search): a query line + the filtered list.
 pub(super) fn render_palette(f: &mut Frame, app: &mut App) {
     let Some(pal) = app.palette.as_mut() else {
         return;
@@ -179,7 +183,7 @@ pub(super) fn render_palette(f: &mut Frame, app: &mut App) {
     f.render_widget(Clear, area);
     let matches = pal.matches();
     let count = matches.len();
-    // Sorotan indeks ke daftar TER-FILTER; jaga tetap dalam rentang.
+    // The highlight indexes into the FILTERED list; keep it in range.
     if let Some(sel) = pal.state.selected() {
         if sel >= count {
             pal.state.select(Some(count.saturating_sub(1)));
@@ -193,17 +197,15 @@ pub(super) fn render_palette(f: &mut Frame, app: &mut App) {
     let list = List::new(items)
         .block(
             Block::bordered()
-                .title(format!(" Cari: {}▏ ", pal.query))
-                .title_bottom(format!(
-                    " {count} hasil · Enter jalankan/lompat · Esc tutup "
-                ))
+                .title(format!(" Search: {}▏ ", pal.query))
+                .title_bottom(format!(" {count} results · Enter run/jump · Esc close "))
                 .border_style(Style::default().fg(Color::Cyan)),
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(list, area, &mut pal.state);
 }
 
-/// Menu konteks klik-kanan: popup kecil di kursor, dijepit agar tetap di layar.
+/// Right-click context menu: a small popup at the cursor, clamped to stay on screen.
 pub(super) fn render_menu(f: &mut Frame, app: &mut App) {
     let full = f.area();
     let Some(menu) = app.menu.as_mut() else {
@@ -235,7 +237,7 @@ pub(super) fn render_menu(f: &mut Frame, app: &mut App) {
     let list = List::new(items)
         .block(
             Block::bordered()
-                .title(" Aksi ")
+                .title(" Actions ")
                 .border_style(Style::default().fg(Color::Yellow)),
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
@@ -243,7 +245,7 @@ pub(super) fn render_menu(f: &mut Frame, app: &mut App) {
     f.render_stateful_widget(list, rect, &mut menu.state);
 }
 
-/// Overlay bantuan: tombol global, tombol layar aktif, dan tombol di dalam form.
+/// Help overlay: global keys, the active screen's keys, and the keys inside forms.
 pub(super) fn render_help(f: &mut Frame, app: &App) {
     let rows = screen_keys(app.screen);
     let area = centered(66, 92, f.area());
@@ -257,8 +259,8 @@ pub(super) fn render_help(f: &mut Frame, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ))
     };
-    // Lebar kolom tombol = tombol terpanjang (lintas semua bagian) + 2, jadi
-    // deskripsi tak pernah menempel ke tombol (mis. "↑↓ / klik kanan").
+    // Key column width = the longest key (across all sections) + 2, so the
+    // description never touches the key (e.g. "↑↓ / right click").
     let kw = rows
         .iter()
         .chain(GLOBAL_KEYS)
@@ -278,16 +280,16 @@ pub(super) fn render_help(f: &mut Frame, app: &App) {
         ])
     };
 
-    let mut lines = vec![head(&format!("{} — layar ini", TABS[app.screen.index()]))];
+    let mut lines = vec![head(&format!("{} — this screen", TABS[app.screen.index()]))];
     if rows.is_empty() {
-        lines.push(Line::from("   (tak ada tombol khusus)"));
+        lines.push(Line::from("   (no dedicated keys)"));
     }
     lines.extend(rows.iter().map(row));
     lines.push(Line::from(""));
-    lines.push(head("Di mana saja"));
+    lines.push(head("Anywhere"));
     lines.extend(GLOBAL_KEYS.iter().map(row));
     lines.push(Line::from(""));
-    lines.push(head("Di dalam form & dropdown"));
+    lines.push(head("Inside forms & dropdowns"));
     lines.extend(OVERLAY_KEYS.iter().map(row));
     lines.push(Line::from(""));
     lines.push(head("Mouse"));
@@ -296,14 +298,14 @@ pub(super) fn render_help(f: &mut Frame, app: &App) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "   tekan tombol apa saja untuk menutup",
+        "   press any key to close",
         Style::default().fg(Color::DarkGray),
     )));
 
     f.render_widget(
         Paragraph::new(lines).block(
             Block::bordered()
-                .title(" Bantuan ")
+                .title(" Help ")
                 .border_style(Style::default().fg(Color::Yellow)),
         ),
         area,
@@ -311,8 +313,8 @@ pub(super) fn render_help(f: &mut Frame, app: &App) {
 }
 
 pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) {
-    // Digambar manual (bukan widget Tabs) supaya tiap tab punya hitbox kolom yang
-    // pasti untuk klik mouse, dan tab aktif bisa "berkedip" sesaat saat berganti.
+    // Drawn by hand (not the Tabs widget) so each tab has a definite column hitbox
+    // for mouse clicks, and the active tab can briefly "flash" when it changes.
     let block = Block::bordered().title(format!(" EasyPanel — {} ", app.server_name));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -333,7 +335,7 @@ pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) {
             let base = Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD);
-            // Kilat: tab yang baru dipilih membalik warna sebentar lalu tenang.
+            // Flash: a newly selected tab inverts its colors briefly, then settles.
             if tab_fresh {
                 base.add_modifier(Modifier::REVERSED)
             } else {
@@ -424,15 +426,15 @@ pub(super) fn render_nodes(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
-    // (cells, is_down): baris turun diwarnai merah agar "apa yang rusak" langsung
-    // terlihat. Indexed(9), bukan Color::Red bernama: tema terminal pernah membuat
-    // warna bernama tak terbaca di proyek ini (lihat AGENT_BRIEF).
+    // (cells, is_down): down rows are painted red so "what's broken" is
+    // immediately visible. Indexed(9), not the named Color::Red: a terminal theme
+    // once made named colors unreadable in this project (see AGENT_BRIEF).
     let rows: Vec<(Vec<String>, bool)> = app
         .visible_rows()
         .iter()
         .map(|r| match r {
-            // Header project: agregat anak-anaknya, seperti tab Monitor. Hitungan
-            // (n) membuat project kosong terlihat sebagai (0), bukan hilang.
+            // Project header: an aggregate of its children, like the Monitor tab.
+            // The (n) count makes an empty project show as (0), not vanish.
             Line2::Project { name, services } => {
                 let mets: Vec<&Value> = services
                     .iter()
@@ -442,9 +444,9 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
             }
             Line2::Service(s) => {
                 let (project, service) = (field(s, "/projectName"), field(s, "/name"));
-                // Status jalan/mati dari metrik: ada metrik = jalan. Tapi jangan
-                // menuduh "berhenti" sebelum metrik pertama dimuat (monitor kosong)
-                // — saat itu jatuh ke enabled saja (None).
+                // Up/down from metrics: metrics present = up. But don't accuse it of
+                // being "stopped" before the first metrics load (monitor empty) — at
+                // that point fall back to enabled alone (None).
                 let running = if app.monitor.is_empty() {
                     None
                 } else {
@@ -452,15 +454,17 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
                 };
                 let replicas = app.replicas(&project, &service);
                 let deploying = app.is_deploying(&project, &service);
-                // Deploy sedang jalan menang atas "turun": container lama masih
-                // ada, ini keadaan yang diharapkan, bukan insiden — jangan denyut
-                // merah. Status col (indeks 3 di baris penuh) ditimpa "deploying".
+                // A running deploy wins over "down": the old container is still
+                // there, this is the expected state, not an incident — don't pulse
+                // red. The Status col (index 3 in the full row) is overwritten with
+                // "deploying".
                 let is_down = !deploying && matches!(replicas, Some((a, d)) if d > 0 && a < d);
                 let mut row = service_row(s, running, replicas);
                 if deploying {
                     row[3] = "deploying".into();
                 }
-                // Kolom Project dilebur ke header; service cukup menjorok di bawahnya.
+                // The Project column is folded into the header; the service just
+                // indents beneath it.
                 let name = format!("  {}", row.remove(1));
                 row.remove(0);
                 let mut out = vec![name];
@@ -475,7 +479,7 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     let mut title = count_title("Services", shown, total, app);
     let down = app.down_count();
     if down > 0 {
-        title.push_str(&format!(" · ⚠ {down} turun"));
+        title.push_str(&format!(" · ⚠ {down} down"));
     }
     let deploying = app.deploying_count();
     if deploying > 0 {
@@ -485,7 +489,7 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     let widths = [
         Constraint::Min(26),
         Constraint::Length(8),
-        // 11: menampung "● berhenti" (titik + spasi + 8 huruf) tanpa terpotong.
+        // 11: fits "● stopped" (dot + space + 7 letters) without truncation.
         Constraint::Length(11),
         Constraint::Min(16),
         Constraint::Length(5),
@@ -500,11 +504,12 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
             .bg(Color::Green)
             .add_modifier(Modifier::BOLD),
     );
-    // Baris "turun" berdenyut (merah terang <-> salmon) supaya mata tertuju ke
-    // yang rusak; ini keadaan insiden, jadi menariknya perhatian itu pas.
+    // "down" rows pulse (bright red <-> salmon) so the eye is drawn to what's
+    // broken; this is an incident state, so pulling attention to it is apt.
     let down_style = pulse_red(app.anim.elapsed().as_millis());
-    // Titik status (kolom 2) & tanda Auto (kolom 4) diberi warna sendiri per sel:
-    // state kebaca sekejap. Baris "turun" dibiarkan mewarisi denyut merah.
+    // The status dot (column 2) & the Auto mark (column 4) get their own per-cell
+    // color: the state reads at a glance. "down" rows are left to inherit the red
+    // pulse.
     let body = rows.into_iter().map(|(cells, is_down)| {
         let cells: Vec<Cell> = cells
             .into_iter()
@@ -522,9 +527,9 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
             row
         }
     });
-    // Kilat seleksi: baris yang baru dipilih (klik/panah) dipertebal sesaat lalu
-    // tenang jadi sekadar terbalik. Grid sel tak bisa meluncur antar-baris, jadi
-    // "transisi" di terminal berupa penegasan singkat, bukan gerak mulus.
+    // Selection flash: a newly selected row (click/arrow) is bolded briefly, then
+    // settles to plain reversed. A cell grid can't slide between rows, so a
+    // "transition" in the terminal is a brief emphasis, not smooth motion.
     let hl = if app.nav_at.elapsed().as_millis() < 220 {
         Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
     } else {
@@ -539,30 +544,30 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_stateful_widget(table, area, &mut app.services_table);
 }
 
-/// Sel Status dengan titik `●` berwarna per state: aktif hijau, berhenti kuning,
-/// mati abu, turun merah (diwarnai denyut baris). Titik BMP 1-sel, tema-proof.
-/// Baris non-status (header project, "-") tak diberi titik.
+/// Status cell with a `●` dot colored per state: active green, stopped yellow,
+/// disabled gray, down red (colored by the row pulse). A 1-cell BMP dot,
+/// theme-proof. Non-status rows (project headers, "-") get no dot.
 fn status_cell(text: &str, is_down: bool) -> Cell<'static> {
     let color = match text {
-        "aktif" => Some(Color::Indexed(2)),
-        "berhenti" => Some(Color::Indexed(3)),
-        "mati" => Some(Color::Indexed(8)),
-        // "deploying": biru-cyan, beda dari state jalan/mati — sedang berproses.
+        "active" => Some(Color::Indexed(2)),
+        "stopped" => Some(Color::Indexed(3)),
+        "disabled" => Some(Color::Indexed(8)),
+        // "deploying": blue-cyan, distinct from up/down states — in progress.
         "deploying" => Some(Color::Indexed(6)),
         _ => None,
     };
-    if color.is_none() && text != "turun" {
+    if color.is_none() && text != "down" {
         return Cell::from(text.to_string());
     }
     let cell = Cell::from(format!("● {text}"));
     match color {
-        // "turun": biarkan denyut merah baris yang mewarnai (titik ikut merah).
+        // "down": let the row's red pulse color it (the dot goes red too).
         Some(c) if !is_down => cell.style(Style::default().fg(c)),
         _ => cell,
     }
 }
 
-/// Sel Auto: ✓ hijau (nyala), ✗ abu (mati), "-" apa adanya (tak berlaku).
+/// Auto cell: ✓ green (on), ✗ gray (off), "-" as-is (not applicable).
 fn auto_cell(text: &str, is_down: bool) -> Cell<'static> {
     let color = match text {
         "✓" => Some(Color::Indexed(2)),
@@ -576,8 +581,8 @@ fn auto_cell(text: &str, is_down: bool) -> Cell<'static> {
     }
 }
 
-/// Warna denyut untuk baris "turun": siklus 4-langkah ~1,1 detik antara merah
-/// terang dan salmon. Indeks palet, bukan warna bernama (tema-proof).
+/// The pulse color for a "down" row: a 4-step cycle ~1.1 seconds between bright
+/// red and salmon. Palette indices, not named colors (theme-proof).
 fn pulse_red(ms: u128) -> Style {
     const SHADES: [u8; 4] = [196, 203, 210, 203];
     let c = SHADES[((ms / 280) % 4) as usize];
@@ -609,18 +614,18 @@ pub(super) fn render_table(
     f.render_stateful_widget(table, area, state);
 }
 
-/// Info server + pembersihan Docker. Aksinya destruktif dan tak bisa dibatalkan,
-/// jadi tombolnya ditulis apa adanya beserta akibatnya, bukan disamarkan.
+/// Server info + Docker cleanup. The actions are destructive and irreversible, so
+/// the keys are written plainly along with their consequences, not disguised.
 pub(super) fn render_maintenance(f: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
-            format!(" Server aktif: {}", app.server_name),
+            format!(" Active server: {}", app.server_name),
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
     ];
     if app.maint.is_empty() {
-        lines.push(Line::from("  memuat…"));
+        lines.push(Line::from("  loading…"));
     }
     for (k, v) in &app.maint {
         lines.push(Line::from(vec![
@@ -631,12 +636,12 @@ pub(super) fn render_maintenance(f: &mut Frame, area: Rect, app: &App) {
     lines.extend([
         Line::from(""),
         Line::from(Span::styled(
-            "  Pembersihan (tak bisa dibatalkan, minta konfirmasi dulu)",
+            "  Cleanup (irreversible, asks for confirmation first)",
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::from("    [p] prune sistem — container, network, image, build cache tak terpakai"),
-        Line::from("    [i] hapus image Docker tak terpakai"),
-        Line::from("    [c] hapus build cache Docker"),
+        Line::from("    [p] prune system — unused containers, networks, images, build cache"),
+        Line::from("    [i] remove unused Docker images"),
+        Line::from("    [c] remove the Docker build cache"),
     ]);
     f.render_widget(
         Paragraph::new(lines).block(Block::bordered().title(" Maintenance ")),
@@ -644,9 +649,9 @@ pub(super) fn render_maintenance(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// Judul tabel: sebutkan filter yang sedang aktif beserta berapa yang tersaring.
-/// Filter yang tak terlihat lebih buruk daripada tak ada filter — user akan
-/// mengira baris yang hilang itu memang tak ada.
+/// Table title: name the active filter and how many rows it keeps. An invisible
+/// filter is worse than no filter — the user would assume the missing rows simply
+/// don't exist.
 pub(super) fn count_title(name: &str, shown: usize, total: usize, app: &App) -> String {
     if app.filter.is_empty() && !app.filter_input {
         return format!(" {name} ({total}) ");
@@ -655,9 +660,9 @@ pub(super) fn count_title(name: &str, shown: usize, total: usize, app: &App) -> 
     format!(" {name} ({shown}/{total})  /{}{cursor} ", app.filter)
 }
 
-/// Semua host sekaligus. Baris diwarnai per status karena inti layar ini adalah
-/// menemukan host bermasalah sekilas — error yang tampil sewarna teks biasa
-/// justru terlewat.
+/// Every host at once. Rows are colored by status because the point of this screen
+/// is spotting a troubled host at a glance — an error shown in the same color as
+/// ordinary text gets missed.
 pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
     let rows: Vec<Row> = app
         .hosts
@@ -667,7 +672,7 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
                 HostState::Loading => (
                     vec![
                         h.name.clone(),
-                        "memuat…".into(),
+                        "loading…".into(),
                         String::new(),
                         String::new(),
                         String::new(),
@@ -679,7 +684,7 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
                 HostState::Err(e) => (
                     vec![
                         h.name.clone(),
-                        format!("MATI — {}", crate::output::first_line(e, 40)),
+                        format!("DOWN — {}", crate::output::first_line(e, 40)),
                         "-".into(),
                         "-".into(),
                         "-".into(),
@@ -704,14 +709,14 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
                             format!("{cpu:.1}%"),
                             pair("/memoryUsedBytes", "/memoryTotalBytes"),
                             pair("/diskUsedBytes", "/diskTotalBytes"),
-                            // loadAvg bukan deret berstempel-waktu seperti cpu/memory:
-                            // isinya tiga string rata-rata 1/5/15 menit. series_last()
-                            // mencari p[1] di tiap titik, tak menemukannya, lalu
-                            // mengembalikan 0.00 — angka salah yang tampak meyakinkan.
+                            // loadAvg isn't a timestamped series like cpu/memory:
+                            // it's three strings, the 1/5/15-minute averages.
+                            // series_last() looks for p[1] at each point, doesn't
+                            // find it, then returns 0.00 — a convincing wrong number.
                             commands::load_avg(v),
                             h.url.clone(),
                         ],
-                        // Host sehat tak perlu menarik perhatian.
+                        // A healthy host needn't draw attention.
                         Style::default(),
                     )
                 }
@@ -846,7 +851,7 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-/// Lima tile metrik dengan histori (CPU, Memory, Disk, Net In, Net Out).
+/// Five metric tiles with history (CPU, Memory, Disk, Net In, Net Out).
 pub(super) fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
     let s = app.stats.clone().unwrap_or(Value::Null);
     let pair = |used: &str, total: &str| {
@@ -926,10 +931,10 @@ pub(super) fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-/// Terminal container tertanam: gambar grid emulator vt100 di pane, dan jaga
-/// ukuran shell mengikuti ukuran pane (resize dua arah).
+/// Embedded container terminal: draw the vt100 emulator grid in the pane, and keep
+/// the shell's size in step with the pane size (two-way resize).
 pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
-    let block = Block::bordered().title(format!(" Terminal · {} · Ctrl-Q keluar ", app.term_title));
+    let block = Block::bordered().title(format!(" Terminal · {} · Ctrl-Q exit ", app.term_title));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -937,7 +942,7 @@ pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(parser) = app.term_parser.as_mut() else {
         return;
     };
-    // Selaraskan ukuran shell dengan pane. vt100 pakai (rows, cols).
+    // Keep the shell's size aligned with the pane. vt100 uses (rows, cols).
     if parser.screen().size() != (rows, cols) {
         parser.set_size(rows, cols);
         if let Some(tx) = app.term_input.as_ref() {
@@ -977,7 +982,7 @@ pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 
-    // Kursor shell (kalau tak disembunyikan).
+    // The shell cursor (unless hidden).
     if !screen.hide_cursor() {
         let (cr, cc) = screen.cursor_position();
         if cr < rows && cc < cols {
@@ -986,7 +991,7 @@ pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-/// vt100 → warna ratatui.
+/// vt100 → ratatui color.
 fn vt_color(c: vt100::Color) -> Color {
     match c {
         vt100::Color::Default => Color::Reset,
@@ -996,8 +1001,8 @@ fn vt_color(c: vt100::Color) -> Color {
 }
 
 pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
-    // Tinggi baru diketahui saat render, jadi posisi "menempel di bawah" dihitung
-    // di sini — bukan di handler, yang tak tahu sebesar apa layarnya.
+    // The height is only known at render, so the "stick to the bottom" position is
+    // computed here — not in the handler, which doesn't know how big the screen is.
     if app.viewer_follow {
         let rows = area.height.saturating_sub(2);
         app.viewer_scroll = (app.viewer_lines.len() as u16).saturating_sub(rows);
@@ -1007,11 +1012,11 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
             .block(Block::bordered().title(format!(
                 " {}{} ",
                 app.viewer_title,
-                // Katakan kalau memang hidup. Tanpa ini, log yang diam tak bisa
-                // dibedakan dari tail yang mati.
+                // Say so if it's really live. Without this, a quiet log can't be
+                // told apart from a dead tail.
                 match (app.log_cursor.is_some(), app.viewer_follow) {
                     (true, true) => " · live",
-                    (true, false) => " · live (dijeda — End untuk ikut lagi)",
+                    (true, false) => " · live (paused — End to follow again)",
                     _ => "",
                 }
             )))
@@ -1021,19 +1026,19 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
-    // Warna bernama (Color::Blue) ditafsirkan tema terminal dan bisa jadi biru
-    // terang, sehingga teks putih di atasnya nyaris tak terbaca. Indeks palet
-    // memberi abu-abu gelap yang pasti.
+    // A named color (Color::Blue) is interpreted by the terminal theme and can come
+    // out bright blue, leaving the white text on top barely readable. A palette
+    // index gives a definite dark gray.
     let bar = Style::default().bg(Color::Indexed(238)).fg(Color::White);
 
     if app.filter_input {
-        // Saat mengetik filter, tampilkan cara memakai/membatalkannya (kontekstual,
-        // bukan daftar tombol lengkap — itu ada di overlay "?").
+        // While typing a filter, show how to apply/cancel it (contextual, not the
+        // full key list — that's in the "?" overlay).
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(" filter: ", bar.fg(Color::Indexed(252))),
                 Span::styled(format!("{}▏", app.filter), bar.add_modifier(Modifier::BOLD)),
-                Span::styled("  Enter pakai · Esc batal", bar.fg(Color::Indexed(244))),
+                Span::styled("  Enter apply · Esc cancel", bar.fg(Color::Indexed(244))),
             ]))
             .style(bar),
             area,
@@ -1041,16 +1046,16 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Satu baris: hanya pesan status. Daftar tombol dihapus dari sini — sudah ada
-    // lengkap di overlay "?" (dan baris ekstra itu memakan satu baris tabel).
-    let is_error = app.status.starts_with("Error") || app.status.contains("gagal");
+    // A single line: just the status message. The key list is removed from here —
+    // it's fully in the "?" overlay (and that extra line cost one table row).
+    let is_error = app.status.starts_with("Error") || app.status.contains("failed");
     let status_style = if is_error {
-        // Merah muda palet: kontras di atas abu-abu, tak bergantung tema.
+        // Palette pink: contrasts on top of the gray, theme-independent.
         bar.fg(Color::Indexed(210)).add_modifier(Modifier::BOLD)
     } else {
         bar.add_modifier(Modifier::BOLD)
     };
-    // Spinner saat ada operasi berjalan: menandakan "sedang bekerja", bukan freeze.
+    // A spinner while an operation is running: signals "working", not frozen.
     let head = match app.spinner() {
         Some(c) => format!(" {c} {} ", app.status),
         None => format!(" {} ", app.status),
@@ -1062,12 +1067,12 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
-    // Hanya field langkah sekarang yang tampil (satu-halaman = semuanya).
+    // Only the current step's fields show (single-page = all of them).
     let visible = form.visible_here();
     let height = (visible.len() as u16 + 5).min(f.area().height);
     let area = centered_abs(64, height, f.area());
     f.render_widget(Clear, area);
-    // Judul menyebut langkah agar wizard tak terasa seperti form yang terpotong.
+    // The title names the step so a wizard doesn't feel like a cut-off form.
     let steps = form.steps_present();
     let title = if form.is_wizard() {
         let at = steps
@@ -1075,7 +1080,7 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
             .position(|&s| s as usize == form.step)
             .unwrap_or(0);
         let label = match form.step {
-            0 => "Dasar",
+            0 => "Basics",
             1 => "Source",
             2 => "Build",
             3 => "Environment",
@@ -1104,8 +1109,8 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
     rows.push(Constraint::Min(1));
     let slots = Layout::vertical(rows).split(inner);
 
-    // Lebar kolom label = label terpanjang + 2 spasi, jadi value tak pernah
-    // menempel ke label (mis. "Buat file .env" / "Install command").
+    // Label column width = the longest label + 2 spaces, so the value never touches
+    // the label (e.g. "Create .env file" / "Install command").
     let lw = visible
         .iter()
         .map(|&i| form.fields[i].label.chars().count())
@@ -1116,9 +1121,9 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
         let field = &form.fields[idx];
         let focused = idx == form.focus;
         let hint = match (focused, &field.kind) {
-            (true, FieldKind::Bool) => "  ⌄ Spasi untuk ubah",
-            (true, FieldKind::Choice(_)) => "  ⌄ Spasi untuk pilih",
-            (true, FieldKind::Editor) => "  ⌄ Spasi untuk buka di $EDITOR",
+            (true, FieldKind::Bool) => "  ⌄ Space to toggle",
+            (true, FieldKind::Choice(_)) => "  ⌄ Space to choose",
+            (true, FieldKind::Editor) => "  ⌄ Space to open in $EDITOR",
             _ => "",
         };
         let line = Line::from(vec![
@@ -1141,22 +1146,22 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
         f.render_widget(Paragraph::new(line), slots[slot]);
     }
 
-    // Footer menyesuaikan langkah: Enter "lanjut" sampai langkah terakhir, dan
-    // Esc "kembali" sampai langkah pertama.
+    // The footer adapts to the step: Enter "next" until the last step, and Esc
+    // "back" until the first step.
     let footer = if form.is_wizard() {
         let enter = if form.next_present_step().is_some() {
-            "lanjut →"
+            "next →"
         } else {
-            "buat service"
+            "create service"
         };
         let esc = if form.prev_present_step().is_some() {
-            "← kembali"
+            "← back"
         } else {
-            "batal"
+            "cancel"
         };
-        format!("[Enter] {enter}   [Esc] {esc}   [Tab] pindah field   [Spasi] pilih")
+        format!("[Enter] {enter}   [Esc] {esc}   [Tab] move field   [Space] choose")
     } else {
-        "[Spasi] pilih   [Enter] simpan   [Tab] pindah field   [Esc] batal".to_string()
+        "[Space] choose   [Enter] save   [Tab] move field   [Esc] cancel".to_string()
     };
     f.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
@@ -1172,9 +1177,9 @@ pub(super) fn render_chooser(f: &mut Frame, ch: &mut Chooser) {
     f.render_widget(Clear, area);
 
     let title = if ch.filter.is_empty() {
-        format!(" {} — ketik untuk mencari ", ch.label)
+        format!(" {} — type to search ", ch.label)
     } else {
-        format!(" {} — cari: {} ", ch.label, ch.filter)
+        format!(" {} — search: {} ", ch.label, ch.filter)
     };
     let list = List::new(items.into_iter().map(ListItem::new).collect::<Vec<_>>())
         .block(
@@ -1190,23 +1195,23 @@ pub(super) fn render_chooser(f: &mut Frame, ch: &mut Chooser) {
 pub(super) fn render_confirm(f: &mut Frame, c: &Confirm) {
     let area = centered(52, 22, f.area());
     f.render_widget(Clear, area);
-    // Sebutkan target sebenarnya. Kalimat "Memengaruhi service nyata" dulu
-    // dipasang untuk semua konfirmasi — keliru untuk aksi maintenance, yang
-    // justru mengenai seluruh host, bukan satu service.
+    // Name the actual target. The line "Affects a real service" used to be shown on
+    // every confirmation — wrong for a maintenance action, which affects the whole
+    // host, not a single service.
     let target = match (c.project.as_str(), c.service.as_str()) {
-        ("", _) => "Memengaruhi SELURUH host.".to_string(),
+        ("", _) => "Affects the ENTIRE host.".to_string(),
         (p, "") => format!("Target: {p}"),
         (p, s) => format!("Target: {p}/{s}"),
     };
     f.render_widget(
         Paragraph::new(format!(
-            "\n{}\n\n{target}\n\n[y] Ya      [n] Batal",
+            "\n{}\n\n{target}\n\n[y] Yes      [n] Cancel",
             c.label
         ))
         .alignment(Alignment::Center)
         .block(
             Block::bordered()
-                .title(" Konfirmasi ")
+                .title(" Confirm ")
                 .border_style(Style::default().fg(Color::Yellow)),
         ),
         area,
@@ -1221,12 +1226,12 @@ pub(super) fn render_picker(f: &mut Frame, app: &mut App) {
         .iter()
         .map(|(n, url)| {
             let mark = if n == &app.server_name {
-                " (aktif)"
+                " (active)"
             } else {
                 ""
             };
-            // URL ikut ditampilkan: nama saja tak cukup untuk memastikan host mana
-            // yang akan diedit atau dihapus.
+            // The URL is shown too: the name alone isn't enough to be sure which
+            // host is about to be edited or deleted.
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{n}{mark}  ")),
                 Span::styled(url.clone(), Style::default().fg(Color::DarkGray)),
@@ -1236,13 +1241,13 @@ pub(super) fn render_picker(f: &mut Frame, app: &mut App) {
     let list = List::new(items)
         .block(
             Block::bordered()
-                .title(" Server: Enter pilih · n baru · e edit · x hapus ")
+                .title(" Server: Enter select · n new · e edit · x delete ")
                 .border_style(Style::default().fg(Color::Yellow)),
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("› ");
-    // Dipanggil hanya saat picker Some (lihat ui()), tapi total menghindari
-    // panic kalau urutan itu berubah: tanpa state, cukup gambar list tanpa sorot.
+    // Only called while the picker is Some (see ui()), but taking avoids a panic if
+    // that order ever changes: without state, just draw the list without a highlight.
     if let Some(state) = app.picker.as_mut() {
         f.render_stateful_widget(list, area, state);
     } else {
@@ -1270,7 +1275,7 @@ pub(super) fn cap(s: &str) -> String {
     }
 }
 
-/// Overlay dengan lebar persen dan tinggi baris tetap.
+/// An overlay with a percentage width and a fixed row height.
 pub(super) fn centered_abs(pct_x: u16, height: u16, r: Rect) -> Rect {
     let pad = r.height.saturating_sub(height) / 2;
     let v = Layout::vertical([

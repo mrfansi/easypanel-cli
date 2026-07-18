@@ -1,8 +1,8 @@
-//! Apa yang terjadi saat sebuah tombol ditekan.
+//! What happens when a key is pressed.
 //!
-//! `impl App` yang kedua, sengaja di berkas lain: state dan selektor ada di
-//! `app.rs`, sementara ini murni "tombol -> aksi". Menggabungkannya membuat satu
-//! berkas yang tak bisa dibaca sekali duduk.
+//! A second `impl App`, deliberately in another file: state and selectors live
+//! in `app.rs`, while this is purely "key -> action". Merging them would make one
+//! file that can't be read in a single sitting.
 
 use std::sync::mpsc::Sender;
 
@@ -19,8 +19,8 @@ use super::worker::{Req, View};
 
 impl App {
     pub(super) fn on_key(&mut self, code: KeyCode, req: &Sender<Req>) {
-        // Bantuan menutup dengan tombol apa pun: user membukanya untuk membaca,
-        // bukan untuk menghafal cara keluar.
+        // Help closes on any key: the user opened it to read, not to memorize how
+        // to get out.
         if self.help {
             self.help = false;
             return;
@@ -55,15 +55,14 @@ impl App {
         }
 
         match code {
-            // Datang ke Domains lewat `o` dari sebuah service: Esc kembali ke
-            // Services (bukan sekadar menghapus filter scope-nya).
+            // Arrived at Domains via `o` from a service: Esc goes back to Services
+            // (not just clearing its scope filter).
             KeyCode::Esc if self.domain_scope.is_some() => self.goto(Screen::Projects, req),
             KeyCode::Esc if !self.filter.is_empty() => self.clear_filter(),
-            // Esc TIDAK menutup aplikasi. Esc berarti "batal": ia menutup form,
-            // dropdown, konfirmasi, atau filter — dan bila tak ada yang perlu
-            // dibatalkan, ia tak melakukan apa-apa. Menutup TUI karena satu
-            // ketukan Esc refleks adalah kehilangan konteks tanpa peringatan.
-            // Keluar: 'q' atau Ctrl-C.
+            // Esc does NOT quit the app. Esc means "cancel": it closes a form,
+            // dropdown, confirmation, or filter — and when there's nothing to
+            // cancel, it does nothing. Closing the TUI on a single reflexive Esc
+            // is losing context without warning. Quit: 'q' or Ctrl-C.
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('1') => self.screen = Screen::Dashboard,
             KeyCode::Char('2') => self.goto(Screen::Hosts, req),
@@ -73,19 +72,21 @@ impl App {
             KeyCode::Char('6') => self.goto(Screen::Domains, req),
             KeyCode::Char('7') => self.goto(Screen::Projects, req),
             KeyCode::Tab => self.goto(self.screen.next(), req),
-            // ←/→ pindah antar tab (mis. Services ↔ Domains). Menu & form
-            // menangkap panah lebih dulu (di atas), jadi ini hanya berlaku di
-            // navigasi tabel biasa.
+            // ←/→ move between tabs (e.g. Services ↔ Domains). Menus & forms grab
+            // the arrows first (above), so this only applies in ordinary table
+            // navigation.
             KeyCode::Right => self.goto(self.screen.next(), req),
             KeyCode::Left => self.goto(self.screen.prev(), req),
-            // Space membuka menu aksi baris terpilih — versi keyboard dari klik
-            // kanan. Kosong (layar tanpa aksi baris) = tak melakukan apa-apa.
+            // Space opens the action menu for the selected row — the keyboard
+            // version of a right click. Empty (a screen with no row actions) does
+            // nothing.
             KeyCode::Char(' ') => {
                 let items = self.context_items();
                 self.open_menu(items);
             }
-            // Global search / command palette: navigasi cepat ke service/tab tanpa
-            // menu. Alternatif keyboard untuk yang tak suka menyusuri menu.
+            // Global search / command palette: jump quickly to a service/tab
+            // without menus. A keyboard alternative for those who dislike browsing
+            // menus.
             KeyCode::Char(':') => self.open_palette(),
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('s') => self.open_picker(),
@@ -102,22 +103,24 @@ impl App {
                 Screen::Monitor => self.monitor_key(code, req),
                 Screen::Hosts => move_table(&mut self.hosts_state, code, self.hosts.len()),
                 Screen::Maintenance => self.maint_key(code),
-                // Terminal ditangani langsung di event_loop (encode_key), bukan di
-                // sini. Dashboard tak punya tombol khusus.
+                // Terminal is handled directly in event_loop (encode_key), not
+                // here. Dashboard has no dedicated keys.
                 Screen::Dashboard | Screen::Terminal => {}
             },
         }
     }
 
-    /// Klik & scroll. Menu konteks menangkap mouse selama terbuka; modal lain
-    /// (form/picker/konfirmasi/dropdown/bantuan) menelannya — klik tak boleh
-    /// diam-diam mengganti tab di belakang dialog. Sesi terminal mengabaikannya.
+    /// Clicks & scroll. The context menu captures the mouse while open; other
+    /// modals (form/picker/confirmation/dropdown/help) swallow it — a click must
+    /// never quietly switch tabs behind a dialog. A terminal session ignores it.
     pub(super) fn on_mouse(&mut self, m: MouseEvent, req: &Sender<Req>) {
-        // Palette digerakkan keyboard; telan mouse supaya klik tak tembus ke tabel.
+        // The palette is keyboard-driven; swallow the mouse so a click doesn't
+        // fall through to the table.
         if self.palette.is_some() {
             return;
         }
-        // Menu konteks & dropdown menangkap mouse sendiri (hover/klik itemnya).
+        // The context menu & dropdown capture the mouse themselves (hover/click
+        // their items).
         if self.menu.is_some() {
             self.menu_mouse(m, req);
             return;
@@ -130,7 +133,8 @@ impl App {
             self.form_mouse(m);
             return;
         }
-        // Modal lain menelan mouse: klik tak boleh menembus ke belakang dialog.
+        // Other modals swallow the mouse: a click must not fall through behind the
+        // dialog.
         if self.screen == Screen::Terminal
             || self.help
             || self.picker.is_some()
@@ -139,14 +143,15 @@ impl App {
             return;
         }
         match m.kind {
-            // Scroll menggulung viewport; seleksi tetap di bawah kursor supaya tak
-            // bertabrakan dengan follow-cursor. Viewer menggulung teksnya.
+            // Scroll moves the viewport; the selection stays under the cursor so it
+            // doesn't fight the follow-cursor. The viewer scrolls its text.
             MouseEventKind::ScrollDown => self.on_scroll(3),
             MouseEventKind::ScrollUp => self.on_scroll(-3),
             MouseEventKind::Down(MouseButton::Left) => self.on_click(m.column, m.row, req),
             MouseEventKind::Down(MouseButton::Right) => self.on_right_click(m.column, m.row),
-            // Sorotan mengikuti kursor: gerak mouse di atas baris memilihnya. Di
-            // luar area tabel select_row_at tak berbuat apa-apa, jadi seleksi tetap.
+            // The highlight follows the cursor: moving the mouse over a row selects
+            // it. Outside the table area select_row_at does nothing, so the
+            // selection holds.
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 self.select_row_at(m.column, m.row);
             }
@@ -154,10 +159,10 @@ impl App {
         }
     }
 
-    /// Scroll: viewer menggulung teks; tabel menggeser viewport DAN seleksi
-    /// bersamaan, jadi sorotan tetap di baris layar yang sama (= tetap di bawah
-    /// kursor). Itu yang membuat scroll tak lagi bertabrakan dengan hover — gerak
-    /// mouse berikutnya memilih baris yang sama.
+    /// Scroll: the viewer scrolls its text; a table moves the viewport AND the
+    /// selection together, so the highlight stays on the same screen row (= stays
+    /// under the cursor). That's what stops scroll from fighting hover — the next
+    /// mouse move selects the same row.
     fn on_scroll(&mut self, delta: isize) {
         if self.screen == Screen::Viewer {
             let step = delta.unsigned_abs() as u16;
@@ -173,29 +178,29 @@ impl App {
         if len == 0 {
             return;
         }
-        // Baris data yang muat = tinggi area - border atas/bawah - header.
+        // Data rows that fit = area height - top/bottom border - header.
         let visible = (self.table_area.height as isize - 3).max(0);
-        // Offset maksimum: berhenti saat halaman terakhir penuh. Kalau seluruh
-        // daftar muat (max_off = 0), tak ada yang bisa digulung.
+        // Max offset: stop when the last page is full. If the whole list fits
+        // (max_off = 0), there's nothing to scroll.
         let max_off = (len - visible).max(0);
         if let Some(state) = self.active_table() {
             let off = state.offset() as isize;
             let new_off = (off + delta).clamp(0, max_off);
             let applied = new_off - off;
             if applied == 0 {
-                return; // tak ada ruang gulung -> seleksi TAK bergeser
+                return; // no room to scroll -> selection does NOT move
             }
-            // Geser seleksi sebanyak offset benar-benar bergerak: sorotan tetap di
-            // baris layar yang sama (= tetap di bawah kursor).
+            // Shift the selection by however much the offset actually moved: the
+            // highlight stays on the same screen row (= stays under the cursor).
             let sel = state.selected().unwrap_or(0) as isize;
             state.select(Some((sel + applied).clamp(0, len - 1) as usize));
             *state.offset_mut() = new_off as usize;
         }
     }
 
-    /// Mouse pada form: klik sebuah field memfokuskannya, lalu — untuk Bool/Choice/
-    /// Editor — langsung mengaktifkannya (toggle / buka dropdown / buka $EDITOR).
-    /// Field teks cukup difokus; user lalu mengetik.
+    /// Mouse on a form: clicking a field focuses it, then — for Bool/Choice/Editor
+    /// — activates it right away (toggle / open dropdown / open $EDITOR). A text
+    /// field is just focused; the user then types.
     fn form_mouse(&mut self, m: MouseEvent) {
         if !matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
             return;
@@ -229,8 +234,8 @@ impl App {
         }
     }
 
-    /// Mouse pada dropdown terbuka: hover menyorot pilihan di bawah kursor, klik
-    /// memilihnya (sama seperti Enter), klik di luar / scroll menavigasi.
+    /// Mouse on an open dropdown: hover highlights the option under the cursor, a
+    /// click selects it (same as Enter), a click outside / scroll navigates.
     fn chooser_mouse(&mut self, m: MouseEvent, req: &Sender<Req>) {
         let Some(ch) = self.chooser.as_mut() else {
             return;
@@ -261,7 +266,7 @@ impl App {
         }
     }
 
-    /// Terapkan pilihan dropdown ke field form (sama untuk Enter maupun klik).
+    /// Apply the dropdown choice to the form field (same for Enter and click).
     fn apply_chooser(&mut self, req: &Sender<Req>) {
         let Some(ch) = self.chooser.as_ref() else {
             return;
@@ -286,7 +291,7 @@ impl App {
     }
 
     fn on_click(&mut self, col: u16, row: u16, req: &Sender<Req>) {
-        // Klik tab -> pindah ke tab itu (sama seperti menekan angkanya).
+        // Click a tab -> switch to it (same as pressing its number).
         if row == self.tab_row {
             if let Some(i) = self
                 .tab_spans
@@ -302,8 +307,8 @@ impl App {
         self.select_row_at(col, row);
     }
 
-    /// Klik kanan sebuah baris memilihnya lalu membuka menu aksinya. Tanpa aksi
-    /// untuk baris/layar itu, tak ada menu yang muncul.
+    /// Right-clicking a row selects it, then opens its action menu. With no action
+    /// for that row/screen, no menu appears.
     fn on_right_click(&mut self, col: u16, row: u16) {
         if row == self.tab_row {
             return;
@@ -324,13 +329,13 @@ impl App {
         }
     }
 
-    /// Pilih baris di bawah (col,row) pada tabel layar aktif. Dua baris teratas
-    /// (border + header) bukan data; offset menampung daftar yang tergulung. True
-    /// bila sebuah baris benar-benar terpilih.
+    /// Select the row under (col,row) in the active screen's table. The top two
+    /// rows (border + header) aren't data; offset accounts for a scrolled list.
+    /// True when a row was actually selected.
     fn select_row_at(&mut self, col: u16, row: u16) -> bool {
         let a = self.table_area;
-        let first = a.y.saturating_add(2); // border atas + header
-        let last = a.y.saturating_add(a.height).saturating_sub(1); // border bawah (eksklusif)
+        let first = a.y.saturating_add(2); // top border + header
+        let last = a.y.saturating_add(a.height).saturating_sub(1); // bottom border (exclusive)
         if col < a.x || col >= a.x.saturating_add(a.width) || row < first || row >= last {
             return false;
         }
@@ -346,7 +351,7 @@ impl App {
         false
     }
 
-    /// Navigasi menu konteks lewat keyboard.
+    /// Navigate the context menu by keyboard.
     fn menu_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         let Some(menu) = self.menu.as_mut() else {
             return;
@@ -362,8 +367,8 @@ impl App {
                 let last = menu.items.len().saturating_sub(1);
                 menu.state.select(Some((i + 1).min(last)));
             }
-            // → masuk submenu / jalankan (sama seperti Enter); ← kembali ke menu
-            // induk, atau tutup kalau sudah di menu teratas.
+            // → enter submenu / run (same as Enter); ← back to the parent menu, or
+            // close if already at the top menu.
             KeyCode::Enter | KeyCode::Right => self.activate_menu(req),
             KeyCode::Left => {
                 self.menu = self.menu.take().and_then(|m| m.parent).map(|p| *p);
@@ -372,8 +377,8 @@ impl App {
         }
     }
 
-    /// Mouse saat menu terbuka: scroll menavigasi, klik pada item mengaktifkannya,
-    /// klik di luar menutup menu.
+    /// Mouse while the menu is open: scroll navigates, a click on an item
+    /// activates it, a click outside closes the menu.
     fn menu_mouse(&mut self, m: MouseEvent, req: &Sender<Req>) {
         let Some(menu) = self.menu.as_mut() else {
             return;
@@ -388,7 +393,7 @@ impl App {
                 let last = menu.items.len().saturating_sub(1);
                 menu.state.select(Some((i + 1).min(last)));
             }
-            // Sorotan mengikuti kursor di dalam menu.
+            // The highlight follows the cursor inside the menu.
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 if let Some(i) = menu.item_at(m.column, m.row) {
                     menu.state.select(Some(i));
@@ -399,14 +404,14 @@ impl App {
                     menu.state.select(Some(i));
                     self.activate_menu(req);
                 }
-                // Klik di luar menu -> tutup tanpa aksi.
+                // Click outside the menu -> close without acting.
                 None => self.menu = None,
             },
             _ => {}
         }
     }
 
-    /// Jalankan item menu terpilih (fungsi aksinya). Item ber-▸ membuka submenu.
+    /// Run the selected menu item (its action function). A ▸ item opens a submenu.
     fn activate_menu(&mut self, req: &Sender<Req>) {
         let run = self.menu.as_ref().and_then(|menu| {
             menu.state
@@ -414,20 +419,21 @@ impl App {
                 .and_then(|i| menu.items.get(i))
                 .map(|it| it.run)
         });
-        // Lepas menu kini; `run` boleh membuka submenu (item ▸) dengan set self.menu.
+        // Take the menu now; `run` may open a submenu (a ▸ item) by setting self.menu.
         let parent = self.menu.take();
         if let Some(run) = run {
             run(self, req);
         }
-        // Kalau `run` membuka submenu, catat menu tadi sebagai induknya supaya `←`
-        // bisa kembali. Kalau `run` aksi leaf (menu tetap None), induk dibuang.
+        // If `run` opened a submenu, record the old menu as its parent so `←` can
+        // go back. If `run` was a leaf action (menu stayed None), drop the parent.
         if let (Some(child), Some(parent)) = (self.menu.as_mut(), parent) {
             child.parent = Some(Box::new(parent));
         }
     }
 
-    /// Command palette: ketik memfilter, ↑↓ pilih (dalam daftar ter-filter), Enter
-    /// lompat, Esc tutup, Backspace hapus. Mengetik mereset sorotan ke atas.
+    /// Command palette: typing filters, ↑↓ selects (within the filtered list),
+    /// Enter jumps, Esc closes, Backspace deletes. Typing resets the highlight to
+    /// the top.
     fn palette_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         let Some(pal) = self.palette.as_mut() else {
             return;
@@ -456,16 +462,17 @@ impl App {
         }
     }
 
-    /// Actions: Enter (atau View di menu konteks) membuka detail action —
-    /// metadata + log deploy/aksi — di viewer. Sisanya navigasi tabel.
+    /// Actions: Enter (or View in the context menu) opens the action detail —
+    /// metadata + deploy/action log — in the viewer. Everything else is table
+    /// navigation.
     pub(super) fn actions_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
             KeyCode::Enter => {
                 if let Some(id) = self.selected_action_id() {
                     self.viewer_from = Screen::Actions;
-                    // Bukan tampilan log-tail: pastikan poll log tak menyambungnya.
+                    // Not a log-tail view: make sure the log poll doesn't latch onto it.
                     self.viewer_ctx = None;
-                    self.status = "Memuat detail action...".into();
+                    self.status = "Loading action detail...".into();
                     let _ = req.send(Req::ActionDetail(id));
                 }
             }
@@ -478,8 +485,8 @@ impl App {
 
     pub(super) fn filter_key(&mut self, code: KeyCode) {
         match code {
-            // Esc membatalkan filter sepenuhnya; Enter menyimpannya dan kembali
-            // ke navigasi biasa.
+            // Esc cancels the filter entirely; Enter keeps it and returns to
+            // ordinary navigation.
             KeyCode::Esc => self.clear_filter(),
             KeyCode::Enter => self.filter_input = false,
             KeyCode::Backspace => {
@@ -494,21 +501,21 @@ impl App {
         }
     }
 
-    /// Pembersihan Docker itu destruktif dan tak bisa dibatalkan, jadi tiap aksi
-    /// lewat konfirmasi — sama seperti deploy/destroy.
+    /// Docker cleanup is destructive and irreversible, so every action goes
+    /// through a confirmation — just like deploy/destroy.
     pub(super) fn maint_key(&mut self, code: KeyCode) {
         let (op, label) = match code {
             KeyCode::Char('p') => (
                 "systemPrune",
-                "Prune sistem Docker? Container, network, image, dan build cache yang tak terpakai akan dihapus.",
+                "Prune the Docker system? Unused containers, networks, images, and build cache will be removed.",
             ),
             KeyCode::Char('i') => (
                 "cleanupDockerImages",
-                "Hapus image Docker yang tak terpakai?",
+                "Remove unused Docker images?",
             ),
             KeyCode::Char('c') => (
                 "cleanupDockerBuilder",
-                "Hapus build cache Docker?",
+                "Remove the Docker build cache?",
             ),
             _ => return,
         };
@@ -551,8 +558,8 @@ impl App {
 
         match code {
             KeyCode::Char('n') => {
-                // Datang dari sebuah service (via `o`) -> prefill project+service
-                // ke service itu, supaya "Domain baru" tak mulai dari project acak.
+                // Arrived from a service (via `o`) -> prefill project+service to
+                // that service, so "New domain" doesn't start from a random project.
                 let prefill = self.domain_scope.as_ref().map(|(p, s)| {
                     json!({
                         "destinationType": "service",
@@ -563,7 +570,7 @@ impl App {
                     })
                 });
                 let fields = domain_fields(prefill.as_ref(), &self.projects);
-                self.form = Some(Form::new(FormKind::DomainCreate, " Domain baru ", fields));
+                self.form = Some(Form::new(FormKind::DomainCreate, " New domain ", fields));
                 self.load_form_services(req);
             }
             KeyCode::Char('e') => {
@@ -588,7 +595,7 @@ impl App {
                         project: field(&d, "/id"),
                         service: String::new(),
                         stype: String::new(),
-                        label: format!("Hapus domain '{}'?", field(&d, "/host")),
+                        label: format!("Delete domain '{}'?", field(&d, "/host")),
                     });
                 }
             }
@@ -641,30 +648,30 @@ impl App {
         let typed = form.fields[form.focus].kind.is_typed();
 
         match code {
-            // Wizard: Esc mundur satu langkah, dan membatalkan hanya di langkah
-            // pertama. Form satu-halaman tak punya langkah sebelumnya, jadi Esc
-            // langsung membatalkan seperti dulu.
+            // Wizard: Esc steps back one, and cancels only on the first step. A
+            // single-page form has no previous step, so Esc cancels right away as
+            // before.
             KeyCode::Esc => match form.prev_present_step() {
                 Some(step) => form.goto_step(step),
                 None => {
                     self.form = None;
-                    self.status = "Dibatalkan".into();
+                    self.status = "Cancelled".into();
                 }
             },
             KeyCode::Tab | KeyCode::Down => form.move_focus(1),
             KeyCode::BackTab | KeyCode::Up => form.move_focus(-1),
-            // Bool cukup di-toggle; Choice membuka dropdown yang bisa dicari.
-            // Enter sengaja TIDAK di sini: kalau Enter membuka dropdown, form yang
-            // field terakhirnya Choice ("Service baru" tipe app) tak pernah bisa
-            // disimpan — Enter cuma buka-tutup dropdown, selamanya.
+            // Bool just toggles; Choice opens a searchable dropdown. Enter is
+            // deliberately NOT here: if Enter opened the dropdown, a form whose
+            // last field is a Choice ("New service", app type) could never be
+            // saved — Enter would only open and close the dropdown, forever.
             KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right if !typed => {
                 match form.fields[form.focus].kind {
                     FieldKind::Bool => {
                         form.fields[form.focus].cycle();
                         form.clamp_focus();
                     }
-                    // Isi multi-baris berpindah ke $EDITOR. event_loop yang
-                    // melakukannya: hanya ia yang boleh melepas terminal.
+                    // Multi-line content moves to $EDITOR. event_loop does it: only
+                    // it may release the terminal.
                     FieldKind::Editor => self.edit_field = Some(form.focus),
                     _ => self.open_chooser(),
                 }
@@ -673,9 +680,9 @@ impl App {
                 form.fields[form.focus].value.pop();
             }
             KeyCode::Char(c) if typed => form.fields[form.focus].value.push(c),
-            // Wizard: Enter maju satu langkah, dan menyimpan hanya di langkah
-            // terakhir. Form satu-halaman tak punya langkah berikutnya, jadi Enter
-            // langsung menyimpan seperti dulu.
+            // Wizard: Enter advances one step, and saves only on the last step. A
+            // single-page form has no next step, so Enter saves right away as
+            // before.
             KeyCode::Enter => match form.next_present_step() {
                 Some(step) => form.goto_step(step),
                 None => self.submit_form(req),
@@ -685,24 +692,25 @@ impl App {
     }
 
     pub(super) fn confirm_key(&mut self, code: KeyCode, req: &Sender<Req>) {
-        // Pemanggil sudah cek is_some(), tapi total lebih tahan daripada unwrap
-        // yang bergantung pada guard di tempat lain: kalau dipanggil tanpa
-        // konfirmasi aktif, tak ada yang perlu dilakukan.
+        // The caller already checked is_some(), but taking is more robust than an
+        // unwrap that depends on a guard elsewhere: if called with no active
+        // confirmation, there's nothing to do.
         let Some(c) = self.confirm.take() else {
             return;
         };
         if !matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-            self.status = "Dibatalkan".into();
+            self.status = "Cancelled".into();
             return;
         }
 
-        // Hapus project/domain punya endpoint sendiri; sisanya aksi service biasa
-        // (deploy/restart/stop/start/destroy -> services/{type}/{action}Service).
+        // Deleting a project/domain has its own endpoint; the rest are ordinary
+        // service actions (deploy/restart/stop/start/destroy ->
+        // services/{type}/{action}Service).
         let _ = match c.action.as_str() {
             "destroy-project" => req.send(Req::ProjectDestroy(c.project.clone())),
             "domain-delete" => req.send(Req::DomainDelete(c.project.clone())),
-            // Indeks port dititipkan di `stype` (pola yang sama seperti id domain
-            // dititipkan di `project`).
+            // The port index is stashed in `stype` (same pattern as a domain id
+            // stashed in `project`).
             "port-delete" => req.send(Req::PortDelete {
                 project: c.project.clone(),
                 service: c.service.clone(),
@@ -713,9 +721,9 @@ impl App {
                 service: c.service.clone(),
                 index: c.stype.parse().unwrap_or(0),
             }),
-            // redirect-delete butuh stype (services/{stype}); index dititipkan di
-            // `stype` seperti port/mount, jadi stype nyata diambil dari viewer_ctx
-            // (viewer masih terbuka saat konfirmasi).
+            // redirect-delete needs stype (services/{stype}); the index is stashed
+            // in `stype` like port/mount, so the real stype is pulled from
+            // viewer_ctx (the viewer is still open during the confirmation).
             "redirect-delete" => {
                 let stype = self
                     .viewer_ctx
@@ -729,10 +737,10 @@ impl App {
                     index: c.stype.parse().unwrap_or(0),
                 })
             }
-            // Hapus server: perubahan config, bukan panggilan API.
+            // Removing a server: a config change, not an API call.
             "server-remove" => {
                 self.server_action = Some(ServerAction::Remove(c.project));
-                self.status = "Menghapus server...".into();
+                self.status = "Removing server...".into();
                 return;
             }
             "maint:systemPrune" => req.send(Req::MaintAction("systemPrune")),
@@ -745,7 +753,7 @@ impl App {
                 action: action.to_string(),
             }),
         };
-        self.status = "Mengirim...".into();
+        self.status = "Sending...".into();
     }
 
     pub(super) fn picker_key(&mut self, code: KeyCode, _req: &Sender<Req>) {
@@ -758,9 +766,9 @@ impl App {
                 self.picker = None;
                 self.form = Some(Form::new(
                     FormKind::ServerAdd,
-                    " Tambah server ",
+                    " Add server ",
                     vec![
-                        Field::text("Nama", ""),
+                        Field::text("Name", ""),
                         Field::text("URL", "https://"),
                         Field::secret("Token"),
                     ],
@@ -774,18 +782,19 @@ impl App {
                         format!(" Edit server: {name} "),
                         vec![
                             Field::text("URL", &url),
-                            // Token sengaja tak diisi ulang: menampilkannya kembali ke
-                            // layar tak perlu. Kosong = pakai token yang tersimpan.
-                            Field::secret("Token (kosong = tak diubah)"),
+                            // The token is deliberately not re-filled: there's no
+                            // need to put it back on screen. Empty = keep the stored
+                            // token.
+                            Field::secret("Token (empty = unchanged)"),
                         ],
                     ));
                 }
             }
             KeyCode::Char('x') => {
-                // Menghapus server ikut membuang tokennya, dan token tak bisa
-                // dibaca balik dari mana pun — sekali salah tekan, kredensialnya
-                // hilang. Setiap aksi destruktif lain di sini minta konfirmasi;
-                // yang ini dulu tidak.
+                // Removing a server drops its token too, and the token can't be
+                // read back from anywhere — one wrong keystroke and the credential
+                // is gone. Every other destructive action here asks for
+                // confirmation; this one used not to.
                 if let Some((name, url)) = self.picker_selected() {
                     self.picker = None;
                     self.confirm = Some(Confirm {
@@ -794,7 +803,7 @@ impl App {
                         service: String::new(),
                         stype: String::new(),
                         label: format!(
-                            "Hapus server '{name}' ({url})? Tokennya ikut hilang dan tak bisa dikembalikan."
+                            "Delete server '{name}' ({url})? Its token goes with it and can't be recovered."
                         ),
                     });
                 }
@@ -826,9 +835,10 @@ impl App {
     pub(super) fn services_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
             KeyCode::Enter => self.open_view(View::Logs, req),
-            // Tujuh huruf ini membuka MENU kelompok (bukan satu aksi) — inti
-            // konsolidasi UX: aksi terkait tak lagi berserak jadi tombol lepas.
-            // Tombol leaf-nya (E/w/./p/P/f/F/H/b/U/B/A/L/M/y/R/S/T/X) tetap hidup.
+            // These seven letters open a group MENU (not a single action) — the
+            // heart of the UX consolidation: related actions no longer scatter into
+            // loose keys. Their leaf keys (E/w/./p/P/f/F/H/b/U/B/A/L/M/y/R/S/T/X)
+            // still work.
             KeyCode::Char('e') => {
                 let m = self.env_menu();
                 self.open_menu(m);
@@ -858,8 +868,9 @@ impl App {
             KeyCode::Char('c') => self.open_clone_form(),
             KeyCode::Char('E') => self.start_env_edit(),
             KeyCode::Char('w') => self.start_env_replace(),
-            // Nyalakan/matikan file .env (dotEnvPath). Hanya service app — hanya di
-            // situ EasyPanel menulis env sebagai file. Baca state & balik di worker.
+            // Turn the .env file (dotEnvPath) on/off. App services only — that's
+            // the only place EasyPanel writes env as a file. Read state & flip it
+            // in the worker.
             KeyCode::Char('.') => match self.selected_row() {
                 Some((project, service, stype)) if stype == "app" => {
                     let _ = req.send(Req::EnvFileToggle {
@@ -867,36 +878,36 @@ impl App {
                         service,
                         stype,
                     });
-                    self.status = "Toggle file .env...".into();
+                    self.status = "Toggle .env file...".into();
                 }
                 Some((_, _, stype)) => {
-                    self.status = format!("File .env hanya untuk service app (ini {stype})");
+                    self.status = format!(".env file is only for app services (this is {stype})");
                 }
-                None => self.status = "Pilih sebuah service dulu".into(),
+                None => self.status = "Select a service first".into(),
             },
             KeyCode::Char('t') => {
                 let m = self.shell_menu();
                 self.open_menu(m);
             }
-            // Shell DB (login otomatis) tetap punya tombol langsung; juga tersedia
-            // di menu Shell (`t`). Fitur yang tak ada di dashboard web.
+            // DB shell (auto login) keeps its direct key; also available in the
+            // Shell menu (`t`). A feature the web dashboard doesn't have.
             KeyCode::Char('y') => self.start_db_shell(),
             KeyCode::Char('g') => {
                 self.form = Some(Form::new(
                     FormKind::LogSearch,
-                    " Cari log di SEMUA service ",
-                    vec![Field::text("Kata kunci", "")],
+                    " Search logs across ALL services ",
+                    vec![Field::text("Keyword", "")],
                 ));
             }
             KeyCode::Char('P') => {
                 if let Some((project, service, _)) = self.selected_row() {
                     self.form = Some(Form::new(
                         FormKind::PortCreate { project, service },
-                        " Port baru ",
+                        " New port ",
                         port_fields(),
                     ));
                 } else {
-                    self.status = "Pilih sebuah service dulu".into();
+                    self.status = "Select a service first".into();
                 }
             }
             KeyCode::Char('n') => self.new_service_form(req),
@@ -904,13 +915,13 @@ impl App {
                 let m = self.danger_menu();
                 self.open_menu(m);
             }
-            // Panel Projects sudah tak ada, tapi project tetap harus bisa
-            // dibuat/dihapus dari TUI.
+            // The Projects panel is gone, but projects still need to be
+            // creatable/deletable from the TUI.
             KeyCode::Char('N') => {
                 self.form = Some(Form::new(
                     FormKind::ProjectCreate,
-                    " Project baru ",
-                    vec![Field::text("Nama", "")],
+                    " New project ",
+                    vec![Field::text("Name", "")],
                 ));
             }
             KeyCode::Char('X') => {
@@ -920,7 +931,7 @@ impl App {
                         project: p.clone(),
                         service: String::new(),
                         stype: String::new(),
-                        label: format!("Hapus project '{p}' BESERTA SEMUA service di dalamnya?"),
+                        label: format!("Delete project '{p}' AND ALL its services?"),
                     });
                 }
             }
@@ -940,12 +951,12 @@ impl App {
 
     pub(super) fn viewer_key(&mut self, code: KeyCode) {
         match code {
-            // Esc kembali ke layar asal viewer (Services untuk log/env/dst.,
-            // Actions untuk detail action).
+            // Esc returns to the viewer's origin screen (Services for
+            // logs/env/etc., Actions for an action detail).
             KeyCode::Esc => self.screen = self.viewer_from,
-            // Menggulung ke atas melepas tempelan: kalau tidak, baris log yang
-            // baru datang akan menyeret layar kembali ke bawah persis saat user
-            // sedang membaca sesuatu di atas.
+            // Scrolling up releases the follow: otherwise a newly arriving log line
+            // would drag the view back to the bottom right as the user is reading
+            // something above.
             KeyCode::Up | KeyCode::Char('k') | KeyCode::PageUp | KeyCode::Home => {
                 self.viewer_follow = false;
                 let step = if code == KeyCode::PageUp { 10 } else { 1 };
@@ -954,15 +965,15 @@ impl App {
                     _ => self.viewer_scroll.saturating_sub(step),
                 };
             }
-            // End menempel kembali ke baris terakhir dan melanjutkan mengikuti.
+            // End re-sticks to the last line and resumes following.
             KeyCode::End => self.viewer_follow = true,
             KeyCode::Down | KeyCode::Char('j') => {
                 self.viewer_scroll = self.viewer_scroll.saturating_add(1)
             }
             KeyCode::PageDown => self.viewer_scroll = self.viewer_scroll.saturating_add(10),
-            // Di viewer Ports/Mounts, angka memilih baris [idx] itu untuk dihapus
-            // (deletePort/deleteMount by index). Cukup 0-9: jarang ada >10. Hanya
-            // jika baris [idx] memang ada, jadi angka acak tak melakukan apa pun.
+            // In the Ports/Mounts viewer, a digit selects row [idx] to delete
+            // (deletePort/deleteMount by index). 0-9 is enough: there's rarely >10.
+            // Only if row [idx] actually exists, so a random digit does nothing.
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 let kind = match self.viewer_ctx.as_ref().map(|(v, ..)| *v) {
                     Some(View::Ports) => Some(("port-delete", "port")),
@@ -979,7 +990,7 @@ impl App {
                         .iter()
                         .any(|l| l.starts_with(&format!("[{idx}]")));
                     if exists {
-                        let label = format!("Hapus {noun} [{idx}] dari {service}?");
+                        let label = format!("Delete {noun} [{idx}] from {service}?");
                         self.confirm = Some(Confirm {
                             action: action.into(),
                             project,

@@ -28,9 +28,9 @@ pub(super) const BUILD_TYPES: &[&str] = &[
     "paketo-buildpacks",
 ];
 
-/// Field form source; `source` adalah objek `source` dari inspectService.
+/// Fields for the source form; `source` is the `source` object from inspectService.
 ///
-/// `repos` kosong (GitHub tak tersambung / gagal) membuat "Repo" jadi input teks.
+/// Empty `repos` (GitHub not connected / failed) makes "Repo" a text input.
 pub(super) fn source_fields(source: Option<&Value>, repos: Vec<String>) -> Vec<Field> {
     let get = |ptr: &str, default: &str| match source.map(|s| field(s, ptr)) {
         Some(v) if v != "-" => v,
@@ -47,14 +47,14 @@ pub(super) fn source_fields(source: Option<&Value>, repos: Vec<String>) -> Vec<F
 
     let mut repos = repos;
     if current.is_empty() {
-        // Service baru belum punya source. Tanpa pilihan kosong, choice_owned
-        // memilih repo pertama daftar — Enter tanpa sadar akan menunjuk source
-        // ke repo acak, bukan gagal dengan jelas.
+        // A new service has no source yet. Without an empty choice, choice_owned
+        // picks the first repo in the list — Enter would unknowingly point the
+        // source at a random repo instead of failing clearly.
         repos.insert(0, String::new());
     } else if !repos.contains(&current) {
-        // Repo yang sedang dipakai wajib ada di daftar. Kalau tidak, choice_owned
-        // akan diam-diam memilih repo pertama — mengganti source service saat user
-        // cuma bermaksud mengubah branch.
+        // The repo currently in use must be in the list. Otherwise choice_owned
+        // would silently pick the first one — changing the service's source when
+        // the user only meant to change the branch.
         repos.insert(0, current.clone());
     }
     let repo_field = if repos.is_empty() {
@@ -71,8 +71,8 @@ pub(super) fn source_fields(source: Option<&Value>, repos: Vec<String>) -> Vec<F
     vec![
         Field::choice("Source", SOURCE_TYPES, &stype),
         repo_field.when("Source", "github"),
-        // Diisi setelah branch repo tsb dimuat; nilai lama dipertahankan supaya
-        // mode edit tak kehilangan pilihannya sebelum data tiba.
+        // Filled in once that repo's branches load; the old value is kept so edit
+        // mode doesn't lose its choice before the data arrives.
         Field::choice_owned("Branch", vec![branch.clone()], &branch).when("Source", "github"),
         Field::boolean("Auto deploy", auto_deploy).when("Source", "github"),
         Field::text("Git URL", if stype == "git" { &repo } else { "" }).when("Source", "git"),
@@ -85,13 +85,13 @@ pub(super) fn source_fields(source: Option<&Value>, repos: Vec<String>) -> Vec<F
     ]
 }
 
-/// Field form build; `build` adalah objek `build` dari inspectService.
+/// Fields for the build form; `build` is the `build` object from inspectService.
 ///
-/// nixpacks dan railpack berbagi label perintah yang sama, dan itu aman HANYA
-/// karena label bersama punya SATU field ber-.when("nixpacks,railpack") — bukan
-/// karena by_label() sadar visibilitas. Ia memakai find(): field pertama dengan
-/// label itu, tampil atau tidak. Dua field berlabel sama = tipe yang satu menulis
-/// nilai milik tipe lain.
+/// nixpacks and railpack share the same command labels, and that's safe ONLY
+/// because the shared label has a SINGLE field with .when("nixpacks,railpack") —
+/// not because by_label() is visibility-aware. It uses find(): the first field
+/// with that label, shown or not. Two fields with the same label = one type
+/// writing the other type's value.
 pub(super) fn build_fields(build: Option<&Value>) -> Vec<Field> {
     let get = |ptr: &str, default: &str| match build.map(|b| field(b, ptr)) {
         Some(v) if v != "-" => v,
@@ -103,10 +103,10 @@ pub(super) fn build_fields(build: Option<&Value>) -> Vec<Field> {
     };
     vec![
         Field::choice("Build", BUILD_TYPES, &get("/type", "nixpacks")),
-        // SATU field Version, bukan satu per tipe: by_label() memakai find(), jadi
-        // ia mengambil field PERTAMA berlabel itu — bukan yang sedang tampil. Dua
-        // field "Version" akan membuat railpack menulis versi milik nixpacks.
-        // build_body() sudah memetakannya ke kunci yang benar per tipe.
+        // A SINGLE Version field, not one per type: by_label() uses find(), so it
+        // takes the FIRST field with that label — not the one currently shown. Two
+        // "Version" fields would make railpack write nixpacks's version.
+        // build_body() already maps it to the right key per type.
         Field::text("Version", &version).when("Build", "nixpacks,railpack"),
         Field::text("Install command", &get("/installCommand", ""))
             .when("Build", "nixpacks,railpack"),
@@ -121,11 +121,11 @@ pub(super) fn build_fields(build: Option<&Value>) -> Vec<Field> {
     ]
 }
 
-/// Field form domain; `existing` mengisi nilai awal saat mode edit.
+/// Fields for the domain form; `existing` fills the initial values in edit mode.
 ///
-/// Field service dan custom ditampilkan sekaligus; yang dipakai ditentukan
-/// "Tujuan". Ini mengikuti dialog panel, yang juga punya Protocol dan destination
-/// custom (URL + weight) — keduanya tak boleh hilang saat mengedit.
+/// The service and custom fields are all present; which ones apply is decided by
+/// "Destination". This mirrors the panel dialog, which also has a Protocol and a
+/// custom destination (URL + weight) — neither should be lost while editing.
 pub(super) fn domain_fields(existing: Option<&Value>, projects: &[String]) -> Vec<Field> {
     let get = |ptr: &str, default: &str| match existing.map(|d| field(d, ptr)) {
         Some(v) if v != "-" => v,
@@ -147,72 +147,80 @@ pub(super) fn domain_fields(existing: Option<&Value>, projects: &[String]) -> Ve
         Field::text("Host", &get("/host", "")),
         Field::text("Path", &get("/path", "/")),
         Field::boolean("HTTPS", https),
-        // Nama resolver Traefik ditentukan konfigurasi server (mis. "letsencrypt",
-        // "google"); tak ada endpoint untuk mendaftarnya, jadi teks bebas —
-        // menebak-nebak isi dropdown justru menyesatkan.
+        // The Traefik resolver name is set by the server config (e.g.
+        // "letsencrypt", "google"); there's no endpoint to list them, so it's free
+        // text — guessing dropdown contents would only mislead.
         Field::text("SSL resolver", &get("/certificateResolver", "")),
         Field::boolean("Wildcard", wildcard),
-        Field::choice("Tujuan", DEST_KINDS, &get("/destinationType", "service")),
+        Field::choice(
+            "Destination",
+            DEST_KINDS,
+            &get("/destinationType", "service"),
+        ),
         Field::choice_owned(
             "Project",
             projects.to_vec(),
             &get("/serviceDestination/projectName", ""),
         )
-        .when("Tujuan", "service"),
-        // Diisi setelah service project tsb dimuat; nilai lama dipertahankan
-        // supaya mode edit tidak kehilangan pilihannya sebelum data tiba.
-        Field::choice_owned("Service", vec![service.clone()], &service).when("Tujuan", "service"),
+        .when("Destination", "service"),
+        // Filled in once that project's services load; the old value is kept so
+        // edit mode doesn't lose its choice before the data arrives.
+        Field::choice_owned("Service", vec![service.clone()], &service)
+            .when("Destination", "service"),
         Field::choice(
             "Protocol",
             PROTOCOLS,
             &get("/serviceDestination/protocol", "http"),
         )
-        .when("Tujuan", "service"),
-        Field::text("Port", &get("/serviceDestination/port", "80")).when("Tujuan", "service"),
-        Field::text("Path tujuan", &get("/serviceDestination/path", "/")).when("Tujuan", "service"),
+        .when("Destination", "service"),
+        Field::text("Port", &get("/serviceDestination/port", "80")).when("Destination", "service"),
+        Field::text("Destination path", &get("/serviceDestination/path", "/"))
+            .when("Destination", "service"),
         Field::text(
             "Server URL",
             &server.map(|s| field(s, "/url")).unwrap_or_default(),
         )
-        .when("Tujuan", "custom"),
+        .when("Destination", "custom"),
         Field::text(
             "Weight",
             &server.map(|s| field(s, "/weight")).unwrap_or("1".into()),
         )
-        .when("Tujuan", "custom"),
+        .when("Destination", "custom"),
     ]
 }
 
-/// Field khusus tipe untuk createService, hanya yang benar-benar diisi user.
+/// Type-specific fields for createService, only the ones the user actually fills.
 ///
-/// Semuanya opsional di API, dan kosong berarti server yang membuatkan: password
-/// acak, nama database = nama project, image resmi terbaru — sama seperti dialog
-/// panel. Mengirim "" bukan berarti "buatkan", melainkan "pakai string kosong",
-/// jadi field kosong harus DIHILANGKAN dari body, bukan dikirim kosong.
-/// Objek `source` untuk createService, atau None bila memang tak ada.
+/// All are optional in the API, and empty means the server creates them: a random
+/// password, a database named after the project, the latest official image — just
+/// like the panel dialog. Sending "" doesn't mean "create one for me", it means
+/// "use an empty string", so an empty field must be OMITTED from the body, not
+/// sent empty.
+/// The `source` object for createService, or None when there genuinely isn't one.
 ///
-/// createService menerima source inline (`{type, owner, repo, ref, path,
-/// autoDeploy}`), yaitu isi yang dibungkus endpoint updateSource*. Bentuknya
-/// dipinjam dari source_body() supaya validasi dan pemetaan kuncinya cuma punya
-/// SATU tempat — dua salinan akan berbeda pelan-pelan.
+/// createService accepts an inline source (`{type, owner, repo, ref, path,
+/// autoDeploy}`), the same payload the updateSource* endpoints wrap. Its shape is
+/// borrowed from source_body() so validation and key mapping have a SINGLE home —
+/// two copies would drift apart.
 ///
-/// Kosong berarti user belum memilih, bukan error: service app boleh dibuat
-/// tanpa source lalu diatur belakangan, dan createService cuma mewajibkan
+/// Empty means the user hasn't chosen yet, not an error: an app service can be
+/// created without a source and configured later, and createService only requires
 /// projectName + serviceName.
-/// Panggilan updateSource: (endpoint, body, auto_deploy). Dipakai lintas modul
-/// (form membuatnya, worker menjalankannya), jadi satu alias.
+/// An updateSource call: (endpoint, body, auto_deploy). Used across modules (the
+/// form builds it, the worker runs it), hence one alias.
 pub(super) type SourceCall = (&'static str, Value, Option<bool>);
 
-/// Panggilan updateSource untuk service baru: (op, body, auto), atau None bila
-/// bukan app / source belum diisi.
+/// The updateSource call for a new service: (op, body, auto), or None when it's
+/// not an app / the source hasn't been filled.
 ///
-/// Source DITERAPKAN TERPISAH setelah createService, bukan inline. Sebabnya
-/// diukur di server: createService dengan source langsung memicu deploy (~100
-/// detik + bisa error build), sedangkan updateSource cuma menyimpan konfigurasi
-/// (~2 detik, tanpa deploy). Jadi service muncul seketika di tabel dan deploy
-/// tetap aksi eksplisit `d` — persis alur dashboard EasyPanel.
+/// The source is APPLIED SEPARATELY after createService, not inline. The reason
+/// was measured on the server: createService with an inline source triggers a
+/// deploy (~100 seconds + can error out during the build), whereas updateSource
+/// only stores the config (~2 seconds, no deploy). So the service appears in the
+/// table instantly and deploy stays an explicit `d` action — exactly the EasyPanel
+/// dashboard flow.
 pub(super) fn create_source(form: &Form) -> std::result::Result<Option<SourceCall>, String> {
-    if form.by_label("Tipe") != "app" {
+    if form.by_label("Kind") != "app" {
         return Ok(None);
     }
     let untouched = match form.by_label("Source").as_str() {
@@ -227,30 +235,31 @@ pub(super) fn create_source(form: &Form) -> std::result::Result<Option<SourceCal
     source_body(form).map(Some)
 }
 
-/// Objek `build` untuk createService, atau None untuk service non-app.
+/// The `build` object for createService, or None for a non-app service.
 ///
-/// createService menerima `build` inline sama seperti `source`. Hanya app yang
-/// punya build; database dibuat server tanpa langkah build. build_body() sudah
-/// memetakan tiap engine ke kuncinya (nixpacksVersion vs railpackVersion, dst),
-/// jadi cukup panggil dan ambil isinya.
+/// createService accepts an inline `build` just like `source`. Only apps have a
+/// build; databases are created by the server with no build step. build_body()
+/// already maps each engine to its key (nixpacksVersion vs railpackVersion, etc.),
+/// so just call it and take the contents.
 pub(super) fn create_build(form: &Form) -> Option<Value> {
-    if form.by_label("Tipe") != "app" {
+    if form.by_label("Kind") != "app" {
         return None;
     }
     build_body(form).ok().and_then(|b| b.get("build").cloned())
 }
 
-/// Isi `env` untuk createService, atau None bila kosong. String KEY=value
-/// multi-baris, disunting di $EDITOR — sama seperti env service yang sudah ada.
+/// The `env` contents for createService, or None if empty. A multi-line KEY=value
+/// string, edited in $EDITOR — same as an existing service's env.
 pub(super) fn create_env(form: &Form) -> Option<String> {
     let env = form.by_label("Environment");
     (!env.is_empty()).then_some(env)
 }
 
-/// Array `domains` untuk createService (satu domain), atau None bila host kosong.
+/// The `domains` array for createService (a single domain), or None if the host
+/// is empty.
 ///
-/// API cuma mewajibkan `host`. `port` adalah number, jadi diparse; kalau tak
-/// valid, dihilangkan ketimbang mengirim 0 yang menunjuk port salah.
+/// The API only requires `host`. `port` is a number, so it's parsed; if invalid,
+/// it's dropped rather than sending a 0 that points at the wrong port.
 pub(super) fn create_domains(form: &Form) -> Option<Value> {
     let host = form.by_label("Domain host");
     if host.is_empty() {
@@ -270,12 +279,12 @@ pub(super) fn create_domains(form: &Form) -> Option<Value> {
     Some(json!([Value::Object(d)]))
 }
 
-/// Field limit resource. Semua number; kosong = 0 = tak dibatasi (konvensi
-/// EasyPanel: 0 berarti tanpa batas). Satuan mengikuti dashboard EasyPanel —
-/// CPU dalam core (boleh desimal, mis. 0.5), memory dalam MB. inspectService
-/// menyimpan dan mengembalikan angka apa adanya (terverifikasi round-trip live).
+/// Fields for the resource limit form. All numbers; empty = 0 = unlimited
+/// (EasyPanel's convention: 0 means no limit). Units follow the EasyPanel
+/// dashboard — CPU in cores (decimals allowed, e.g. 0.5), memory in MB.
+/// inspectService stores and returns the numbers as-is (verified round-trip live).
 pub(super) fn resource_fields(resources: Option<&Value>) -> Vec<Field> {
-    // resources bisa null (belum diatur) → semua default "0".
+    // resources may be null (never set) → everything defaults to "0".
     let get = |ptr: &str| match resources.map(|r| field(r, ptr)) {
         Some(v) if v != "-" => v,
         _ => "0".to_string(),
@@ -288,9 +297,9 @@ pub(super) fn resource_fields(resources: Option<&Value>) -> Vec<Field> {
     ]
 }
 
-/// Body updateResources dari form. Keempat wajib number (API menolak string);
-/// kosong → 0 (tak dibatasi). Negatif ditolak; angka tak valid ditolak dengan
-/// pesan, bukan diam-diam jadi 0 yang salah.
+/// updateResources body from the form. All four must be numbers (the API rejects
+/// strings); empty → 0 (unlimited). Negatives are rejected; invalid numbers are
+/// rejected with a message rather than silently becoming a wrong 0.
 pub(super) fn resource_body(form: &Form) -> std::result::Result<Value, String> {
     let num = |label: &str| -> std::result::Result<f64, String> {
         let v = form.by_label(label);
@@ -299,9 +308,9 @@ pub(super) fn resource_body(form: &Form) -> std::result::Result<Value, String> {
             return Ok(0.0);
         }
         match v.parse::<f64>() {
-            Ok(n) if n < 0.0 => Err(format!("{label} tak boleh negatif")),
+            Ok(n) if n < 0.0 => Err(format!("{label} can't be negative")),
             Ok(n) => Ok(n),
-            Err(_) => Err(format!("{label} harus angka")),
+            Err(_) => Err(format!("{label} must be a number")),
         }
     };
     Ok(json!({ "resources": {
@@ -321,8 +330,8 @@ pub(super) fn service_extra(form: &Form) -> Value {
         ("Root password", "rootPassword"),
         ("Image", "image"),
     ] {
-        // Hanya field yang TAMPIL untuk tipe ini: mengirim rootPassword ke redis
-        // akan ditolak server, dan user tak pernah melihat field itu.
+        // Only fields that are SHOWN for this type: sending rootPassword to redis
+        // would be rejected by the server, and the user never saw that field.
         let visible = form
             .visible()
             .iter()
@@ -335,12 +344,13 @@ pub(super) fn service_extra(form: &Form) -> Value {
     Value::Object(out)
 }
 
-/// Endpoint + body updateSource* dari form.
+/// Endpoint + body for updateSource* from the form.
 ///
-/// Tiap tipe source punya endpoint sendiri dengan field yang persis ditentukan
-/// skema, jadi body dibangun dari nol — tak ada field tak termodel yang perlu
-/// dilestarikan seperti pada domain.
-/// `auto_deploy` hanya relevan untuk source github (endpoint lain tak punya konsep ini).
+/// Each source type has its own endpoint with fields defined exactly by the
+/// schema, so the body is built from scratch — there are no unmodelled fields to
+/// preserve like there are on a domain.
+/// `auto_deploy` is only relevant for a github source (the other endpoints have no
+/// such concept).
 pub(super) fn source_body(
     form: &Form,
 ) -> std::result::Result<(&'static str, Value, Option<bool>), String> {
@@ -349,21 +359,21 @@ pub(super) fn source_body(
         p => p.to_string(),
     };
     if !path.starts_with('/') {
-        return Err("Path harus diawali /".into());
+        return Err("Path must start with /".into());
     }
 
     match form.by_label("Source").as_str() {
         "github" => {
             let full = form.by_label("Repo");
             if full.is_empty() {
-                return Err("Repo wajib dipilih".into());
+                return Err("Repo must be selected".into());
             }
             let (owner, repo) = full
                 .split_once('/')
-                .ok_or("Repo harus berbentuk owner/repo")?;
+                .ok_or("Repo must be in owner/repo form")?;
             let branch = form.by_label("Branch");
             if owner.is_empty() || repo.is_empty() || branch.is_empty() {
-                return Err("Repo dan Branch wajib diisi".into());
+                return Err("Repo and Branch are required".into());
             }
             Ok((
                 "updateSourceGithub",
@@ -374,7 +384,7 @@ pub(super) fn source_body(
         "git" => {
             let (repo, git_ref) = (form.by_label("Git URL"), form.by_label("Ref"));
             if repo.is_empty() || git_ref.is_empty() {
-                return Err("Git URL dan Ref wajib diisi".into());
+                return Err("Git URL and Ref are required".into());
             }
             Ok((
                 "updateSourceGit",
@@ -385,7 +395,7 @@ pub(super) fn source_body(
         "dockerfile" => {
             let content = form.by_label("Dockerfile");
             if content.is_empty() {
-                return Err("Dockerfile masih kosong — Spasi untuk membukanya di $EDITOR".into());
+                return Err("Dockerfile is still empty — Space to open it in $EDITOR".into());
             }
             Ok((
                 "updateSourceDockerfile",
@@ -396,10 +406,10 @@ pub(super) fn source_body(
         _ => {
             let image = form.by_label("Docker image");
             if image.is_empty() {
-                return Err("Docker image wajib diisi".into());
+                return Err("Docker image is required".into());
             }
             let mut body = json!({ "image": image });
-            // username/password opsional: kosong = tak dikirim, bukan dikirim "".
+            // username/password optional: empty = not sent, not sent as "".
             for (label, key) in [
                 ("Registry user", "username"),
                 ("Registry password", "password"),
@@ -414,11 +424,11 @@ pub(super) fn source_body(
     }
 }
 
-/// Body updateBuild dari form.
+/// updateBuild body from the form.
 ///
-/// Berangkat dari build asli hanya bila tipenya tak berubah, supaya field yang
-/// tak ada di form (nixpacksVersion, railpackVersion) tetap utuh. Saat tipe
-/// diganti, field tipe lama justru tak boleh ikut terbawa.
+/// Starts from the original build only when the type is unchanged, so fields not
+/// in the form (nixpacksVersion, railpackVersion) stay intact. When the type
+/// changes, the old type's fields must NOT be carried along.
 pub(super) fn build_body(form: &Form) -> std::result::Result<Value, String> {
     let t = form.by_label("Build");
     let same_type =
@@ -448,11 +458,11 @@ pub(super) fn build_body(form: &Form) -> std::result::Result<Value, String> {
         ],
         "dockerfile" => &[("Dockerfile path", "file")],
         "buildpacks" => &[("Builder", "buildpacksBuilder")],
-        // heroku-buildpacks / paketo-buildpacks cuma butuh `type`.
+        // heroku-buildpacks / paketo-buildpacks only need `type`.
         _ => &[],
     };
 
-    let obj = build.as_object_mut().ok_or("bentuk build tak dikenal")?;
+    let obj = build.as_object_mut().ok_or("unrecognized build shape")?;
     for (label, key) in keys {
         match form.by_label(label) {
             v if v.is_empty() => obj.remove(*key),
@@ -462,14 +472,14 @@ pub(super) fn build_body(form: &Form) -> std::result::Result<Value, String> {
     Ok(json!({ "build": build }))
 }
 
-/// Body createDomain/updateDomain dari form.
+/// createDomain/updateDomain body from the form.
 ///
-/// Saat edit, berangkat dari JSON domain aslinya sehingga field yang tak ada
-/// di form (middlewares) tetap utuh — bukan ditimpa nilai default.
+/// On edit, starts from the domain's original JSON so fields not in the form
+/// (middlewares) stay intact — rather than being overwritten with defaults.
 pub(super) fn domain_body(form: &Form) -> std::result::Result<Value, String> {
     let host = form.by_label("Host");
     if host.is_empty() {
-        return Err("Host wajib diisi".into());
+        return Err("Host is required".into());
     }
 
     let mut body = form.original.clone().unwrap_or_else(
@@ -484,19 +494,19 @@ pub(super) fn domain_body(form: &Form) -> std::result::Result<Value, String> {
     body["certificateResolver"] = json!(form.by_label("SSL resolver"));
     body["wildcard"] = json!(form.is_on_label("Wildcard"));
 
-    let obj = body.as_object_mut().ok_or("bentuk domain tak dikenal")?;
-    if form.by_label("Tujuan") == "custom" {
+    let obj = body.as_object_mut().ok_or("unrecognized domain shape")?;
+    if form.by_label("Destination") == "custom" {
         let url = form.by_label("Server URL");
         if url.is_empty() {
-            return Err("Server URL wajib diisi untuk tujuan custom".into());
+            return Err("Server URL is required for a custom destination".into());
         }
         let weight: u32 = form
             .by_label("Weight")
             .parse()
-            .map_err(|_| "Weight harus angka")?;
+            .map_err(|_| "Weight must be a number")?;
 
-        // Form hanya memodelkan server pertama. Server lain (kalau ada) harus
-        // ikut utuh — memangkasnya diam-diam sama saja merusak konfigurasi.
+        // The form only models the first server. Other servers (if any) must stay
+        // intact — silently trimming them would corrupt the config.
         let mut servers = form
             .original
             .as_ref()
@@ -517,12 +527,12 @@ pub(super) fn domain_body(form: &Form) -> std::result::Result<Value, String> {
     } else {
         let (project, service) = (form.by_label("Project"), form.by_label("Service"));
         if project.is_empty() || service.is_empty() {
-            return Err("Project dan service wajib diisi".into());
+            return Err("Project and service are required".into());
         }
         let port: u32 = form
             .by_label("Port")
             .parse()
-            .map_err(|_| "Port harus angka")?;
+            .map_err(|_| "Port must be a number")?;
         obj.remove("customDestination");
         obj.insert("destinationType".into(), json!("service"));
         obj.insert(
@@ -532,7 +542,7 @@ pub(super) fn domain_body(form: &Form) -> std::result::Result<Value, String> {
                 "serviceName": service,
                 "port": port,
                 "protocol": form.by_label("Protocol"),
-                "path": match form.by_label("Path tujuan").as_str() {
+                "path": match form.by_label("Destination path").as_str() {
                     "" => "/".to_string(),
                     p => p.to_string(),
                 }
@@ -542,7 +552,7 @@ pub(super) fn domain_body(form: &Form) -> std::result::Result<Value, String> {
     Ok(body)
 }
 
-/// Field form "Port baru": published (host) -> target (container) + protokol.
+/// Fields for the "New port" form: published (host) -> target (container) + protocol.
 pub(super) fn port_fields() -> Vec<Field> {
     vec![
         Field::text("Published", ""),
@@ -551,8 +561,8 @@ pub(super) fn port_fields() -> Vec<Field> {
     ]
 }
 
-/// Field form tambah redirect. `Regex` mencocokkan URL sumber, `Replacement`
-/// tujuannya (boleh pakai grup `${1}`). Permanent = 301, kalau tidak 302.
+/// Fields for the add-redirect form. `Regex` matches the source URL, `Replacement`
+/// its target (may use groups `${1}`). Permanent = 301, otherwise 302.
 pub(super) fn redirect_fields() -> Vec<Field> {
     vec![
         Field::text("Regex", ""),
@@ -562,13 +572,13 @@ pub(super) fn redirect_fields() -> Vec<Field> {
     ]
 }
 
-/// Objek redirect untuk updateRedirects: `{enabled, permanent, regex, replacement}`
-/// (keempat wajib per skema). Regex & replacement tak boleh kosong.
+/// A redirect object for updateRedirects: `{enabled, permanent, regex, replacement}`
+/// (all four required by the schema). Regex & replacement must not be empty.
 pub(super) fn redirect_body(form: &Form) -> std::result::Result<Value, String> {
     let regex = form.by_label("Regex");
     let replacement = form.by_label("Replacement");
     if regex.trim().is_empty() || replacement.trim().is_empty() {
-        return Err("Regex dan Replacement wajib diisi".into());
+        return Err("Regex and Replacement are required".into());
     }
     Ok(json!({
         "enabled": form.is_on_label("Enabled"),
@@ -578,9 +588,9 @@ pub(super) fn redirect_body(form: &Form) -> std::result::Result<Value, String> {
     }))
 }
 
-/// Field form basic auth, terisi kredensial pertama yang ada (form ini mengelola
-/// SATU user — kasus umum "lindungi service ini"). Password ikut di-prefill supaya
-/// mengubah username saja tak mengosongkannya.
+/// Fields for the basic auth form, prefilled with the first existing credential
+/// (this form manages a SINGLE user — the common "protect this service" case). The
+/// password is prefilled too so changing just the username doesn't clear it.
 pub(super) fn basic_auth_fields(data: Option<&Value>) -> Vec<Field> {
     let first = data.and_then(|d| d.pointer("/basicAuth/0"));
     let user = first.map(|c| field(c, "/username")).unwrap_or_default();
@@ -591,23 +601,24 @@ pub(super) fn basic_auth_fields(data: Option<&Value>) -> Vec<Field> {
     ]
 }
 
-/// Array `basicAuth` untuk updateBasicAuth. Kedua kosong = hapus proteksi ([]);
-/// salah satu kosong = error (setengah kredensial tak berguna).
+/// The `basicAuth` array for updateBasicAuth. Both empty = remove protection ([]);
+/// one empty = error (half a credential is useless).
 pub(super) fn basic_auth_body(form: &Form) -> std::result::Result<Value, String> {
     let user = form.by_label("Username");
     let pass = form.by_label("Password");
     let (u, p) = (user.trim(), pass.trim());
     if u.is_empty() && p.is_empty() {
-        return Ok(json!([])); // kosongkan = matikan proteksi
+        return Ok(json!([])); // clear both = turn off protection
     }
     if u.is_empty() || p.is_empty() {
-        return Err("Isi Username DAN Password, atau kosongkan keduanya untuk mematikan".into());
+        return Err("Fill in Username AND Password, or clear both to turn it off".into());
     }
     Ok(json!([{ "username": u, "password": p }]))
 }
 
-/// Field form tambah mount. Tipe menentukan field yang tampil: volume→Name,
-/// bind→Host path, file→Content (isi berkas, dibuka di $EDITOR). Mount path selalu.
+/// Fields for the add-mount form. The type decides which fields show: volume→Name,
+/// bind→Host path, file→Content (file contents, opened in $EDITOR). Mount path is
+/// always shown.
 pub(super) fn mount_fields() -> Vec<Field> {
     vec![
         Field::choice("Type", MOUNT_TYPES, "volume"),
@@ -618,51 +629,52 @@ pub(super) fn mount_fields() -> Vec<Field> {
     ]
 }
 
-/// Objek `values` untuk createMount, per tipe (bentuk diverifikasi ke server).
-/// Field wajib divalidasi di sini agar pesannya jelas, bukan error server mentah.
+/// The `values` object for createMount, per type (shape verified against the
+/// server). Required fields are validated here so the message is clear, rather than
+/// a raw server error.
 pub(super) fn mount_body(form: &Form) -> std::result::Result<Value, String> {
     let mount_path = form.by_label("Mount path");
     if mount_path.trim().is_empty() {
-        return Err("Mount path wajib diisi".into());
+        return Err("Mount path is required".into());
     }
     match form.by_label("Type").as_str() {
         "bind" => {
             let host = form.by_label("Host path");
             if host.trim().is_empty() {
-                return Err("Host path wajib untuk bind mount".into());
+                return Err("Host path is required for a bind mount".into());
             }
             Ok(json!({ "type": "bind", "hostPath": host, "mountPath": mount_path }))
         }
         "file" => {
             let content = form.by_label("Content");
             if content.is_empty() {
-                return Err("Content masih kosong — Spasi untuk membukanya di $EDITOR".into());
+                return Err("Content is still empty — Space to open it in $EDITOR".into());
             }
             Ok(json!({ "type": "file", "content": content, "mountPath": mount_path }))
         }
         _ => {
             let name = form.by_label("Name");
             if name.trim().is_empty() {
-                return Err("Name wajib untuk volume mount".into());
+                return Err("Name is required for a volume mount".into());
             }
             Ok(json!({ "type": "volume", "name": name, "mountPath": mount_path }))
         }
     }
 }
 
-/// Objek `values` untuk createPort: `{published, target, protocol}`.
+/// The `values` object for createPort: `{published, target, protocol}`.
 ///
-/// Keduanya number di API, jadi diparse; angka non-valid ditolak dengan pesan
-/// jelas, bukan dikirim 0 yang membuka port salah.
+/// Both are numbers in the API, so they're parsed; a non-numeric value is rejected
+/// with a clear message rather than sending a 0 that opens the wrong port.
 pub(super) fn port_body(form: &Form) -> std::result::Result<Value, String> {
     let published: u32 = form
         .by_label("Published")
         .parse()
-        .map_err(|_| "Published harus angka port (mis. 8080)")?;
+        .map_err(|_| "Published must be a port number (e.g. 8080)")?;
     let target: u32 = form
         .by_label("Target")
         .parse()
-        .map_err(|_| "Target harus angka port (mis. 80)")?;
+        .map_err(|_| "Target must be a port number (e.g. 80)")?;
     Ok(json!({
         "published": published,
         "target": target,
@@ -670,21 +682,21 @@ pub(super) fn port_body(form: &Form) -> std::result::Result<Value, String> {
     }))
 }
 
-// ---------- Form (ratatui tak punya widget input, jadi dibuat sendiri) ----------
+// ---------- Form (ratatui has no input widget, so we build our own) ----------
 
 #[derive(PartialEq, Clone)]
 pub(super) enum FieldKind {
     Text,
     Secret,
     Bool,
-    /// Pilihan dari data nyata (project/service/protocol), digilir dgn spasi/←/→.
-    /// Dinamis supaya isinya bisa datang dari API, bukan diketik manual.
+    /// A choice from real data (project/service/protocol), cycled with space/←/→.
+    /// Dynamic so its contents can come from the API, not be typed by hand.
     Choice(Vec<String>),
-    /// Isi multi-baris yang disunting di $EDITOR, seperti env.
+    /// Multi-line content edited in $EDITOR, like env.
     ///
-    /// Sebuah Dockerfile tak pernah muat di field satu baris; memaksakannya ke
-    /// FieldKind::Text berarti user mengetik "\n" harfiah dan mengirim satu baris
-    /// panjang yang tak akan pernah di-build.
+    /// A Dockerfile never fits in a single-line field; forcing it into
+    /// FieldKind::Text means the user types a literal "\n" and sends one long line
+    /// that will never build.
     Editor,
 }
 
@@ -698,21 +710,21 @@ pub(super) struct Field {
     pub(super) label: &'static str,
     pub(super) value: String,
     pub(super) kind: FieldKind,
-    /// Syarat tampil, digabung dengan DAN: (label field penentu, tag dipisah
-    /// koma mis. "github,git"). Kosong = selalu tampil.
+    /// Show conditions, AND-combined: (label of the deciding field, tags separated
+    /// by commas e.g. "github,git"). Empty = always shown.
     ///
-    /// Panel juga begini: memilih Service/Custom mengganti field di bawahnya,
-    /// bukan menampilkan keduanya sekaligus.
+    /// The panel works this way too: choosing Service/Custom swaps the fields
+    /// below it, rather than showing both at once.
     pub(super) only_for: Vec<(&'static str, &'static str)>,
-    /// Langkah wizard tempat field ini muncul. 0 = langkah pertama. Form yang
-    /// semua field-nya di langkah 0 tetap satu halaman biasa; begitu ada field
-    /// di langkah > 0, form itu jadi wizard bertahap. Nilai submit tetap dibaca
-    /// dari SEMUA langkah sekaligus.
+    /// The wizard step this field appears on. 0 = first step. A form whose fields
+    /// are all on step 0 stays an ordinary single page; as soon as a field lands on
+    /// a step > 0, that form becomes a staged wizard. Submit values are still read
+    /// from ALL steps at once.
     pub(super) step: u8,
 }
 
 impl Field {
-    /// Field yang isinya disunting di $EDITOR, bukan diketik di form.
+    /// A field whose contents are edited in $EDITOR, not typed in the form.
     pub(super) fn editor(label: &'static str, value: &str) -> Self {
         Self {
             label,
@@ -731,16 +743,16 @@ impl Field {
             step: 0,
         }
     }
-    /// Tampilkan field ini hanya bila field `switch` bernilai salah satu `tags`
-    /// (dipisah koma). Bisa dipanggil berkali-kali: syaratnya digabung dengan
-    /// DAN, supaya satu form bisa punya lebih dari satu penentu — form "Service
-    /// baru" perlu "tipe service = app" DAN "tipe source = github" sekaligus.
+    /// Show this field only when the `switch` field holds one of `tags` (comma
+    /// separated). Can be called more than once: the conditions are AND-combined,
+    /// so a single form can have more than one decider — the "New service" form
+    /// needs "service type = app" AND "source type = github" at once.
     pub(super) fn when(mut self, switch: &'static str, tags: &'static str) -> Self {
         self.only_for.push((switch, tags));
         self
     }
 
-    /// Tempatkan field di langkah wizard `n` (0 = langkah pertama).
+    /// Place the field on wizard step `n` (0 = first step).
     pub(super) fn step(mut self, n: u8) -> Self {
         self.step = n;
         self
@@ -760,7 +772,7 @@ impl Field {
     pub(super) fn boolean(label: &'static str, on: bool) -> Self {
         Self {
             label,
-            value: if on { "ya".into() } else { "tidak".into() },
+            value: if on { "yes".into() } else { "no".into() },
             kind: FieldKind::Bool,
             only_for: Vec::new(),
             step: 0,
@@ -787,12 +799,13 @@ impl Field {
             step: 0,
         }
     }
-    /// Ganti daftar pilihan (mis. service terisi setelah project dipilih).
+    /// Replace the list of choices (e.g. services filled in after a project is
+    /// chosen).
     ///
-    /// Nilai yang sedang dipakai selalu dipertahankan, meski tak ada di daftar
-    /// baru: melompat diam-diam ke pilihan pertama akan mengubah konfigurasi yang
-    /// tak diminta user — mis. `ref` yang berupa tag akan berganti jadi branch
-    /// pertama sesuai abjad, lalu ikut ter-deploy.
+    /// The current value is always kept, even if it's absent from the new list:
+    /// silently jumping to the first choice would change config the user didn't ask
+    /// for — e.g. a `ref` that's a tag would switch to the first branch
+    /// alphabetically, then get deployed along with it.
     pub(super) fn set_options(&mut self, mut options: Vec<String>) {
         if !self.value.is_empty() && !options.contains(&self.value) {
             options.insert(0, self.value.clone());
@@ -802,14 +815,14 @@ impl Field {
         }
         self.kind = FieldKind::Choice(options);
     }
-    /// Gilir ke pilihan berikutnya (Bool diperlakukan sebagai ya/tidak).
+    /// Cycle to the next choice (Bool is treated as yes/no).
     pub(super) fn cycle(&mut self) {
         match self.kind {
             FieldKind::Bool => {
                 self.value = if self.is_on() {
-                    "tidak".into()
+                    "no".into()
                 } else {
-                    "ya".into()
+                    "yes".into()
                 }
             }
             FieldKind::Choice(ref opts) => {
@@ -823,40 +836,40 @@ impl Field {
         }
     }
     pub(super) fn is_on(&self) -> bool {
-        self.value == "ya"
+        self.value == "yes"
     }
     pub(super) fn shown(&self) -> String {
         match self.kind {
             FieldKind::Secret => "•".repeat(self.value.chars().count()),
-            // Isinya bisa ratusan baris: yang berguna di sini adalah apakah ia
-            // ada dan sebesar apa, bukan cuplikan baris pertamanya.
-            FieldKind::Editor if self.value.trim().is_empty() => "(kosong)".into(),
-            FieldKind::Editor => format!("{} baris", self.value.lines().count()),
+            // The contents can be hundreds of lines: what's useful here is whether
+            // it exists and how big it is, not a snippet of its first line.
+            FieldKind::Editor if self.value.trim().is_empty() => "(empty)".into(),
+            FieldKind::Editor => format!("{} lines", self.value.lines().count()),
             _ => self.value.clone(),
         }
     }
 }
 
-/// Apa yang dilakukan form saat disubmit.
+/// What the form does when submitted.
 pub(super) enum FormKind {
     ServerAdd,
     ServerEdit {
         name: String,
     },
     ProjectCreate,
-    /// Project ikut jadi field form: daftar datar tak punya "project yang
-    /// sedang dibuka" untuk diwarisi.
+    /// Project is one of the form fields: a flat list has no "currently open
+    /// project" to inherit.
     ServiceCreate,
     DomainCreate,
     DomainEdit {
         id: String,
     },
-    /// Tambah port yang di-expose ke sebuah service.
+    /// Add a port exposed to a service.
     PortCreate {
         project: String,
         service: String,
     },
-    /// Cari kata kunci di log semua service sekaligus.
+    /// Search for a keyword in the logs of all services at once.
     LogSearch,
     SourceEdit {
         project: String,
@@ -866,31 +879,31 @@ pub(super) enum FormKind {
         project: String,
         service: String,
     },
-    /// Atur limit CPU/memory sebuah service (semua tipe). `stype` menentukan
-    /// grup endpoint (services/{stype}/updateResources).
+    /// Set a service's CPU/memory limit (any type). `stype` decides the endpoint
+    /// group (services/{stype}/updateResources).
     ResourceEdit {
         project: String,
         service: String,
         stype: String,
     },
-    /// Clone config sebuah service jadi service baru (nama diisi user).
+    /// Clone a service's config into a new service (name filled by the user).
     CloneService {
         project: String,
         service: String,
         stype: String,
     },
-    /// Tambah mount (volume/bind/file) ke sebuah service.
+    /// Add a mount (volume/bind/file) to a service.
     MountCreate {
         project: String,
         service: String,
     },
-    /// Atur basic auth (proteksi user/password) sebuah service web.
+    /// Set basic auth (user/password protection) on a web service.
     BasicAuthEdit {
         project: String,
         service: String,
         stype: String,
     },
-    /// Tambah satu redirect rule ke sebuah service web.
+    /// Add one redirect rule to a web service.
     RedirectCreate {
         project: String,
         service: String,
@@ -903,13 +916,12 @@ pub(super) struct Form {
     pub(super) title: String,
     pub(super) fields: Vec<Field>,
     pub(super) focus: usize,
-    /// JSON asli saat mode edit. Submit berangkat dari sini supaya field yang
-    /// tak ada di form (middlewares pada domain, nixpacksVersion pada build)
-    /// ikut utuh.
+    /// The original JSON in edit mode. Submit starts from here so fields not in the
+    /// form (middlewares on a domain, nixpacksVersion on a build) stay intact.
     pub(super) original: Option<Value>,
-    /// Langkah wizard yang sedang tampil. 0 untuk form satu halaman biasa.
+    /// The wizard step currently shown. 0 for an ordinary single-page form.
     pub(super) step: usize,
-    /// Area baris field (diisi saat render), untuk memetakan klik ke field.
+    /// The area of the field rows (filled in at render), to map a click to a field.
     pub(super) rect: Rect,
 }
 
@@ -929,11 +941,11 @@ impl Form {
         self.original = Some(original);
         self
     }
-    /// Indeks field yang tampil sekarang.
+    /// Indices of the fields shown right now.
     ///
-    /// Setiap field membawa syaratnya sendiri, jadi satu form boleh punya lebih
-    /// dari satu penentu. Tanpa itu, form "Service baru" tak bisa memuat source
-    /// sekaligus: ia butuh "tipe service = app" DAN "tipe source = github".
+    /// Each field carries its own condition, so a single form can have more than
+    /// one decider. Without that, the "New service" form couldn't carry a source
+    /// too: it needs "service type = app" AND "source type = github".
     pub(super) fn visible(&self) -> Vec<usize> {
         self.fields
             .iter()
@@ -948,9 +960,9 @@ impl Form {
             .collect()
     }
 
-    /// Langkah-langkah yang benar-benar punya field tampil, terurut. Untuk
-    /// service database ini cuma `[0]` (field source/build tergantung Tipe=app),
-    /// jadi form-nya tetap satu halaman; untuk app `[0, 1, 2]` → wizard.
+    /// The steps that actually have visible fields, sorted. For a database service
+    /// this is just `[0]` (source/build fields depend on Kind=app), so its form
+    /// stays a single page; for an app `[0, 1, 2]` → wizard.
     pub(super) fn steps_present(&self) -> Vec<u8> {
         let mut steps: Vec<u8> = self
             .visible()
@@ -962,13 +974,13 @@ impl Form {
         steps
     }
 
-    /// Form ini bertahap (lebih dari satu langkah berisi field).
+    /// This form is staged (more than one step holds fields).
     pub(super) fn is_wizard(&self) -> bool {
         self.steps_present().len() > 1
     }
 
-    /// Field tampil DI LANGKAH SEKARANG. Beda dari visible(), yang lintas-langkah
-    /// dan dipakai saat submit untuk membaca semua nilai sekaligus.
+    /// Fields shown ON THE CURRENT STEP. Differs from visible(), which spans steps
+    /// and is used at submit to read every value at once.
     pub(super) fn visible_here(&self) -> Vec<usize> {
         let step = self.step as u8;
         self.visible()
@@ -977,7 +989,7 @@ impl Form {
             .collect()
     }
 
-    /// Langkah berisi berikutnya setelah yang sekarang, bila ada.
+    /// The next populated step after the current one, if any.
     pub(super) fn next_present_step(&self) -> Option<usize> {
         self.steps_present()
             .into_iter()
@@ -985,7 +997,7 @@ impl Form {
             .find(|&s| s > self.step)
     }
 
-    /// Langkah berisi sebelum yang sekarang, bila ada.
+    /// The populated step before the current one, if any.
     pub(super) fn prev_present_step(&self) -> Option<usize> {
         self.steps_present()
             .into_iter()
@@ -994,13 +1006,13 @@ impl Form {
             .find(|&s| s < self.step)
     }
 
-    /// Pindah ke langkah `step` dan letakkan fokus di field pertamanya.
+    /// Move to step `step` and put focus on its first field.
     pub(super) fn goto_step(&mut self, step: usize) {
         self.step = step;
         self.focus = self.visible_here().first().copied().unwrap_or(0);
     }
 
-    /// Pindah fokus `delta` langkah di antara field yang tampil di langkah ini.
+    /// Move focus `delta` steps among the fields shown on this step.
     pub(super) fn move_focus(&mut self, delta: isize) {
         let vis = self.visible_here();
         if vis.is_empty() {
@@ -1011,7 +1023,7 @@ impl Form {
         self.focus = vis[next];
     }
 
-    /// Setelah Tujuan berganti, fokus bisa tertinggal di field yang kini tersembunyi.
+    /// After Destination changes, focus may be left on a now-hidden field.
     pub(super) fn clamp_focus(&mut self) {
         let vis = self.visible_here();
         if !vis.contains(&self.focus) {
@@ -1038,17 +1050,17 @@ impl Form {
     }
 }
 
-/// Dropdown untuk sebuah field Choice: daftar pilihan + filter ketik.
+/// A dropdown for a Choice field: the list of options + a type-to-filter box.
 ///
-/// Menggilir pilihan dengan spasi tidak terpakai untuk daftar panjang (11 service),
-/// jadi field Choice membuka daftar sungguhan yang bisa dicari.
+/// Cycling options with space doesn't scale to long lists (11 services), so a
+/// Choice field opens a real, searchable list.
 pub(super) struct Chooser {
     pub(super) field: usize,
     pub(super) label: &'static str,
     pub(super) options: Vec<String>,
     pub(super) filter: String,
     pub(super) state: ListState,
-    /// Kotak dropdown yang digambar (diisi saat render), untuk hit-test klik/hover.
+    /// The dropdown box as drawn (filled in at render), for click/hover hit-testing.
     pub(super) rect: Rect,
 }
 
@@ -1071,8 +1083,8 @@ impl Chooser {
         }
     }
 
-    /// Indeks pilihan (dalam `matches()`) di bawah (col,row), None bila di luar.
-    /// Baris pertama & terakhir kotak = border; daftar bisa tergulung (offset).
+    /// The option index (within `matches()`) under (col,row), None if outside. The
+    /// box's first & last rows are borders; the list may be scrolled (offset).
     pub(super) fn item_at(&self, col: u16, row: u16) -> Option<usize> {
         let r = self.rect;
         let inside = col >= r.x
@@ -1086,7 +1098,7 @@ impl Chooser {
         (idx < self.matches().len()).then_some(idx)
     }
 
-    /// Pilihan yang lolos filter (case-insensitive, substring).
+    /// The options that pass the filter (case-insensitive, substring).
     pub(super) fn matches(&self) -> Vec<String> {
         let f = self.filter.to_lowercase();
         self.options
@@ -1101,7 +1113,7 @@ impl Chooser {
         self.state.selected().and_then(|i| m.get(i).cloned())
     }
 
-    /// Jaga agar indeks terpilih tetap valid setelah filter berubah.
+    /// Keep the selected index valid after the filter changes.
     pub(super) fn clamp(&mut self) {
         let len = self.matches().len();
         let i = self.state.selected().unwrap_or(0);

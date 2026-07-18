@@ -365,12 +365,12 @@ fn main() {
 fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
     output::set_json_output(cli.json);
     match cli.command {
-        // Tak menyentuh jaringan maupun config: didahulukan supaya completion
-        // tetap bisa dicetak sebelum ada server terdaftar sekalipun.
+        // Touches neither the network nor config: handled first so completions
+        // can still be printed even before any server is registered.
         Some(Command::Completions { shell }) => {
             let Some(shell) = shell.or_else(Shell::from_env) else {
                 anyhow::bail!(
-                    "Tak bisa menebak shell dari $SHELL. Sebutkan: easypanel completions <bash|zsh|fish|elvish|powershell>"
+                    "Could not guess the shell from $SHELL. Specify one: easypanel completions <bash|zsh|fish|elvish|powershell>"
                 );
             };
             let mut cmd = Cli::command();
@@ -378,7 +378,7 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
             Ok(())
         }
 
-        // Sama seperti completions: tak menyentuh jaringan maupun config.
+        // Same as completions: touches neither the network nor config.
         Some(Command::Man) => {
             let mut out = Vec::new();
             clap_mangen::Man::new(Cli::command()).render(&mut out)?;
@@ -664,8 +664,8 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// clap memvalidasi seluruh definisi CLI: nama ganda, arg konflik, dsb.
-    /// Ini menangkap kesalahan yang selama ini hanya muncul saat runtime.
+    /// clap validates the entire CLI definition: duplicate names, arg conflicts, etc.
+    /// This catches mistakes that would otherwise only surface at runtime.
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
@@ -676,19 +676,19 @@ mod tests {
         let mut out = Vec::new();
         clap_mangen::Man::new(Cli::command())
             .render(&mut out)
-            .expect("man page harus ter-render");
-        let roff = String::from_utf8(out).expect("man page harus UTF-8");
-        // Tanpa section ini, `man` menampilkan halaman yang rusak/kosong.
+            .expect("man page should render");
+        let roff = String::from_utf8(out).expect("man page should be UTF-8");
+        // Without these sections, `man` shows a broken/empty page.
         for section in ["NAME", "SYNOPSIS", "DESCRIPTION", "OPTIONS"] {
             assert!(
                 roff.contains(section),
-                "man page tak punya section {section}"
+                "man page is missing section {section}"
             );
         }
-        // Subcommand nyata harus ikut, kalau tidak halamannya tak berguna.
+        // A real subcommand must show up, otherwise the page is useless.
         assert!(
             roff.contains("maintenance"),
-            "man page tak memuat subcommand"
+            "man page doesn't include a subcommand"
         );
     }
 
@@ -703,16 +703,16 @@ mod tests {
         ] {
             let mut out = Vec::new();
             clap_complete::generate(shell, &mut Cli::command(), "easypanel", &mut out);
-            let script = String::from_utf8(out).expect("skrip completion harus UTF-8");
+            let script = String::from_utf8(out).expect("completion script should be UTF-8");
             assert!(
                 script.len() > 100,
-                "{shell} menghasilkan skrip kosong/terlalu pendek"
+                "{shell} produced an empty/too-short script"
             );
-            // Skrip yang tak menyebut subcommand mana pun berarti generatornya
-            // kehilangan definisi CLI — lolos "tak error" tapi tak berguna.
+            // A script that doesn't mention any subcommand means the generator
+            // lost the CLI definition — passes "no error" but is useless.
             assert!(
                 script.contains("maintenance"),
-                "{shell} tak memuat subcommand nyata"
+                "{shell} doesn't include a real subcommand"
             );
         }
     }

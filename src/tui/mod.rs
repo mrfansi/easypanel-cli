@@ -1,11 +1,11 @@
-//! TUI EasyPanel.
+//! The EasyPanel TUI.
 //!
-//! Dipecah mengikuti aliran datanya, bukan tipenya: `worker` bicara ke jaringan
-//! di thread lain dan hanya mengenal Req/Resp; `app` memegang state dan tombol;
-//! `render` menggambar dan tak pernah memutuskan apa pun; `form` dan `table`
-//! adalah bahasa bersama di antaranya. `mod.rs` hanya menyatukan: event loop,
-//! penyerahan ke $EDITOR, dan perubahan daftar server — satu-satunya tempat yang
-//! memegang ServerConfig.
+//! Split along its data flow, not by type: `worker` talks to the network on
+//! another thread and only knows Req/Resp; `app` holds the state and the keys;
+//! `render` draws and never decides anything; `form` and `table` are the shared
+//! vocabulary between them. `mod.rs` only ties it together: the event loop, the
+//! handoff to $EDITOR, and server-list changes — the only place that holds the
+//! ServerConfig.
 
 mod app;
 mod form;
@@ -32,17 +32,17 @@ use crate::client::EasypanelClient;
 use crate::config::ServerConfig;
 
 const REFRESH: Duration = Duration::from_secs(2);
-/// Batas baris yang ditahan viewer saat tail log berjalan.
+/// The cap on lines the viewer holds while a log tail is running.
 const LOG_BUFFER: usize = 5_000;
 
 use app::{App, HostRow, HostState, Screen, ServerAction};
 use render::ui;
 use worker::{spawn_workers, Req, Resp, View};
 
-/// Buka TUI untuk server default (atau --server yang sudah di-resolve).
+/// Open the TUI for the default server (or the resolved --server).
 pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> Result<()> {
     if cfg.all().is_empty() {
-        println!("Belum ada server. Jalankan: easypanel server add");
+        println!("No servers yet. Run: easypanel server add");
         return Ok(());
     }
 
@@ -57,8 +57,8 @@ pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> 
     result
 }
 
-/// Tangkap event mouse (klik tab/baris, scroll). Efek samping: seleksi teks bawaan
-/// terminal jadi tak aktif — pakai Shift+drag di kebanyakan terminal untuk menyalin.
+/// Capture mouse events (tab/row clicks, scroll). Side effect: the terminal's
+/// built-in text selection is disabled — use Shift+drag in most terminals to copy.
 fn enable_mouse() {
     let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture);
 }
@@ -76,10 +76,10 @@ fn event_loop(
     let mut w = spawn_workers(client);
     send_initial(&w.user);
     let mut last_stats = Instant::now();
-    // Status memudar: dilacak di sini, bukan di tiap `self.status = …` yang
-    // tersebar. Timer reset saat pesannya berubah; kalau diam ≥ IDLE detik dan
-    // bukan "Siap", kembalikan ke "Siap" supaya notifikasi sementara (mis.
-    // "Deploy dimulai") tak menetap selamanya.
+    // Status fade: tracked here, not in every scattered `self.status = …`. The
+    // timer resets when the message changes; if it's been idle ≥ IDLE seconds and
+    // isn't "Ready", revert to "Ready" so a transient notice (e.g. "Deploy
+    // started") doesn't linger forever.
     const STATUS_IDLE: Duration = Duration::from_secs(6);
     let mut last_status = app.status.clone();
     let mut status_since = Instant::now();
@@ -92,34 +92,35 @@ fn event_loop(
         if app.status != last_status {
             last_status = app.status.clone();
             status_since = Instant::now();
-        } else if app.status != "Siap" && status_since.elapsed() >= STATUS_IDLE {
-            app.status = "Siap".into();
+        } else if app.status != "Ready" && status_since.elapsed() >= STATUS_IDLE {
+            app.status = "Ready".into();
             last_status = app.status.clone();
         }
 
         app.tick_anim();
         terminal.draw(|f| ui(f, app))?;
 
-        // Metrik jalan di lajur poll. Guard in-flight menjaga agar ronde tak
-        // menumpuk saat server lebih lambat dari interval refresh.
+        // Metrics run on the poll lane. The in-flight guard keeps rounds from
+        // stacking up when the server is slower than the refresh interval.
         if last_stats.elapsed() >= REFRESH && !app.refresh_inflight {
             let _ = w.poll.send(Req::Stats);
-            // Metrik per service ikut live, tapi hanya di layar yang menampilkannya.
+            // Per-service metrics go live too, but only on the screen that shows them.
             if matches!(app.screen, Screen::Monitor | Screen::Projects) {
                 let _ = w.poll.send(Req::MonitorData);
             }
-            // Status "turun" ikut live di tabel Services.
+            // The "down" status goes live in the Services table.
             if app.screen == Screen::Projects {
                 let _ = w.poll.send(Req::TaskStats);
             }
-            // Deploy in-progress live di kolom Status (Projects) dan tab Actions
-            // tetap fresh (dulu beku sampai `r`). Satu panggilan listActions.
+            // In-progress deploys stay live in the Status column (Projects) and the
+            // Actions tab stays fresh (it used to be frozen until `r`). One
+            // listActions call.
             if matches!(app.screen, Screen::Projects | Screen::Actions) {
                 let _ = w.poll.send(Req::Actions);
             }
-            // Log ikut hidup selama viewer-nya terbuka. Di lajur poll, bukan
-            // lajur user: tail tiap dua detik tak boleh mengantre di belakang
-            // (atau di depan) aksi yang ditekan user.
+            // Logs stay live while their viewer is open. On the poll lane, not the
+            // user lane: a tail every two seconds must not queue behind (or ahead
+            // of) an action the user pressed.
             if let (Screen::Viewer, Some((View::Logs, project, service, _))) =
                 (app.screen, &app.viewer_ctx)
             {
@@ -133,9 +134,9 @@ fn event_loop(
             last_stats = Instant::now();
         }
 
-        // Poll lebih rapat saat terminal terbuka (120 ms terasa lag untuk ketikan)
-        // atau saat ada animasi berjalan (spinner/denyut/kilat) supaya mulus; idle
-        // tanpa animasi tetap 120 ms agar murah.
+        // Poll more tightly while the terminal is open (120 ms feels laggy for
+        // typing) or while an animation is running (spinner/pulse/flash) so it's
+        // smooth; idle with no animation stays at 120 ms to keep it cheap.
         let poll = if app.screen == Screen::Terminal {
             15
         } else if app.animating() {
@@ -148,8 +149,8 @@ fn event_loop(
                 Event::Mouse(m) => app.on_mouse(m, &w.user),
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if app.screen == Screen::Terminal {
-                        // Ctrl-Q menutup sesi; SEMUA tombol lain (termasuk Ctrl-C)
-                        // diteruskan ke shell.
+                        // Ctrl-Q closes the session; EVERY other key (including
+                        // Ctrl-C) is forwarded to the shell.
                         let ctrl_q = key.code == KeyCode::Char('q')
                             && key.modifiers.contains(KeyModifiers::CONTROL);
                         if ctrl_q {
@@ -174,8 +175,8 @@ fn event_loop(
             }
         }
 
-        // Layar Hosts: satu thread per server. Fan-out ada di sini karena hanya
-        // event_loop yang memegang ServerConfig (url + token tiap host).
+        // Hosts screen: one thread per server. The fan-out is here because only
+        // event_loop holds the ServerConfig (each host's url + token).
         if app.load_hosts {
             app.load_hosts = false;
             app.hosts = cfg
@@ -199,7 +200,7 @@ fn event_loop(
             }
         }
 
-        // Perubahan daftar server perlu ServerConfig, yang hanya ada di sini.
+        // A server-list change needs the ServerConfig, which only lives here.
         if let Some(action) = app.server_action.take() {
             app.status = match apply_server_action(cfg, action) {
                 Ok(msg) => msg,
@@ -208,8 +209,8 @@ fn event_loop(
             app.all_servers = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
         }
 
-        // Sunting sebuah field form (Dockerfile) di $EDITOR. Beda dengan env:
-        // isinya sudah ada di form, jadi tak ada yang perlu diambil dari server.
+        // Edit a form field (Dockerfile) in $EDITOR. Unlike env: the contents are
+        // already in the form, so there's nothing to fetch from the server.
         if let Some(idx) = app.edit_field.take() {
             let current = app
                 .form
@@ -220,30 +221,30 @@ fn event_loop(
                 .form
                 .as_ref()
                 .map(|f| f.fields[idx].label.to_lowercase())
-                .unwrap_or_else(|| "teks".into());
-            // Namanya menentukan syntax highlighting editor: vim mengenali
-            // *.dockerfile, tapi tidak "easypanel-tmp".
+                .unwrap_or_else(|| "text".into());
+            // The name drives the editor's syntax highlighting: vim recognizes
+            // *.dockerfile, but not "easypanel-tmp".
             match edit_text_in_editor(terminal, &format!("easypanel-form.{name}"), &current) {
                 Ok(Some(edited)) => {
                     if let Some(form) = app.form.as_mut() {
                         form.fields[idx].value = edited;
                     }
-                    app.status = "Diperbarui — Enter untuk menyimpan".into();
+                    app.status = "Updated — Enter to save".into();
                 }
-                Ok(None) => app.status = "Tidak berubah".into(),
+                Ok(None) => app.status = "Unchanged".into(),
                 Err(e) => app.status = format!("Error: {e}"),
             }
         }
 
-        // Terminal container: resolve URL WebSocket (butuh ServerConfig, hanya di
-        // sini), lalu jalankan sesi di thread. Output → Resp::TermOutput ke parser
-        // vt100; keystroke dikirim balik lewat channel. Tabs & status tetap tampil.
+        // Container terminal: resolve the WebSocket URL (needs ServerConfig, only
+        // here), then run the session on a thread. Output → Resp::TermOutput to the
+        // vt100 parser; keystrokes go back via a channel. Tabs & status stay visible.
         if let Some((project, service, db)) = app.terminal_req.take() {
             match cfg.get(&app.server_name) {
                 Some(server) => {
                     let client = EasypanelClient::new(&server.url, &server.token);
-                    // Shell DB: ambil rootPassword + nama database dari inspectService,
-                    // bangun perintah klien mysql. Shell biasa: "sh".
+                    // DB shell: take rootPassword + the database name from
+                    // inspectService, build the mysql client command. Plain shell: "sh".
                     let command = match &db {
                         Some(stype) => {
                             match client.call(
@@ -254,12 +255,12 @@ fn event_loop(
                                 Ok(v) => match terminal::db_command(stype, &v) {
                                     Some(cmd) => cmd,
                                     None => {
-                                        app.status = format!("Shell DB tak didukung untuk {stype}");
+                                        app.status = format!("DB shell not supported for {stype}");
                                         continue;
                                     }
                                 },
                                 Err(e) => {
-                                    app.status = format!("Shell DB gagal: {e}");
+                                    app.status = format!("DB shell failed: {e}");
                                     continue;
                                 }
                             }
@@ -270,8 +271,8 @@ fn event_loop(
                         Ok(url) => {
                             let (cols, rows) =
                                 ratatui::crossterm::terminal::size().unwrap_or((80, 24));
-                            // Pane konten kira-kira ukuran layar minus tabs+status;
-                            // render menyetel ulang persisnya.
+                            // The content pane is roughly the screen minus
+                            // tabs+status; render sets the exact size.
                             let (tcols, trows) = (cols, rows.saturating_sub(5).max(1));
                             let (tx, rx) = std::sync::mpsc::channel();
                             app.term_parser = Some(vt100::Parser::new(trows, tcols, 0));
@@ -281,19 +282,19 @@ fn event_loop(
                             app.term_title = format!("{project}/{service}{label}");
                             terminal::spawn_session(url, w.resp_tx.clone(), rx, tcols, trows);
                             app.screen = Screen::Terminal;
-                            app.status = "Terminal — ketik `exit` atau Ctrl-Q untuk keluar".into();
+                            app.status = "Terminal — type `exit` or Ctrl-Q to leave".into();
                         }
                         Err(e) => app.status = format!("Error: {e}"),
                     }
                 }
-                None => app.status = "Server aktif tak ditemukan".into(),
+                None => app.status = "Active server not found".into(),
             }
         }
 
-        // Edit env: lepas terminal, buka $EDITOR, lalu ambil alih lagi.
+        // Edit env: release the terminal, open $EDITOR, then take it back.
         if let Some((project, service, stype, replace)) = app.edit_env.take() {
-            // Ganti-cepat (replace): editor kosong, tanpa fetch. Simpan hanya kalau
-            // user mengetik sesuatu — kosong berarti batal, BUKAN menghapus env.
+            // Quick-replace (replace): an empty editor, no fetch. Save only if the
+            // user typed something — empty means cancel, NOT clear the env.
             let edited = if replace {
                 edit_text_in_editor(terminal, &format!("easypanel-{project}-{service}.env"), "")
             } else {
@@ -307,15 +308,15 @@ fn event_loop(
                         stype,
                         env,
                     });
-                    app.status = "Menyimpan env...".into();
+                    app.status = "Saving env...".into();
                 }
-                Ok(None) if replace => app.status = "Kosong — env tidak diubah".into(),
-                Ok(None) => app.status = "Env tidak berubah".into(),
+                Ok(None) if replace => app.status = "Empty — env left unchanged".into(),
+                Ok(None) => app.status = "Env unchanged".into(),
                 Err(e) => app.status = format!("Error: {e}"),
             }
         }
 
-        // Sunting Config File (Advanced db) di $EDITOR, lalu simpan via updateAdvanced.
+        // Edit the Config File (Advanced db) in $EDITOR, then save via updateAdvanced.
         if let Some((project, service, stype)) = app.edit_config.take() {
             match edit_config_in_editor(&w.user, &w.resp, terminal, &project, &service, &stype) {
                 Ok(Some(config)) => {
@@ -325,21 +326,21 @@ fn event_loop(
                         stype,
                         config,
                     });
-                    app.status = "Menyimpan config file...".into();
+                    app.status = "Saving config file...".into();
                 }
-                Ok(None) => app.status = "Config file tidak berubah".into(),
+                Ok(None) => app.status = "Config file unchanged".into(),
                 Err(e) => app.status = format!("Error: {e}"),
             }
         }
 
-        // Ganti server: bangun worker baru (yang lama berhenti saat sender-nya di-drop).
+        // Switch server: build a new worker (the old one stops when its sender is dropped).
         if let Some(name) = app.switch_to.take() {
             if let Some(server) = cfg.get(&name) {
                 w = spawn_workers(EasypanelClient::new(&server.url, &server.token));
                 app.reset_for_server(name);
                 send_initial(&w.user);
-                // Muat data layar yang sedang dibuka (reset mengosongkannya), bukan
-                // hanya global — kalau tidak, tetap di Services tapi tabelnya kosong.
+                // Load the currently open screen's data (reset cleared it), not just
+                // the global stuff — otherwise we stay on Services with an empty table.
                 let screen = app.screen;
                 app.goto(screen, &w.user);
                 last_stats = Instant::now();
@@ -356,30 +357,30 @@ fn event_loop(
 fn apply_server_action(cfg: &ServerConfig, action: ServerAction) -> Result<String> {
     match action {
         ServerAction::Save { name, url, token } => {
-            // Token tak pernah ditampilkan kembali ke layar; membiarkannya kosong
-            // saat edit berarti "pakai yang lama", bukan "kosongkan".
+            // The token is never shown back on screen; leaving it empty on edit
+            // means "keep the old one", not "clear it".
             let token = match token {
                 Some(t) => t,
                 None => cfg
                     .get(&name)
                     .map(|s| s.token)
-                    .ok_or_else(|| anyhow::anyhow!("server '{name}' tak ditemukan"))?,
+                    .ok_or_else(|| anyhow::anyhow!("server '{name}' not found"))?,
             };
             cfg.add(&name, &url, &token)?;
-            Ok(format!("Server '{name}' disimpan"))
+            Ok(format!("Server '{name}' saved"))
         }
         ServerAction::Remove(name) => {
             cfg.remove(&name)?;
-            Ok(format!("Server '{name}' dihapus"))
+            Ok(format!("Server '{name}' deleted"))
         }
     }
 }
 
-/// Ambil env service, buka di `$EDITOR`, kembalikan isinya bila berubah.
+/// Fetch a service's env, open it in `$EDITOR`, return the contents if changed.
 ///
-/// Memakai editor milik user (pola `kubectl edit`) alih-alih menulis textarea
-/// sendiri di ratatui: jauh lebih sedikit kode dan sudah familier. Terminal
-/// dilepas selama editor jalan, lalu diambil alih kembali.
+/// Uses the user's editor (the `kubectl edit` pattern) instead of writing our own
+/// textarea in ratatui: far less code and already familiar. The terminal is
+/// released while the editor runs, then taken back.
 fn edit_env_in_editor(
     req: &Sender<Req>,
     resp: &Receiver<Resp>,
@@ -388,7 +389,7 @@ fn edit_env_in_editor(
     service: &str,
     stype: &str,
 ) -> Result<Option<String>> {
-    // Ambil env terkini lebih dulu (blocking; user memang sedang menunggu).
+    // Fetch the current env first (blocking; the user is waiting on it anyway).
     req.send(Req::Fetch {
         view: View::Env,
         project: project.to_string(),
@@ -403,7 +404,7 @@ fn edit_env_in_editor(
             Ok(Resp::Err(e)) => return Err(anyhow::anyhow!(e)),
             Ok(_) => {}
             Err(_) if Instant::now() > deadline => {
-                return Err(anyhow::anyhow!("timeout mengambil env"))
+                return Err(anyhow::anyhow!("timed out fetching env"))
             }
             Err(_) => {}
         }
@@ -416,8 +417,8 @@ fn edit_env_in_editor(
     )
 }
 
-/// Ambil Config File (Advanced) service, buka di `$EDITOR`, kembalikan bila berubah.
-/// Sama seperti edit_env_in_editor tapi memuat `configFile`.
+/// Fetch a service's Config File (Advanced), open it in `$EDITOR`, return it if
+/// changed. Like edit_env_in_editor but loads `configFile`.
 fn edit_config_in_editor(
     req: &Sender<Req>,
     resp: &Receiver<Resp>,
@@ -436,10 +437,10 @@ fn edit_config_in_editor(
     let deadline = Instant::now() + Duration::from_secs(30);
     let current = loop {
         match resp.recv_timeout(Duration::from_millis(200)) {
-            // fetch_view mengembalikan "(kosong)" untuk config kosong — jangan
-            // memuatnya sebagai isi awal editor.
+            // fetch_view returns "(empty)" for an empty config — don't load that as
+            // the editor's initial contents.
             Ok(Resp::Viewer(_, lines)) => {
-                break if lines == ["(kosong)"] {
+                break if lines == ["(empty)"] {
                     String::new()
                 } else {
                     lines.join("\n")
@@ -448,7 +449,7 @@ fn edit_config_in_editor(
             Ok(Resp::Err(e)) => return Err(anyhow::anyhow!(e)),
             Ok(_) => {}
             Err(_) if Instant::now() > deadline => {
-                return Err(anyhow::anyhow!("timeout mengambil config file"))
+                return Err(anyhow::anyhow!("timed out fetching config file"))
             }
             Err(_) => {}
         }
@@ -461,10 +462,10 @@ fn edit_config_in_editor(
     )
 }
 
-/// Suntingkan teks di `$EDITOR`; None bila tak berubah.
+/// Edit text in `$EDITOR`; None if unchanged.
 ///
-/// Terminal dilepas selama editor jalan, lalu diambil alih kembali — termasuk
-/// bila editornya gagal, kalau tidak TUI-nya tak pernah kembali.
+/// The terminal is released while the editor runs, then taken back — including if
+/// the editor fails, otherwise the TUI never comes back.
 fn edit_text_in_editor(
     terminal: &mut ratatui::DefaultTerminal,
     filename: &str,
@@ -487,10 +488,11 @@ fn edit_text_in_editor(
     Ok((edited.trim_end() != current.trim_end()).then_some(edited))
 }
 
-/// Kandidat editor: pilihan user dulu, lalu cadangan yang pasti ada di Unix.
+/// Editor candidates: the user's choice first, then fallbacks that are sure to
+/// exist on Unix.
 ///
-/// Tiap entri dipecah jadi program + argumen, supaya `EDITOR="code -w"` bekerja
-/// dan tidak dicari sebagai satu biner bernama "code -w".
+/// Each entry is split into program + arguments, so `EDITOR="code -w"` works and
+/// isn't looked up as a single binary named "code -w".
 fn editor_candidates() -> Vec<Vec<String>> {
     let mut out: Vec<Vec<String>> = ["VISUAL", "EDITOR"]
         .iter()
@@ -503,29 +505,29 @@ fn editor_candidates() -> Vec<Vec<String>> {
     out
 }
 
-/// Buka file di editor pertama yang benar-benar ada.
+/// Open the file in the first editor that actually exists.
 ///
-/// $EDITOR yang menunjuk editor tak terpasang (mis. `nvim` yang belum dipasang)
-/// dulu gagal dengan "No such file or directory (os error 2)" — pesan yang
-/// terbaca seolah file env-nya yang hilang, bukan editornya. Sekarang kandidat
-/// yang hilang dilewati, dan kalau semuanya hilang pesannya menyebut nama-namanya.
+/// A $EDITOR pointing at an uninstalled editor (e.g. `nvim` that isn't installed)
+/// used to fail with "No such file or directory (os error 2)" — a message that
+/// reads as if the env file were missing, not the editor. Now a missing candidate
+/// is skipped, and if they're all missing the message names them.
 fn open_in_editor(path: &std::path::Path) -> Result<()> {
     let mut missing = Vec::new();
     for cand in editor_candidates() {
-        let (prog, args) = cand.split_first().expect("kandidat tak pernah kosong");
+        let (prog, args) = cand.split_first().expect("candidate is never empty");
         match std::process::Command::new(prog)
             .args(args)
             .arg(path)
             .status()
         {
             Ok(status) if status.success() => return Ok(()),
-            Ok(status) => anyhow::bail!("editor '{prog}' keluar dengan {status}"),
+            Ok(status) => anyhow::bail!("editor '{prog}' exited with {status}"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(prog.clone()),
             Err(e) => return Err(e.into()),
         }
     }
     anyhow::bail!(
-        "tak ada editor yang bisa dipakai (dicoba: {}). Set $EDITOR ke editor yang terpasang.",
+        "no usable editor found (tried: {}). Set $EDITOR to an installed editor.",
         missing.join(", ")
     )
 }

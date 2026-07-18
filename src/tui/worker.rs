@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::client::EasypanelClient;
 use crate::output::field;
 
-// ---------- Worker (network di thread terpisah agar UI tak nge-freeze) ----------
+// ---------- Worker (networking on a separate thread so the UI doesn't freeze) ----------
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum View {
@@ -42,11 +42,11 @@ pub(super) enum Req {
     Nodes,
     Projects,
     Actions,
-    /// Detail satu action (getAction): metadata + `log` (output deploy/aksi).
+    /// Detail of one action (getAction): metadata + `log` (deploy/action output).
     ActionDetail(String),
     MonitorData,
-    /// Replika swarm per service (actual/desired) — ground truth "berjalan sesuai
-    /// target?". Satu panggilan menutupi semua service; `actual < desired` = turun.
+    /// Swarm replicas per service (actual/desired) — the ground truth for "running
+    /// as targeted?". One call covers every service; `actual < desired` = down.
     TaskStats,
     Storage,
     Domains,
@@ -62,78 +62,78 @@ pub(super) enum Req {
         stype: String,
         action: String,
     },
-    /// Semua service lintas project dalam satu panggilan.
+    /// All services across projects in a single call.
     AllServices,
-    /// Muat service sebuah project untuk dropdown di form (bukan panel Projects).
+    /// Load a project's services for a form dropdown (not the Projects panel).
     ServicesFor(String),
-    /// Buka form source/build: butuh inspectService (nilai sekarang) dan —
-    /// untuk source — daftar repo GitHub buat dropdown-nya.
+    /// Open the source/build form: needs inspectService (the current values) and —
+    /// for source — the list of GitHub repos for its dropdown.
     ConfigForm {
         project: String,
         service: String,
         build: bool,
     },
-    /// Buka form limit resource: inspectService (grup services/{stype}) untuk
-    /// nilai `resources` sekarang.
+    /// Open the resource limit form: inspectService (group services/{stype}) for
+    /// the current `resources` values.
     ResourceForm {
         project: String,
         service: String,
         stype: String,
     },
-    /// Simpan limit resource (updateResources). Grup ikut `stype` sebab resource
-    /// ada di semua tipe service, bukan cuma app.
+    /// Save the resource limit (updateResources). The group follows `stype` since
+    /// resources exist on every service type, not just app.
     ResourceSave {
         project: String,
         service: String,
         stype: String,
         resources: Value,
     },
-    /// Buka form basic auth: inspectService untuk kredensial `basicAuth` sekarang.
+    /// Open the basic auth form: inspectService for the current `basicAuth`.
     BasicAuthForm {
         project: String,
         service: String,
         stype: String,
     },
-    /// Simpan basic auth (updateBasicAuth). Hanya service web (app/box/compose/
-    /// wordpress) yang punya endpoint ini.
+    /// Save basic auth (updateBasicAuth). Only web services (app/box/compose/
+    /// wordpress) have this endpoint.
     BasicAuthSave {
         project: String,
         service: String,
         stype: String,
         basic_auth: Value,
     },
-    /// Info server untuk tab Maintenance (versi Docker, IP, ketersediaan update).
+    /// Server info for the Maintenance tab (Docker version, IP, update availability).
     MaintInfo,
-    /// Pembersihan Docker: systemPrune / cleanupDockerImages / cleanupDockerBuilder.
+    /// Docker cleanup: systemPrune / cleanupDockerImages / cleanupDockerBuilder.
     MaintAction(&'static str),
-    /// Cari `query` di log SEMUA service sekaligus (fitur killer). Fan-out
-    /// paralel; hasil digabung per service.
+    /// Search for `query` in the logs of ALL services at once (the killer
+    /// feature). Parallel fan-out; results grouped per service.
     LogSearch {
         query: String,
     },
-    /// Ronde tail log berikutnya. `since` = timestamp terbaru yang sudah
-    /// terlihat; None = batch pertama.
+    /// The next log-tail round. `since` = the newest timestamp already seen; None =
+    /// the first batch.
     LogTail {
         project: String,
         service: String,
         since: Option<String>,
     },
-    /// Daftar repo GitHub untuk dropdown "Repo" di form "Service baru".
+    /// The list of GitHub repos for the "Repo" dropdown in the "New service" form.
     ///
-    /// Form source memakai ConfigForm, tapi itu butuh service yang SUDAH ada —
-    /// form create belum punya satu pun.
+    /// The source form uses ConfigForm, but that needs a service that ALREADY
+    /// exists — the create form doesn't have one yet.
     Repos,
-    /// Branch sebuah repo untuk dropdown "Branch" (dipicu setelah repo dipilih).
+    /// A repo's branches for the "Branch" dropdown (triggered once a repo is chosen).
     Branches {
         owner: String,
         repo: String,
     },
-    /// `op` menentukan endpoint: updateSourceGithub/Git/Image, atau updateBuild.
+    /// `op` picks the endpoint: updateSourceGithub/Git/Image, or updateBuild.
     ///
-    /// `auto_deploy` menyusul lewat enable/disableGithubDeploy: updateSourceGithub
-    /// selalu mereset autoDeploy jadi false (terverifikasi di server), jadi nilainya
-    /// harus dipasang ulang setelah update — kalau tidak, mengubah branch akan
-    /// mematikan auto-deploy diam-diam.
+    /// `auto_deploy` follows via enable/disableGithubDeploy: updateSourceGithub
+    /// always resets autoDeploy to false (verified on the server), so its value has
+    /// to be reapplied after the update — otherwise changing the branch would
+    /// silently disable auto-deploy.
     ConfigSave {
         project: String,
         service: String,
@@ -141,12 +141,11 @@ pub(super) enum Req {
         body: Value,
         auto_deploy: Option<bool>,
     },
-    /// Nyalakan/matikan auto deploy tanpa menyentuh source.
+    /// Turn auto deploy on/off without touching the source.
     ///
-    /// Terpisah dari ConfigSave: lewat sana berarti mengirim ulang
-    /// updateSourceGithub, yang mereset autoDeploy jadi false lalu memasangnya
-    /// kembali — dua panggilan dan satu jendela di mana nilainya salah, hanya
-    /// untuk membalik sebuah bool.
+    /// Separate from ConfigSave: going through there would mean resending
+    /// updateSourceGithub, which resets autoDeploy to false and then reapplies it —
+    /// two calls and one window where the value is wrong, just to flip a bool.
     AutoDeploy {
         project: String,
         service: String,
@@ -158,23 +157,26 @@ pub(super) enum Req {
         project: String,
         service: String,
         stype: String,
-        /// Field yang aman inline di createService: db (databaseName, user, …),
-        /// build, env, dotEnvPath, domains. Semua ini cepat dan TAK memicu deploy.
-        /// Hanya field yang diisi user yang ikut: kosong = server yang membuatkan.
+        /// Fields safe to send inline to createService: db (databaseName, user, …),
+        /// build, env, dotEnvPath, domains. These are all fast and do NOT trigger a
+        /// deploy. Only fields the user filled are included: empty = the server
+        /// creates them.
         extra: Value,
-        /// Source diterapkan TERPISAH setelah createService (updateSource*), sebab
-        /// inline-nya memicu deploy 100 detik. (op, body, auto_deploy).
+        /// The source is applied SEPARATELY after createService (updateSource*),
+        /// because inline it triggers a 100-second deploy. (op, body, auto_deploy).
         source: Option<super::form::SourceCall>,
     },
-    /// Clone sebuah service — config saja, TANPA data — ke `new_name` di project
-    /// yang sama. Fitur killer: EasyPanel tak punya endpoint clone; ini komposisi
-    /// inspectService → createService (minus source) → updateSource*/updateAdvanced.
+    /// Clone a service — config only, WITHOUT data — into `new_name` in the same
+    /// project. A killer feature: EasyPanel has no clone endpoint; this is a
+    /// composition of inspectService → createService (minus source) →
+    /// updateSource*/updateAdvanced.
     CloneService {
         project: String,
         service: String,
         stype: String,
-        /// Project tujuan clone (boleh beda dari sumber). Harus project yang SUDAH
-        /// ada — kalau tidak, network Docker-nya belum siap (race).
+        /// The clone's target project (may differ from the source). Must be a
+        /// project that ALREADY exists — otherwise its Docker network isn't ready
+        /// yet (race).
         target: String,
         new_name: String,
     },
@@ -182,40 +184,40 @@ pub(super) enum Req {
         id: Option<String>,
         body: Value,
     },
-    /// Tambah port (createPort) ke sebuah service.
+    /// Add a port (createPort) to a service.
     PortSave {
         project: String,
         service: String,
         values: Value,
     },
-    /// Hapus port berdasar indeks di listPorts (deletePort), lalu muat ulang
-    /// daftar port ke viewer supaya yang terhapus langsung hilang.
+    /// Delete a port by its index in listPorts (deletePort), then reload the port
+    /// list into the viewer so the deleted one disappears immediately.
     PortDelete {
         project: String,
         service: String,
         index: usize,
     },
-    /// Tambah mount (createMount) ke sebuah service.
+    /// Add a mount (createMount) to a service.
     MountSave {
         project: String,
         service: String,
         values: Value,
     },
-    /// Hapus mount berdasar indeks (deleteMount), lalu muat ulang daftar mount.
+    /// Delete a mount by index (deleteMount), then reload the mount list.
     MountDelete {
         project: String,
         service: String,
         index: usize,
     },
-    /// Tambah satu redirect. Tak ada endpoint per-item: baca redirects sekarang,
-    /// tambahkan, lalu updateRedirects seluruh array (read-modify-write).
+    /// Add one redirect. There's no per-item endpoint: read the current redirects,
+    /// append, then updateRedirects the whole array (read-modify-write).
     RedirectAdd {
         project: String,
         service: String,
         stype: String,
         redirect: Value,
     },
-    /// Hapus redirect berdasar indeks: baca, buang indeks itu, updateRedirects.
+    /// Delete a redirect by index: read, drop that index, updateRedirects.
     RedirectDelete {
         project: String,
         service: String,
@@ -230,15 +232,15 @@ pub(super) enum Req {
         stype: String,
         env: String,
     },
-    /// Nyalakan/matikan penulisan env sebagai file `.env` (`dotEnvPath`). Baca
-    /// state sekarang lalu balik: kalau sudah aktif → matikan, kalau mati →
-    /// aktifkan di path `.env`.
+    /// Turn writing env as a `.env` file (`dotEnvPath`) on/off. Read the current
+    /// state then flip it: if already on → turn off, if off → turn on at the path
+    /// `.env`.
     EnvFileToggle {
         project: String,
         service: String,
         stype: String,
     },
-    /// Simpan Config File (Advanced db) lewat updateAdvanced. `config` = isi baru.
+    /// Save the Config File (Advanced db) via updateAdvanced. `config` = new contents.
     ConfigFileSave {
         project: String,
         service: String,
@@ -253,31 +255,31 @@ pub(super) enum Resp {
     Projects(Vec<String>),
     Actions(Vec<Value>),
     MonitorData(Vec<Value>),
-    /// (actual, desired) replika swarm, dikunci nama "{project}_{service}".
+    /// (actual, desired) swarm replicas, keyed by the name "{project}_{service}".
     TaskStats(HashMap<String, (i64, i64)>),
     Storage(Vec<Value>),
     Domains(Vec<Value>),
-    /// Semua service lintas project + nama project untuk dropdown form.
+    /// All services across projects + the project names for a form dropdown.
     AllServices {
         projects: Vec<String>,
         services: Vec<Value>,
     },
     ServicesFor(String, Vec<String>),
-    /// Data untuk membuka form limit resource: hasil inspectService.
+    /// Data to open the resource limit form: the inspectService result.
     ResourceForm {
         project: String,
         service: String,
         stype: String,
         data: Value,
     },
-    /// Data untuk membuka form basic auth: hasil inspectService.
+    /// Data to open the basic auth form: the inspectService result.
     BasicAuthForm {
         project: String,
         service: String,
         stype: String,
         data: Value,
     },
-    /// Data untuk membuka form source/build: hasil inspectService + daftar repo.
+    /// Data to open the source/build form: the inspectService result + repo list.
     ConfigForm {
         project: String,
         service: String,
@@ -285,40 +287,40 @@ pub(super) enum Resp {
         data: Value,
         repos: Vec<String>,
     },
-    /// Baris log yang lebih baru dari `since`, plus kursor untuk ronde berikutnya.
+    /// Log lines newer than `since`, plus a cursor for the next round.
     LogTail {
         lines: Vec<String>,
         cursor: Option<String>,
     },
-    /// Daftar kosong = GitHub tak tersambung; "Repo" tetap jadi input teks.
+    /// An empty list = GitHub not connected; "Repo" stays a text input.
     Repos(Vec<String>),
-    /// Err = daftar branch tak bisa dimuat (mis. token GitHub di EasyPanel mati).
+    /// Err = the branch list couldn't load (e.g. the GitHub token in EasyPanel is dead).
     Branches(std::result::Result<Vec<String>, String>),
     MaintInfo(Vec<(String, String)>),
-    /// Hasil satu host di layar Hosts; tiap host tiba sendiri-sendiri supaya
-    /// host lambat/mati tak menahan yang lain.
+    /// The result for one host on the Hosts screen; each host arrives on its own so
+    /// a slow/dead host doesn't hold up the others.
     HostStat {
         name: String,
         data: std::result::Result<Value, String>,
     },
     Viewer(String, Vec<String>),
-    /// Byte output dari sesi terminal container (diumpankan ke parser vt100).
+    /// Output bytes from a container terminal session (fed to the vt100 parser).
     TermOutput(Vec<u8>),
-    /// Sesi terminal berakhir (shell keluar / socket tutup).
+    /// The terminal session ended (shell exited / socket closed).
     TermClosed,
-    /// Mutasi berhasil: pesan status + data mana yang perlu dimuat ulang.
+    /// A mutation succeeded: a status message + which data needs reloading.
     Done(String, Refresh),
     Err(String),
 }
 
-/// Data yang perlu di-refresh setelah sebuah mutasi.
+/// The data that needs refreshing after a mutation.
 pub(super) enum Refresh {
     Projects,
     Domains,
     None,
 }
 
-/// Satu lajur worker: memproses request berurutan dan mengirim hasilnya ke `resp_tx`.
+/// One worker lane: processes requests in order and sends the results to `resp_tx`.
 pub(super) fn spawn_worker(client: EasypanelClient, resp_tx: Sender<Resp>) -> Sender<Req> {
     let (req_tx, req_rx) = mpsc::channel::<Req>();
 
@@ -334,16 +336,16 @@ pub(super) fn spawn_worker(client: EasypanelClient, resp_tx: Sender<Resp>) -> Se
     req_tx
 }
 
-/// Dua lajur: `user` untuk aksi user, `poll` untuk metrik periodik.
+/// Two lanes: `user` for user actions, `poll` for periodic metrics.
 ///
-/// getSystemStats/getMonitorTableData bisa makan ~2,5 detik masing-masing. Dengan
-/// satu lajur, polling metrik akan menahan aksi user (mis. membuka tab) selama itu.
+/// getSystemStats/getMonitorTableData can each take ~2.5 seconds. With a single
+/// lane, metric polling would block a user action (e.g. opening a tab) for that long.
 pub(super) struct Workers {
     pub(super) user: Sender<Req>,
     pub(super) poll: Sender<Req>,
     pub(super) resp: Receiver<Resp>,
-    /// Untuk fan-out layar Hosts: tiap host dapat thread sendiri, jadi hasilnya
-    /// tak lewat lajur user/poll yang terikat satu client.
+    /// For the Hosts screen fan-out: each host gets its own thread, so its result
+    /// doesn't go through the user/poll lane bound to a single client.
     pub(super) resp_tx: Sender<Resp>,
 }
 
@@ -405,7 +407,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                     Some(log) if !log.trim().is_empty() => {
                         lines.extend(log.lines().map(String::from))
                     }
-                    _ => lines.push("(tak ada log untuk action ini)".into()),
+                    _ => lines.push("(no log for this action)".into()),
                 }
                 Resp::Viewer(format!("Action · {}", field(&v, "/description")), lines)
             }
@@ -483,8 +485,9 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
         } => {
             let ps = json!({ "projectName": project, "serviceName": service });
             match client.call("services/app", "inspectService", ps) {
-                // Repo hanya perlu untuk form source. Kegagalan searchRepos tidak
-                // menggagalkan form: field "Repo" jatuh ke input teks biasa.
+                // Repos are only needed for the source form. A searchRepos failure
+                // doesn't fail the form: the "Repo" field falls back to a plain
+                // text input.
                 Ok(data) => {
                     let repos = if build {
                         Vec::new()
@@ -528,10 +531,10 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             input["projectName"] = json!(project);
             input["serviceName"] = json!(service);
             match client.call(&format!("services/{stype}"), "updateResources", input) {
-                // Refresh::None: limit tak tampil di tabel; simpan konfigurasi saja,
-                // deploy yang menerapkannya (sama seperti port).
+                // Refresh::None: limits don't show in the table; just store the
+                // config, deploy applies it (same as ports).
                 Ok(_) => Resp::Done(
-                    format!("Resource {project}/{service} tersimpan — deploy (d) untuk menerapkan"),
+                    format!("Resource {project}/{service} saved — deploy (d) to apply"),
                     Refresh::None,
                 ),
                 Err(e) => Resp::Err(e.to_string()),
@@ -564,27 +567,27 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             json!({ "projectName": project, "serviceName": service, "basicAuth": basic_auth }),
         ) {
             Ok(_) => Resp::Done(
-                format!("Basic auth {project}/{service} tersimpan — deploy (d) untuk menerapkan"),
+                format!("Basic auth {project}/{service} saved — deploy (d) to apply"),
                 Refresh::None,
             ),
             Err(e) => Resp::Err(e.to_string()),
         },
         Req::MaintInfo => {
-            // Tiap baris berdiri sendiri: satu endpoint gagal tak boleh
-            // mengosongkan seluruh tab.
+            // Each row stands on its own: one endpoint failing must not empty the
+            // whole tab.
             let one = |op: &str| match client.call("settings", op, Value::Null) {
                 Ok(v) => field(&v, ""),
                 Err(e) => format!("error: {e}"),
             };
             Resp::MaintInfo(vec![
                 ("Docker".into(), one("getDockerVersion")),
-                ("IP server".into(), one("getServerIp")),
-                ("Update tersedia".into(), one("checkForUpdates")),
-                ("Bersih-bersih harian".into(), one("getDailyDockerCleanup")),
+                ("Server IP".into(), one("getServerIp")),
+                ("Update available".into(), one("checkForUpdates")),
+                ("Daily cleanup".into(), one("getDailyDockerCleanup")),
             ])
         }
         Req::MaintAction(op) => match client.call("settings", op, Value::Null) {
-            Ok(_) => Resp::Done(format!("{op} selesai"), Refresh::None),
+            Ok(_) => Resp::Done(format!("{op} done"), Refresh::None),
             Err(e) => Resp::Err(e.to_string()),
         },
         Req::Branches { owner, repo } => {
@@ -593,7 +596,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 "searchBranches",
                 json!({ "owner": owner, "repo": repo, "search": "" }),
             ) {
-                // searchBranches mengembalikan array string datar (bukan {items:[...]}).
+                // searchBranches returns a flat array of strings (not {items:[...]}).
                 Ok(v) => Resp::Branches(Ok(v
                     .as_array()
                     .map(|a| {
@@ -626,17 +629,18 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                             "disableGithubDeploy"
                         };
                         match client.call("services/app", ep, ps) {
-                            // Refresh::Projects, bukan None: tanpa ini kolom Source
-                            // di tabel tetap menampilkan branch/source lama sampai
-                            // user menekan `r`. Persis kelas bug yang sama dengan
-                            // service terhapus yang tak hilang dari tabel.
-                            Ok(_) => Resp::Done("Tersimpan".into(), Refresh::Projects),
+                            // Refresh::Projects, not None: without it the Source
+                            // column in the table keeps showing the old
+                            // branch/source until the user presses `r`. Exactly the
+                            // same class of bug as a deleted service that doesn't
+                            // leave the table.
+                            Ok(_) => Resp::Done("Saved".into(), Refresh::Projects),
                             Err(e) => {
-                                Resp::Err(format!("source tersimpan, auto deploy gagal: {e}"))
+                                Resp::Err(format!("Source saved, but auto deploy failed: {e}"))
                             }
                         }
                     }
-                    None => Resp::Done("Tersimpan".into(), Refresh::Projects),
+                    None => Resp::Done("Saved".into(), Refresh::Projects),
                 },
                 Err(e) => Resp::Err(e.to_string()),
             }
@@ -655,8 +659,8 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             match client.call("services/app", ep, ps) {
                 Ok(_) => Resp::Done(
                     format!(
-                        "Auto deploy {} untuk {service}",
-                        if on { "aktif" } else { "mati" }
+                        "Auto deploy {} for {service}",
+                        if on { "on" } else { "off" }
                     ),
                     Refresh::Projects,
                 ),
@@ -677,13 +681,13 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
         }
         Req::ProjectCreate(name) => {
             match client.call("projects", "createProject", json!({ "name": name })) {
-                Ok(_) => Resp::Done(format!("Project '{name}' dibuat"), Refresh::Projects),
+                Ok(_) => Resp::Done(format!("Project '{name}' created"), Refresh::Projects),
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
         Req::ProjectDestroy(name) => {
             match client.call("projects", "destroyProject", json!({ "name": name })) {
-                Ok(_) => Resp::Done(format!("Project '{name}' dihapus"), Refresh::Projects),
+                Ok(_) => Resp::Done(format!("Project '{name}' deleted"), Refresh::Projects),
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
@@ -699,18 +703,19 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             let mut input = extra;
             input["projectName"] = json!(project);
             input["serviceName"] = json!(service);
-            // 1) Buat service. Tanpa source inline ini cepat (~0,2 detik) dan tak
-            //    memicu deploy, jadi service langsung muncul di tabel.
+            // 1) Create the service. Without an inline source this is fast (~0.2
+            //    seconds) and triggers no deploy, so the service shows up in the
+            //    table right away.
             match client.call(&grp, "createService", input) {
                 Ok(_) => {
-                    // 2) Terapkan source terpisah (updateSource* + autoDeploy).
-                    //    Menyimpan konfigurasi saja, tanpa men-deploy.
+                    // 2) Apply the source separately (updateSource* + autoDeploy).
+                    //    This only stores the config, without deploying.
                     if let Some((op, mut body, auto)) = source {
                         body["projectName"] = json!(project);
                         body["serviceName"] = json!(service);
                         if let Err(e) = client.call(&grp, op, body) {
                             return Resp::Err(format!(
-                                "Service '{service}' dibuat, tapi source gagal: {e}"
+                                "Service '{service}' created, but its source failed: {e}"
                             ));
                         }
                         if let Some(on) = auto {
@@ -722,10 +727,11 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                             let _ = client.call(&grp, ep, ps.clone());
                         }
                     }
-                    // Sengaja TIDAK deploy: biar muncul dulu di tabel, lalu user
-                    // menekan `d`. Deploy saat create-lah yang dulu bikin error.
+                    // Deliberately NOT deploying: let it appear in the table first,
+                    // then the user presses `d`. Deploying on create is what used
+                    // to cause the error.
                     Resp::Done(
-                        format!("Service '{service}' dibuat — tekan d untuk deploy"),
+                        format!("Service '{service}' created — press d to deploy"),
                         Refresh::Projects,
                     )
                 }
@@ -740,8 +746,8 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             new_name,
         } => clone_service(client, &project, &service, &stype, &target, &new_name),
         Req::DomainSave { id, body } => {
-            // createDomain mewajibkan `id` tapi server mengabaikannya dan membuat
-            // cuid sendiri, jadi placeholder cukup untuk domain baru.
+            // createDomain requires `id` but the server ignores it and makes its own
+            // cuid, so a placeholder is enough for a new domain.
             let op = if id.is_some() {
                 "updateDomain"
             } else {
@@ -752,9 +758,9 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             match client.call("domains", op, input) {
                 Ok(_) => Resp::Done(
                     if id.is_some() {
-                        "Domain diperbarui".into()
+                        "Domain updated".into()
                     } else {
-                        "Domain dibuat".into()
+                        "Domain created".into()
                     },
                     Refresh::Domains,
                 ),
@@ -766,17 +772,14 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             service,
             values,
         } => {
-            // Port tak tampil di tabel Services, jadi tak perlu refresh; user
-            // membukanya lagi dengan `p` untuk memeriksa.
+            // Ports don't show in the Services table, so no refresh needed; the user
+            // reopens it with `p` to check.
             match client.call(
                 "ports",
                 "createPort",
                 json!({ "projectName": project, "serviceName": service, "values": values }),
             ) {
-                Ok(_) => Resp::Done(
-                    format!("Port ditambahkan ke {project}/{service}"),
-                    Refresh::None,
-                ),
+                Ok(_) => Resp::Done(format!("Port added to {project}/{service}"), Refresh::None),
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
@@ -790,9 +793,10 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 "deletePort",
                 json!({ "projectName": project, "serviceName": service, "index": index }),
             ) {
-                // Muat ulang daftar port ke viewer: yang terhapus harus langsung
-                // hilang, bukan menunggu user membuka ulang (kelas bug "baris
-                // terhapus tetap tampil" yang sudah berulang di proyek ini).
+                // Reload the port list into the viewer: the deleted one must
+                // disappear immediately, not wait for the user to reopen it (the
+                // "deleted row still showing" class of bug that has recurred in this
+                // project).
                 Ok(_) => match fetch_view(client, View::Ports, &project, &service, "") {
                     Ok(lines) => Resp::Viewer(format!("Ports · {project}/{service}"), lines),
                     Err(e) => Resp::Err(e.to_string()),
@@ -810,7 +814,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             json!({ "projectName": project, "serviceName": service, "values": values }),
         ) {
             Ok(_) => Resp::Done(
-                format!("Mount ditambahkan ke {project}/{service} — tekan d untuk deploy"),
+                format!("Mount added to {project}/{service} — press d to deploy"),
                 Refresh::None,
             ),
             Err(e) => Resp::Err(e.to_string()),
@@ -824,7 +828,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             "deleteMount",
             json!({ "projectName": project, "serviceName": service, "index": index }),
         ) {
-            // Muat ulang daftar mount ke viewer (pola sama dengan port delete).
+            // Reload the mount list into the viewer (same pattern as port delete).
             Ok(_) => match fetch_view(client, View::Mounts, &project, &service, "") {
                 Ok(lines) => Resp::Viewer(format!("Mounts · {project}/{service}"), lines),
                 Err(e) => Resp::Err(e.to_string()),
@@ -841,9 +845,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             list
         }) {
             Ok(_) => Resp::Done(
-                format!(
-                    "Redirect ditambahkan ke {project}/{service} — deploy (d) untuk menerapkan"
-                ),
+                format!("Redirect added to {project}/{service} — deploy (d) to apply"),
                 Refresh::None,
             ),
             Err(e) => Resp::Err(e.to_string()),
@@ -860,7 +862,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 }
                 list
             }) {
-                // Muat ulang viewer (pola sama dengan port/mount delete).
+                // Reload the viewer (same pattern as port/mount delete).
                 Ok(_) => match fetch_view(client, View::Redirects, &project, &service, &stype) {
                     Ok(lines) => Resp::Viewer(format!("Redirects · {project}/{service}"), lines),
                     Err(e) => Resp::Err(e.to_string()),
@@ -870,13 +872,13 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
         }
         Req::DomainDelete(id) => {
             match client.call("domains", "deleteDomain", json!({ "id": id })) {
-                Ok(_) => Resp::Done("Domain dihapus".into(), Refresh::Domains),
+                Ok(_) => Resp::Done("Domain deleted".into(), Refresh::Domains),
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
         Req::DomainSetPrimary(id) => {
             match client.call("domains", "setPrimaryDomain", json!({ "id": id })) {
-                Ok(_) => Resp::Done("Domain jadi primary".into(), Refresh::Domains),
+                Ok(_) => Resp::Done("Domain set as primary".into(), Refresh::Domains),
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
@@ -888,16 +890,16 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
         } => {
             let grp = format!("services/{stype}");
             let ps = json!({ "projectName": project, "serviceName": service });
-            // updateEnv mengganti SELURUH konfigurasi env; tanpa menyertakan
-            // dotEnvPath yang ada, menyunting env akan diam-diam mematikan file
-            // .env. Baca dulu, pertahankan. Kalau inspect gagal, batalkan alih-alih
-            // menyimpan buta dan menghilangkan file-nya.
+            // updateEnv replaces the WHOLE env config; without including the existing
+            // dotEnvPath, editing env would silently turn off the .env file. Read it
+            // first, keep it. If inspect fails, abort rather than saving blind and
+            // losing the file.
             match client.call(&grp, "inspectService", ps) {
                 Ok(cur) => {
                     let dot = cur.get("dotEnvPath").and_then(Value::as_str);
                     match client.call(&grp, "updateEnv", env_body(&project, &service, &env, dot)) {
                         Ok(_) => {
-                            Resp::Done(format!("Env {project}/{service} disimpan"), Refresh::None)
+                            Resp::Done(format!("Env {project}/{service} saved"), Refresh::None)
                         }
                         Err(e) => Resp::Err(e.to_string()),
                     }
@@ -916,14 +918,14 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 Ok(cur) => {
                     let env = cur.get("env").and_then(Value::as_str).unwrap_or("");
                     let active = cur.get("dotEnvPath").and_then(Value::as_str).is_some();
-                    // Balik: aktif → matikan (dot None), mati → aktifkan di ".env".
+                    // Flip: on → turn off (dot None), off → turn on at ".env".
                     let dot = if active { None } else { Some(".env") };
                     match client.call(&grp, "updateEnv", env_body(&project, &service, env, dot)) {
                         Ok(_) => {
                             let msg = if active {
-                                format!("File .env dimatikan untuk {project}/{service}")
+                                format!(".env file turned off for {project}/{service}")
                             } else {
-                                format!("File .env aktif (.env) untuk {project}/{service}")
+                                format!(".env file on (.env) for {project}/{service}")
                             };
                             Resp::Done(msg, Refresh::None)
                         }
@@ -941,9 +943,9 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
         } => {
             let grp = format!("services/{stype}");
             let ps = json!({ "projectName": project, "serviceName": service });
-            // updateAdvanced mengganti seluruh blok Advanced; image & command WAJIB
-            // string (terverifikasi: null/omit ditolak). Baca yang ada, pertahankan,
-            // ganti hanya configFile. env disertakan kalau ada agar tak terhapus.
+            // updateAdvanced replaces the whole Advanced block; image & command MUST
+            // be strings (verified: null/omit is rejected). Read what's there, keep
+            // it, replace only configFile. env is included if present so it isn't lost.
             match client.call(&grp, "inspectService", ps) {
                 Ok(cur) => {
                     let mut body = json!({
@@ -958,7 +960,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                     }
                     match client.call(&grp, "updateAdvanced", body) {
                         Ok(_) => Resp::Done(
-                            format!("Config file {project}/{service} disimpan"),
+                            format!("Config file {project}/{service} saved"),
                             Refresh::None,
                         ),
                         Err(e) => Resp::Err(e.to_string()),
@@ -973,32 +975,33 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             stype,
             action,
         } => {
-            // Deploy DI-DISPATCH, tidak ditunggu. Build lamanya tak tentu — bisa
-            // menit, tergantung repo — dan melebihi batas proxy mana pun (diukur:
-            // 125 detik lalu 524 dari Cloudflare). Menunggunya = "error sending
-            // request" padahal deploy jalan terus. Jadi picu di thread terpisah
-            // dan langsung lapor dimulai; server menyelesaikan build sendiri
-            // (drop koneksi tak membatalkannya — terbukti di createService).
+            // Deploy is DISPATCHED, not awaited. Its build takes an unpredictable
+            // time — possibly minutes, depending on the repo — and exceeds any
+            // proxy limit (measured: 125 seconds then a 524 from Cloudflare).
+            // Awaiting it = "error sending request" even though the deploy keeps
+            // running. So fire it on a separate thread and report started right
+            // away; the server finishes the build on its own (dropping the
+            // connection doesn't cancel it — proven with createService).
             if action == "deploy" {
                 let c = client.clone();
                 let (grp, input) = (
                     format!("services/{stype}"),
                     json!({ "projectName": project, "serviceName": service, "forceRebuild": false }),
                 );
-                // Penolakan langsung (config salah, 400, service tak bisa deploy)
-                // dulu ditelan `let _ =` — UI sudah bilang "dimulai" padahal server
-                // menolak seketika. Sekarang thread melaporkan kegagalan lewat
-                // resp_tx supaya sampai ke baris status. Build yang benar-benar jalan
-                // tetap tak ditunggu (bisa menit, melebihi batas proxy).
+                // An immediate rejection (bad config, 400, service can't deploy) used
+                // to be swallowed by `let _ =` — the UI said "started" while the
+                // server rejected it instantly. Now the thread reports the failure
+                // via resp_tx so it reaches the status line. A build that actually
+                // runs is still not awaited (can be minutes, exceeds proxy limits).
                 let tx = resp_tx.clone();
                 let (p, s) = (project.clone(), service.clone());
                 std::thread::spawn(move || {
                     if let Err(e) = c.call(&grp, "deployService", input) {
-                        let _ = tx.send(Resp::Err(format!("Deploy {p}/{s} gagal: {e}")));
+                        let _ = tx.send(Resp::Err(format!("Deploy {p}/{s} failed: {e}")));
                     }
                 });
                 return Resp::Done(
-                    format!("Deploy {project}/{service} dimulai — pantau di Logs (Enter)"),
+                    format!("Deploy {project}/{service} started — watch it in Logs (Enter)"),
                     Refresh::None,
                 );
             }
@@ -1008,14 +1011,14 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 &format!("{action}Service"),
                 input,
             ) {
-                // Refresh, bukan sekadar Msg: destroy/start/stop sudah selesai di
-                // server saat panggilan ini kembali (destroyService diukur 0,2-5
-                // detik), tapi tabel tak pernah dimuat ulang — service yang sudah
-                // dihapus tetap terpampang sampai user menekan `r`. Persis kelas
-                // bug "service baru tak langsung muncul" yang dulu diperbaiki
-                // untuk create dan terlewat untuk yang ini.
+                // Refresh, not just a message: destroy/start/stop are already done on
+                // the server when this call returns (destroyService measured
+                // 0.2-5 seconds), but the table was never reloaded — a deleted
+                // service stayed on screen until the user pressed `r`. Exactly the
+                // "new service doesn't show up right away" class of bug that was
+                // fixed for create and missed for this one.
                 Ok(_) => Resp::Done(
-                    format!("{action} dipicu untuk {project}/{service}"),
+                    format!("{action} triggered for {project}/{service}"),
                     Refresh::Projects,
                 ),
                 Err(e) => Resp::Err(e.to_string()),
@@ -1024,16 +1027,16 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
     }
 }
 
-/// Cari `query` di log semua service sekaligus — fitur killer.
+/// Search for `query` in the logs of every service at once — the killer feature.
 ///
-/// EasyPanel tak punya endpoint "cari lintas service"; kita fan-out
-/// `queryServiceLogs` (yang menerima `search`, terverifikasi di server) ke tiap
-/// service secara PARALEL. Satu thread per service dengan klien kloningan; log
-/// didukung Loki, jadi pencarian dilakukan server-side, cepat. Hasil digabung,
-/// dikelompokkan per service, hanya yang punya match.
+/// EasyPanel has no "search across services" endpoint; we fan out
+/// `queryServiceLogs` (which accepts `search`, verified on the server) to each
+/// service in PARALLEL. One thread per service with a cloned client; logs are
+/// backed by Loki, so the search runs server-side, fast. Results are merged,
+/// grouped per service, only the ones with a match.
 fn log_search(client: &EasypanelClient, query: &str) -> Resp {
     if query.trim().is_empty() {
-        return Resp::Err("Kata kunci pencarian kosong".into());
+        return Resp::Err("Search keyword is empty".into());
     }
     let all = match client.call("projects", "listProjectsAndServices", Value::Null) {
         Ok(v) => v,
@@ -1049,8 +1052,8 @@ fn log_search(client: &EasypanelClient, query: &str) -> Resp {
         })
         .unwrap_or_default();
 
-    // Fan-out paralel: satu thread per service. reqwest blocking berbagi pool,
-    // tapi Loki menjawab cepat, jadi puluhan service selesai dalam ~1-2 detik.
+    // Parallel fan-out: one thread per service. reqwest blocking shares a pool, but
+    // Loki answers fast, so dozens of services finish in ~1-2 seconds.
     let handles: Vec<_> = services
         .into_iter()
         .map(|(project, service)| {
@@ -1089,12 +1092,13 @@ fn log_search(client: &EasypanelClient, query: &str) -> Resp {
         out.push(String::new());
     }
     if out.is_empty() {
-        out.push(format!(
-            "Tak ada match untuk '{query}' di service mana pun."
-        ));
+        out.push(format!("No match for '{query}' in any service."));
     }
     Resp::Viewer(
-        format!("Cari '{query}' — {total} baris di {} service", hits.len()),
+        format!(
+            "Search '{query}' — {total} lines in {} services",
+            hits.len()
+        ),
         out,
     )
 }
@@ -1123,7 +1127,7 @@ pub(super) fn fetch_view(
         }
         View::Ports => {
             let v = client.call("ports", "listPorts", ps)?;
-            let mut lines = list_or_empty(&v, "Tidak ada port", |i, p| {
+            let mut lines = list_or_empty(&v, "No ports", |i, p| {
                 format!(
                     "[{i}] {} {}->{}",
                     field(p, "/protocol"),
@@ -1131,16 +1135,17 @@ pub(super) fn fetch_view(
                     field(p, "/target")
                 )
             });
-            // Hint hapus hanya bila ada port sungguhan (baris pertama mulai "[0]").
+            // Show the delete hint only when there's a real port (first line starts
+            // with "[0]").
             if lines.first().is_some_and(|l| l.starts_with("[0]")) {
                 lines.push(String::new());
-                lines.push("Tekan angka [0-9] untuk menghapus port itu.".into());
+                lines.push("Press a digit [0-9] to delete that port.".into());
             }
             lines
         }
         View::Mounts => {
             let v = client.call("mounts", "listMounts", ps)?;
-            let mut lines = list_or_empty(&v, "Tidak ada mount", |i, m| {
+            let mut lines = list_or_empty(&v, "No mounts", |i, m| {
                 let detail = match field(m, "/type").as_str() {
                     "bind" => format!("{} -> {}", field(m, "/hostPath"), field(m, "/mountPath")),
                     "volume" => format!("{} -> {}", field(m, "/name"), field(m, "/mountPath")),
@@ -1150,12 +1155,12 @@ pub(super) fn fetch_view(
             });
             if lines.first().is_some_and(|l| l.starts_with("[0]")) {
                 lines.push(String::new());
-                lines.push("Tekan angka [0-9] untuk menghapus mount itu.".into());
+                lines.push("Press a digit [0-9] to delete that mount.".into());
             }
             lines
         }
         View::Redirects => {
-            // Redirects ada di inspectService (bukan endpoint list sendiri).
+            // Redirects live in inspectService (not a separate list endpoint).
             let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
             let arr = v
                 .get("redirects")
@@ -1163,7 +1168,7 @@ pub(super) fn fetch_view(
                 .cloned()
                 .unwrap_or_default();
             if arr.is_empty() {
-                return Ok(vec!["Tidak ada redirect".into()]);
+                return Ok(vec!["No redirects".into()]);
             }
             let mut lines: Vec<String> = arr
                 .iter()
@@ -1187,14 +1192,14 @@ pub(super) fn fetch_view(
                 })
                 .collect();
             lines.push(String::new());
-            lines.push("Tekan angka [0-9] untuk menghapus redirect itu.".into());
+            lines.push("Press a digit [0-9] to delete that redirect.".into());
             lines
         }
         View::Source => {
             let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
             let mut out = Vec::new();
-            // Sengaja tidak menampilkan `token` (deploy token) dan `env`:
-            // keduanya kredensial, dan env sudah punya view sendiri.
+            // Deliberately not showing `token` (deploy token) and `env`: both are
+            // credentials, and env already has its own view.
             for (title, key) in [
                 ("Source", "source"),
                 ("Build", "build"),
@@ -1203,31 +1208,31 @@ pub(super) fn fetch_view(
             ] {
                 out.push(format!("── {title}"));
                 match v.get(key) {
-                    // pointer "" = akar nilai itu sendiri, jadi string tampil tanpa kutip.
+                    // pointer "" = the value itself, so a string shows without quotes.
                     Some(Value::Object(o)) if !o.is_empty() => out.extend(
                         o.iter()
                             .map(|(k, val)| format!("  {k}: {}", field(val, ""))),
                     ),
-                    _ => out.push("  (belum diatur)".into()),
+                    _ => out.push("  (not set)".into()),
                 }
                 out.push(String::new());
             }
             out
         }
         View::ConfigFile => {
-            // configFile (Advanced) ada di inspectService. Dikembalikan apa adanya
-            // untuk disunting di $EDITOR (lihat edit_config_in_editor).
+            // configFile (Advanced) lives in inspectService. Returned as-is for
+            // editing in $EDITOR (see edit_config_in_editor).
             let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
             let cf = v.get("configFile").and_then(Value::as_str).unwrap_or("");
             cf.lines().map(String::from).collect()
         }
         View::Backups => {
             let v = client.call("databaseBackups", "listDatabaseBackups", ps)?;
-            list_or_empty(&v, "Tidak ada database backup", |_, b| {
+            list_or_empty(&v, "No database backups", |_, b| {
                 let state = if b.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
-                    "aktif"
+                    "on"
                 } else {
-                    "nonaktif"
+                    "off"
                 };
                 format!(
                     "{}  {}  {}  {state}",
@@ -1239,16 +1244,16 @@ pub(super) fn fetch_view(
         }
     };
     Ok(if lines.is_empty() {
-        vec!["(kosong)".to_string()]
+        vec!["(empty)".to_string()]
     } else {
         lines
     })
 }
 
-/// Daftar repo GitHub sebagai "owner/repo" untuk dropdown.
+/// The list of GitHub repos as "owner/repo" for a dropdown.
 ///
-/// GitHub belum tentu tersambung di sebuah host, dan itu bukan alasan untuk
-/// menggagalkan form: daftar kosong membuat "Repo" jadi input teks biasa.
+/// GitHub may not be connected on a given host, and that's no reason to fail the
+/// form: an empty list makes "Repo" a plain text input.
 pub(super) fn github_repos(client: &EasypanelClient) -> Vec<String> {
     let Ok(v) = client.call("github", "searchRepos", Value::Null) else {
         return Vec::new();
@@ -1269,9 +1274,9 @@ pub(super) fn github_repos(client: &EasypanelClient) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Body updateEnv. `dot` = path file `.env` (`dotEnvPath`): Some untuk menulis env
-/// sebagai file, None untuk tak ada file. Server menolak dotEnvPath null/kosong
-/// (min 1 char), jadi "tak ada file" berarti field-nya diomit sama sekali.
+/// updateEnv body. `dot` = the `.env` file path (`dotEnvPath`): Some to write env
+/// as a file, None for no file. The server rejects a null/empty dotEnvPath (min 1
+/// char), so "no file" means the field is omitted entirely.
 pub(super) fn env_body(project: &str, service: &str, env: &str, dot: Option<&str>) -> Value {
     let mut body = json!({ "projectName": project, "serviceName": service, "env": env });
     if let Some(path) = dot {
@@ -1280,9 +1285,9 @@ pub(super) fn env_body(project: &str, service: &str, env: &str, dot: Option<&str
     body
 }
 
-/// Baca redirects sekarang, ubah lewat `transform`, lalu updateRedirects seluruh
-/// array. updateRedirects mengganti keseluruhan (tak ada endpoint per-item), jadi
-/// menambah/menghapus satu HARUS lewat read-modify-write agar sisanya tak hilang.
+/// Read the current redirects, transform via `transform`, then updateRedirects the
+/// whole array. updateRedirects replaces everything (there's no per-item endpoint),
+/// so adding/removing one MUST go through read-modify-write or the rest are lost.
 fn save_redirects(
     client: &EasypanelClient,
     stype: &str,
@@ -1307,9 +1312,9 @@ fn save_redirects(
     Ok(())
 }
 
-/// Field yang TAK disalin saat clone: identitas & yang dikelola server. `source`
-/// dan `configFile` punya endpoint sendiri (lihat clone_service), jadi ikut diblok
-/// di sini dan diterapkan terpisah.
+/// Fields NOT copied on a clone: identity & server-managed ones. `source` and
+/// `configFile` have their own endpoints (see clone_service), so they're blocked
+/// here too and applied separately.
 const CLONE_BLOCK: &[&str] = &[
     "name",
     "serviceName",
@@ -1326,8 +1331,8 @@ const CLONE_BLOCK: &[&str] = &[
     "configFile",
 ];
 
-/// Body createService untuk clone: hasil inspectService minus field terlarang,
-/// dengan projectName/serviceName diarahkan ke target.
+/// The createService body for a clone: the inspectService result minus the blocked
+/// fields, with projectName/serviceName pointed at the target.
 pub(super) fn clone_body(inspect: &Value, project: &str, new_name: &str) -> Value {
     let mut body = inspect.clone();
     if let Some(obj) = body.as_object_mut() {
@@ -1340,10 +1345,10 @@ pub(super) fn clone_body(inspect: &Value, project: &str, new_name: &str) -> Valu
     body
 }
 
-/// Clone CONFIG sebuah service ke `new_name` di project yang sama (bukan datanya —
-/// volume tak disalin). Komposisi: inspectService → createService (minus source,
-/// jadi tak deploy) → updateSource* (app) / updateAdvanced (db, mis. configFile
-/// replikasi). Terverifikasi live untuk app dan mysql.
+/// Clone a service's CONFIG into `new_name` in the same project (not its data —
+/// volumes aren't copied). A composition: inspectService → createService (minus
+/// source, so no deploy) → updateSource* (app) / updateAdvanced (db, e.g. a
+/// replication configFile). Verified live for app and mysql.
 fn clone_service(
     client: &EasypanelClient,
     project: &str,
@@ -1356,24 +1361,28 @@ fn clone_service(
     let ps = json!({ "projectName": project, "serviceName": service });
     let inspect = match client.call(&grp, "inspectService", ps) {
         Ok(v) => v,
-        Err(e) => return Resp::Err(format!("clone: gagal membaca sumber: {e}")),
+        Err(e) => return Resp::Err(format!("clone: couldn't read the source: {e}")),
     };
-    // 1) Buat service di project TUJUAN dengan config inline KECUALI source.
+    // 1) Create the service in the TARGET project with the config inline EXCEPT the
+    //    source.
     if let Err(e) = client.call(
         &grp,
         "createService",
         clone_body(&inspect, target, new_name),
     ) {
-        return Resp::Err(format!("clone: gagal membuat '{new_name}': {e}"));
+        return Resp::Err(format!("clone: couldn't create '{new_name}': {e}"));
     }
-    // 2) Source (service app/compose) diterapkan terpisah agar tak memicu deploy.
+    // 2) The source (app/compose service) is applied separately so it doesn't
+    //    trigger a deploy.
     if let Some(src) = inspect.get("source").filter(|s| s.get("type").is_some()) {
         if let Err(e) = apply_clone_source(client, &grp, target, new_name, src) {
-            return Resp::Err(format!("clone '{new_name}' dibuat, source gagal: {e}"));
+            return Resp::Err(format!(
+                "Clone '{new_name}' created, but the source failed: {e}"
+            ));
         }
     }
-    // 3) configFile (db): updateAdvanced — inilah yang membawa konfig lanjutan
-    //    seperti setelan replikasi MySQL.
+    // 3) configFile (db): updateAdvanced — this is what carries the advanced config
+    //    such as MySQL replication settings.
     if inspect
         .get("configFile")
         .and_then(Value::as_str)
@@ -1388,20 +1397,20 @@ fn clone_service(
         });
         if let Err(e) = client.call(&grp, "updateAdvanced", adv) {
             return Resp::Err(format!(
-                "clone '{new_name}' dibuat, config lanjutan gagal: {e}"
+                "clone '{new_name}' created, advanced config failed: {e}"
             ));
         }
     }
     Resp::Done(
         format!(
-            "'{service}' di-clone jadi '{target}/{new_name}' — tekan d untuk deploy (data TAK ikut)"
+            "'{service}' cloned into '{target}/{new_name}' — press d to deploy (data NOT included)"
         ),
         Refresh::Projects,
     )
 }
 
-/// Terapkan source hasil inspect ke service clone (endpoint per tipe source),
-/// lalu pasang ulang autoDeploy untuk github (updateSourceGithub meresetnya).
+/// Apply the inspected source to the cloned service (per source-type endpoint),
+/// then reapply autoDeploy for github (updateSourceGithub resets it).
 fn apply_clone_source(
     client: &EasypanelClient,
     grp: &str,
@@ -1465,8 +1474,9 @@ fn apply_clone_source(
     Ok(())
 }
 
-/// Peta `{ "{project}_{service}": {actual, desired} }` dari getDockerTaskStats
-/// jadi `swarm_name -> (actual, desired)`. Entri tanpa kedua angka diabaikan.
+/// Turn the map `{ "{project}_{service}": {actual, desired} }` from
+/// getDockerTaskStats into `swarm_name -> (actual, desired)`. Entries missing
+/// either number are ignored.
 pub(super) fn parse_task_stats(v: &Value) -> HashMap<String, (i64, i64)> {
     v.as_object()
         .map(|o| {
@@ -1485,7 +1495,7 @@ pub(super) fn parse_task_stats(v: &Value) -> HashMap<String, (i64, i64)> {
         .unwrap_or_default()
 }
 
-/// Nama+tipe service dari inspectProject, untuk dropdown Service di form domain.
+/// Service name+type from inspectProject, for the Service dropdown in the domain form.
 pub(super) fn parse_services(v: &Value) -> Vec<(String, String)> {
     v.get("services")
         .and_then(Value::as_array)
@@ -1517,25 +1527,24 @@ pub(super) fn list_or_empty(
     arr.iter().enumerate().map(|(i, x)| f(i, x)).collect()
 }
 
-/// Ringkas error API jadi sebab yang bisa ditindaklanjuti.
+/// Condense an API error into an actionable cause.
 ///
-/// EasyPanel membungkus error upstream, jadi token GitHub mati muncul sebagai
-/// "[400] Request failed with status code 403 Forbidden" — dua kode status dan
-/// nol petunjuk. Yang perlu user tahu adalah kredensialnya ditolak.
-/// Pesan gagal auto deploy yang menyebut sebabnya, bukan tumpukan kode status.
+/// EasyPanel wraps upstream errors, so a dead GitHub token shows up as "[400]
+/// Request failed with status code 403 Forbidden" — two status codes and zero
+/// hints. What the user needs to know is that their credential was rejected.
+/// A failed-auto-deploy message that names the cause, not a stack of status codes.
 ///
-/// enable/disableGithubDeploy membuat webhook GitHub, jadi ia gagal untuk repo
-/// yang tak kita kuasai. EasyPanel meneruskannya sebagai 400 yang di dalamnya
-/// ada 404 dari `GET /repos/{owner}/{repo}/hooks` — diamati langsung di server
-/// pada sebuah service yang sumbernya repo pihak ketiga.
+/// enable/disableGithubDeploy creates a GitHub webhook, so it fails for a repo we
+/// don't control. EasyPanel forwards it as a 400 that contains a 404 from
+/// `GET /repos/{owner}/{repo}/hooks` — observed directly on the server for a
+/// service sourced from a third-party repo.
 ///
-/// Yang tak dikenali dikembalikan apa adanya: pesan server yang panjang tetap
-/// lebih berguna daripada "gagal", dan membuangnya adalah bug yang pernah
-/// terjadi di proyek ini.
+/// Anything unrecognized is returned as-is: a long server message is still more
+/// useful than "failed", and dropping it is a bug this project has had before.
 pub(super) fn auto_deploy_error(service: &str, raw: &str) -> String {
     if raw.contains("404") && raw.contains("/hooks") {
-        format!("Auto deploy {service}: tak ada akses webhook ke repo itu — biasanya karena repo pihak ketiga")
+        format!("Auto deploy {service}: no webhook access to that repo — usually because it's a third-party repo")
     } else {
-        format!("Auto deploy {service} gagal: {raw}")
+        format!("Auto deploy {service} failed: {raw}")
     }
 }

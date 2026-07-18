@@ -1,8 +1,8 @@
-//! Test TUI, sengaja dibiarkan dalam satu berkas saat pemecahan ini.
+//! TUI tests, deliberately kept in one file during this split.
 //!
-//! Pemecahan modul harus TANPA perubahan perilaku, dan test yang tak disentuh
-//! adalah buktinya: 83 test yang persis sama, lulus sebelum dan sesudah.
-//! Menyebarnya ke tiap modul adalah pekerjaan tersendiri.
+//! The module split must be WITHOUT behavior changes, and untouched tests are the
+//! proof: 83 identical tests passing before and after. Spreading them across each
+//! module is a separate job.
 
 use serde_json::{json, Value};
 
@@ -25,20 +25,20 @@ fn f_val(f: &Form, label: &str) -> String {
 
 #[test]
 fn source_without_config_does_not_default_to_first_repo() {
-    // Service baru: Enter tanpa sadar tak boleh menunjuk source ke repo acak.
-    // inspectService mengembalikan `source: null`, bukan field yang absen.
+    // A new service: Enter must not unknowingly point the source at a random repo.
+    // inspectService returns `source: null`, not an absent field.
     let f = form(source_fields(
         Some(&Value::Null),
         vec!["caesario/Kuze".into(), "acme/web".into()],
     ));
     assert_eq!(f_val(&f, "Repo"), "");
-    assert_eq!(source_body(&f).unwrap_err(), "Repo wajib dipilih");
+    assert_eq!(source_body(&f).unwrap_err(), "Repo must be selected");
 }
 
 #[test]
 fn domain_edit_keeps_middlewares_and_extra_servers() {
-    // Middleware belum bisa diedit dari TUI, jadi HARUS ikut utuh. Begitu juga
-    // server custom kedua dst., yang tak dimodelkan form.
+    // Middlewares can't be edited from the TUI yet, so they MUST stay intact. Same
+    // for a second custom server etc., which the form doesn't model.
     let original = json!({
         "id": "d1", "host": "a.test", "path": "/", "https": true,
         "wildcard": false, "certificateResolver": "google",
@@ -58,7 +58,7 @@ fn domain_edit_keeps_middlewares_and_extra_servers() {
     let body = domain_body(&f).unwrap();
     assert_eq!(body["middlewares"], json!(["mw1", "mw2"]));
     assert_eq!(body["certificateResolver"], json!("google"));
-    // Server kedua tak boleh terpangkas diam-diam.
+    // The second server must not be silently trimmed.
     assert_eq!(
         body["customDestination"]["servers"][1],
         json!({ "url": "http://b:2", "weight": 5 })
@@ -89,7 +89,7 @@ fn domain_ssl_resolver_and_wildcard_are_editable() {
         .iter_mut()
         .find(|x| x.label == "Wildcard")
         .unwrap()
-        .value = "ya".into();
+        .value = "yes".into();
     let body = domain_body(&f).unwrap();
     assert_eq!(body["certificateResolver"], json!("letsencrypt"));
     assert_eq!(body["wildcard"], json!(true));
@@ -113,15 +113,15 @@ fn service_row_summarises_source_without_opening_anything() {
     });
     let row = service_row(&image, None, None);
     assert_eq!(row[4], "redis:7");
-    assert_eq!(row[3], "mati");
+    assert_eq!(row[3], "disabled");
 
-    // Service tanpa source (baru dibuat) tak boleh bikin panik.
-    assert_eq!(service_row(&svc("p", "kosong", "app"), None, None)[4], "-");
+    // A service with no source (just created) must not panic.
+    assert_eq!(service_row(&svc("p", "empty", "app"), None, None)[4], "-");
 }
 
 #[test]
 fn resource_body_parses_numbers_defaults_zero_and_rejects_junk() {
-    // Prefill dari resources yang ada.
+    // Prefill from existing resources.
     let res = json!({ "cpuLimit": 1, "cpuReservation": 0.25,
                       "memoryLimit": 512, "memoryReservation": 128 });
     let f = form(resource_fields(Some(&res)));
@@ -129,15 +129,15 @@ fn resource_body_parses_numbers_defaults_zero_and_rejects_junk() {
     assert_eq!(f.by_label("CPU reservation (core)"), "0.25");
     assert_eq!(f.by_label("Memory limit (MB)"), "512");
 
-    // resources null (belum diatur) -> semua "0".
+    // resources null (never set) -> everything "0".
     let f0 = form(resource_fields(None));
     assert_eq!(f0.by_label("Memory limit (MB)"), "0");
     let body = resource_body(&f0).unwrap();
-    // Number, bukan string (API menolak string). CPU desimal, memory apa adanya.
+    // Numbers, not strings (the API rejects strings). CPU decimal, memory as-is.
     assert_eq!(body["resources"]["cpuLimit"], json!(0.0));
     assert_eq!(body["resources"]["memoryReservation"], json!(0.0));
 
-    // Isi campur: kosong -> 0, desimal CPU dipertahankan.
+    // A mixed fill: empty -> 0, CPU decimal preserved.
     let mut f = form(resource_fields(None));
     for (label, val) in [
         ("CPU limit (core)", "0.5"),
@@ -155,16 +155,16 @@ fn resource_body_parses_numbers_defaults_zero_and_rejects_junk() {
     assert_eq!(body["resources"]["memoryLimit"], json!(1024.0));
     assert_eq!(body["resources"]["memoryReservation"], json!(0.0));
 
-    // Non-angka -> error dengan pesan, bukan diam-diam 0.
+    // Non-numeric -> error with a message, not a silent 0.
     let mut bad = form(resource_fields(None));
     bad.fields
         .iter_mut()
         .find(|x| x.label == "CPU limit (core)")
         .unwrap()
-        .value = "banyak".into();
+        .value = "lots".into();
     assert!(resource_body(&bad).is_err());
 
-    // Negatif ditolak.
+    // Negatives rejected.
     let mut neg = form(resource_fields(None));
     neg.fields
         .iter_mut()
@@ -177,7 +177,7 @@ fn resource_body_parses_numbers_defaults_zero_and_rejects_junk() {
 #[test]
 fn base64_matches_known_values() {
     use super::terminal::base64;
-    assert_eq!(base64(b"sh"), "c2g="); // yang dipakai shell container
+    assert_eq!(base64(b"sh"), "c2g="); // the container shell we use
     assert_eq!(base64(b""), "");
     assert_eq!(base64(b"M"), "TQ==");
     assert_eq!(base64(b"Ma"), "TWE=");
@@ -187,13 +187,13 @@ fn base64_matches_known_values() {
 #[test]
 fn db_command_per_type_uses_stored_credentials() {
     use super::terminal::db_command;
-    // Bentuk tiap perintah diverifikasi live ke server (mysql/postgres/mongo/redis).
+    // Each command's shape is verified live against the server (mysql/postgres/mongo/redis).
     let mysql = json!({ "rootPassword": "rp", "databaseName": "app" });
     assert_eq!(
         db_command("mysql", &mysql).unwrap(),
         "MYSQL_PWD='rp' mysql -uroot app"
     );
-    // mariadb pakai klien `mysql` yang sama.
+    // mariadb uses the same `mysql` client.
     assert_eq!(
         db_command("mariadb", &mysql).unwrap(),
         "MYSQL_PWD='rp' mysql -uroot app"
@@ -212,13 +212,13 @@ fn db_command_per_type_uses_stored_credentials() {
         db_command("redis", &json!({ "password": "rp" })).unwrap(),
         "REDISCLI_AUTH='rp' redis-cli"
     );
-    // Non-database -> None (key 'y' menolak).
+    // Non-database -> None (the 'y' key refuses).
     assert!(db_command("app", &json!({})).is_none());
-    // Kutip single-quote aman: password ber-apostrof tak memecah perintah sh.
+    // Single-quote escaping is safe: a password with an apostrophe doesn't break the sh command.
     assert!(db_command("redis", &json!({ "password": "a'b" }))
         .unwrap()
         .contains(r"'a'\''b'"));
-    // postgres tanpa user -> fallback superuser "postgres".
+    // postgres with no user -> fall back to the superuser "postgres".
     assert!(db_command("postgres", &json!({ "password": "x" }))
         .unwrap()
         .contains("-U postgres"));
@@ -226,7 +226,7 @@ fn db_command_per_type_uses_stored_credentials() {
 
 #[test]
 fn env_body_omits_dot_env_path_when_disabled() {
-    // Aktif: dotEnvPath ikut. Server menolak null/kosong, jadi "mati" = field diomit.
+    // On: dotEnvPath included. The server rejects null/empty, so "off" = field omitted.
     let on = env_body("proj", "svc", "FOO=bar", Some(".env"));
     assert_eq!(on["env"], json!("FOO=bar"));
     assert_eq!(on["dotEnvPath"], json!(".env"));
@@ -248,18 +248,18 @@ fn redirect_body_builds_shape_and_requires_regex_replacement() {
     let mut f = form(redirect_fields());
     set(&mut f, "Regex", "^https://old.test/(.*)");
     set(&mut f, "Replacement", "https://new.test/${1}");
-    // Permanent & Enabled default ya (301, on).
+    // Permanent & Enabled default to yes (301, on).
     let body = redirect_body(&f).unwrap();
     assert_eq!(body["regex"], json!("^https://old.test/(.*)"));
     assert_eq!(body["replacement"], json!("https://new.test/${1}"));
     assert_eq!(body["permanent"], json!(true));
     assert_eq!(body["enabled"], json!(true));
 
-    // Permanent = tidak -> 302.
-    set(&mut f, "Permanent (301)", "tidak");
+    // Permanent = no -> 302.
+    set(&mut f, "Permanent (301)", "no");
     assert_eq!(redirect_body(&f).unwrap()["permanent"], json!(false));
 
-    // Regex/replacement kosong -> error.
+    // Empty regex/replacement -> error.
     let mut empty = form(redirect_fields());
     set(&mut empty, "Replacement", "x");
     assert!(redirect_body(&empty).is_err());
@@ -274,7 +274,7 @@ fn basic_auth_body_sets_clears_and_rejects_half() {
             .unwrap()
             .value = val.into();
     };
-    // Prefill dari kredensial pertama yang ada (bentuk terverifikasi live).
+    // Prefill from the first existing credential (shape verified live).
     let data = json!({ "basicAuth": [{ "username": "admin", "password": "s3cret" }] });
     let f = form(basic_auth_fields(Some(&data)));
     assert_eq!(f.by_label("Username"), "admin");
@@ -284,11 +284,11 @@ fn basic_auth_body_sets_clears_and_rejects_half() {
         json!([{ "username": "admin", "password": "s3cret" }])
     );
 
-    // Keduanya kosong -> array kosong (matikan proteksi).
+    // Both empty -> empty array (turn off protection).
     let f = form(basic_auth_fields(None));
     assert_eq!(basic_auth_body(&f).unwrap(), json!([]));
 
-    // Setengah (username tanpa password) -> error, bukan kredensial cacat.
+    // Half (username without password) -> error, not a broken credential.
     let mut f = form(basic_auth_fields(None));
     set(&mut f, "Username", "admin");
     assert!(basic_auth_body(&f).is_err());
@@ -323,13 +323,13 @@ fn mount_body_builds_per_type_and_validates() {
         json!({ "type": "bind", "hostPath": "/etc/host/cfg", "mountPath": "/cfg" })
     );
 
-    // Mount path kosong -> error, apa pun tipenya.
+    // Empty mount path -> error, whatever the type.
     let mut f = form(mount_fields());
     set(&mut f, "Type", "volume");
     set(&mut f, "Name", "data");
     assert!(mount_body(&f).is_err());
 
-    // volume tanpa name -> error (bukan diam-diam kirim name kosong).
+    // volume with no name -> error (not a silently-sent empty name).
     let mut f = form(mount_fields());
     set(&mut f, "Type", "volume");
     set(&mut f, "Mount path", "/data");
@@ -339,7 +339,7 @@ fn mount_body_builds_per_type_and_validates() {
 #[test]
 fn port_body_parses_numbers_and_rejects_junk() {
     let f = form(port_fields());
-    // Kosong -> ditolak dengan pesan, bukan port 0.
+    // Empty -> rejected with a message, not port 0.
     assert!(port_body(&f).is_err());
 
     let mut f = form(port_fields());
@@ -351,12 +351,12 @@ fn port_body_parses_numbers_and_rejects_junk() {
             .value = val.into();
     }
     let v = port_body(&f).unwrap();
-    // published/target HARUS number (API menolak string), protocol apa adanya.
+    // published/target MUST be numbers (the API rejects strings), protocol as-is.
     assert_eq!(v["published"], json!(8080));
     assert_eq!(v["target"], json!(80));
     assert_eq!(v["protocol"], json!("udp"));
 
-    // Published non-angka -> error, bukan diam-diam 0.
+    // Non-numeric Published -> error, not a silent 0.
     let mut f = form(port_fields());
     f.fields
         .iter_mut()
@@ -373,40 +373,41 @@ fn port_body_parses_numbers_and_rejects_junk() {
 
 #[test]
 fn status_reflects_running_state_not_just_enabled() {
-    // `enabled` cuma "tidak di-disable", bukan "hidup". Service crash tetap
-    // enabled — dulu tabel bohong menampilkan "aktif". Sekarang metrik yang
-    // menentukan jalan/mati.
+    // `enabled` only means "not disabled", not "alive". A crashed service stays
+    // enabled — the table used to lie and show "active". Now the metrics decide
+    // up/down.
     let on = json!({ "projectName": "p", "name": "a", "type": "app", "enabled": true });
     let off = json!({ "projectName": "p", "name": "b", "type": "app", "enabled": false });
 
-    // Di-disable user -> "mati", apa pun metriknya.
-    assert_eq!(service_status(&off, Some(true), None), "mati");
-    assert_eq!(service_status(&off, None, None), "mati");
-    // Enabled + ada metrik -> jalan.
-    assert_eq!(service_status(&on, Some(true), None), "aktif");
-    // Enabled TAPI tak ada metrik (crash/stop) -> "berhenti", bukan "aktif" palsu.
-    assert_eq!(service_status(&on, Some(false), None), "berhenti");
-    // Metrik belum dimuat (None) -> jangan menuduh mati; jatuh ke "aktif".
-    assert_eq!(service_status(&on, None, None), "aktif");
+    // Disabled by the user -> "disabled", whatever the metrics.
+    assert_eq!(service_status(&off, Some(true), None), "disabled");
+    assert_eq!(service_status(&off, None, None), "disabled");
+    // Enabled + metrics present -> up.
+    assert_eq!(service_status(&on, Some(true), None), "active");
+    // Enabled BUT no metrics (crash/stop) -> "stopped", not a false "active".
+    assert_eq!(service_status(&on, Some(false), None), "stopped");
+    // Metrics not loaded yet (None) -> don't accuse it of being dead; fall back to "active".
+    assert_eq!(service_status(&on, None, None), "active");
 }
 
 #[test]
 fn replica_stats_distinguish_down_from_stopped() {
-    // Replika swarm (actual/desired) memisahkan yang DULU dilebur jadi "berhenti":
-    // service crash-loop (desired>0, actual<desired) itu RUSAK, bukan sengaja stop.
+    // Swarm replicas (actual/desired) separate what used to be lumped into
+    // "stopped": a crash-looping service (desired>0, actual<desired) is BROKEN, not
+    // deliberately stopped.
     let on = json!({ "projectName": "p", "name": "a", "type": "app", "enabled": true });
 
-    // desired>0 tapi belum ada replika yang naik -> "turun" (rusak sekarang).
-    assert_eq!(service_status(&on, Some(false), Some((0, 1))), "turun");
-    // Sebagian replika hilang -> tetap "turun".
-    assert_eq!(service_status(&on, None, Some((1, 3))), "turun");
-    // Sengaja di-scale ke 0 -> "berhenti", bukan "turun".
-    assert_eq!(service_status(&on, None, Some((0, 0))), "berhenti");
-    // Replika penuh -> "aktif", meski metrik bilang belum ada (replika menang).
-    assert_eq!(service_status(&on, Some(false), Some((1, 1))), "aktif");
-    // enabled=false selalu "mati", replika tak mengubahnya.
+    // desired>0 but no replica up yet -> "down" (broken right now).
+    assert_eq!(service_status(&on, Some(false), Some((0, 1))), "down");
+    // Some replicas missing -> still "down".
+    assert_eq!(service_status(&on, None, Some((1, 3))), "down");
+    // Deliberately scaled to 0 -> "stopped", not "down".
+    assert_eq!(service_status(&on, None, Some((0, 0))), "stopped");
+    // Full replicas -> "active", even if metrics say none yet (replicas win).
+    assert_eq!(service_status(&on, Some(false), Some((1, 1))), "active");
+    // enabled=false is always "disabled", replicas don't change it.
     let off = json!({ "projectName": "p", "name": "b", "type": "app", "enabled": false });
-    assert_eq!(service_status(&off, None, Some((0, 1))), "mati");
+    assert_eq!(service_status(&off, None, Some((0, 1))), "disabled");
 }
 
 #[test]
@@ -416,7 +417,7 @@ fn is_deploying_tracks_running_deployment_actions_only() {
         json!({ "projectName": "p", "name": "web", "type": "app" }),
         json!({ "projectName": "p", "name": "db", "type": "mysql" }),
     ];
-    // running = sedang berjalan; done = selesai (tidak); status live-verified
+    // running = in progress; done = finished (not); a live-verified status
     // pending → running → done/error.
     app.actions = vec![
         json!({ "type": "deployment", "status": "running", "projectName": "p", "serviceName": "web" }),
@@ -427,7 +428,7 @@ fn is_deploying_tracks_running_deployment_actions_only() {
     assert!(!app.is_deploying("p", "absent"));
     assert_eq!(app.deploying_count(), 1);
 
-    // pending juga "sedang berjalan"; type non-deployment (backup) diabaikan.
+    // pending is also "in progress"; a non-deployment type (backup) is ignored.
     app.actions = vec![
         json!({ "type": "deployment", "status": "pending", "projectName": "p", "serviceName": "web" }),
         json!({ "type": "backup", "status": "running", "projectName": "p", "serviceName": "db" }),
@@ -440,15 +441,15 @@ fn is_deploying_tracks_running_deployment_actions_only() {
 #[test]
 fn context_menu_items_match_screen_and_selection() {
     let mut app = App::new("t".into(), vec![]);
-    // Layar Domains tanpa baris terpilih -> tak ada menu.
+    // Domains screen with no row selected -> no menu.
     app.screen = Screen::Domains;
     assert!(app.context_items().is_empty());
-    // Baris domain terpilih -> aksi domain (edit/primary/hapus).
+    // A domain row selected -> domain actions (edit/primary/delete).
     app.domains_state.select(Some(0));
     let items = app.context_items();
     assert_eq!(items.len(), 3);
-    assert!(items.iter().any(|i| i.label == "Hapus"));
-    // Layar tanpa aksi baris (Dashboard) -> selalu kosong.
+    assert!(items.iter().any(|i| i.label == "Delete"));
+    // A screen with no row actions (Dashboard) -> always empty.
     app.screen = Screen::Dashboard;
     assert!(app.context_items().is_empty());
 }
@@ -462,32 +463,32 @@ fn service_menu_groups_actions_and_respects_type() {
         json!({ "projectName": "p", "name": "db", "type": "mysql" }),
     ];
     app.screen = Screen::Projects;
-    // visible_rows terurut nama: [header "p", "db"(mysql), "web"(app)].
+    // visible_rows is sorted by name: [header "p", "db"(mysql), "web"(app)].
     let has = |v: &[super::app::MenuItem], s: &str| v.iter().any(|i| i.label == s);
 
     app.services_table.select(Some(2)); // web (app)
     let top = app.service_menu();
     let top: Vec<&str> = top.iter().map(|i| i.label.as_str()).collect();
-    assert!(top.contains(&"Env ▸") && top.contains(&"Jaringan ▸") && top.contains(&"Bahaya ▸"));
-    // app: file .env bisa di-toggle; shell TANPA DB shell.
-    assert!(has(&app.env_menu(), "Toggle file .env"));
+    assert!(top.contains(&"Env ▸") && top.contains(&"Networking ▸") && top.contains(&"Danger ▸"));
+    // app: the .env file can be toggled; shell WITHOUT a DB shell.
+    assert!(has(&app.env_menu(), "Toggle .env file"));
     assert!(!app
         .shell_menu()
         .iter()
         .any(|i| i.label.contains("DB shell")));
 
     app.services_table.select(Some(1)); // db (mysql)
-                                        // db: TANPA toggle .env; shell PUNYA DB shell (login otomatis).
-    assert!(!has(&app.env_menu(), "Toggle file .env"));
+                                        // db: NO .env toggle; shell HAS a DB shell (auto login).
+    assert!(!has(&app.env_menu(), "Toggle .env file"));
     assert!(app
         .shell_menu()
         .iter()
         .any(|i| i.label.contains("DB shell")));
-    // db punya Config file (Advanced) di menu Build.
+    // db has Config file (Advanced) in the Build menu.
     assert!(has(&app.build_menu(), "Config file (Advanced)"));
 
     app.services_table.select(Some(2)); // web (app)
-                                        // app TANPA Config file (Advanced) — configFile hanya untuk service database.
+                                        // app has NO Config file (Advanced) — configFile is database-only.
     assert!(!has(&app.build_menu(), "Config file (Advanced)"));
 }
 
@@ -500,22 +501,22 @@ fn menu_arrows_open_drill_and_go_back() {
     app.screen = Screen::Projects;
     app.services_table.select(Some(1)); // web
 
-    // Klik kanan membuka menu service (top-level), lalu → masuk submenu Env; ←
-    // mengembalikan ke menu service (induk), bukan menutup.
-    app.on_key(KeyCode::Char('e'), &tx); // opener keyboard: langsung menu Env (tanpa induk)
+    // A right click opens the service menu (top-level), then → enters the Env
+    // submenu; ← returns to the service menu (parent), not close.
+    app.on_key(KeyCode::Char('e'), &tx); // keyboard opener: straight to the Env menu (no parent)
     assert!(app.menu.is_some());
-    app.on_key(KeyCode::Left, &tx); // teratas → menutup
+    app.on_key(KeyCode::Left, &tx); // top level → closes
     assert!(app.menu.is_none());
 
-    // Drill dua tingkat lewat item ▸ mempertahankan induk untuk ←.
+    // Drilling two levels via a ▸ item keeps the parent for ←.
     let top = app.service_menu();
     app.open_menu(top);
-    // pilih "Env ▸" (indeks 1) lalu → masuk submenu.
+    // select "Env ▸" (index 1) then → to enter the submenu.
     app.menu.as_mut().unwrap().state.select(Some(1));
     app.on_key(KeyCode::Right, &tx);
-    // sekarang di submenu Env; item pertama "Lihat env".
-    assert_eq!(app.menu.as_ref().unwrap().items[0].label, "Lihat env");
-    // ← kembali ke menu service (induk), tidak menutup.
+    // now in the Env submenu; the first item is "View env".
+    assert_eq!(app.menu.as_ref().unwrap().items[0].label, "View env");
+    // ← returns to the service menu (parent), doesn't close.
     app.on_key(KeyCode::Left, &tx);
     assert_eq!(app.menu.as_ref().unwrap().items[1].label, "Env ▸");
 }
@@ -529,7 +530,7 @@ fn space_opens_the_row_action_menu() {
     app.screen = Screen::Projects;
     app.services_table.select(Some(1)); // web
     app.on_key(KeyCode::Char(' '), &tx);
-    // Space = versi keyboard dari klik kanan: menu service top-level (punya Env ▸).
+    // Space = keyboard version of a right click: the top-level service menu (has Env ▸).
     assert!(app
         .menu
         .as_ref()
@@ -555,32 +556,32 @@ fn palette_filters_then_jumps_to_service() {
             .collect()
     };
 
-    // Tanpa service terpilih (bukan di Services): palette MURNI navigasi — tak ada
-    // entri aksi (mencegah bloating ratusan entri).
+    // With no service selected (not on Services): the palette is PURE navigation —
+    // no action entries (preventing hundreds of them).
     app.screen = Screen::Dashboard;
     app.open_palette();
     let nav = labels(&app);
-    assert!(nav.iter().any(|x| x == "Buka  proj/web  ·  app"));
+    assert!(nav.iter().any(|x| x == "Open  proj/web  ·  app"));
     assert!(!nav.iter().any(|x| x.starts_with("Deploy")));
     app.palette = None;
 
-    // Dengan service web (app) terpilih di Services: muncul aksi service ITU saja.
+    // With the web (app) service selected on Services: only THAT service's actions appear.
     app.screen = Screen::Projects;
-    // visible_rows terurut nama: [header "proj", "db"(mysql), "web"(app)].
+    // visible_rows is sorted by name: [header "proj", "db"(mysql), "web"(app)].
     app.services_table.select(Some(2)); // web
     app.open_palette();
     let l = labels(&app);
-    // Daftar aksi PENUH (bukan cuma lifecycle): lifecycle + env + jaringan + dst.
+    // The FULL action list (not just lifecycle): lifecycle + env + networking + etc.
     assert!(l.iter().any(|x| x == "Deploy  ·  proj/web"));
-    assert!(l.iter().any(|x| x == "Lihat env  ·  proj/web"));
+    assert!(l.iter().any(|x| x == "View env  ·  proj/web"));
     assert!(l.iter().any(|x| x == "Domain  ·  proj/web"));
     assert!(l.iter().any(|x| x == "Basic auth  ·  proj/web"));
-    assert!(l.iter().any(|x| x == "Hapus service  ·  proj/web"));
-    assert!(!l.iter().any(|x| x.starts_with("DB shell"))); // app bukan db
-    assert!(!l.iter().any(|x| x == "Deploy  ·  proj/db")); // hanya service terpilih
+    assert!(l.iter().any(|x| x == "Delete service  ·  proj/web"));
+    assert!(!l.iter().any(|x| x.starts_with("DB shell"))); // app isn't a db
+    assert!(!l.iter().any(|x| x == "Deploy  ·  proj/db")); // only the selected service
     app.palette = None;
 
-    // db (mysql) terpilih → aksinya menyertakan DB shell + Config file (Advanced).
+    // db (mysql) selected → its actions include DB shell + Config file (Advanced).
     app.services_table.select(Some(1)); // db
     app.open_palette();
     let ldb = labels(&app);
@@ -592,24 +593,24 @@ fn palette_filters_then_jumps_to_service() {
         .any(|x| x == "Config file (Advanced)  ·  proj/db"));
     app.palette = None;
 
-    // Konteks juga untuk baris NON-service: Domains dengan domain terpilih →
-    // aksi menu konteks domain (Edit/Primary/Hapus) muncul di palette.
+    // Context also works for NON-service rows: Domains with a domain selected → the
+    // domain context-menu actions (Edit/Primary/Delete) appear in the palette.
     app.screen = Screen::Domains;
     app.domains = vec![json!({ "host": "x.test", "id": "d1" })];
     app.domains_state.select(Some(0));
     app.open_palette();
-    assert!(labels(&app).iter().any(|x| x == "Domains: Hapus"));
+    assert!(labels(&app).iter().any(|x| x == "Domains: Delete"));
     app.palette = None;
 
-    // Balik ke Services untuk uji jalankan aksi service.
+    // Back to Services to test running a service action.
     app.screen = Screen::Projects;
 
-    // Kembali ke web, uji jalankan aksi.
+    // Back to web, test running an action.
     app.services_table.select(Some(2)); // web
     app.open_palette();
 
-    // Pencarian multi-kata (token-AND): "deploy web" mempersempit ke entri yang
-    // memuat kedua kata (mis. "Deploy …/web" dan "Auto deploy …/web").
+    // Multi-word search (token-AND): "deploy web" narrows to entries that contain
+    // both words (e.g. "Deploy …/web" and "Auto deploy …/web").
     app.palette.as_mut().unwrap().query = "deploy web".into();
     let pal = app.palette.as_ref().unwrap();
     let m = pal.matches();
@@ -617,7 +618,7 @@ fn palette_filters_then_jumps_to_service() {
         let l = pal.items[i].label.to_lowercase();
         l.contains("deploy") && l.contains("web")
     }));
-    // Ambil entri aksi Deploy (bukan "Auto deploy…") dan jalankan.
+    // Take the Deploy action entry (not "Auto deploy…") and run it.
     let pos = m
         .iter()
         .position(|&i| pal.items[i].label.starts_with("Deploy  "))
@@ -629,30 +630,30 @@ fn palette_filters_then_jumps_to_service() {
     assert!(app.services_table.selected().is_some());
     assert!(
         app.confirm.as_ref().is_some_and(|c| c.action == "deploy"),
-        "quick action Deploy harus memunculkan konfirmasi deploy"
+        "the Deploy quick action must raise a deploy confirmation"
     );
 }
 
 #[test]
 fn spinner_shows_only_while_loading() {
-    // Spinner = umpan balik "sedang bekerja". Muncul saat status diakhiri "..." /
-    // "…" (Memuat…/Mengirim…/Mencari…), diam saat status biasa.
+    // The spinner = "working" feedback. It shows while the status ends with "..." /
+    // "…" (Loading…/Sending…/Searching…), and is quiet on an ordinary status.
     let mut app = App::new("t".into(), vec![]);
-    app.status = "Siap".into();
+    app.status = "Ready".into();
     assert!(app.spinner().is_none());
-    app.status = "Memuat...".into();
+    app.status = "Loading...".into();
     assert!(app.spinner().is_some());
-    app.status = "Mencari 'x' di semua service…".into();
+    app.status = "Searching 'x' across all services…".into();
     assert!(app.spinner().is_some());
-    app.status = "Domain dihapus".into();
+    app.status = "Domain deleted".into();
     assert!(app.spinner().is_none());
 }
 
 #[test]
 fn clone_body_drops_identity_and_source_but_keeps_config() {
-    // Bentuk field diverifikasi ke server hidup (mysql). Clone menyalin config,
-    // membuang identitas/token, dan menerapkan source/configFile TERPISAH — jadi
-    // keduanya harus absen dari body createService.
+    // Field shapes verified against a live server (mysql). Clone copies the config,
+    // drops identity/token, and applies source/configFile SEPARATELY — so both must
+    // be absent from the createService body.
     let inspect = json!({
         "name": "mysql", "serviceName": "mysql", "projectName": "db", "type": "mysql",
         "enabled": true, "token": "secret", "primaryDomainId": "d1",
@@ -672,38 +673,38 @@ fn clone_body_drops_identity_and_source_but_keeps_config() {
     ] {
         assert!(
             body.get(k).is_none(),
-            "'{k}' harusnya dibuang dari body clone"
+            "'{k}' should be dropped from the clone body"
         );
     }
-    // Config sungguhan (termasuk kredensial) ikut tersalin.
+    // The real config (including credentials) is copied along.
     assert_eq!(body["image"], json!("mysql:8.0"));
     assert_eq!(body["env"], json!("TZ=Asia/Jakarta"));
     assert_eq!(body["rootPassword"], json!("rpw"));
     assert_eq!(body["databaseName"], json!("app"));
-    // Diarahkan ke target.
+    // Pointed at the target.
     assert_eq!(body["projectName"], json!("db"));
     assert_eq!(body["serviceName"], json!("mysql-replica"));
 }
 
 #[test]
 fn task_stats_parse_matches_server_shape() {
-    // Bentuk terverifikasi ke server hidup: objek { "{proj}_{svc}": {actual,desired} }.
+    // Shape verified against a live server: an object { "{proj}_{svc}": {actual,desired} }.
     let v = json!({
         "edukasistudio-db_mysql": { "actual": 1, "desired": 1 },
         "harisenin-com_webapp":   { "actual": 0, "desired": 1 },
-        "rusak":                  { "actual": 2 }
+        "broken":                 { "actual": 2 }
     });
     let m = parse_task_stats(&v);
     assert_eq!(m.get("edukasistudio-db_mysql"), Some(&(1, 1)));
     assert_eq!(m.get("harisenin-com_webapp"), Some(&(0, 1)));
-    // Entri tanpa `desired` diabaikan, tidak bikin panik atau nilai palsu.
-    assert_eq!(m.get("rusak"), None);
+    // An entry without `desired` is ignored, not a panic or a fake value.
+    assert_eq!(m.get("broken"), None);
 }
 
 #[test]
 fn auto_deploy_column_separates_off_from_not_applicable() {
-    // Bentuk ini dipastikan ke API sungguhan, bukan dikarang: source github
-    // selalu membawa autoDeploy (15/16 app), source image tak pernah.
+    // This shape is confirmed against the real API, not invented: a github source
+    // always carries autoDeploy (15/16 apps), an image source never does.
     let on = json!({ "projectName": "p", "name": "a", "type": "app",
             "source": { "type": "github", "owner": "acme", "repo": "web",
                         "ref": "dev", "autoDeploy": true } });
@@ -716,13 +717,13 @@ fn auto_deploy_column_separates_off_from_not_applicable() {
 
     assert_eq!(auto_deploy_cell(&on), "✓");
     assert_eq!(auto_deploy_cell(&off), "✗");
-    // Bukan "✗": MySQL dan source image tak punya auto deploy untuk
-    // dinyalakan, jadi "belum" akan jadi klaim yang salah.
+    // Not "✗": MySQL and an image source have no auto deploy to turn on, so "not
+    // yet" would be a wrong claim.
     assert_eq!(auto_deploy_cell(&image), "-");
     assert_eq!(auto_deploy_cell(&db), "-");
 
-    // service_row masih memisah project dan nama; render melebur keduanya,
-    // jadi indeksnya bergeser satu terhadap header.
+    // service_row still keeps project and name separate; render folds them, so the
+    // index shifts by one against the header.
     assert_eq!(service_row(&on, None, None)[5], "✓");
     assert_eq!(SERVICE_HEADERS[4], "Auto");
 }
@@ -739,23 +740,23 @@ fn auto_deploy_toggle_flips_the_value_and_refuses_where_it_cannot_apply() {
         json!({ "projectName": "p", "name": "b", "type": "mysql" }),
     ];
 
-    // Baris 0 = header project, 1 = service "a", 2 = service "b".
+    // Row 0 = project header, 1 = service "a", 2 = service "b".
     app.services_table.select(Some(1));
     app.toggle_auto_deploy(&tx);
     assert!(
         matches!(rx.try_recv(), Ok(Req::AutoDeploy { ref service, on, .. })
                      if service == "a" && !on),
-        "true harus dikirim sebagai on:false, bukan mengirim ulang nilai lama"
+        "true must be sent as on:false, not resending the old value"
     );
 
-    // MySQL: tak ada auto deploy untuk dibalik. Diam-diam mengirim
-    // disableGithubDeploy ke sana hanya menghasilkan error dari server.
+    // MySQL: no auto deploy to flip. Silently sending disableGithubDeploy there
+    // would only produce a server error.
     app.services_table.select(Some(2));
     app.toggle_auto_deploy(&tx);
-    assert!(rx.try_recv().is_err(), "tak boleh ada request untuk MySQL");
+    assert!(rx.try_recv().is_err(), "there must be no request for MySQL");
     assert!(app.status.contains("GitHub"), "status: {}", app.status);
 
-    // Header project bukan service.
+    // A project header isn't a service.
     app.services_table.select(Some(0));
     app.toggle_auto_deploy(&tx);
     assert!(rx.try_recv().is_err());
@@ -769,15 +770,15 @@ fn metric_cols_render_bytes_and_rates() {
         metric_cols(Some(&m)),
         vec!["0.3 %", "547.3 MB", "12.2 KB/s", "31.9 KB/s"]
     );
-    // Service tanpa metrik tak boleh bikin panik atau menampilkan 0 palsu.
+    // A service with no metrics must not panic or show a fake 0.
     assert_eq!(metric_cols(None), vec!["-", "-", "-", "-"]);
 }
 
 #[test]
 fn metrics_join_by_project_and_service() {
-    // getAllServicesStats memuat lebih banyak entri daripada daftar service
-    // (service sistem, sub-service compose) — dan nama service yang sama bisa
-    // ada di project berbeda, jadi kuncinya harus pasangan, bukan nama saja.
+    // getAllServicesStats carries more entries than the service list (system
+    // services, compose sub-services) — and the same service name can exist in
+    // different projects, so the key must be the pair, not the name alone.
     let mut app = App::new("s".into(), vec![]);
     app.all_services = vec![svc("proj-a", "mysql", "mysql")];
     app.monitor = vec![
@@ -787,19 +788,19 @@ fn metrics_join_by_project_and_service() {
                     "cpu": 1.0, "memory": 2048.0, "networkIn": 0.0, "networkOut": 0.0 }),
     ];
     let m = app.metric_for("proj-a", "mysql").unwrap();
-    // Harus mengambil proj-a, bukan proj-b yang namanya sama.
+    // Must pick proj-a, not proj-b with the same name.
     assert_eq!(metric_cols(Some(m))[0], "1.0 %");
     assert_eq!(metric_cols(Some(m))[1], "2.0 KB");
 
-    // Service yang tak punya metrik: kolomnya "-", bukan 0 palsu.
-    assert!(app.metric_for("proj-c", "hantu").is_none());
-    assert_eq!(metric_cols(app.metric_for("proj-c", "hantu"))[0], "-");
+    // A service with no metrics: its columns are "-", not a fake 0.
+    assert!(app.metric_for("proj-c", "ghost").is_none());
+    assert_eq!(metric_cols(app.metric_for("proj-c", "ghost"))[0], "-");
 }
 
 #[test]
 fn flat_list_filters_across_projects() {
-    // Inti daftar datar: cari "mysql" menemukannya di project mana pun,
-    // tanpa perlu tahu ia ada di project yang mana.
+    // The point of a flat list: searching "mysql" finds it in any project, with no
+    // need to know which project it's in.
     let mut app = App::new("s".into(), vec![]);
     app.all_services = vec![
         svc("harisenin-net", "api", "app"),
@@ -815,12 +816,12 @@ fn flat_list_filters_across_projects() {
     assert_eq!(field(vis[0], "/projectName"), "harisenin-net-db");
     assert_eq!(field(vis[1], "/projectName"), "edukasistudio-db");
 
-    // Nama project juga ikut dicocokkan, bukan cuma nama service.
+    // A project name is matched too, not just a service name.
     app.filter = "edukasistudio".into();
     assert_eq!(app.visible_services().len(), 2);
 }
 
-/// Form "Service baru" seperti yang dilihat user, dengan Tipe/Source diatur.
+/// The "New service" form as the user sees it, with Kind/Source set.
 fn create_form(pairs: &[(&str, &str)]) -> Form {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
@@ -831,7 +832,7 @@ fn create_form(pairs: &[(&str, &str)]) -> Form {
         form.fields
             .iter_mut()
             .find(|f| &f.label == label)
-            .unwrap_or_else(|| panic!("field '{label}' tak ada di form"))
+            .unwrap_or_else(|| panic!("field '{label}' isn't in the form"))
             .value = (*val).into();
     }
     form
@@ -839,18 +840,18 @@ fn create_form(pairs: &[(&str, &str)]) -> Form {
 
 #[test]
 fn a_new_app_carries_its_source_in_the_same_request() {
-    // Inti item ini: createService menerima source inline, jadi service app
-    // tak perlu dibuat dulu lalu diedit. Sebelumnya form ini hanya bisa
-    // mengirim project/nama/tipe.
+    // The point here: createService accepts an inline source, so an app service
+    // doesn't need to be created first and then edited. This form used to be able to
+    // send only project/name/type.
     let f = create_form(&[
-        ("Nama", "web"),
-        ("Tipe", "app"),
+        ("Name", "web"),
+        ("Kind", "app"),
         ("Source", "github"),
         ("Repo", "acme/web"),
         ("Branch", "dev"),
     ]);
-    // Source diterapkan lewat updateSourceGithub TERPISAH (bukan inline di
-    // createService, yang memicu deploy). create_source memberi (op, body, auto).
+    // The source is applied via updateSourceGithub SEPARATELY (not inline in
+    // createService, which triggers a deploy). create_source gives (op, body, auto).
     let (op, body, auto) = create_source(&f).unwrap().unwrap();
     assert_eq!(op, "updateSourceGithub");
     assert_eq!(
@@ -860,46 +861,46 @@ fn a_new_app_carries_its_source_in_the_same_request() {
     assert_eq!(auto, Some(false));
 
     let f = create_form(&[
-        ("Nama", "web"),
+        ("Name", "web"),
         ("Repo", "acme/web"),
         ("Branch", "dev"),
-        ("Auto deploy", "ya"),
+        ("Auto deploy", "yes"),
     ]);
     assert_eq!(create_source(&f).unwrap().unwrap().2, Some(true));
 }
 
 #[test]
 fn a_new_service_without_a_source_sends_none_at_all() {
-    // Repo kosong = user belum memilih. createService hanya mewajibkan
-    // projectName + serviceName, jadi source DIHILANGKAN — bukan dikirim
-    // setengah jadi, dan bukan pula error yang memblokir pembuatan.
-    let f = create_form(&[("Nama", "web"), ("Tipe", "app")]);
+    // An empty repo = the user hasn't chosen. createService only requires
+    // projectName + serviceName, so the source is OMITTED — not sent half-formed,
+    // and not an error that blocks creation.
+    let f = create_form(&[("Name", "web"), ("Kind", "app")]);
     assert_eq!(create_source(&f).unwrap(), None);
 
-    // Database tak punya source sama sekali.
-    let f = create_form(&[("Nama", "db"), ("Tipe", "mysql")]);
+    // A database has no source at all.
+    let f = create_form(&[("Name", "db"), ("Kind", "mysql")]);
     assert_eq!(create_source(&f).unwrap(), None);
 
-    // Tapi source yang setengah jadi tetap ditolak: repo dipilih, branch tidak.
-    let f = create_form(&[("Nama", "web"), ("Repo", "acme/web"), ("Branch", "")]);
+    // But a half-formed source is still rejected: repo chosen, branch not.
+    let f = create_form(&[("Name", "web"), ("Repo", "acme/web"), ("Branch", "")]);
     assert!(create_source(&f).is_err());
 }
 
 #[test]
 fn source_fields_hide_unless_the_service_type_is_app() {
-    // Dua penentu sekaligus: tipe service DAN tipe source. Ini yang dulu
-    // mustahil — satu form hanya punya satu switch.
+    // Two deciders at once: the service type AND the source type. This is what used
+    // to be impossible — a form had only one switch.
     let shown =
         |f: &Form| -> Vec<&str> { f.visible().iter().map(|i| f.fields[*i].label).collect() };
 
-    let f = create_form(&[("Tipe", "app"), ("Source", "github")]);
+    let f = create_form(&[("Kind", "app"), ("Source", "github")]);
     assert!(shown(&f).contains(&"Repo"));
     assert!(shown(&f).contains(&"Branch"));
     assert!(!shown(&f).contains(&"Docker image"));
-    assert!(!shown(&f).contains(&"Database"), "app bukan database");
+    assert!(!shown(&f).contains(&"Database"), "app isn't a database");
 
-    // Tipe mysql: seluruh blok source lenyap, field database muncul.
-    let f = create_form(&[("Tipe", "mysql"), ("Source", "github")]);
+    // Kind mysql: the whole source block vanishes, database fields appear.
+    let f = create_form(&[("Kind", "mysql"), ("Source", "github")]);
     assert!(!shown(&f).contains(&"Repo"));
     assert!(!shown(&f).contains(&"Source"));
     assert!(shown(&f).contains(&"Database"));
@@ -908,14 +909,18 @@ fn source_fields_hide_unless_the_service_type_is_app() {
 
 #[test]
 fn the_merged_create_form_has_no_duplicate_labels() {
-    // Form ini menggabungkan field database dan field source. Keduanya dulu
-    // sama-sama punya "Tipe", "Image", dan "Password" — dan by_label() memakai
-    // find(), jadi field database akan membajak nilai milik source. Inilah
-    // alasan label source diganti jadi Source/Docker image/Registry *.
+    // This form merges the database fields and the source fields. Both used to have
+    // a "Type", "Image", and "Password" — and by_label() uses find(), so the
+    // database field would hijack the source's value. That's why the source labels
+    // were renamed to Source/Docker image/Registry *.
     let f = create_form(&[]);
     let mut seen = std::collections::HashSet::new();
     for field in &f.fields {
-        assert!(seen.insert(field.label), "label '{}' ganda", field.label);
+        assert!(
+            seen.insert(field.label),
+            "label '{}' is duplicated",
+            field.label
+        );
     }
 }
 
@@ -928,15 +933,15 @@ fn service_extra_omits_empty_and_hidden_fields() {
     app.new_service_form(&tx);
     let form = app.form.as_mut().unwrap();
 
-    // Tipe app: tak ada field database sama sekali.
+    // Kind app: no database fields at all.
     assert_eq!(service_extra(form), json!({}));
 
-    // Tipe redis: hanya password + image yang tampil. Mengisi Root password
-    // (tersembunyi untuk redis) tak boleh ikut terkirim — server menolaknya.
+    // Kind redis: only password + image show. Filling Root password (hidden for
+    // redis) must not be sent — the server rejects it.
     for (label, val) in [
-        ("Tipe", "redis"),
+        ("Kind", "redis"),
         ("Password", "s3cret"),
-        ("Root password", "bocor"),
+        ("Root password", "leaked"),
     ] {
         form.fields
             .iter_mut()
@@ -946,37 +951,37 @@ fn service_extra_omits_empty_and_hidden_fields() {
     }
     assert_eq!(service_extra(form), json!({ "password": "s3cret" }));
 
-    // Tipe mysql: Root password kini tampil, jadi ikut. Database/User/Image
-    // dibiarkan kosong -> DIHILANGKAN, bukan dikirim "": server harus
-    // membuatkan sendiri, dan "" berarti "pakai string kosong".
+    // Kind mysql: Root password now shows, so it's included. Database/User/Image
+    // left empty -> OMITTED, not sent as "": the server must create them, and "" means
+    // "use an empty string".
     form.fields
         .iter_mut()
-        .find(|f| f.label == "Tipe")
+        .find(|f| f.label == "Kind")
         .unwrap()
         .value = "mysql".into();
     assert_eq!(
         service_extra(form),
-        json!({ "password": "s3cret", "rootPassword": "bocor" })
+        json!({ "password": "s3cret", "rootPassword": "leaked" })
     );
 }
 
 #[test]
 fn empty_project_shows_no_metrics_not_negative_zero() {
-    // Versi lama test ini menguji `vec![].sum()` dan `metric_cols(None)` —
-    // semantik float Rust dan sebuah fungsi yang tak dipanggil baris header
-    // project. Ia lulus sementara layar sungguhan menampilkan "-0.0 %".
-    // Sekarang ia memanggil pembangun baris yang sebenarnya dipakai render.
-    let row = project_row("kosong", 0, &[]);
-    assert_eq!(row[0], "kosong (0)");
-    assert_eq!(&row[5..], ["-", "-", "-", "-"], "tak ada yang diukur");
+    // The old version of this test exercised `vec![].sum()` and `metric_cols(None)`
+    // — Rust float semantics and a function the project header row doesn't call. It
+    // passed while the real screen showed "-0.0 %". Now it calls the actual row
+    // builder that render uses.
+    let row = project_row("empty", 0, &[]);
+    assert_eq!(row[0], "empty (0)");
+    assert_eq!(&row[5..], ["-", "-", "-", "-"], "nothing measured");
     assert!(
         !row.iter().any(|c| c.contains("-0.0")),
-        "identitas Sum f64 adalah -0.0; ia tak boleh bocor ke layar: {row:?}"
+        "the Sum f64 identity is -0.0; it must not leak to the screen: {row:?}"
     );
 
-    // Ada metrik -> dijumlahkan sungguhan, bukan "-".
+    // With metrics -> actually summed, not "-".
     let m = json!({ "cpu": 1.5, "memory": 2048.0, "networkIn": 0.0, "networkOut": 0.0 });
-    let row = project_row("isi", 1, &[&m]);
+    let row = project_row("filled", 1, &[&m]);
     assert_eq!(row[5], "1.5 %");
 
     assert_eq!(metric_cols(None), vec!["-", "-", "-", "-"]);
@@ -989,15 +994,15 @@ fn rows_are_project_headers_followed_by_their_services() {
     app.all_services = vec![svc("p1", "b", "app"), svc("p1", "a", "app")];
 
     let rows = app.visible_rows();
-    // p1 header + 2 service (urut nama) + p2 header (kosong, tetap tampil).
+    // p1 header + 2 services (sorted by name) + p2 header (empty, still shown).
     assert_eq!(rows.len(), 4);
     assert!(
         matches!(&rows[0], Line2::Project { name, services } if *name == "p1" && services.len() == 2)
     );
     assert!(matches!(&rows[1], Line2::Service(s) if field(s, "/name") == "a"));
     assert!(matches!(&rows[2], Line2::Service(s) if field(s, "/name") == "b"));
-    // Project tanpa service HARUS punya baris: kalau tidak ia hilang sama
-    // sekali — tak terlihat, tak bisa dipilih, tak bisa dihapus.
+    // A project with no services MUST have a row: otherwise it vanishes entirely —
+    // invisible, unselectable, undeletable.
     assert!(
         matches!(&rows[3], Line2::Project { name, services } if *name == "p2" && services.is_empty())
     );
@@ -1005,8 +1010,8 @@ fn rows_are_project_headers_followed_by_their_services() {
 
 #[test]
 fn header_row_is_never_mistaken_for_a_service() {
-    // Aksi service (logs/deploy/hapus) pada header project akan menyentuh
-    // service yang tak ada. selected_row() harus None di header.
+    // A service action (logs/deploy/delete) on a project header would touch a
+    // nonexistent service. selected_row() must be None on a header.
     let mut app = App::new("s".into(), vec![]);
     app.projects = vec!["p1".into()];
     app.all_services = vec![svc("p1", "api", "app")];
@@ -1032,13 +1037,13 @@ fn filtering_a_project_name_keeps_its_services() {
         svc("edukasistudio", "web", "app"),
     ];
 
-    // Nama project cocok -> isinya ikut tampil, bukan header kosong.
+    // Project name matches -> its contents show too, not an empty header.
     app.filter = "harisenin".into();
     let rows = app.visible_rows();
     assert_eq!(rows.len(), 2);
     assert!(matches!(&rows[1], Line2::Service(s) if field(s, "/name") == "api"));
 
-    // Nama service cocok -> header project-nya ikut, supaya konteksnya jelas.
+    // A service name matches -> its project header comes along, so the context is clear.
     app.filter = "web".into();
     let rows = app.visible_rows();
     assert_eq!(rows.len(), 2);
@@ -1058,7 +1063,7 @@ fn every_interactive_screen_documents_its_keys() {
     ] {
         assert!(
             !screen_keys(sc).is_empty(),
-            "{:?} tak punya keybinding terdaftar",
+            "{:?} has no registered keybindings",
             TABS[sc.index()]
         );
     }
@@ -1066,28 +1071,37 @@ fn every_interactive_screen_documents_its_keys() {
 
 #[test]
 fn help_lists_the_destructive_keys_that_exist() {
-    // Tombol destruktif paling perlu ditemukan sebelum ditekan. Kini aksinya ada
-    // di menu grup, jadi opener-nya harus terdokumentasi DAN deskripsinya menyebut
-    // aksi destruktif/lifecycle-nya (hapus/deploy/restart/stop/start).
+    // Destructive keys most need finding before they're pressed. Their actions now
+    // live in group menus, so the opener must be documented AND its description must
+    // name the destructive/lifecycle actions (delete/deploy/restart/stop/start).
     let projects = screen_keys(Screen::Projects);
     let keys: Vec<&str> = projects.iter().map(|k| k.0).collect();
-    assert!(keys.contains(&"x"), "opener menu Bahaya tak terdokumentasi");
-    assert!(keys.contains(&"d"), "opener menu Siklus tak terdokumentasi");
-    let bahaya = projects.iter().find(|k| k.0 == "x").unwrap().1;
-    assert!(bahaya.contains("hapus"), "menu Bahaya harus menyebut hapus");
-    let siklus = projects.iter().find(|k| k.0 == "d").unwrap().1;
+    assert!(
+        keys.contains(&"x"),
+        "the Danger menu opener isn't documented"
+    );
+    assert!(
+        keys.contains(&"d"),
+        "the Lifecycle menu opener isn't documented"
+    );
+    let danger = projects.iter().find(|k| k.0 == "x").unwrap().1;
+    assert!(
+        danger.contains("delete"),
+        "the Danger menu must mention delete"
+    );
+    let lifecycle = projects.iter().find(|k| k.0 == "d").unwrap().1;
     for word in ["deploy", "restart", "stop", "start"] {
-        assert!(siklus.contains(word), "menu Siklus harus menyebut '{word}'");
+        assert!(
+            lifecycle.contains(word),
+            "the Lifecycle menu must mention '{word}'"
+        );
     }
     let maint: Vec<&str> = screen_keys(Screen::Maintenance)
         .iter()
         .map(|k| k.0)
         .collect();
     for k in ["p", "i", "c"] {
-        assert!(
-            maint.contains(&k),
-            "'{k}' tak terdokumentasi di Maintenance"
-        );
+        assert!(maint.contains(&k), "'{k}' isn't documented on Maintenance");
     }
 }
 
@@ -1096,7 +1110,7 @@ fn help_key_and_quit_key_are_documented_globally() {
     let g: Vec<&str> = GLOBAL_KEYS.iter().map(|k| k.0).collect();
     assert!(g.contains(&"?"));
     assert!(g.contains(&"q / Ctrl-C"));
-    // Esc membatalkan, dan itu harus tertulis: sebelumnya Esc menutup TUI.
+    // Esc cancels, and that must be written down: Esc used to close the TUI.
     assert!(g.contains(&"Esc"));
 }
 
@@ -1109,47 +1123,44 @@ fn keep_matches_any_column_case_insensitively() {
     assert!(keep(&row, ""));
     assert!(keep(&row, "rezabelle"));
     assert!(keep(&row, "PROXY"));
-    assert!(!keep(&row, "tidakada"));
+    assert!(!keep(&row, "nothinghere"));
 }
 
 #[test]
 fn enter_saves_the_form_from_a_choice_field() {
-    // Regresi: Enter dulu membuka dropdown pada field Choice, jadi form yang
-    // field terakhirnya Choice — "Service baru" tipe app, persis kasus yang
-    // dilaporkan — mustahil disimpan. Enter cuma buka-tutup dropdown.
+    // Regression: Enter used to open the dropdown on a Choice field, so a form whose
+    // last field is a Choice — "New service", app type, exactly the reported case —
+    // was impossible to save. Enter only opened and closed the dropdown.
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.projects = vec!["p".into()];
     app.new_service_form(&tx);
-    // Form ini memuat daftar repo untuk dropdown source-nya; itu request
-    // pertama di antrean, bukan yang sedang diuji.
+    // This form loads the repo list for its source dropdown; that's the first
+    // request in the queue, not the one under test.
     assert!(matches!(rx.try_recv(), Ok(Req::Repos)));
 
     let form = app.form.as_mut().unwrap();
     form.fields
         .iter_mut()
-        .find(|f| f.label == "Nama")
+        .find(|f| f.label == "Name")
         .unwrap()
         .value = "webapp".into();
-    // Tipe database = wizard satu langkah, jadi Enter langsung menyimpan (bukan
-    // maju ke langkah source/build yang tak ada untuk database). Regresi yang
-    // dijaga: Enter pada field Choice TAK membuka dropdown — dulu ia begitu,
-    // sehingga form tak pernah bisa disimpan.
+    // A database Kind = a one-step wizard, so Enter saves right away (rather than
+    // advancing to the source/build steps that don't exist for a database). The
+    // guarded regression: Enter on a Choice field does NOT open the dropdown — it
+    // used to, so the form could never be saved.
     form.fields
         .iter_mut()
-        .find(|f| f.label == "Tipe")
+        .find(|f| f.label == "Kind")
         .unwrap()
         .value = "redis".into();
-    form.focus = form.fields.iter().position(|f| f.label == "Tipe").unwrap();
+    form.focus = form.fields.iter().position(|f| f.label == "Kind").unwrap();
     assert!(matches!(form.fields[form.focus].kind, FieldKind::Choice(_)));
-    assert!(
-        !app.form.as_ref().unwrap().is_wizard(),
-        "redis = satu langkah"
-    );
+    assert!(!app.form.as_ref().unwrap().is_wizard(), "redis = one step");
 
     app.form_key(KeyCode::Enter, &tx);
 
-    assert!(app.chooser.is_none(), "Enter tak boleh membuka dropdown");
+    assert!(app.chooser.is_none(), "Enter must not open the dropdown");
     assert!(matches!(
         rx.try_recv(),
         Ok(Req::ServiceCreate { ref service, ref stype, .. })
@@ -1159,14 +1170,14 @@ fn enter_saves_the_form_from_a_choice_field() {
 
 #[test]
 fn env_and_domain_are_attached_only_when_filled() {
-    // Kedua langkah opsional: kosong = tak dikirim (bukan env "" atau domain
-    // tanpa host). Port diparse jadi number; path default "/".
-    let f = create_form(&[("Nama", "web"), ("Tipe", "app")]);
-    assert_eq!(create_env(&f), None, "env kosong tak dikirim");
-    assert_eq!(create_domains(&f), None, "tanpa host tak ada domain");
+    // Both steps optional: empty = not sent (not env "" or a domain with no host).
+    // The port is parsed into a number; path defaults to "/".
+    let f = create_form(&[("Name", "web"), ("Kind", "app")]);
+    assert_eq!(create_env(&f), None, "an empty env isn't sent");
+    assert_eq!(create_domains(&f), None, "no host = no domain");
 
     let f = create_form(&[
-        ("Nama", "web"),
+        ("Name", "web"),
         ("Environment", "FOO=bar\nBAZ=qux"),
         ("Domain host", "web.test"),
         ("Domain port", "8080"),
@@ -1174,21 +1185,25 @@ fn env_and_domain_are_attached_only_when_filled() {
     assert_eq!(create_env(&f).as_deref(), Some("FOO=bar\nBAZ=qux"));
     let d = create_domains(&f).unwrap();
     assert_eq!(d[0]["host"], json!("web.test"));
-    assert_eq!(d[0]["port"], json!(8080), "port harus number, bukan string");
+    assert_eq!(
+        d[0]["port"],
+        json!(8080),
+        "the port must be a number, not a string"
+    );
     assert_eq!(d[0]["https"], json!(true));
     assert_eq!(d[0]["path"], json!("/"));
 
-    // Port non-numerik dihilangkan, bukan dikirim 0 (port salah lebih buruk).
-    let f = create_form(&[("Domain host", "web.test"), ("Domain port", "bukan")]);
+    // A non-numeric port is dropped, not sent as 0 (a wrong port is worse).
+    let f = create_form(&[("Domain host", "web.test"), ("Domain port", "notaport")]);
     assert!(create_domains(&f).unwrap()[0].get("port").is_none());
 }
 
 #[test]
 fn create_keeps_source_separate_and_never_deploys_inline() {
-    // Insight pemilik proyek: createService dengan source inline langsung
-    // men-deploy (~100 detik, bisa error). Source harus TERPISAH supaya service
-    // muncul dulu di tabel, lalu deploy manual. Jadi Req membawa `source`
-    // sendiri, dan `extra` (yang masuk createService) TAK memuat "source".
+    // The owner's insight: createService with an inline source deploys right away
+    // (~100 seconds, can error). The source must be SEPARATE so the service appears
+    // in the table first, then deploys manually. So the Req carries its own
+    // `source`, and `extra` (which goes into createService) does NOT contain "source".
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.projects = vec!["p".into()];
@@ -1196,11 +1211,11 @@ fn create_keeps_source_separate_and_never_deploys_inline() {
     assert!(matches!(rx.try_recv(), Ok(Req::Repos)));
     let form = app.form.as_mut().unwrap();
     for (label, val) in [
-        ("Nama", "web"),
+        ("Name", "web"),
         ("Repo", "acme/web"),
         ("Branch", "dev"),
         ("Environment", "A=1"),
-        ("Buat file .env", "ya"),
+        ("Create .env file", "yes"),
     ] {
         form.fields
             .iter_mut()
@@ -1212,21 +1227,24 @@ fn create_keeps_source_separate_and_never_deploys_inline() {
 
     match rx.try_recv() {
         Ok(Req::ServiceCreate { extra, source, .. }) => {
-            assert!(extra.get("source").is_none(), "source tak boleh inline");
+            assert!(
+                extra.get("source").is_none(),
+                "the source must not be inline"
+            );
             assert!(matches!(source, Some(("updateSourceGithub", _, _))));
-            // env file: toggle nyala -> dotEnvPath, dan env ikut inline (aman).
+            // env file: toggle on -> dotEnvPath, and env goes inline too (safe).
             assert_eq!(extra["env"], json!("A=1"));
             assert_eq!(extra["dotEnvPath"], json!(".env"));
         }
-        _ => panic!("harus mengirim ServiceCreate"),
+        _ => panic!("must send ServiceCreate"),
     }
 }
 
 #[test]
 fn app_creation_is_a_five_step_wizard_ending_in_one_request() {
-    // Alur dashboard EasyPanel: Dasar → Source → Build → Environment → Domains.
-    // Enter maju tiap langkah lalu MENYIMPAN di langkah terakhir; Esc mundur.
-    // Semuanya jadi SATU createService, bukan create-lalu-edit berkali-kali.
+    // The EasyPanel dashboard flow: Basics → Source → Build → Environment → Domains.
+    // Enter advances each step then SAVES on the last; Esc steps back. It all
+    // becomes ONE createService, not create-then-edit over and over.
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.projects = vec!["p".into()];
@@ -1236,16 +1254,16 @@ fn app_creation_is_a_five_step_wizard_ending_in_one_request() {
     let form = app.form.as_mut().unwrap();
     form.fields
         .iter_mut()
-        .find(|f| f.label == "Nama")
+        .find(|f| f.label == "Name")
         .unwrap()
         .value = "web".into();
-    // Isi satu domain supaya bisa dipastikan ikut ke request.
+    // Fill one domain so it can be confirmed to reach the request.
     form.fields
         .iter_mut()
         .find(|f| f.label == "Domain host")
         .unwrap()
         .value = "web.test".into();
-    // app (default) → lima langkah.
+    // app (default) → five steps.
     assert_eq!(form.steps_present(), vec![0, 1, 2, 3, 4]);
     assert_eq!(form.step, 0);
 
@@ -1253,57 +1271,57 @@ fn app_creation_is_a_five_step_wizard_ending_in_one_request() {
         app.form_key(KeyCode::Enter, &tx);
         assert_eq!(app.form.as_ref().unwrap().step, expected);
     }
-    // Mundur satu lalu maju lagi: navigasi dua arah.
+    // Step back one then forward again: two-way navigation.
     app.form_key(KeyCode::Esc, &tx);
     assert_eq!(app.form.as_ref().unwrap().step, 3);
-    app.form_key(KeyCode::Enter, &tx); // kembali ke Domains (terakhir)
-    app.form_key(KeyCode::Enter, &tx); // Domains = terakhir → simpan
+    app.form_key(KeyCode::Enter, &tx); // back to Domains (last)
+    app.form_key(KeyCode::Enter, &tx); // Domains = last → save
 
     assert!(
         matches!(rx.try_recv(), Ok(Req::ServiceCreate { ref service, ref stype, ref extra, .. })
             if service == "web" && stype == "app"
                 && extra.get("build").is_some()
                 && extra["domains"][0]["host"] == json!("web.test")),
-        "langkah terakhir harus mengirim createService dengan build + domain inline"
+        "the last step must send createService with build + domain inline"
     );
 }
 
 #[test]
 fn space_opens_the_dropdown_on_a_choice_field() {
-    // Konsekuensi dari test di atas: kalau Enter menyimpan, harus ada tombol
-    // lain yang membuka dropdown — kalau tidak, Tipe jadi tak bisa diubah.
+    // A consequence of the test above: if Enter saves, some other key must open the
+    // dropdown — otherwise Kind couldn't be changed.
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.projects = vec!["p".into()];
     app.new_service_form(&tx);
     let form = app.form.as_mut().unwrap();
-    form.focus = form.fields.iter().position(|f| f.label == "Tipe").unwrap();
+    form.focus = form.fields.iter().position(|f| f.label == "Kind").unwrap();
 
     app.form_key(KeyCode::Char(' '), &tx);
-    assert!(app.chooser.is_some(), "Spasi harus membuka dropdown");
+    assert!(app.chooser.is_some(), "Space must open the dropdown");
 }
 
 #[test]
 fn filter_narrows_domains_and_actions_use_the_same_list() {
-    // Kalau render difilter tapi aksi memakai indeks daftar penuh, `x` akan
-    // menghapus domain yang salah. Keduanya wajib lewat visible_domains().
+    // If render is filtered but actions use full-list indices, `x` would delete the
+    // wrong domain. Both must go through visible_domains().
     let mut app = App::new("s".into(), vec![]);
     app.domains = vec![
-        json!({ "id": "a", "host": "satu.com", "https": true, "path": "/",
+        json!({ "id": "a", "host": "one.com", "https": true, "path": "/",
                     "destinationType": "service",
                     "serviceDestination": { "projectName": "p", "serviceName": "x",
                                             "port": 80, "protocol": "http", "path": "/" } }),
-        json!({ "id": "b", "host": "dua.com", "https": true, "path": "/",
+        json!({ "id": "b", "host": "two.com", "https": true, "path": "/",
                     "destinationType": "service",
                     "serviceDestination": { "projectName": "p", "serviceName": "y",
                                             "port": 80, "protocol": "http", "path": "/" } }),
     ];
     assert_eq!(app.visible_domains().len(), 2);
 
-    app.filter = "dua".into();
+    app.filter = "two".into();
     let vis = app.visible_domains();
     assert_eq!(vis.len(), 1);
-    // Indeks 0 dari daftar terfilter harus "dua.com" — bukan "satu.com".
+    // Index 0 of the filtered list must be "two.com" — not "one.com".
     assert_eq!(vis[0]["id"], json!("b"));
 }
 
@@ -1312,27 +1330,26 @@ fn clamp_keeps_selection_inside_filtered_list() {
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Domains;
     app.domains = vec![
-        json!({ "id": "a", "host": "satu.com", "https": true, "path": "/" }),
-        json!({ "id": "b", "host": "dua.com", "https": true, "path": "/" }),
+        json!({ "id": "a", "host": "one.com", "https": true, "path": "/" }),
+        json!({ "id": "b", "host": "two.com", "https": true, "path": "/" }),
     ];
     app.domains_state.select(Some(1));
-    app.filter = "satu".into();
+    app.filter = "one".into();
     app.clamp_filtered();
-    // Hanya 1 baris tersisa; baris ke-1 sudah tak ada.
+    // Only 1 row left; row 1 is gone.
     assert_eq!(app.domains_state.selected(), Some(0));
 
-    app.filter = "tidakadayangcocok".into();
+    app.filter = "nothingmatches".into();
     app.clamp_filtered();
     assert_eq!(app.domains_state.selected(), None);
 }
 
 #[test]
 fn branch_falls_back_to_text_when_its_list_cannot_load() {
-    // Field Branch adalah dropdown yang diisi dari GitHub. Kalau daftarnya
-    // gagal (mis. token GitHub di EasyPanel ter-revoke — user benar-benar
-    // mengalaminya), opsinya cuma berisi nilai sekarang, jadi branch TAK BISA
-    // diganti sama sekali. Dropdown satu-opsi itu pintu terkunci, bukan
-    // degradasi anggun.
+    // The Branch field is a dropdown filled from GitHub. If its list fails to load
+    // (e.g. the GitHub token in EasyPanel was revoked — users hit this for real),
+    // its options hold only the current value, so the branch CAN'T be changed at
+    // all. That single-option dropdown is a locked door, not graceful degradation.
     let f = source_fields(
         Some(&json!({ "type": "github", "owner": "acme", "repo": "web", "ref": "dev" })),
         vec!["acme/web".into()],
@@ -1347,37 +1364,37 @@ fn branch_falls_back_to_text_when_its_list_cannot_load() {
 
 #[test]
 fn auto_deploy_error_names_the_cause_and_never_swallows_the_rest() {
-    // Pesan ini disalin apa adanya dari server sungguhan saat mencoba
-    // menyalakan auto deploy untuk service yang sumbernya repo pihak ketiga.
+    // This message is copied as-is from a real server while trying to turn on auto
+    // deploy for a service sourced from a third-party repo.
     let real = "[400] Request failed with status code 404 Not Found: \
                     GET https://api.github.com/repos/benborla/mcp-server-mysql/hooks";
     let msg = auto_deploy_error("mysql-mcp", real);
     assert!(msg.contains("webhook"), "{msg}");
     assert!(
         !msg.contains("404"),
-        "tumpukan kode status tak menolong: {msg}"
+        "a stack of status codes doesn't help: {msg}"
     );
 
-    // Yang tak dikenali tak boleh dibuang — membuang pesan server adalah bug
-    // yang sudah pernah terjadi di sini.
+    // The unrecognized must not be dropped — dropping a server message is a bug
+    // that has already happened here.
     let msg = auto_deploy_error("api", "connection reset");
     assert!(msg.contains("connection reset"), "{msg}");
 }
 
 #[test]
 fn short_reason_names_the_cause_not_the_status_stack() {
-    // EasyPanel membungkus error upstream, jadi token GitHub mati muncul
-    // sebagai "[400] Request failed with status code 403 Forbidden" — dua kode
-    // status dan nol petunjuk tentang apa yang harus diperbaiki.
+    // EasyPanel wraps upstream errors, so a dead GitHub token shows up as "[400]
+    // Request failed with status code 403 Forbidden" — two status codes and zero
+    // hint about what to fix.
     assert_eq!(
         short_reason("[400] Request failed with status code 403 Forbidden"),
-        "GitHub menolak: 403"
+        "GitHub rejected: 403"
     );
     assert_eq!(
         short_reason("[400] Request failed with status code 401 Unauthorized"),
-        "GitHub menolak: token tidak valid"
+        "GitHub rejected: invalid token"
     );
-    assert_eq!(short_reason("connection reset"), "gagal");
+    assert_eq!(short_reason("connection reset"), "failed");
 }
 
 #[test]
@@ -1395,23 +1412,23 @@ fn source_github_sends_owner_and_repo_split() {
         body,
         json!({ "owner": "acme", "repo": "web", "ref": "dev", "path": "/" })
     );
-    // updateSourceGithub mereset autoDeploy jadi false di server; nilainya
-    // harus ikut supaya bisa dipasang ulang setelahnya.
+    // updateSourceGithub resets autoDeploy to false on the server; its value must
+    // come along so it can be reapplied afterwards.
     assert_eq!(auto, Some(true));
 }
 
 #[test]
 fn dockerfile_source_sends_its_contents_inline() {
-    // updateSourceDockerfile menerima ISI Dockerfile, bukan path — jadi ia
-    // multi-baris, dan itulah kenapa ia lewat $EDITOR.
-    let body = json!({ "type": "dockerfile", "dockerfile": "FROM alpine\nRUN echo hai" });
+    // updateSourceDockerfile accepts the Dockerfile CONTENTS, not a path — so it's
+    // multi-line, and that's why it goes through $EDITOR.
+    let body = json!({ "type": "dockerfile", "dockerfile": "FROM alpine\nRUN echo hi" });
     let f = form(source_fields(Some(&body), vec![]));
     let (op, sent, auto) = source_body(&f).unwrap();
     assert_eq!(op, "updateSourceDockerfile");
-    assert_eq!(sent, json!({ "dockerfile": "FROM alpine\nRUN echo hai" }));
-    assert_eq!(auto, None, "dockerfile tak punya auto deploy");
+    assert_eq!(sent, json!({ "dockerfile": "FROM alpine\nRUN echo hi" }));
+    assert_eq!(auto, None, "a dockerfile has no auto deploy");
 
-    // Kosong ditolak dengan menyebut cara mengisinya, bukan "wajib diisi".
+    // Empty is rejected by naming how to fill it, not with "required".
     let f = form(source_fields(
         Some(&json!({ "type": "dockerfile" })),
         vec![],
@@ -1422,41 +1439,41 @@ fn dockerfile_source_sends_its_contents_inline() {
 
 #[test]
 fn dockerfile_source_is_not_mislabelled_as_an_image() {
-    // create_source dulu memetakan tipe dengan catch-all `_ => "image"`. Sebuah
-    // source dockerfile akan lolos sebagai image: bentuknya sah, tapi
-    // service-nya di-build dari image yang tak pernah disebut siapa pun.
+    // create_source used to map the type with a catch-all `_ => "image"`. A
+    // dockerfile source would slip through as an image: the shape is valid, but the
+    // service gets built from an image nobody ever named.
     let f = create_form(&[
-        ("Nama", "web"),
-        ("Tipe", "app"),
+        ("Name", "web"),
+        ("Kind", "app"),
         ("Source", "dockerfile"),
         ("Dockerfile", "FROM alpine"),
     ]);
-    // Dockerfile diterapkan lewat updateSourceDockerfile, bukan disalahlabeli
-    // jadi image. create_source memberi op yang benar + isi Dockerfile.
+    // The Dockerfile is applied via updateSourceDockerfile, not mislabelled as an
+    // image. create_source gives the right op + the Dockerfile contents.
     let (op, body, _) = create_source(&f).unwrap().unwrap();
     assert_eq!(op, "updateSourceDockerfile");
     assert_eq!(body["dockerfile"], json!("FROM alpine"));
     assert!(body.get("image").is_none());
 
-    // Dockerfile kosong = belum diisi -> source dihilangkan.
-    let f = create_form(&[("Nama", "web"), ("Source", "dockerfile")]);
+    // An empty Dockerfile = not filled -> the source is omitted.
+    let f = create_form(&[("Name", "web"), ("Source", "dockerfile")]);
     assert_eq!(create_source(&f).unwrap(), None);
 }
 
 #[test]
 fn the_editor_field_shows_its_size_not_its_first_line() {
-    // Isi ratusan baris di kolom satu baris cuma jadi bubur; yang berguna adalah
-    // apakah ia sudah diisi.
-    let f = Field::editor("Dockerfile", "FROM alpine\nRUN echo hai\nCMD sh");
-    assert_eq!(f.shown(), "3 baris");
-    assert_eq!(Field::editor("Dockerfile", "").shown(), "(kosong)");
-    // Bukan field ketik: Spasi membuka $EDITOR, bukan menyisipkan spasi.
+    // Hundreds of lines in a single-line field is just mush; what's useful is
+    // whether it's been filled.
+    let f = Field::editor("Dockerfile", "FROM alpine\nRUN echo hi\nCMD sh");
+    assert_eq!(f.shown(), "3 lines");
+    assert_eq!(Field::editor("Dockerfile", "").shown(), "(empty)");
+    // Not a typed field: Space opens $EDITOR, doesn't insert a space.
     assert!(!f.kind.is_typed());
 }
 
 #[test]
 fn source_git_and_image_have_no_auto_deploy() {
-    // Hanya source github yang punya konsep auto deploy.
+    // Only a github source has the concept of auto deploy.
     let f = form(source_fields(
         Some(&json!({ "type": "image", "image": "nginx" })),
         vec![],
@@ -1483,15 +1500,15 @@ fn source_image_omits_empty_credentials() {
     ));
     let (op, body, _) = source_body(&f).unwrap();
     assert_eq!(op, "updateSourceImage");
-    // Kirim "" akan menimpa kredensial registry jadi kosong.
+    // Sending "" would overwrite the registry credentials with blanks.
     assert_eq!(body, json!({ "image": "nginx:latest" }));
 }
 
 #[test]
 fn version_field_maps_to_the_right_key_per_builder() {
-    // Satu field "Version" melayani nixpacks dan railpack. Kalau dibuat dua
-    // field berlabel sama, by_label() — yang memakai find(), bukan visibilitas —
-    // akan mengambil yang pertama, jadi railpack menulis versi milik nixpacks.
+    // A single "Version" field serves nixpacks and railpack. If it were two fields
+    // with the same label, by_label() — which uses find(), not visibility — would
+    // take the first, so railpack would write nixpacks's version.
     let original = json!({ "type": "railpack", "railpackVersion": "0.17.1" });
     let mut f = form(build_fields(Some(&original)));
     f.original = Some(original);
@@ -1501,10 +1518,10 @@ fn version_field_maps_to_the_right_key_per_builder() {
     assert_eq!(body["build"]["railpackVersion"], json!("0.17.1"));
     assert!(
         body["build"].get("nixpacksVersion").is_none(),
-        "railpack tak boleh menulis kunci milik nixpacks"
+        "railpack must not write nixpacks's key"
     );
 
-    // nixpacks membaca kunci versinya sendiri.
+    // nixpacks reads its own version key.
     let original = json!({ "type": "nixpacks", "nixpacksVersion": "1.41.0" });
     let mut f = form(build_fields(Some(&original)));
     f.original = Some(original);
@@ -1517,8 +1534,8 @@ fn version_field_maps_to_the_right_key_per_builder() {
 
 #[test]
 fn changing_the_builder_version_actually_reaches_the_body() {
-    // Sebelumnya versi hanya dilestarikan dari build asli: user terkunci di
-    // versi yang kebetulan dipakai saat service dibuat.
+    // The version used to only be preserved from the original build: the user was
+    // locked to whatever version happened to be in use when the service was created.
     let original = json!({ "type": "nixpacks", "nixpacksVersion": "1.41.0" });
     let mut f = form(build_fields(Some(&original)));
     f.original = Some(original);
@@ -1535,8 +1552,8 @@ fn changing_the_builder_version_actually_reaches_the_body() {
 
 #[test]
 fn no_two_fields_share_a_label_in_any_form() {
-    // by_label() memakai find(): label ganda berarti field yang tersembunyi bisa
-    // membajak nilai milik yang tampil, diam-diam.
+    // by_label() uses find(): a duplicate label means a hidden field could hijack a
+    // shown one's value, silently.
     let forms = vec![
         ("build", build_fields(Some(&json!({ "type": "nixpacks" })))),
         (
@@ -1554,7 +1571,7 @@ fn no_two_fields_share_a_label_in_any_form() {
         for f in &fields {
             assert!(
                 seen.insert(f.label),
-                "form {name}: label '{}' ganda",
+                "form {name}: label '{}' is duplicated",
                 f.label
             );
         }
@@ -1569,7 +1586,7 @@ fn build_keeps_unmodelled_version_on_same_type() {
     let mut f = form(build_fields(Some(&original)));
     f.original = Some(original);
     let body = build_body(&f).unwrap();
-    // nixpacksVersion tak ada di form; hilang = build berubah diam-diam.
+    // nixpacksVersion isn't in the form; losing it = the build changes silently.
     assert_eq!(body["build"]["nixpacksVersion"], json!("1.41.0"));
     assert_eq!(body["build"]["installCommand"], json!("npm ci"));
 }
@@ -1610,21 +1627,21 @@ fn build_removes_field_emptied_by_user() {
 
 #[test]
 fn set_options_keeps_current_value_missing_from_list() {
-    // `ref` bisa berupa tag; searchBranches tak memuatnya. Melompat ke branch
-    // pertama akan mengganti apa yang ter-deploy.
+    // `ref` can be a tag; searchBranches doesn't include it. Jumping to the first
+    // branch would change what gets deployed.
     let mut f = Field::choice_owned("Branch", vec!["v1.2.0".into()], "v1.2.0");
     f.set_options(vec!["main".into(), "dev".into()]);
     assert_eq!(f.value, "v1.2.0");
     match &f.kind {
         FieldKind::Choice(o) => assert_eq!(o[0], "v1.2.0"),
-        _ => panic!("harus tetap Choice"),
+        _ => panic!("must stay a Choice"),
     }
 }
 
 #[test]
 fn source_fields_keep_repo_absent_from_list() {
-    // Repo yang dipakai tak ada di searchRepos (mis. hilang akses) -> jangan
-    // diam-diam pindah ke repo pertama.
+    // The repo in use isn't in searchRepos (e.g. lost access) -> don't silently
+    // switch to the first repo.
     let f = source_fields(
         Some(&json!({ "type": "github", "owner": "acme", "repo": "old", "ref": "dev" })),
         vec!["other/new".into()],
@@ -1659,7 +1676,7 @@ fn visible_follows_switch_and_multi_tag() {
 fn encode_key_matches_xterm() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let k = |code, m| super::terminal::encode_key(KeyEvent::new(code, m));
-    // Char biasa, Enter, Backspace, arrow, dan Ctrl-C (0x03).
+    // An ordinary char, Enter, Backspace, an arrow, and Ctrl-C (0x03).
     assert_eq!(k(KeyCode::Char('a'), KeyModifiers::NONE), Some(vec![b'a']));
     assert_eq!(k(KeyCode::Enter, KeyModifiers::NONE), Some(vec![b'\r']));
     assert_eq!(k(KeyCode::Backspace, KeyModifiers::NONE), Some(vec![0x7f]));
@@ -1673,18 +1690,18 @@ fn encode_key_matches_xterm() {
     );
 }
 
-/// Round-trip WebSocket terminal LEWAT KODE RUST (bukan python): ws_url +
-/// spawn_session + vt100. Butuh server hidup dan container zzz-emb/zzz-redis
-/// yang berjalan, jadi #[ignore] — jalankan manual dengan `--ignored`.
+/// A WebSocket terminal round-trip THROUGH THE RUST CODE (not python): ws_url +
+/// spawn_session + vt100. Needs a live server and the containers zzz-emb/zzz-redis
+/// running, hence #[ignore] — run it manually with `--ignored`.
 #[test]
-#[ignore = "live: butuh zzz-emb/zzz-redis berjalan di server"]
+#[ignore = "live: needs zzz-emb/zzz-redis running on the server"]
 fn terminal_ws_roundtrip_live() {
     use super::worker::Resp;
     use std::sync::mpsc::channel;
     use std::time::{Duration, Instant};
 
     let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
-    let srv = cfg.default().expect("ada server default");
+    let srv = cfg.default().expect("a default server exists");
     let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
     let url = super::terminal::ws_url(&client, "zzz-emb", "zzz-redis", "sh").expect("ws_url");
 
@@ -1705,9 +1722,9 @@ fn terminal_ws_roundtrip_live() {
             parser.process(&b);
         }
         if parser.screen().contents().contains("RUSTPROOF_331") {
-            break; // shell mengeksekusi dan output kembali lewat kode Rust
+            break; // the shell executed and its output came back through the Rust code
         }
-        assert!(Instant::now() < deadline, "tak ada output berisi bukti");
+        assert!(Instant::now() < deadline, "no output containing the proof");
     }
-    drop(in_tx); // tutup sesi
+    drop(in_tx); // close the session
 }

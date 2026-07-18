@@ -11,7 +11,7 @@ use crate::output::{
     table, yes_no,
 };
 
-/// Resolve klien untuk server aktif (dari --server atau default).
+/// Resolve the client for the active server (from --server or the default).
 pub fn resolve_client(cfg: &ServerConfig, server: &Option<String>) -> Result<EasypanelClient> {
     let s = match server {
         Some(name) => cfg
@@ -56,7 +56,7 @@ pub fn server_add(
     let url = match url {
         Some(u) => u,
         None => Input::new()
-            .with_prompt("URL host (mis. https://panel.example.com)")
+            .with_prompt("URL host (e.g. https://panel.example.com)")
             .interact_text()?,
     };
     let token = match token {
@@ -69,7 +69,7 @@ pub fn server_add(
 
     let is_default = cfg.default().map(|s| s.name == name).unwrap_or(false);
     println!(
-        "Server '{}' ditambahkan.{}",
+        "Server '{}' added.{}",
         name,
         if is_default { " (default)" } else { "" }
     );
@@ -103,7 +103,7 @@ pub fn server_use(cfg: &ServerConfig, name: &str) -> Result<()> {
         return Err(anyhow!("Server '{}' not found.", name));
     }
     cfg.set_default(name)?;
-    println!("Server default sekarang: {name}");
+    println!("Default server is now: {name}");
     Ok(())
 }
 
@@ -117,10 +117,10 @@ pub fn server_remove(cfg: &ServerConfig, name: &str) -> Result<()> {
 }
 
 fn mask_token(token: &str) -> String {
-    // Per KARAKTER, bukan byte: token berasal dari file config yang bisa disunting
-    // tangan. `&token[..6]` mengiris pada indeks byte, dan sebuah token dengan
-    // karakter multibyte di batas itu membuat `server list` panic — len() menghitung
-    // byte, jadi guard <= 10 pun tak melindunginya.
+    // Per CHARACTER, not byte: the token comes from a config file that can be
+    // hand-edited. `&token[..6]` slices at a byte index, and a token with a
+    // multibyte character at that boundary would make `server list` panic —
+    // len() counts bytes, so the <= 10 guard alone wouldn't protect against it.
     let chars: Vec<char> = token.chars().collect();
     if chars.len() <= 10 {
         "***".to_string()
@@ -185,7 +185,7 @@ pub fn project_inspect(client: &EasypanelClient, name: &str) -> Result<()> {
         .unwrap_or_default();
 
     if services.is_empty() {
-        println!("Project tanpa service.");
+        println!("Project has no services.");
         return Ok(());
     }
 
@@ -196,9 +196,9 @@ pub fn project_inspect(client: &EasypanelClient, name: &str) -> Result<()> {
                 field(s, "/name"),
                 field(s, "/type"),
                 if s.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
-                    "ya".into()
+                    "yes".into()
                 } else {
-                    "tidak".into()
+                    "no".into()
                 },
             ]
         })
@@ -255,8 +255,8 @@ pub fn service_logs(
 
 // ---------- Monitoring & Cluster ----------
 
-/// Rangkuman metrik host dari grup `metrics` (Prometheus): ~0,3 detik dan sudah
-/// berisi laju network + total/used byte, tak seperti `monitorOld` (~2,3 detik).
+/// Host metrics summary from the `metrics` group (Prometheus): ~0.3s and already
+/// includes network rate + total/used bytes, unlike `monitorOld` (~2.3s).
 pub fn stats(client: &EasypanelClient) -> Result<()> {
     let s = client.call("metrics", "getSystemStats", json!({}))?;
     if output::json_output() {
@@ -387,7 +387,7 @@ pub fn service_set_env(
     Ok(())
 }
 
-// ---------- Ports (grup "ports") ----------
+// ---------- Ports (group "ports") ----------
 
 pub fn ports_list(client: &EasypanelClient, project: &str, service: &str) -> Result<()> {
     let ports = client.call(
@@ -437,7 +437,7 @@ pub fn port_add(
             "values": { "published": published, "target": target, "protocol": protocol }
         }),
     )?;
-    println!("Port {published}->{target}/{protocol} ditambahkan ke {project}/{service}.");
+    println!("Port {published}->{target}/{protocol} added to {project}/{service}.");
     Ok(())
 }
 
@@ -456,7 +456,7 @@ pub fn port_remove(
     Ok(())
 }
 
-// ---------- Mounts (grup "mounts") ----------
+// ---------- Mounts (group "mounts") ----------
 
 pub fn mounts_list(client: &EasypanelClient, project: &str, service: &str) -> Result<()> {
     let mounts = client.call(
@@ -516,7 +516,7 @@ pub fn mount_add(
         "createMount",
         json!({ "projectName": project, "serviceName": service, "values": values }),
     )?;
-    println!("Mount {kind} ditambahkan ke {project}/{service}.");
+    println!("Mount {kind} added to {project}/{service}.");
     Ok(())
 }
 
@@ -535,7 +535,7 @@ pub fn mount_remove(
     Ok(())
 }
 
-// ---------- Domains (grup "domains") ----------
+// ---------- Domains (group "domains") ----------
 
 pub fn domains_list(client: &EasypanelClient, project: &str, service: &str) -> Result<()> {
     let domains = client.call(
@@ -559,9 +559,9 @@ pub fn domains_list(client: &EasypanelClient, project: &str, service: &str) -> R
                 field(dm, "/id"),
                 field(dm, "/host"),
                 if dm.get("https").and_then(Value::as_bool).unwrap_or(false) {
-                    "ya".into()
+                    "yes".into()
                 } else {
-                    "tidak".into()
+                    "no".into()
                 },
                 field(dm, "/path"),
                 field(dm, "/serviceDestination/port"),
@@ -826,7 +826,7 @@ pub fn volume_backup_delete(client: &EasypanelClient, id: &str) -> Result<()> {
 
 // ---------- Actions ----------
 
-/// Bangun input listActions dari filter opsional.
+/// Build listActions input from optional filters.
 pub fn actions_input(
     limit: u32,
     project: &Option<String>,
@@ -846,14 +846,14 @@ pub fn actions_input(
     input
 }
 
-/// Batas deskripsi untuk tabel CLI: comfy-table melebarkan kolom sepanjang
-/// isinya, jadi baris panjang harus dipotong di sini.
+/// Description limit for the CLI table: comfy-table widens columns to fit
+/// their content, so long lines need to be truncated here.
 pub const ACTION_DESC_CLI: usize = 60;
-/// TUI memakai batas longgar karena widget tabelnya meng-clip sendiri sesuai
-/// lebar kolom — memotong lebih awal justru menyisakan ruang kosong.
+/// The TUI uses a looser limit because its table widget clips its own content
+/// to the column width — truncating earlier would just leave empty space.
 pub const ACTION_DESC_TUI: usize = 200;
 
-/// Baris tabel untuk satu action; deskripsi dipotong pada `desc_max`.
+/// Table row for a single action; description truncated at `desc_max`.
 pub fn action_row(a: &Value, desc_max: usize) -> Vec<String> {
     let target = match (
         field(a, "/projectName").as_str(),
@@ -901,21 +901,21 @@ pub fn action_list(
 
 pub fn action_kill(client: &EasypanelClient, id: &str) -> Result<()> {
     client.call("actions", "killAction", json!({ "id": id }))?;
-    println!("Action {id} dihentikan.");
+    println!("Action {id} killed.");
     Ok(())
 }
 
 // ---------- Monitor ----------
 
-/// Nama service dari containerName ("proj_svc.1.hash" -> "svc").
+/// Service name from containerName ("proj_svc.1.hash" -> "svc").
 ///
-/// Field `serviceName` dari API keliru untuk sub-service compose: container
-/// `proj_mysql_phpmyadmin.1.x` dilaporkan sebagai `mysql`. Panel menurunkannya
-/// dari containerName, jadi kita ikut supaya namanya cocok.
-/// Baris tabel monitor per project (header project + service-nya), urut memori terbesar.
+/// The API's `serviceName` field is wrong for compose sub-services: the
+/// container `proj_mysql_phpmyadmin.1.x` is reported as `mysql`. The panel
+/// derives it from containerName, so we follow suit so the name matches.
+/// Monitor table rows per project (project header + its services), sorted by memory descending.
 ///
-/// Sumber: `metrics/getAllServicesStats` — `networkIn`/`networkOut` sudah berupa
-/// laju byte/detik, dan `serviceName` benar untuk sub-service compose.
+/// Source: `metrics/getAllServicesStats` — `networkIn`/`networkOut` are already
+/// byte/sec rates, and `serviceName` is correct for compose sub-services.
 pub fn monitor_rows(services: Vec<Value>) -> Vec<Vec<String>> {
     let mem = |c: &Value| num(c, "/memory");
     let mut groups: std::collections::HashMap<String, Vec<Value>> =
@@ -969,7 +969,7 @@ pub fn monitor_services(client: &EasypanelClient) -> Result<()> {
     Ok(())
 }
 
-/// Baris tabel storage, urut terbesar.
+/// Storage table rows, sorted largest first.
 pub fn storage_rows(mut arr: Vec<Value>) -> Vec<Vec<String>> {
     arr.sort_by(|a, b| num(b, "/size").total_cmp(&num(a, "/size")));
     arr.iter()
@@ -1003,7 +1003,7 @@ pub fn monitor_storage(client: &EasypanelClient) -> Result<()> {
 
 // ---------- Domains (host-wide) ----------
 
-/// Sumber domain: "https://host/path".
+/// Domain source: "https://host/path".
 pub fn domain_source(d: &Value) -> String {
     let scheme = if d.get("https").and_then(Value::as_bool).unwrap_or(false) {
         "https"
@@ -1013,7 +1013,7 @@ pub fn domain_source(d: &Value) -> String {
     format!("{scheme}://{}{}", field(d, "/host"), field(d, "/path"))
 }
 
-/// Tujuan domain: service internal, atau daftar server custom dengan bobotnya.
+/// Domain destination: an internal service, or a list of custom servers with their weights.
 pub fn domain_destination(d: &Value) -> String {
     match field(d, "/destinationType").as_str() {
         "service" => format!(
@@ -1060,25 +1060,25 @@ pub fn domain_list_all(client: &EasypanelClient) -> Result<()> {
     Ok(())
 }
 
-/// Info server untuk `maintenance info`.
+/// Server info for `maintenance info`.
 pub fn maintenance_info(client: &EasypanelClient) -> Result<()> {
     let one = |op: &str| match client.call("settings", op, Value::Null) {
         Ok(v) => field(&v, ""),
         Err(e) => format!("error: {e}"),
     };
     table(
-        &["Item", "Nilai"],
+        &["Item", "Value"],
         vec![
             vec!["Docker".into(), one("getDockerVersion")],
-            vec!["IP server".into(), one("getServerIp")],
-            vec!["Update tersedia".into(), one("checkForUpdates")],
-            vec!["Bersih-bersih harian".into(), one("getDailyDockerCleanup")],
+            vec!["Server IP".into(), one("getServerIp")],
+            vec!["Update available".into(), one("checkForUpdates")],
+            vec!["Daily cleanup".into(), one("getDailyDockerCleanup")],
         ],
     );
     Ok(())
 }
 
-/// Pembersihan Docker; `op` sudah dibatasi enum CLI.
+/// Docker cleanup; `op` is already constrained by the CLI enum.
 pub fn maintenance_clean(client: &EasypanelClient, op: &str, label: &str, yes: bool) -> Result<()> {
     if !confirm(
         &format!("{label} on the whole host? This cannot be undone."),
@@ -1091,7 +1091,7 @@ pub fn maintenance_clean(client: &EasypanelClient, op: &str, label: &str, yes: b
     Ok(())
 }
 
-/// Storage provider yang terdaftar (id-nya dibutuhkan untuk restore).
+/// Registered storage providers (their id is needed for restore).
 pub fn storage_providers(client: &EasypanelClient) -> Result<()> {
     let v = client.call("storageProviders/common", "list", Value::Null)?;
     let rows = v
@@ -1113,12 +1113,12 @@ pub fn storage_providers(client: &EasypanelClient) -> Result<()> {
     Ok(())
 }
 
-/// Restore database dari sebuah file backup.
+/// Restore a database from a backup file.
 ///
-/// `path` harus diketahui sendiri: API EasyPanel tidak punya endpoint untuk
-/// mendaftar file backup yang ada (cek `easypanel-api.json` — hanya jadwal yang
-/// bisa didaftar, bukan isinya). Karena itu path diminta eksplisit, bukan
-/// ditebak-tebak.
+/// `path` has to be known ahead of time: the EasyPanel API has no endpoint to
+/// list existing backup files (check `easypanel-api.json` — only schedules can
+/// be listed, not their contents). That's why the path is required explicitly
+/// rather than guessed.
 #[allow(clippy::too_many_arguments)]
 pub fn backup_db_restore(
     client: &EasypanelClient,
@@ -1129,8 +1129,8 @@ pub fn backup_db_restore(
     provider: Option<&str>,
     yes: bool,
 ) -> Result<()> {
-    // Provider boleh dikosongkan hanya bila memang cuma ada satu — menebak
-    // salah satu dari beberapa provider bukan urusan CLI.
+    // The provider may be omitted only when there's exactly one — guessing
+    // among several providers isn't the CLI's job.
     let provider_id = match provider {
         Some(p) => p.to_string(),
         None => {
@@ -1178,16 +1178,17 @@ mod tests {
 
     #[test]
     fn mask_token_never_panics_on_a_hand_edited_token() {
-        // Token berasal dari file config yang bisa disunting tangan. Versi lama
-        // mengiris per byte: token 13 byte dengan '€' (3 byte) di batas indeks 6
-        // membuat `server list` panic. Menghitung per karakter menyelesaikannya.
+        // The token comes from a config file that can be hand-edited. The old
+        // version sliced per byte: a 13-byte token with '€' (3 bytes) sitting at
+        // the index-6 boundary made `server list` panic. Counting per character
+        // fixes it.
         assert_eq!(mask_token("aaaaa€aaaaa"), "aaaaa€…aaaa");
         assert_eq!(mask_token("short"), "***");
         assert_eq!(
             mask_token("你好世界一二三四五六七"),
             "你好世界一二…四五六七"
         );
-        // ASCII biasa tetap seperti dulu.
+        // Plain ASCII behaves the same as before.
         assert_eq!(mask_token("abcdefghijklmnop"), "abcdef…mnop");
     }
 
@@ -1202,17 +1203,18 @@ mod tests {
     fn monitor_groups_by_project_and_sorts_by_memory() {
         let rows = monitor_rows(vec![
             svc("small", "a", 10.0, 0.1),
-            svc("big", "kecil", 1.0, 0.2),
-            svc("big", "besar", 1_073_741_824.0, 0.5),
+            svc("big", "tiny", 1.0, 0.2),
+            svc("big", "huge", 1_073_741_824.0, 0.5),
         ]);
 
-        // Project dengan memori terbesar lebih dulu, lalu service-nya urut memori.
+        // The project with the largest total memory comes first, then its
+        // services sorted by memory.
         let names: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
         assert_eq!(
             names,
-            vec!["big (2)", "  besar", "  kecil", "small (1)", "  a"]
+            vec!["big (2)", "  huge", "  tiny", "small (1)", "  a"]
         );
-        // Baris project = jumlah service-nya.
+        // Project row = the total across its services.
         assert_eq!(rows[0][1], "0.7 %");
         assert_eq!(rows[0][4], "4.0 KB/s"); // 2048*2
     }
@@ -1250,7 +1252,7 @@ mod tests {
         );
 
         assert_eq!(
-            domain_destination(&json!({ "destinationType": "aneh" })),
+            domain_destination(&json!({ "destinationType": "unknown" })),
             "-"
         );
     }
@@ -1271,24 +1273,24 @@ mod tests {
     fn action_row_shows_target_duration_and_trims_description() {
         let a = json!({
             "projectName": "proj", "serviceName": "api", "status": "done",
-            "description": "Deploy service: baris pertama\nbaris kedua diabaikan",
+            "description": "Deploy service: first line\nsecond line ignored",
             "createdAt": "2026-07-16 05:55:15", "updatedAt": "2026-07-16 06:03:14"
         });
         let row = action_row(&a, ACTION_DESC_CLI);
         assert_eq!(row[0], "done");
         assert_eq!(row[1], "proj/api");
-        assert_eq!(row[2], "Deploy service: baris pertama");
-        assert_eq!(row[3], "7 menit"); // 05:55:15 -> 06:03:14
+        assert_eq!(row[2], "Deploy service: first line");
+        assert_eq!(row[3], "7 minutes"); // 05:55:15 -> 06:03:14
     }
 
     #[test]
     fn action_row_target_falls_back_when_not_service_scoped() {
         let login = json!({
-            "status": "done", "description": "User masuk",
+            "status": "done", "description": "User logged in",
             "createdAt": "2026-07-16 05:55:15", "updatedAt": "2026-07-16 05:55:15"
         });
         assert_eq!(action_row(&login, ACTION_DESC_CLI)[1], "-");
-        assert_eq!(action_row(&login, ACTION_DESC_CLI)[3], "0 detik");
+        assert_eq!(action_row(&login, ACTION_DESC_CLI)[3], "0 seconds");
     }
 
     #[test]
@@ -1324,7 +1326,7 @@ mod tests {
             "networkOut": [[1, "2048"]]
         });
         let rows = stats_rows(&s);
-        assert_eq!(rows[0], vec!["CPU", "5.5 %"]); // titik terakhir
+        assert_eq!(rows[0], vec!["CPU", "5.5 %"]); // last point
         assert_eq!(rows[1], vec!["Cores", "16"]);
         assert_eq!(rows[2], vec!["Load avg", "0.10, 0.20, 0.30"]);
         assert_eq!(rows[3], vec!["Memory", "25.0 % (1.0 GB / 2.0 GB)"]);
@@ -1335,11 +1337,11 @@ mod tests {
     #[test]
     fn storage_rows_sorted_by_size_desc() {
         let rows = storage_rows(vec![
-            json!({ "projectName": "p", "serviceName": "kecil", "size": 1024, "path": "/a" }),
-            json!({ "projectName": "p", "serviceName": "besar", "size": 1048576, "path": "/b" }),
+            json!({ "projectName": "p", "serviceName": "tiny", "size": 1024, "path": "/a" }),
+            json!({ "projectName": "p", "serviceName": "huge", "size": 1048576, "path": "/b" }),
         ]);
-        assert_eq!(rows[0][1], "besar");
+        assert_eq!(rows[0][1], "huge");
         assert_eq!(rows[0][2], "1.0 MB");
-        assert_eq!(rows[1][1], "kecil");
+        assert_eq!(rows[1][1], "tiny");
     }
 }

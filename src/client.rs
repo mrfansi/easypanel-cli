@@ -1,10 +1,10 @@
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
-/// Klien tRPC EasyPanel: POST {url}/api/rpc/{group}/{op}, body {"json": input}.
+/// EasyPanel tRPC client: POST {url}/api/rpc/{group}/{op}, body {"json": input}.
 ///
-/// Clone berbagi connection pool reqwest yang sama, jadi murah: dipakai untuk
-/// memberi tiap worker TUI klien sendiri.
+/// Cloning shares the same reqwest connection pool, so it's cheap: used to give
+/// each TUI worker its own client.
 #[derive(Clone)]
 pub struct EasypanelClient {
     url: String,
@@ -17,8 +17,8 @@ impl EasypanelClient {
         Self {
             url: url.trim_end_matches('/').to_string(),
             token: token.to_string(),
-            // Timeout wajib: tanpa ini satu request menggantung membekukan
-            // worker TUI selamanya (tak ada request lain yang bisa jalan).
+            // Timeout is mandatory: without it, one hanging request freezes the
+            // TUI worker forever (no other request can run).
             http: reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
@@ -26,12 +26,12 @@ impl EasypanelClient {
         }
     }
 
-    /// Panggil endpoint dan kembalikan payload `.json` dari respons.
-    /// URL panel (tanpa trailing slash). Untuk membangun URL WebSocket terminal.
+    /// Call the endpoint and return the `.json` payload from the response.
+    /// Panel URL (without a trailing slash). Used to build the terminal WebSocket URL.
     pub fn url(&self) -> &str {
         &self.url
     }
-    /// Token API. Dipakai sebagai query param `token` pada WebSocket terminal.
+    /// API token. Used as the `token` query param on the terminal WebSocket.
     pub fn token(&self) -> &str {
         &self.token
     }
@@ -40,15 +40,15 @@ impl EasypanelClient {
         self.call_within(group, op, input, None)
     }
 
-    /// Seperti `call`, tapi dengan batas waktu sendiri.
+    /// Like `call`, but with its own timeout.
     ///
-    /// Sebagian operasi jauh lebih lama dari sisanya: `createService` menjawab
-    /// dalam 0,2 detik tanpa source, tapi 101 detik bila source github ikut —
-    /// diukur langsung ke server. Dengan batas 30 detik, request itu putus
-    /// SEMENTARA server tetap menyelesaikannya, jadi user melihat "gagal" lalu
-    /// mendapati service-nya ada saat mencoba lagi. Menaikkan batas global bukan
-    /// jawabannya: itu memaksa setiap panggilan lain menunggu dua menit sebelum
-    /// boleh melaporkan gagal.
+    /// Some operations take far longer than others: `createService` responds in
+    /// 0.2 seconds without a source, but 101 seconds when a GitHub source is
+    /// included — measured directly against the server. With a 30-second limit,
+    /// that request gets cut off WHILE the server keeps completing it, so the
+    /// user sees "failed" and then finds the service exists on the next try.
+    /// Raising the global timeout isn't the answer: it would force every other
+    /// call to wait two minutes before it's allowed to report failure.
     pub fn call_within(
         &self,
         group: &str,
@@ -74,10 +74,10 @@ impl EasypanelClient {
                 bail!("Invalid or expired token (401).");
             }
             let body: Value = resp.json().unwrap_or(Value::Null);
-            // EasyPanel menaruh pesan error DI DALAM "json", sama seperti respons
-            // sukses: {"json":{"code":"BAD_REQUEST","message":"Branch not found"}}.
-            // Membaca "message" di level teratas saja membuat semua pesan server
-            // terbuang dan tergantikan nama status generik ("Bad Request").
+            // EasyPanel puts the error message INSIDE "json", same as a success
+            // response: {"json":{"code":"BAD_REQUEST","message":"Branch not found"}}.
+            // Reading only a top-level "message" would discard every server
+            // message and replace it with a generic status name ("Bad Request").
             let msg = ["/json/message", "/message", "/json/error", "/error"]
                 .iter()
                 .find_map(|p| body.pointer(p).and_then(Value::as_str))
@@ -168,10 +168,10 @@ mod tests {
 
     #[test]
     fn surfaces_message_nested_under_json() {
-        // Bentuk error EasyPanel yang sebenarnya (terverifikasi di server):
-        // pesannya di dalam "json", bukan di level teratas. Mock lama memakai
-        // bentuk level-teratas, jadi test lolos sementara pesan asli terbuang
-        // dan user cuma melihat "[400] Bad Request".
+        // The actual EasyPanel error shape (verified against the server): the
+        // message is inside "json", not at the top level. The old mock used the
+        // top-level shape, so the test passed while the real message was
+        // discarded and the user only saw "[400] Bad Request".
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST);

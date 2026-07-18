@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] — 2026-07-18
+
+### Changed
+
+- **The entire codebase and interface are now in English.** Every user-facing
+  string — status messages, the help overlay, menu and palette labels, form field
+  labels, service status words (`active` / `stopped` / `down` / `disabled` /
+  `deploying`) — plus all source comments were translated from Indonesian to
+  natural English, with consistent terminology, punctuation, and sentence case
+  throughout. This makes the project approachable for the wider community it is
+  meant for. No behaviour changed; the full test suite passes (form field lookups
+  that key off label text, and the status/error strings the tests assert, were
+  renamed in lockstep).
+
 ## [0.41.0] — 2026-07-18
 
 ### Changed
@@ -132,18 +146,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Toggle file `.env` (`.`)** on app services. Nyalakan/matikan penulisan env
-  sebagai file `.env` di dalam container (`dotEnvPath`) — sebelumnya opsi ini
-  hanya bisa diatur sekali, saat membuat service. Tekan `.` untuk membalik:
-  aktifkan (ditulis ke `.env`) atau matikan. State dibaca lalu dibalik di server,
-  jadi env yang ada tak tersentuh.
+- **Toggle the `.env` file (`.`)** on app services. Turn on/off writing the env
+  as a `.env` file inside the container (`dotEnvPath`) — previously this could
+  only be set once, at service creation. Press `.` to flip it: enable (written to
+  `.env`) or disable. The state is read and then inverted on the server, so the
+  existing env is left untouched.
 
 ### Fixed
 
-- **Menyunting env tak lagi diam-diam mematikan file `.env`.** `updateEnv`
-  mengganti seluruh konfigurasi env; sebelumnya `E`/`w` mengirim env tanpa
-  `dotEnvPath`, sehingga service yang punya file `.env` kehilangan file itu tiap
-  kali env diedit. Sekarang `dotEnvPath` yang ada dipertahankan otomatis.
+- **Editing env no longer silently disables the `.env` file.** `updateEnv`
+  replaces the entire env configuration; previously `E`/`w` sent the env without
+  `dotEnvPath`, so a service that had a `.env` file lost it on every env edit. The
+  existing `dotEnvPath` is now preserved automatically.
 
 ## [0.34.0] — 2026-07-18
 

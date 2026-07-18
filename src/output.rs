@@ -3,38 +3,38 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use comfy_table::{presets::UTF8_FULL, Table};
 use serde_json::Value;
 
-// Mode output dipilih sekali dari flag --json lalu dibaca banyak perintah
-// read-only. Sebuah flag proses (seperti verbositas logger) menghindari
-// menyelipkan `json: bool` ke ~16 signature + call-site — nilainya konfigurasi,
-// bukan argumen tiap fungsi.
-// ponytail: flag global; kalau nanti perlu dua output mode bersamaan, jadikan
-// parameter — tapi CLI ini satu proses satu perintah, jadi belum perlu.
+// The output mode is chosen once from the --json flag and then read by many
+// read-only commands. A process-wide flag (like a logger's verbosity) avoids
+// threading a `json: bool` through ~16 signatures + call sites — it's
+// configuration, not a per-function argument.
+// ponytail: global flag; if two output modes are ever needed at once, make it
+// a parameter — but this CLI is one process per command, so not needed yet.
 static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
 
-/// Aktifkan output JSON mentah untuk perintah read-only (dipanggil sekali di main).
+/// Enable raw JSON output for read-only commands (called once in main).
 pub fn set_json_output(on: bool) {
     JSON_OUTPUT.store(on, Ordering::Relaxed);
 }
 
-/// Apakah perintah read-only harus mencetak JSON API apa adanya, bukan tabel.
+/// Whether read-only commands should print the raw API JSON instead of a table.
 pub fn json_output() -> bool {
     JSON_OUTPUT.load(Ordering::Relaxed)
 }
 
-/// Cetak JSON API apa adanya (pretty). Bentuknya milik server, bukan skema kita:
-/// yang nge-script mendapat persis yang dikirim EasyPanel, termasuk `[]` kosong
-/// alih-alih pesan "No X." yang bukan JSON.
+/// Print the raw API JSON (pretty-printed). Its shape belongs to the server, not
+/// to us: scripts get exactly what EasyPanel sent, including an empty `[]`
+/// instead of a "No X." message that isn't valid JSON.
 pub fn print_json(value: &Value) {
     println!("{}", json_string(value));
 }
 
-/// JSON pretty untuk sebuah Value; fallback ke bentuk kompak bila serialisasi
-/// pretty gagal (praktis tak pernah untuk Value yang sudah valid).
+/// Pretty JSON for a Value; falls back to the compact form if pretty
+/// serialization fails (practically never happens for an already-valid Value).
 pub fn json_string(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
-/// Cetak tabel sederhana ke stdout.
+/// Print a simple table to stdout.
 pub fn table(headers: &[&str], rows: Vec<Vec<String>>) {
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
@@ -45,7 +45,7 @@ pub fn table(headers: &[&str], rows: Vec<Vec<String>>) {
     println!("{table}");
 }
 
-/// Ambil field JSON via pointer (mis. "/cpuInfo/count") sebagai string; "-" bila kosong.
+/// Get a JSON field via pointer (e.g. "/cpuInfo/count") as a string; "-" if empty.
 pub fn field(value: &Value, pointer: &str) -> String {
     match value.pointer(pointer) {
         Some(Value::String(s)) => s.clone(),
@@ -56,7 +56,7 @@ pub fn field(value: &Value, pointer: &str) -> String {
     }
 }
 
-/// Angka di pointer JSON sebagai f64 (menerima number maupun string numerik).
+/// Number at a JSON pointer as f64 (accepts both a number and a numeric string).
 pub fn num(value: &Value, pointer: &str) -> f64 {
     match value.pointer(pointer) {
         Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
@@ -65,7 +65,7 @@ pub fn num(value: &Value, pointer: &str) -> f64 {
     }
 }
 
-/// Nilai satu titik seri metrics: `[unix_ts, "12.34"]`.
+/// Value of a single metrics series point: `[unix_ts, "12.34"]`.
 fn point_value(p: &Value) -> f64 {
     match p.get(1) {
         Some(Value::String(s)) => s.parse().unwrap_or(0.0),
@@ -74,7 +74,7 @@ fn point_value(p: &Value) -> f64 {
     }
 }
 
-/// Nilai terbaru sebuah seri metrics (mis. "cpu").
+/// Latest value of a metrics series (e.g. "cpu").
 pub fn series_last(v: &Value, key: &str) -> f64 {
     v.get(key)
         .and_then(Value::as_array)
@@ -83,14 +83,14 @@ pub fn series_last(v: &Value, key: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// `n` titik terakhir sebuah seri, dinormalisasi ke 0..100 terhadap rentang
-/// datanya sendiri (min..max) untuk sparkline.
+/// The last `n` points of a series, normalized to 0..100 against its own
+/// data range (min..max), for a sparkline.
 ///
-/// Skala absolut tidak berguna di sini: disk yang selalu ~16% akan membuat semua
-/// bar penuh (blok solid) bila diskala 0..max, dan CPU 1-5% jadi tak terlihat bila
-/// diskala 0..100. Yang ingin dilihat dari sparkline adalah *bentuk perubahannya* —
-/// nilai absolutnya sudah tercetak di sebelahnya. Deret datar dirender setengah
-/// tinggi supaya terbaca sebagai garis rata, bukan kosong.
+/// An absolute scale isn't useful here: disk usage that's always ~16% would
+/// make every bar full (a solid block) if scaled 0..max, and CPU at 1-5% would
+/// be invisible if scaled 0..100. What a sparkline should show is *the shape of
+/// the change* — the absolute value is already printed right next to it. A flat
+/// series is rendered at half height so it reads as a level line, not empty.
 pub fn series_spark(v: &Value, key: &str, n: usize) -> Vec<u64> {
     let vals: Vec<f64> = v
         .get(key)
@@ -116,12 +116,12 @@ pub fn series_spark(v: &Value, key: &str, n: usize) -> Vec<u64> {
         .collect()
 }
 
-/// Laju byte per detik jadi bentuk terbaca (mis. "30.4 KB/s").
+/// Bytes per second as a human-readable string (e.g. "30.4 KB/s").
 pub fn format_rate(bytes_per_sec: f64) -> String {
     format!("{}/s", format_bytes(bytes_per_sec))
 }
 
-/// Ukuran byte jadi bentuk terbaca (mis. "4.1 GB").
+/// Byte size as a human-readable string (e.g. "4.1 GB").
 pub fn format_bytes(bytes: f64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = bytes.max(0.0);
@@ -137,22 +137,22 @@ pub fn format_bytes(bytes: f64) -> String {
     }
 }
 
-/// Timestamp EasyPanel ("2026-07-16 05:55:15", UTC) jadi NaiveDateTime.
+/// EasyPanel timestamp ("2026-07-16 05:55:15", UTC) as a NaiveDateTime.
 pub fn parse_ts(s: &str) -> Option<chrono::NaiveDateTime> {
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()
 }
 
-/// Detik jadi durasi ringkas berbahasa Indonesia.
+/// Seconds as a concise human-readable duration.
 pub fn human_duration(secs: i64) -> String {
     match secs {
-        s if s < 60 => format!("{s} detik"),
-        s if s < 3600 => format!("{} menit", s / 60),
-        s if s < 86400 => format!("{} jam", s / 3600),
-        s => format!("{} hari", s / 86400),
+        s if s < 60 => format!("{s} seconds"),
+        s if s < 3600 => format!("{} minutes", s / 60),
+        s if s < 86400 => format!("{} hours", s / 3600),
+        s => format!("{} days", s / 86400),
     }
 }
 
-/// Selisih dua timestamp EasyPanel sebagai durasi.
+/// Difference between two EasyPanel timestamps, as a duration.
 pub fn duration_between(start: &str, end: &str) -> String {
     match (parse_ts(start), parse_ts(end)) {
         (Some(a), Some(b)) => human_duration((b - a).num_seconds().max(0)),
@@ -160,18 +160,18 @@ pub fn duration_between(start: &str, end: &str) -> String {
     }
 }
 
-/// Umur sebuah timestamp relatif sekarang (mis. "3 jam lalu").
+/// Age of a timestamp relative to now (e.g. "3 hours ago").
 pub fn age_of(ts: &str) -> String {
     match parse_ts(ts) {
         Some(t) => format!(
-            "{} lalu",
+            "{} ago",
             human_duration((chrono::Utc::now().naive_utc() - t).num_seconds().max(0))
         ),
         None => "-".to_string(),
     }
 }
 
-/// Baris pertama, dipotong pada `max` karakter.
+/// First line, truncated at `max` characters.
 pub fn first_line(s: &str, max: usize) -> String {
     let line = s.lines().next().unwrap_or("").trim();
     if line.chars().count() <= max {
@@ -181,16 +181,16 @@ pub fn first_line(s: &str, max: usize) -> String {
     format!("{cut}…")
 }
 
-/// Boolean di pointer JSON sebagai "ya"/"tidak".
+/// Boolean at a JSON pointer as "yes"/"no".
 pub fn yes_no(value: &Value, pointer: &str) -> String {
     if value
         .pointer(pointer)
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        "ya".to_string()
+        "yes".to_string()
     } else {
-        "tidak".to_string()
+        "no".to_string()
     }
 }
 
@@ -201,14 +201,14 @@ mod tests {
 
     #[test]
     fn spark_normalises_to_own_range() {
-        // CPU 1..5% harus memakai seluruh tinggi, bukan tenggelam di skala 0..100.
+        // CPU at 1..5% should use the full height, not get lost on a 0..100 scale.
         let v = json!({ "cpu": [[1, "1"], [2, "3"], [3, "5"]] });
         assert_eq!(series_spark(&v, "cpu", 10), vec![0, 50, 100]);
     }
 
     #[test]
     fn spark_renders_flat_series_as_mid_line() {
-        // Disk yang konstan: garis rata, bukan blok solid (dan bukan kosong).
+        // Constant disk usage: a level line, not a solid block (and not empty).
         let v = json!({ "disk": [[1, "16.2"], [2, "16.2"]] });
         assert_eq!(series_spark(&v, "disk", 10), vec![50, 50]);
     }
@@ -229,10 +229,10 @@ mod tests {
 
     #[test]
     fn series_last_returns_zero_for_flat_arrays() {
-        // Jebakan: `loadAvg` dari metrics BUKAN deret [ts, nilai] seperti cpu —
-        // isinya tiga string rata-rata 1/5/15 menit. series_last() mencari p[1]
-        // di tiap titik dan mengembalikan 0.0, yang terbaca sebagai "load nol"
-        // padahal load sebenarnya 0.58. Pakai commands::load_avg() untuk ini.
+        // Trap: `loadAvg` from metrics is NOT a [ts, value] series like cpu —
+        // it's three strings holding the 1/5/15-minute averages. series_last()
+        // looks for p[1] at each point and returns 0.0, which reads as "load
+        // zero" when the actual load is 0.58. Use commands::load_avg() for this.
         let v = json!({ "loadAvg": ["0.58", "0.62", "0.7"] });
         assert_eq!(series_last(&v, "loadAvg"), 0.0);
     }
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn first_line_trims_and_truncates() {
-        assert_eq!(first_line("satu\ndua", 20), "satu");
+        assert_eq!(first_line("one\ntwo", 20), "one");
         assert_eq!(first_line("abcdef", 4), "abc…");
         assert_eq!(first_line("abcd", 4), "abcd");
     }
@@ -262,16 +262,16 @@ mod tests {
 
     #[test]
     fn format_bytes_survives_extreme_and_invalid_input() {
-        // Byte datang dari server: bisa 0, negatif (kalau server keliru), atau
-        // NaN. Semua harus jadi "0 B", bukan "-5 B", "NaN B", atau panic. Sifat
-        // ini bergantung pada `.max(0.0)`; refactor yang membuangnya diam-diam
-        // akan merusaknya, jadi dikunci di sini.
+        // Bytes come from the server: could be 0, negative (if the server is
+        // wrong), or NaN. All of these must become "0 B", not "-5 B", "NaN B", or
+        // a panic. This behavior relies on `.max(0.0)`; a refactor that silently
+        // drops it would break this, so it's pinned here.
         assert_eq!(format_bytes(-5.0), "0 B");
         assert_eq!(format_bytes(f64::NAN), "0 B");
-        // Batas unit persis.
+        // Exact unit boundary.
         assert_eq!(format_bytes(1023.0), "1023 B");
         assert_eq!(format_bytes(1024.0), "1.0 KB");
-        // Tak pernah melewati TB, betapapun besarnya — dan tak overflow/panic.
+        // Never goes past TB, no matter how large — and doesn't overflow/panic.
         assert!(format_bytes(1024f64.powi(6)).ends_with(" TB"));
         assert!(format_bytes(f64::MAX).ends_with(" TB"));
         assert_eq!(format_bytes(f64::INFINITY), "inf TB");
@@ -279,29 +279,29 @@ mod tests {
 
     #[test]
     fn series_helpers_are_empty_safe() {
-        // Seri kosong / kunci hilang tak boleh panic maupun mengarang angka:
-        // "-" lebih jujur daripada 0 palsu (lihat riwayat bug loadAvg).
+        // An empty series / missing key must not panic or make up a number:
+        // "-" is more honest than a fake 0 (see the loadAvg bug history).
         let empty = json!({ "cpu": [] });
         assert_eq!(series_last(&empty, "cpu"), 0.0);
-        assert_eq!(series_last(&empty, "tidakada"), 0.0);
+        assert_eq!(series_last(&empty, "missing"), 0.0);
         assert!(series_spark(&empty, "cpu", 30).is_empty());
         assert!(series_spark(&json!({}), "cpu", 30).is_empty());
-        // Satu titik: tak ada rentang, jadi garis tengah (50), bukan bagi-nol.
+        // One point: no range, so a mid-height line (50), not a divide-by-zero.
         let one = json!({ "cpu": [["1700000000000", "42"]] });
         assert_eq!(series_spark(&one, "cpu", 30), vec![50]);
     }
 
     #[test]
     fn json_string_is_pretty_and_preserves_the_api_shape() {
-        // --json harus mencetak apa yang server kirim, bukan skema kita — jadi
-        // yang penting: valid, ter-indentasi, dan tak kehilangan/menambah field.
+        // --json must print what the server sent, not our own schema — so what
+        // matters is: valid, indented, and no fields lost or added.
         let v = json!({ "name": "web", "members": [1, 2] });
         let s = json_string(&v);
-        assert!(s.contains("\n  "), "harus pretty (ter-indentasi): {s}");
+        assert!(s.contains("\n  "), "must be pretty (indented): {s}");
         assert_eq!(serde_json::from_str::<Value>(&s).unwrap(), v);
 
-        // Array kosong dicetak sebagai `[]`, bukan pesan manusia — itu inti
-        // kelayakan-script: `[]` bisa dibaca `jq`, "No X." tidak.
+        // An empty array prints as `[]`, not a human message — that's the heart
+        // of script-friendliness: `[]` can be read by `jq`, "No X." can't.
         assert_eq!(json_string(&json!([])), "[]");
     }
 }
