@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-07-18
+
+### Added
+
+- **A colored status dot in the Services table** — each service's Status now leads with a
+  `●` you read at a glance before the word: green `aktif`, yellow `berhenti`, gray `mati`,
+  and red for `turun` (which keeps its pulse). The Auto column's `✓`/`✗` are colored to
+  match (green on, gray off). Deliberately plain single-cell Unicode symbols, not emoji or
+  Nerd-Font glyphs: emoji are often double-width and would break the table's fixed columns,
+  and Nerd-Font icons render as tofu without a patched font — the dot works in every
+  terminal and doesn't depend on the theme (palette-indexed colors, per this project's
+  standing rule).
+
 ## [0.23.0] — 2026-07-18
 
 ### Added

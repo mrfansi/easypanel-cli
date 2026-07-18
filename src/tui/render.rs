@@ -1,6 +1,6 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, Clear, Gauge, List, ListItem, Paragraph, Row, Sparkline, Table, TableState,
+    Block, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Sparkline, Table, TableState,
 };
 use serde_json::Value;
 
@@ -420,8 +420,8 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     let widths = [
         Constraint::Min(26),
         Constraint::Length(8),
-        // 9, bukan 7: "berhenti" (8 huruf) harus muat, tak terpotong.
-        Constraint::Length(9),
+        // 11: menampung "● berhenti" (titik + spasi + 8 huruf) tanpa terpotong.
+        Constraint::Length(11),
         Constraint::Min(16),
         Constraint::Length(5),
         Constraint::Length(8),
@@ -438,7 +438,18 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     // Baris "turun" berdenyut (merah terang <-> salmon) supaya mata tertuju ke
     // yang rusak; ini keadaan insiden, jadi menariknya perhatian itu pas.
     let down_style = pulse_red(app.anim.elapsed().as_millis());
+    // Titik status (kolom 2) & tanda Auto (kolom 4) diberi warna sendiri per sel:
+    // state kebaca sekejap. Baris "turun" dibiarkan mewarisi denyut merah.
     let body = rows.into_iter().map(|(cells, is_down)| {
+        let cells: Vec<Cell> = cells
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| match i {
+                2 => status_cell(&c, is_down),
+                4 => auto_cell(&c, is_down),
+                _ => Cell::from(c),
+            })
+            .collect();
         let row = Row::new(cells);
         if is_down {
             row.style(down_style)
@@ -461,6 +472,41 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
         .row_highlight_style(hl)
         .highlight_symbol("› ");
     f.render_stateful_widget(table, area, &mut app.services_table);
+}
+
+/// Sel Status dengan titik `●` berwarna per state: aktif hijau, berhenti kuning,
+/// mati abu, turun merah (diwarnai denyut baris). Titik BMP 1-sel, tema-proof.
+/// Baris non-status (header project, "-") tak diberi titik.
+fn status_cell(text: &str, is_down: bool) -> Cell<'static> {
+    let color = match text {
+        "aktif" => Some(Color::Indexed(2)),
+        "berhenti" => Some(Color::Indexed(3)),
+        "mati" => Some(Color::Indexed(8)),
+        _ => None,
+    };
+    if color.is_none() && text != "turun" {
+        return Cell::from(text.to_string());
+    }
+    let cell = Cell::from(format!("● {text}"));
+    match color {
+        // "turun": biarkan denyut merah baris yang mewarnai (titik ikut merah).
+        Some(c) if !is_down => cell.style(Style::default().fg(c)),
+        _ => cell,
+    }
+}
+
+/// Sel Auto: ✓ hijau (nyala), ✗ abu (mati), "-" apa adanya (tak berlaku).
+fn auto_cell(text: &str, is_down: bool) -> Cell<'static> {
+    let color = match text {
+        "✓" => Some(Color::Indexed(2)),
+        "✗" => Some(Color::Indexed(8)),
+        _ => None,
+    };
+    let cell = Cell::from(text.to_string());
+    match color {
+        Some(c) if !is_down => cell.style(Style::default().fg(c)),
+        _ => cell,
+    }
 }
 
 /// Warna denyut untuk baris "turun": siklus 4-langkah ~1,1 detik antara merah
