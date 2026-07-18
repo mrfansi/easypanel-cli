@@ -247,8 +247,14 @@ Fill out the management surface. Verify live with a `zzz-*` target and clean up.
    most users never touch. The common redirect need is a SEPARATE, simpler endpoint
    (`updateRedirects`), now shipped (see #10). If middlewares are built later, scope one
    concrete type end-to-end (form + assign to a domain), not the whole catalogue.
-9. **Cloudflare Tunnel** (`cloudflareTunnel/*`, 11 endpoints) — expose services without a
-   public IP; large but high-value for self-hosters.
+9. **Cloudflare Tunnel — NOT verifiable in a session without a Cloudflare token (checked
+   2026-07-18).** `getConfig` returns `null` on the live host (no tunnel configured), and
+   every operation (`listAccounts`/`listZones`/`listTunnels`/`createTunnelRule`) requires a
+   Cloudflare **`apiToken`** as input — a credential this project doesn't have and shouldn't
+   obtain. Building it means guessing the `setConfig`/`createTunnelRule`/account→zone→
+   hostname flow with no way to verify — exactly what the "no live server" rule forbids. If
+   a run is given a Cloudflare token against a throwaway zone, do it then; otherwise it stays
+   an issue, not a guess.
 10. Small self-contained editors:
     - ~~**Basic auth**~~ done in v0.31.0. `H` on a web service (app/box/compose/wordpress)
       → form (Username + Password, prefilled from current) → `updateBasicAuth`; empty both =

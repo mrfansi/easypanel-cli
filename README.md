@@ -20,6 +20,22 @@ searchable table, and every domain on the box — without clicking through a hie
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+**Things it does that the web panel can't, or can't from one screen:**
+
+- **Clone a service** (`c`) — copy a service's whole config (image/source, build, env,
+  resources, mounts, ports, and a database's advanced config file) into a new service, in
+  any project. Config only, no data, no deploy. EasyPanel's own panel has no clone. The
+  motivating case: standing up a **MySQL replica** without re-entering everything by hand.
+- **Search one keyword across every service's logs at once** (`g`) — a parallel fan-out
+  over all services, grouped by where it hit. "Which service logged this error?" in one
+  keystroke.
+- **A real shell inside any container** (`t`), embedded right in the pane — colours,
+  arrows, tab-completion, resize, all of it, over EasyPanel's own WebSocket.
+- **Crash visibility** — a service whose Swarm replicas are missing shows a pulsing red
+  `turun`, counted in the title, so "what's broken right now?" is answered at a glance.
+- **Mouse and keyboard** — click tabs and rows, right-click for a context menu, scroll,
+  hover to highlight; every action also has a key.
+
 ## Install
 
 Download a binary from [Releases](https://github.com/mrfansi/easypanel-cli/releases)
@@ -94,8 +110,8 @@ to select/copy.)
 | **Actions** | Deploy/destroy/login history with status, target, duration, age. |
 | **Monitor** | Five history tiles (CPU, memory, disk, net in/out) plus per-service metrics and storage (`v` switches). |
 | **Domains** | Every domain on the host: source → destination (internal service or weighted custom servers), SSL resolver, wildcard. |
-| **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. Shows type, status, source (`owner/repo#branch`), and live CPU/memory/network. A crashed or restart-looping service shows **`turun` in red** (its Swarm replicas are missing) and is counted in the title, so you see what's broken at a glance — distinct from `berhenti`, which means intentionally stopped. Selecting a header targets the project (`n` new service, `X` destroy); selecting a service targets the service. |
-| **Viewer** | Scrollable pane for logs, env, ports, mounts, domains, backups, source & build. Reached from a service; `Esc` goes back. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. |
+| **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. A colored status dot reads at a glance: green `aktif`, yellow `berhenti`, gray `mati`, and a pulsing red **`turun`** for a crashed/restart-looping service (its Swarm replicas are missing), counted in the title. From a selected service you can do the lot — logs, terminal, deploy/restart/stop/start, clone, env, ports, mounts, redirects, domains, resource limits, basic auth. Selecting a project header targets the project (`n` new service, `X` destroy). |
+| **Viewer** | Scrollable pane for logs, env, ports, mounts, redirects, backups, source & build. Reached from a service; `Esc` goes back. In the ports/mounts/redirects view, a digit key deletes that row. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. |
 
 ### Key bindings
 
@@ -104,16 +120,20 @@ to select/copy.)
 | `?` | every shortcut for the current screen |
 | `1`–`7`, `Tab` | switch tabs (`2` = Hosts) |
 | `/` | filter (Services, Domains, Actions, Monitor) · `Esc` clears |
-| `Enter` | logs for the selected service (**live**; `End` re-follows) |
-| `e` `p` `m` `o` `b` `u` | view env · ports · mounts · domains · backups · source & build |
+| `Enter` | logs for the selected service (**live**; `End` re-follows) · on **Actions**, the action's detail + deploy log |
+| `g` | **search a keyword across every service's logs at once** |
+| `t` | **open a shell inside the running container** (Ctrl-Q to force-quit) |
+| `c` | **clone the service's config into a new service** (any project) |
+| `e` `p` `m` `b` `u` | view env · ports · mounts · backups · source & build |
+| `f` | view redirects · in the ports/mounts/redirects view, `[0]`–`[9]` **deletes** that row |
+| `o` | manage the service's **domains** (opens the Domains tab filtered to it) |
 | `E` | edit env in `$EDITOR` |
 | `U` · `B` | configure source · build (app services) |
 | `A` | turn auto deploy on/off (GitHub sources only) |
-| `P` | add an exposed port (published→target, tcp/udp) |
-| `g` | **search a keyword across every service's logs at once** |
-| `t` | **open a shell inside the running container** (Ctrl-Q to force-quit) |
+| `P` · `M` · `F` | add a **port** · **mount** (volume/bind/file) · **redirect** (regex→replacement) |
+| `L` · `H` | set **resource limits** (CPU/memory) · **basic auth** (web services) |
 | `d` `R` `S` `T` | deploy · restart · stop · start (confirmed) |
-| `n` · `x` | new · delete service (Domains: domain) |
+| `n` · `x` | new · delete service (Domains: `n` `e` `x` `P` add/edit/delete/primary) |
 | `N` · `X` | new · delete project |
 | `s` | server list: `Enter` switch · `n` add · `e` edit · `x` delete |
 | `r` · `q` | refresh · quit (`Esc` **cancels**, it does not quit) |
