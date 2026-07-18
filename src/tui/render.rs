@@ -20,7 +20,10 @@ pub(super) struct Key(pub(super) &'static str, pub(super) &'static str);
 pub(super) const GLOBAL_KEYS: &[Key] = &[
     Key("1-7 / Tab / ←→", "pindah tab"),
     Key("?", "bantuan ini"),
-    Key(":", "cari & lompat cepat ke service / tab (global search)"),
+    Key(
+        ":",
+        "global search: lompat ATAU aksi cepat (deploy/restart/logs/terminal…) ke service mana pun",
+    ),
     Key("s", "daftar server (pilih/tambah/edit/hapus)"),
     Key("r", "refresh"),
     Key("Esc", "batal: tutup form/dropdown/konfirmasi/filter"),
@@ -191,7 +194,9 @@ pub(super) fn render_palette(f: &mut Frame, app: &mut App) {
         .block(
             Block::bordered()
                 .title(format!(" Cari: {}▏ ", pal.query))
-                .title_bottom(format!(" {count} hasil · Enter lompat · Esc tutup "))
+                .title_bottom(format!(
+                    " {count} hasil · Enter jalankan/lompat · Esc tutup "
+                ))
                 .border_style(Style::default().fg(Color::Cyan)),
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));

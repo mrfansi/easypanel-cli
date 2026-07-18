@@ -306,10 +306,28 @@ impl Menu {
     }
 }
 
+/// Quick action yang bisa dijalankan dari palette pada sebuah service.
+#[derive(Clone, Copy)]
+pub(super) enum PaletteVerb {
+    Deploy,
+    Restart,
+    Stop,
+    Start,
+    Logs,
+    Terminal,
+    DbShell,
+}
+
 /// Aksi sebuah entri command palette (global search).
 pub(super) enum PaletteAction {
     /// Lompat ke sebuah service (pindah ke Services, sorot barisnya).
     Service { project: String, service: String },
+    /// Jalankan quick action pada sebuah service (sorot lalu jalankan aksinya).
+    ServiceAction {
+        project: String,
+        service: String,
+        verb: PaletteVerb,
+    },
     /// Pindah ke sebuah tab.
     Tab(Screen),
 }
@@ -330,13 +348,18 @@ pub(super) struct Palette {
 }
 
 impl Palette {
-    /// Indeks item yang cocok query (substring, tak peduli huruf besar/kecil).
+    /// Indeks item yang cocok query. Query dipecah per kata dan SEMUA kata harus
+    /// muncul (tak harus berurutan), jadi "deploy pay" cocok ke "Deploy …/pay".
     pub(super) fn matches(&self) -> Vec<usize> {
         let q = self.query.to_lowercase();
+        let terms: Vec<&str> = q.split_whitespace().collect();
         self.items
             .iter()
             .enumerate()
-            .filter(|(_, it)| q.is_empty() || it.label.to_lowercase().contains(&q))
+            .filter(|(_, it)| {
+                let l = it.label.to_lowercase();
+                terms.iter().all(|t| l.contains(t))
+            })
             .map(|(i, _)| i)
             .collect()
     }
@@ -632,10 +655,40 @@ impl App {
                 field(s, "/name"),
                 field(s, "/type"),
             );
+            let id = format!("{project}/{service}");
+            // Navigasi.
             items.push(PaletteItem {
-                label: format!("{project} / {service}  ·  {t}"),
-                action: PaletteAction::Service { project, service },
+                label: format!("Buka  {id}  ·  {t}"),
+                action: PaletteAction::Service {
+                    project: project.clone(),
+                    service: service.clone(),
+                },
             });
+            // Quick actions — jalankan langsung dari palette.
+            let mut verbs: Vec<(&str, PaletteVerb)> = vec![
+                ("Deploy", PaletteVerb::Deploy),
+                ("Restart", PaletteVerb::Restart),
+                ("Stop", PaletteVerb::Stop),
+                ("Start", PaletteVerb::Start),
+                ("Logs", PaletteVerb::Logs),
+                ("Terminal", PaletteVerb::Terminal),
+            ];
+            if matches!(
+                t.as_str(),
+                "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
+            ) {
+                verbs.push(("DB shell", PaletteVerb::DbShell));
+            }
+            for (name, verb) in verbs {
+                items.push(PaletteItem {
+                    label: format!("{name}  {id}"),
+                    action: PaletteAction::ServiceAction {
+                        project: project.clone(),
+                        service: service.clone(),
+                        verb,
+                    },
+                });
+            }
         }
         let mut state = ListState::default();
         state.select(Some(0));
@@ -661,6 +714,24 @@ impl App {
             PaletteAction::Service { project, service } => {
                 let (p, s) = (project.clone(), service.clone());
                 self.jump_to_service(&p, &s, req);
+            }
+            PaletteAction::ServiceAction {
+                project,
+                service,
+                verb,
+            } => {
+                let (p, s, verb) = (project.clone(), service.clone(), *verb);
+                // Sorot dulu service-nya (aksi memakai baris terpilih), lalu jalankan.
+                self.jump_to_service(&p, &s, req);
+                match verb {
+                    PaletteVerb::Deploy => self.ask_action("deploy"),
+                    PaletteVerb::Restart => self.ask_action("restart"),
+                    PaletteVerb::Stop => self.ask_action("stop"),
+                    PaletteVerb::Start => self.ask_action("start"),
+                    PaletteVerb::Logs => self.open_view(View::Logs, req),
+                    PaletteVerb::Terminal => self.start_terminal(),
+                    PaletteVerb::DbShell => self.start_db_shell(),
+                }
             }
         }
     }

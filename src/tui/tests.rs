@@ -546,32 +546,41 @@ fn palette_filters_then_jumps_to_service() {
         json!({ "projectName": "proj", "name": "db", "type": "mysql" }),
     ];
     app.open_palette();
-    // Entri = semua tab + tiap service.
-    assert_eq!(
-        app.palette.as_ref().unwrap().items.len(),
-        TAB_SCREENS.len() + 2
-    );
-    // Tanpa query, semua cocok.
-    assert_eq!(
-        app.palette.as_ref().unwrap().matches().len(),
-        TAB_SCREENS.len() + 2
-    );
+    let labels = |a: &App| -> Vec<String> {
+        a.palette
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .map(|i| i.label.clone())
+            .collect()
+    };
+    // Entri berisi navigasi + quick action. DB shell hanya untuk service db.
+    let l = labels(&app);
+    assert!(l.iter().any(|x| x == "Buka  proj/web  ·  app"));
+    assert!(l.iter().any(|x| x == "Deploy  proj/web"));
+    assert!(l.iter().any(|x| x == "DB shell  proj/db"));
+    assert!(!l.iter().any(|x| x == "DB shell  proj/web")); // app bukan db
 
-    // Filter "web" → satu service.
-    app.palette.as_mut().unwrap().query = "web".into();
+    // Pencarian multi-kata (token-AND): "deploy web" cocok tepat ke Deploy web.
+    app.palette.as_mut().unwrap().query = "deploy web".into();
     let m = app.palette.as_ref().unwrap().matches();
     assert_eq!(m.len(), 1);
-    assert!(app.palette.as_ref().unwrap().items[m[0]]
-        .label
-        .contains("web"));
+    assert_eq!(
+        app.palette.as_ref().unwrap().items[m[0]].label,
+        "Deploy  proj/web"
+    );
 
-    // Enter menjalankan entri terpilih: lompat ke Services, tutup palette, ada
-    // baris terpilih.
+    // Enter menjalankan quick action: sorot service lalu picu deploy (confirm).
     app.palette.as_mut().unwrap().state.select(Some(0));
     app.palette_run(&tx);
     assert!(app.palette.is_none());
     assert!(matches!(app.screen, Screen::Projects));
     assert!(app.services_table.selected().is_some());
+    assert!(
+        app.confirm.as_ref().is_some_and(|c| c.action == "deploy"),
+        "quick action Deploy harus memunculkan konfirmasi deploy"
+    );
 }
 
 #[test]

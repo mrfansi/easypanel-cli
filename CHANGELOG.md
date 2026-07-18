@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0] — 2026-07-18
+
+### Added
+
+- **Quick actions in the command palette (`:`)** — the palette is no longer just
+  navigation. Every service now also carries action entries — **Deploy, Restart,
+  Stop, Start, Logs, Terminal**, plus **DB shell** for databases — so you can run
+  them from anywhere without touching the menu (e.g. type `deploy pay` → `Enter`
+  to deploy that service, with the usual confirmation). Lifecycle actions still
+  go through their confirm dialog; the service is selected first so the action
+  targets the right row.
+- **Multi-word palette search.** The query now matches on each word independently
+  (all must appear), so `deploy pay` finds `Deploy  …/pay` even though the words
+  aren't adjacent in the label.
+
 ## [0.39.0] — 2026-07-18
 
 ### Added
