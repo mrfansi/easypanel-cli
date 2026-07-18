@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.2] — 2026-07-18
+
+### Fixed
+
+- **The action menus looked broken on first contact.** Opening Services put the
+  highlight on row 0 — which is a *project header*, not a service. Every service
+  action reads the selected row, and a header has none, so `Space`, `e`, `o`, `u`,
+  `m`, `d`, `t` and `x` all did nothing at all, with no message, until you pressed
+  `↓`. The headline feature of the last few releases appeared dead on arrival. The
+  first paint now lands on the first service.
+- **Row actions no longer fail in silence.** With a project header selected, the
+  group keys used to open a menu whose every item quietly did nothing. They now say
+  `Select a service first` instead — the same wording the other row actions already
+  used.
+
 ## [0.42.1] — 2026-07-18
 
 ### Fixed

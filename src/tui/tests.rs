@@ -1728,3 +1728,89 @@ fn terminal_ws_roundtrip_live() {
     }
     drop(in_tx); // close the session
 }
+
+#[test]
+fn first_load_lands_on_a_service_not_a_project_header() {
+    // Row 0 of visible_rows is a PROJECT HEADER. Landing there makes every service
+    // action a silent no-op (selected_row() is None for a header), so the grouped
+    // menus look broken on first contact.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Projects;
+    app.handle(
+        Resp::AllServices {
+            projects: vec!["proj".into()],
+            services: vec![json!({ "projectName": "proj", "name": "web", "type": "app" })],
+        },
+        &tx,
+    );
+    assert!(
+        app.selected_row().is_some(),
+        "after the first load a SERVICE must be selected, not the project header"
+    );
+}
+
+#[test]
+fn row_actions_say_something_when_no_service_is_selected() {
+    // A header row is selected: opening a group menu would build a menu whose every
+    // item silently fails. Say so instead.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Projects;
+    app.projects = vec!["proj".into()];
+    app.all_services = vec![json!({ "projectName": "proj", "name": "web", "type": "app" })];
+    app.services_table.select(Some(0)); // the project header
+    app.status = "Ready".into();
+    app.on_key(KeyCode::Char('d'), &tx); // Lifecycle group key
+    assert!(app.menu.is_none(), "no menu should open without a service");
+    assert_ne!(
+        app.status, "Ready",
+        "the rejection must be visible in the status"
+    );
+}
+
+#[test]
+fn services_screen_highlights_a_service_row_on_first_paint() {
+    // Renders the real screen and inspects what is drawn: the highlight symbol must
+    // sit on a service, not on the project header. A unit test on the selection
+    // index can't see that the marker landed on the wrong line.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Projects;
+    app.handle(
+        Resp::AllServices {
+            projects: vec!["proj".into()],
+            services: vec![
+                json!({ "projectName": "proj", "name": "web", "type": "app" }),
+                json!({ "projectName": "proj", "name": "db", "type": "mysql" }),
+            ],
+        },
+        &tx,
+    );
+
+    let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+
+    let screen: Vec<String> = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(120)
+        .map(|row| row.iter().map(|c| c.symbol()).collect())
+        .collect();
+    let marked = screen
+        .iter()
+        .find(|l| l.contains('›'))
+        .expect("a row must be highlighted");
+    assert!(
+        marked.contains("db") || marked.contains("web"),
+        "the highlight must be on a service, got: {marked:?}"
+    );
+    assert!(
+        !marked.contains("proj ("),
+        "the highlight must not sit on the project header, got: {marked:?}"
+    );
+}

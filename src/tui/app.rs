@@ -600,6 +600,18 @@ impl App {
     /// Open a menu that was triggered by the keyboard. Anchored to the SELECTED row
     /// (not the top-left corner) so it appears in that row's context, like a right
     /// click. Right-click menus use the cursor position (see on_right_click).
+    /// Open a row menu, but say so instead of doing nothing when no service is
+    /// selected. Without this the menu opens over a project header and every item
+    /// inside it silently fails — the action surface looks broken rather than
+    /// unavailable.
+    pub(super) fn open_service_menu(&mut self, items: Vec<MenuItem>) {
+        if self.selected_row().is_none() {
+            self.status = "Select a service first".into();
+            return;
+        }
+        self.open_menu(items);
+    }
+
     pub(super) fn open_menu(&mut self, items: Vec<MenuItem>) {
         if items.is_empty() {
             return;
@@ -889,8 +901,12 @@ impl App {
                 self.all_services = services;
                 self.all_services
                     .sort_by_key(|s| (field(s, "/projectName"), field(s, "/name")));
-                let n = self.visible_services().len();
-                select_first(&mut self.services_table, n);
+                // Land on the first SERVICE, not row 0 — row 0 is a project header,
+                // and every service action is a no-op while a header is highlighted,
+                // which made the whole action menu look broken on first contact.
+                if self.services_table.selected().is_none() {
+                    self.services_table.select(self.first_service_row());
+                }
             }
             Resp::ServicesFor(project, names) => {
                 if let Some(form) = self.form.as_mut() {
@@ -1233,10 +1249,21 @@ impl App {
         out
     }
 
-    /// The services that pass the filter.
+    /// Index of the first SERVICE row in `visible_rows()`. Row 0 is a project
+    /// header, which carries no service actions, so that is where a fresh selection
+    /// belongs. None when nothing is loaded or everything is filtered out.
+    pub(super) fn first_service_row(&self) -> Option<usize> {
+        self.visible_rows()
+            .iter()
+            .position(|r| matches!(r, Line2::Service(_)))
+    }
+
+    /// The services that pass the filter, as a flat list.
     ///
-    /// Render AND actions must both go through here: if render is filtered while
-    /// actions use full-list indices, `x` would delete the wrong service.
+    /// Test-only: the screen and every action go through `visible_rows()` (which
+    /// also carries the project headers). This flat view exists so the cross-project
+    /// filter can be asserted directly, without reconstructing the grouped rows.
+    #[cfg(test)]
     pub(super) fn visible_services(&self) -> Vec<&Value> {
         self.all_services
             .iter()

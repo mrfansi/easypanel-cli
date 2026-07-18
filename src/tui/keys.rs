@@ -82,7 +82,14 @@ impl App {
             // nothing.
             KeyCode::Char(' ') => {
                 let items = self.context_items();
-                self.open_menu(items);
+                // On Services an empty menu means "no service selected" — say so
+                // rather than swallowing the key. Other screens have rows without
+                // actions, where doing nothing is the honest answer.
+                if self.screen == Screen::Projects {
+                    self.open_service_menu(items);
+                } else {
+                    self.open_menu(items);
+                }
             }
             // Global search / command palette: jump quickly to a service/tab
             // without menus. A keyboard alternative for those who dislike browsing
@@ -841,19 +848,19 @@ impl App {
             // still work.
             KeyCode::Char('e') => {
                 let m = self.env_menu();
-                self.open_menu(m);
+                self.open_service_menu(m);
             }
             KeyCode::Char('o') => {
                 let m = self.net_menu();
-                self.open_menu(m);
+                self.open_service_menu(m);
             }
             KeyCode::Char('u') => {
                 let m = self.build_menu();
-                self.open_menu(m);
+                self.open_service_menu(m);
             }
             KeyCode::Char('m') => {
                 let m = self.store_menu();
-                self.open_menu(m);
+                self.open_service_menu(m);
             }
             KeyCode::Char('p') => self.open_view(View::Ports, req),
             KeyCode::Char('b') => self.open_view(View::Backups, req),
@@ -887,7 +894,7 @@ impl App {
             },
             KeyCode::Char('t') => {
                 let m = self.shell_menu();
-                self.open_menu(m);
+                self.open_service_menu(m);
             }
             // DB shell (auto login) keeps its direct key; also available in the
             // Shell menu (`t`). A feature the web dashboard doesn't have.
@@ -913,7 +920,7 @@ impl App {
             KeyCode::Char('n') => self.new_service_form(req),
             KeyCode::Char('x') => {
                 let m = self.danger_menu();
-                self.open_menu(m);
+                self.open_service_menu(m);
             }
             // The Projects panel is gone, but projects still need to be
             // creatable/deletable from the TUI.
@@ -937,7 +944,7 @@ impl App {
             }
             KeyCode::Char('d') => {
                 let m = self.life_menu();
-                self.open_menu(m);
+                self.open_service_menu(m);
             }
             KeyCode::Char('R') => self.ask_action("restart"),
             KeyCode::Char('S') => self.ask_action("stop"),
