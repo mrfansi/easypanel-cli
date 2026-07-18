@@ -378,14 +378,53 @@ pub fn service_set_env(
             buf
         }
     };
-    client.call(
-        &format!("services/{stype}"),
-        "updateEnv",
-        json!({ "projectName": project, "serviceName": service, "env": env }),
-    )?;
+    save_env(client, project, service, stype, &env)?;
     println!("Env for {project}/{service} updated.");
     Ok(())
 }
+
+/// Write a service's env, whichever endpoint its type uses. app-ish types have
+/// `updateEnv`; databases keep env inside the Advanced block (`updateAdvanced`).
+/// Both replace the whole block they own, so inspect first and keep the fields we
+/// aren't editing (`dotEnvPath` / image, command, configFile) instead of wiping them.
+pub fn save_env(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    stype: &str,
+    env: &str,
+) -> Result<()> {
+    let grp = format!("services/{stype}");
+    let ps = json!({ "projectName": project, "serviceName": service });
+    let cur = client.call(&grp, "inspectService", ps)?;
+    let (op, body) = if HAS_UPDATE_ENV.contains(&stype) {
+        let mut b = json!({ "projectName": project, "serviceName": service, "env": env });
+        // The server rejects a null/empty dotEnvPath, so "no file" = omit the field.
+        if let Some(dot) = cur.get("dotEnvPath").and_then(Value::as_str) {
+            b["dotEnvPath"] = json!(dot);
+        }
+        ("updateEnv", b)
+    } else {
+        let mut b = json!({
+            "projectName": project,
+            "serviceName": service,
+            // image & command MUST be strings — null/omitted is rejected.
+            "image": cur.get("image").and_then(Value::as_str).unwrap_or(""),
+            "command": cur.get("command").and_then(Value::as_str).unwrap_or(""),
+            "env": env,
+        });
+        if let Some(cfg) = cur.get("configFile").and_then(Value::as_str) {
+            b["configFile"] = json!(cfg);
+        }
+        ("updateAdvanced", b)
+    };
+    client.call(&grp, op, body)?;
+    Ok(())
+}
+
+/// Service types with an `updateEnv` endpoint. The rest (mysql, postgres, redis, …)
+/// do have env, but as part of the Advanced block → `updateAdvanced`.
+pub const HAS_UPDATE_ENV: &[&str] = &["app", "box", "compose", "wordpress"];
 
 // ---------- Ports (group "ports") ----------
 
@@ -1175,6 +1214,58 @@ pub fn backup_db_restore(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::prelude::*;
+
+    /// A mysql service has no updateEnv endpoint — its env lives in the Advanced
+    /// block. Sending updateEnv there returned 404; save_env must route by type and
+    /// keep image/command/configFile intact.
+    #[test]
+    fn env_of_a_database_goes_through_update_advanced() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.path("/api/rpc/services/mysql/inspectService");
+            then.status(200).json_body(json!({ "json": {
+                "image": "mysql:8.0", "command": "", "configFile": "[mysqld]"
+            }, "meta": [] }));
+        });
+        let save = server.mock(|when, then| {
+            when.path("/api/rpc/services/mysql/updateAdvanced")
+                .json_body(json!({ "json": {
+                    "projectName": "p", "serviceName": "db", "image": "mysql:8.0",
+                    "command": "", "configFile": "[mysqld]", "env": "TZ=Asia/Jakarta"
+                }}));
+            then.status(200)
+                .json_body(json!({ "json": null, "meta": [] }));
+        });
+
+        let client = EasypanelClient::new(&server.base_url(), "t");
+        save_env(&client, "p", "db", "mysql", "TZ=Asia/Jakarta").unwrap();
+        save.assert();
+    }
+
+    /// An app service keeps updateEnv — and its dotEnvPath must survive the save,
+    /// otherwise editing env silently turns the .env file off.
+    #[test]
+    fn env_of_an_app_keeps_its_dot_env_path() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.path("/api/rpc/services/app/inspectService");
+            then.status(200)
+                .json_body(json!({ "json": { "dotEnvPath": ".env" }, "meta": [] }));
+        });
+        let save = server.mock(|when, then| {
+            when.path("/api/rpc/services/app/updateEnv")
+                .json_body(json!({ "json": {
+                    "projectName": "p", "serviceName": "web", "env": "A=1", "dotEnvPath": ".env"
+                }}));
+            then.status(200)
+                .json_body(json!({ "json": null, "meta": [] }));
+        });
+
+        let client = EasypanelClient::new(&server.base_url(), "t");
+        save_env(&client, "p", "web", "app", "A=1").unwrap();
+        save.assert();
+    }
 
     #[test]
     fn mask_token_never_panics_on_a_hand_edited_token() {

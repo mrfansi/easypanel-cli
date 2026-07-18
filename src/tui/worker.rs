@@ -887,26 +887,10 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             service,
             stype,
             env,
-        } => {
-            let grp = format!("services/{stype}");
-            let ps = json!({ "projectName": project, "serviceName": service });
-            // updateEnv replaces the WHOLE env config; without including the existing
-            // dotEnvPath, editing env would silently turn off the .env file. Read it
-            // first, keep it. If inspect fails, abort rather than saving blind and
-            // losing the file.
-            match client.call(&grp, "inspectService", ps) {
-                Ok(cur) => {
-                    let dot = cur.get("dotEnvPath").and_then(Value::as_str);
-                    match client.call(&grp, "updateEnv", env_body(&project, &service, &env, dot)) {
-                        Ok(_) => {
-                            Resp::Done(format!("Env {project}/{service} saved"), Refresh::None)
-                        }
-                        Err(e) => Resp::Err(e.to_string()),
-                    }
-                }
-                Err(e) => Resp::Err(e.to_string()),
-            }
-        }
+        } => match crate::commands::save_env(client, &project, &service, &stype, &env) {
+            Ok(()) => Resp::Done(format!("Env {project}/{service} saved"), Refresh::None),
+            Err(e) => Resp::Err(e.to_string()),
+        },
         Req::EnvFileToggle {
             project,
             service,

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.1] — 2026-07-18
+
+### Fixed
+
+- **Editing env on a database service used to fail silently.** `updateEnv` does not
+  exist for `mysql`/`mariadb`/`postgres`/`mongo`/`redis` — the server answers
+  `Not found` (verified live). A database keeps its env in the Advanced block, so
+  `E` / `w` on one never saved anything. Env now routes by service type: `app`,
+  `box`, `compose` and `wordpress` use `updateEnv` (preserving `dotEnvPath`), every
+  other type uses `updateAdvanced` (preserving `image`, `command` and the config
+  file). Covered by two tests, one per path.
+
 ## [0.42.0] — 2026-07-18
 
 ### Changed
