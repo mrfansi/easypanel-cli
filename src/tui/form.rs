@@ -17,6 +17,7 @@ pub(super) const SERVICE_TYPES: &[&str] = &[
 pub(super) const DEST_KINDS: &[&str] = &["service", "custom"];
 pub(super) const PROTOCOLS: &[&str] = &["http", "https"];
 pub(super) const PORT_PROTOCOLS: &[&str] = &["tcp", "udp"];
+pub(super) const MOUNT_TYPES: &[&str] = &["volume", "bind", "file"];
 pub(super) const SOURCE_TYPES: &[&str] = &["github", "git", "image", "dockerfile"];
 pub(super) const BUILD_TYPES: &[&str] = &[
     "nixpacks",
@@ -550,6 +551,50 @@ pub(super) fn port_fields() -> Vec<Field> {
     ]
 }
 
+/// Field form tambah mount. Tipe menentukan field yang tampil: volume→Name,
+/// bind→Host path, file→Content (isi berkas, dibuka di $EDITOR). Mount path selalu.
+pub(super) fn mount_fields() -> Vec<Field> {
+    vec![
+        Field::choice("Type", MOUNT_TYPES, "volume"),
+        Field::text("Name", "").when("Type", "volume"),
+        Field::text("Host path", "").when("Type", "bind"),
+        Field::editor("Content", "").when("Type", "file"),
+        Field::text("Mount path", ""),
+    ]
+}
+
+/// Objek `values` untuk createMount, per tipe (bentuk diverifikasi ke server).
+/// Field wajib divalidasi di sini agar pesannya jelas, bukan error server mentah.
+pub(super) fn mount_body(form: &Form) -> std::result::Result<Value, String> {
+    let mount_path = form.by_label("Mount path");
+    if mount_path.trim().is_empty() {
+        return Err("Mount path wajib diisi".into());
+    }
+    match form.by_label("Type").as_str() {
+        "bind" => {
+            let host = form.by_label("Host path");
+            if host.trim().is_empty() {
+                return Err("Host path wajib untuk bind mount".into());
+            }
+            Ok(json!({ "type": "bind", "hostPath": host, "mountPath": mount_path }))
+        }
+        "file" => {
+            let content = form.by_label("Content");
+            if content.is_empty() {
+                return Err("Content masih kosong — Spasi untuk membukanya di $EDITOR".into());
+            }
+            Ok(json!({ "type": "file", "content": content, "mountPath": mount_path }))
+        }
+        _ => {
+            let name = form.by_label("Name");
+            if name.trim().is_empty() {
+                return Err("Name wajib untuk volume mount".into());
+            }
+            Ok(json!({ "type": "volume", "name": name, "mountPath": mount_path }))
+        }
+    }
+}
+
 /// Objek `values` untuk createPort: `{published, target, protocol}`.
 ///
 /// Keduanya number di API, jadi diparse; angka non-valid ditolak dengan pesan
@@ -778,6 +823,11 @@ pub(super) enum FormKind {
         project: String,
         service: String,
         stype: String,
+    },
+    /// Tambah mount (volume/bind/file) ke sebuah service.
+    MountCreate {
+        project: String,
+        service: String,
     },
 }
 

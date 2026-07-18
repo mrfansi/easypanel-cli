@@ -8,6 +8,7 @@ use std::sync::mpsc::Sender;
 
 use ratatui::crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::widgets::ListState;
+use serde_json::json;
 
 use crate::output::field;
 
@@ -50,6 +51,9 @@ impl App {
         }
 
         match code {
+            // Datang ke Domains lewat `o` dari sebuah service: Esc kembali ke
+            // Services (bukan sekadar menghapus filter scope-nya).
+            KeyCode::Esc if self.domain_scope.is_some() => self.goto(Screen::Projects, req),
             KeyCode::Esc if !self.filter.is_empty() => self.clear_filter(),
             // Esc TIDAK menutup aplikasi. Esc berarti "batal": ia menutup form,
             // dropdown, konfirmasi, atau filter — dan bila tak ada yang perlu
@@ -484,7 +488,18 @@ impl App {
 
         match code {
             KeyCode::Char('n') => {
-                let fields = domain_fields(None, &self.projects);
+                // Datang dari sebuah service (via `o`) -> prefill project+service
+                // ke service itu, supaya "Domain baru" tak mulai dari project acak.
+                let prefill = self.domain_scope.as_ref().map(|(p, s)| {
+                    json!({
+                        "destinationType": "service",
+                        "serviceDestination": {
+                            "projectName": p, "serviceName": s, "port": 80,
+                            "protocol": "http", "path": "/"
+                        }
+                    })
+                });
+                let fields = domain_fields(prefill.as_ref(), &self.projects);
                 self.form = Some(Form::new(FormKind::DomainCreate, " Domain baru ", fields));
                 self.load_form_services(req);
             }
@@ -630,6 +645,11 @@ impl App {
                 service: c.service.clone(),
                 index: c.stype.parse().unwrap_or(0),
             }),
+            "mount-delete" => req.send(Req::MountDelete {
+                project: c.project.clone(),
+                service: c.service.clone(),
+                index: c.stype.parse().unwrap_or(0),
+            }),
             // Hapus server: perubahan config, bukan panggilan API.
             "server-remove" => {
                 self.server_action = Some(ServerAction::Remove(c.project));
@@ -737,6 +757,7 @@ impl App {
             KeyCode::Char('U') => self.open_config_form(false, req),
             KeyCode::Char('B') => self.open_config_form(true, req),
             KeyCode::Char('L') => self.open_resource_form(req),
+            KeyCode::Char('M') => self.open_mount_form(),
             KeyCode::Char('c') => self.open_clone_form(),
             KeyCode::Char('E') => self.start_env_edit(),
             KeyCode::Char('t') => {
@@ -821,20 +842,27 @@ impl App {
                 self.viewer_scroll = self.viewer_scroll.saturating_add(1)
             }
             KeyCode::PageDown => self.viewer_scroll = self.viewer_scroll.saturating_add(10),
-            // Di viewer Ports, angka memilih port itu untuk dihapus (deletePort by
-            // index). Cukup 0-9: satu service jarang punya >10 port. Hanya jika
-            // baris [idx] memang ada, jadi menekan angka acak tak melakukan apa pun.
+            // Di viewer Ports/Mounts, angka memilih baris [idx] itu untuk dihapus
+            // (deletePort/deleteMount by index). Cukup 0-9: jarang ada >10. Hanya
+            // jika baris [idx] memang ada, jadi angka acak tak melakukan apa pun.
             KeyCode::Char(c) if c.is_ascii_digit() => {
-                if let Some((View::Ports, project, service, _)) = self.viewer_ctx.clone() {
+                let kind = match self.viewer_ctx.as_ref().map(|(v, ..)| *v) {
+                    Some(View::Ports) => Some(("port-delete", "port")),
+                    Some(View::Mounts) => Some(("mount-delete", "mount")),
+                    _ => None,
+                };
+                if let (Some((action, noun)), Some((_, project, service, _))) =
+                    (kind, self.viewer_ctx.clone())
+                {
                     let idx = (c as u8 - b'0') as usize;
                     let exists = self
                         .viewer_lines
                         .iter()
                         .any(|l| l.starts_with(&format!("[{idx}]")));
                     if exists {
-                        let label = format!("Hapus port [{idx}] dari {service}?");
+                        let label = format!("Hapus {noun} [{idx}] dari {service}?");
                         self.confirm = Some(Confirm {
-                            action: "port-delete".into(),
+                            action: action.into(),
                             project,
                             service,
                             stype: idx.to_string(),

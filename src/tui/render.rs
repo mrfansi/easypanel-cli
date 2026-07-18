@@ -71,7 +71,8 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("T", "start"),
             Key("e", "lihat env"),
             Key("p", "lihat ports"),
-            Key("m", "lihat mounts"),
+            Key("m", "lihat mounts (angka = hapus)"),
+            Key("M", "tambah mount (volume/bind/file)"),
             Key("o", "kelola domain (buka tab Domains ter-filter)"),
             Key("b", "lihat backups"),
             Key("u", "lihat source & build"),
@@ -88,7 +89,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
         Screen::Viewer => &[
             Key("↑↓ / PgUp/PgDn", "scroll (melepas ikut-baris-terakhir)"),
             Key("End", "ikuti baris terakhir lagi (log)"),
-            Key("[0-9]", "hapus port itu (di tampilan Ports)"),
+            Key("[0-9]", "hapus port/mount itu (di tampilan Ports/Mounts)"),
             Key("Esc", "kembali ke Services"),
         ],
         Screen::Terminal => &[Key("Ctrl-Q", "keluar terminal (atau ketik `exit`)")],

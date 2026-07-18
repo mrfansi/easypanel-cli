@@ -222,8 +222,12 @@ Fill out the management surface. Verify live with a `zzz-*` target and clean up.
    press `[0-9]` → confirm → `deletePort` by index; list reloads in place). Verified live
    that the index equals the listed position. **Open:** a Ports step in the create wizard
    (`createService` takes `ports` inline) — additive, low priority.
-5. **Mount management** (`mounts/createMount`, `updateMount`, `deleteMount`) — TUI viewer
-   is read-only; the CLI already has `mount-add`.
+5. ~~**Mount management**~~ Add + delete done in v0.30.0, mirroring ports: `M` opens a
+   form (volume/bind/file → `createMount`), and in the Mounts viewer (`m`) a digit
+   `[0-9]` → confirm → `deleteMount` by index, list reloads in place. Verified live that
+   all three `values` shapes create and that `deleteMount` index = listed position.
+   **Open:** `updateMount` (edit an existing mount) — needs the current values to prefill;
+   lower priority.
 6. ~~**Resource limits**~~ TUI done in v0.20.0. `L` on a service opens a form (CPU/memory
    limit + reservation, cores/MB, `0` = unbounded) → `services/{type}/updateResources`;
    works for every service type. Verified live: the endpoint round-trips the exact decimal

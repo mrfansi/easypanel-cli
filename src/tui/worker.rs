@@ -177,6 +177,18 @@ pub(super) enum Req {
         service: String,
         index: usize,
     },
+    /// Tambah mount (createMount) ke sebuah service.
+    MountSave {
+        project: String,
+        service: String,
+        values: Value,
+    },
+    /// Hapus mount berdasar indeks (deleteMount), lalu muat ulang daftar mount.
+    MountDelete {
+        project: String,
+        service: String,
+        index: usize,
+    },
     DomainDelete(String),
     DomainSetPrimary(String),
     EnvSave {
@@ -701,6 +713,37 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
+        Req::MountSave {
+            project,
+            service,
+            values,
+        } => match client.call(
+            "mounts",
+            "createMount",
+            json!({ "projectName": project, "serviceName": service, "values": values }),
+        ) {
+            Ok(_) => Resp::Done(
+                format!("Mount ditambahkan ke {project}/{service} — tekan d untuk deploy"),
+                Refresh::None,
+            ),
+            Err(e) => Resp::Err(e.to_string()),
+        },
+        Req::MountDelete {
+            project,
+            service,
+            index,
+        } => match client.call(
+            "mounts",
+            "deleteMount",
+            json!({ "projectName": project, "serviceName": service, "index": index }),
+        ) {
+            // Muat ulang daftar mount ke viewer (pola sama dengan port delete).
+            Ok(_) => match fetch_view(client, View::Mounts, &project, &service, "") {
+                Ok(lines) => Resp::Viewer(format!("Mounts · {project}/{service}"), lines),
+                Err(e) => Resp::Err(e.to_string()),
+            },
+            Err(e) => Resp::Err(e.to_string()),
+        },
         Req::DomainDelete(id) => {
             match client.call("domains", "deleteDomain", json!({ "id": id })) {
                 Ok(_) => Resp::Done("Domain dihapus".into(), Refresh::Domains),
@@ -890,14 +933,19 @@ pub(super) fn fetch_view(
         }
         View::Mounts => {
             let v = client.call("mounts", "listMounts", ps)?;
-            list_or_empty(&v, "Tidak ada mount", |i, m| {
+            let mut lines = list_or_empty(&v, "Tidak ada mount", |i, m| {
                 let detail = match field(m, "/type").as_str() {
                     "bind" => format!("{} -> {}", field(m, "/hostPath"), field(m, "/mountPath")),
                     "volume" => format!("{} -> {}", field(m, "/name"), field(m, "/mountPath")),
                     _ => field(m, "/mountPath"),
                 };
                 format!("[{i}] {}  {detail}", field(m, "/type"))
-            })
+            });
+            if lines.first().is_some_and(|l| l.starts_with("[0]")) {
+                lines.push(String::new());
+                lines.push("Tekan angka [0-9] untuk menghapus mount itu.".into());
+            }
+            lines
         }
         View::Source => {
             let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;

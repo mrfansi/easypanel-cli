@@ -172,6 +172,10 @@ pub(super) struct App {
     pub(super) monitor_view: MonitorView,
     pub(super) domains: Vec<Value>,
     pub(super) domains_state: TableState,
+    /// (project, service) asal saat masuk tab Domains lewat `o` dari sebuah
+    /// service — dipakai memprefill form "Domain baru" ke service itu. None = tab
+    /// Domains dibuka biasa.
+    pub(super) domain_scope: Option<(String, String)>,
 
     pub(super) projects: Vec<String>,
     /// Semua service lintas project. Daftar datar menggantikan hirarki
@@ -289,6 +293,7 @@ impl App {
             monitor_view: MonitorView::Services,
             domains: Vec::new(),
             domains_state: TableState::default(),
+            domain_scope: None,
             projects: Vec::new(),
             all_services: Vec::new(),
             services_table: TableState::default(),
@@ -361,6 +366,7 @@ impl App {
                 ("Start".into(), KeyCode::Char('T')),
                 ("Env".into(), KeyCode::Char('e')),
                 ("Domain".into(), KeyCode::Char('o')),
+                ("Mount baru".into(), KeyCode::Char('M')),
                 ("Resource".into(), KeyCode::Char('L')),
                 ("Clone".into(), KeyCode::Char('c')),
                 ("Hapus".into(), KeyCode::Char('x')),
@@ -692,6 +698,10 @@ impl App {
         // menyembunyikan baris tanpa sebab yang terlihat.
         self.filter.clear();
         self.filter_input = false;
+        // Scope domain hanya berlaku untuk kunjungan `o` dari sebuah service;
+        // navigasi biasa mengosongkannya (open_service_domains menyetel ulang
+        // sesudah goto).
+        self.domain_scope = None;
         self.screen = screen;
         match screen {
             Screen::Projects => {
@@ -942,6 +952,20 @@ impl App {
         self.status = "Memuat...".into();
     }
 
+    /// Buka form tambah mount untuk service yang disorot.
+    pub(super) fn open_mount_form(&mut self) {
+        let Some((project, service, _)) = self.selected_row() else {
+            self.status = "Pilih sebuah service dulu".into();
+            return;
+        };
+        self.form = Some(Form::new(
+            FormKind::MountCreate { project, service },
+            " Mount baru ",
+            mount_fields(),
+        ));
+        self.status = "Enter tambah · Esc batal · hapus mount: 'm' lalu angka".into();
+    }
+
     /// Kelola domain sebuah service: buka tab Domains ter-filter ke service itu.
     /// Reuse CRUD domain penuh (n baru · e edit · x hapus · P primary) alih-alih
     /// viewer read-only. Filter cocok ke destination "protocol://{project}_{service}:…".
@@ -950,9 +974,10 @@ impl App {
             self.status = "Pilih sebuah service dulu".into();
             return;
         };
-        // goto mengosongkan filter lebih dulu, jadi set filter SESUDAHnya.
+        // goto mengosongkan filter & scope lebih dulu, jadi set keduanya SESUDAHnya.
         self.goto(Screen::Domains, req);
         self.filter = format!("{project}_{service}");
+        self.domain_scope = Some((project.clone(), service.clone()));
         self.status = format!("Domain {project}/{service} · n baru · e edit · x hapus · P primary");
     }
 
@@ -1194,6 +1219,19 @@ impl App {
                     new_name: new_name.to_string(),
                 });
             }
+            FormKind::MountCreate { project, service } => match mount_body(form) {
+                Ok(values) => {
+                    let _ = req.send(Req::MountSave {
+                        project: project.clone(),
+                        service: service.clone(),
+                        values,
+                    });
+                }
+                Err(msg) => {
+                    self.status = msg;
+                    return;
+                }
+            },
             FormKind::LogSearch => {
                 let query = form.by_label("Kata kunci");
                 if query.is_empty() {

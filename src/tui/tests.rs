@@ -175,6 +175,48 @@ fn resource_body_parses_numbers_defaults_zero_and_rejects_junk() {
 }
 
 #[test]
+fn mount_body_builds_per_type_and_validates() {
+    let set = |f: &mut Form, label: &str, val: &str| {
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == label)
+            .unwrap()
+            .value = val.into();
+    };
+    // volume: {type, name, mountPath}
+    let mut f = form(mount_fields());
+    set(&mut f, "Type", "volume");
+    set(&mut f, "Name", "data");
+    set(&mut f, "Mount path", "/var/lib/data");
+    assert_eq!(
+        mount_body(&f).unwrap(),
+        json!({ "type": "volume", "name": "data", "mountPath": "/var/lib/data" })
+    );
+
+    // bind: {type, hostPath, mountPath}
+    let mut f = form(mount_fields());
+    set(&mut f, "Type", "bind");
+    set(&mut f, "Host path", "/etc/host/cfg");
+    set(&mut f, "Mount path", "/cfg");
+    assert_eq!(
+        mount_body(&f).unwrap(),
+        json!({ "type": "bind", "hostPath": "/etc/host/cfg", "mountPath": "/cfg" })
+    );
+
+    // Mount path kosong -> error, apa pun tipenya.
+    let mut f = form(mount_fields());
+    set(&mut f, "Type", "volume");
+    set(&mut f, "Name", "data");
+    assert!(mount_body(&f).is_err());
+
+    // volume tanpa name -> error (bukan diam-diam kirim name kosong).
+    let mut f = form(mount_fields());
+    set(&mut f, "Type", "volume");
+    set(&mut f, "Mount path", "/data");
+    assert!(mount_body(&f).is_err());
+}
+
+#[test]
 fn port_body_parses_numbers_and_rejects_junk() {
     let f = form(port_fields());
     // Kosong -> ditolak dengan pesan, bukan port 0.
@@ -267,13 +309,13 @@ fn status_keys_fit_the_width_and_never_drop_help() {
     assert!(tiny.contains("? bantuan"));
 
     // Makin lebar makin banyak tombol muat (monotonik), tak pernah lebih sedikit.
-    let wide = fit_status_keys(keys, 600);
+    let wide = fit_status_keys(keys, 900);
     let count = |s: &str| s.matches(" · ").count();
     assert!(count(&wide) >= count(&narrow));
-    // Cukup lebar -> tombol terakhir layar pun ikut (semua muat di 600 kolom).
+    // Cukup lebar -> tombol terakhir layar pun ikut (semua muat).
     assert!(
         wide.contains("hapus project"),
-        "600 kolom harusnya memuat semua"
+        "layar sangat lebar harusnya memuat semua tombol"
     );
     // Menyerah di batas "·", bukan tengah kata: tak ada spasi ganda dari potongan.
     assert!(!narrow.contains("  "));

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-07-18
+
+### Added
+
+- **Mount management from the TUI.** Press `M` on a service to add a mount — a **volume**
+  (named), a **bind** (host path), or a **file** (inline content edited in `$EDITOR`) — the
+  right fields appear per type. In the Mounts view (`m`), press a mount's number (`[0]`–
+  `[9]`) to delete it after a confirmation; the list reloads in place. Until now the TUI
+  could only *view* mounts (the CLI had `mount-add` but the TUI didn't). Verified live that
+  all three mount shapes create and that delete-by-index removes the listed row.
+
+### Fixed
+
+- **Adding a domain from a service now pre-fills that service.** After opening a service's
+  domains (`o`), pressing `n` (new domain) starts with the domain pointed at *that* service
+  (its project and name), instead of a blank/arbitrary project — the whole point of coming
+  from the service.
+- **`Esc` from a service's domains returns to Services.** Opening domains from a service
+  (`o`) filters the Domains tab to it; `Esc` now goes back to the service you came from
+  rather than just clearing the filter and stranding you on the Domains tab.
+
 ## [0.29.0] — 2026-07-18
 
 ### Changed
