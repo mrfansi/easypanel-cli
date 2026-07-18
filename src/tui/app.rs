@@ -299,6 +299,24 @@ impl App {
                     }
                 }
             }
+            Resp::ResourceForm {
+                project,
+                service,
+                stype,
+                data,
+            } => {
+                let title = format!("Resource · {project}/{service}");
+                self.form = Some(Form::new(
+                    FormKind::ResourceEdit {
+                        project,
+                        service,
+                        stype,
+                    },
+                    title,
+                    resource_fields(data.get("resources")),
+                ));
+                self.status = "Enter simpan · Esc batal · 0 = tak dibatasi".into();
+            }
             Resp::ConfigForm {
                 project,
                 service,
@@ -745,6 +763,20 @@ impl App {
         self.status = "Memuat...".into();
     }
 
+    /// Buka form limit resource untuk service yang disorot (semua tipe punya).
+    pub(super) fn open_resource_form(&mut self, req: &Sender<Req>) {
+        let Some((project, service, stype)) = self.selected_row() else {
+            self.status = "Pilih sebuah service dulu".into();
+            return;
+        };
+        let _ = req.send(Req::ResourceForm {
+            project,
+            service,
+            stype,
+        });
+        self.status = "Memuat...".into();
+    }
+
     /// Muat branch repo yang sedang dipilih ke dropdown "Branch".
     pub(super) fn load_form_branches(&mut self, req: &Sender<Req>) {
         let Some(form) = self.form.as_ref() else {
@@ -887,6 +919,24 @@ impl App {
                         op: "updateBuild",
                         body,
                         auto_deploy: None,
+                    });
+                }
+                Err(msg) => {
+                    self.status = msg;
+                    return;
+                }
+            },
+            FormKind::ResourceEdit {
+                project,
+                service,
+                stype,
+            } => match resource_body(form) {
+                Ok(resources) => {
+                    let _ = req.send(Req::ResourceSave {
+                        project: project.clone(),
+                        service: service.clone(),
+                        stype: stype.clone(),
+                        resources,
                     });
                 }
                 Err(msg) => {

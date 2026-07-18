@@ -195,9 +195,15 @@ Each is grounded in an endpoint confirmed to exist in `backend.js` 2.32.2.
    the per-service `getDockerContainers` `Status` string ("Restarting (1)…"/"Exited (1)…")
    — 33 calls, too costly for the poll lane; best as an on-demand drill-down on the
    selected service, not a column.
-3. **Alerting.** Wire crash/health detection to EasyPanel's own notification channels
-   (`notifications/createNotificationChannel`, `sendTestNotification`). A terminal tool
-   that can also notify is a real operational upgrade.
+3. **Alerting — not buildable as an in-tool feature (checked 2026-07-18).** The
+   `notifications/*` group is only channel CRUD + `sendTestNotification`; there is **no
+   endpoint to send a custom alert/message**. EasyPanel fires notifications from its own
+   events — this tool cannot inject "service X crashed" into a channel. So the crash→notify
+   idea is dead through the API. What *is* possible and honest: a `watch` CLI subcommand
+   that polls `getDockerTaskStats` itself and notifies via an external hook (OS notifier,
+   webhook) — a separate feature, not "wire to EasyPanel channels". Channel management
+   (list/create/delete + send test) is doable but thin. Don't build channel management and
+   call it alerting.
 
 ### Growth backlog — richer features (every endpoint verified in 2.32.2)
 
@@ -207,7 +213,11 @@ Fill out the management surface. Verify live with a `zzz-*` target and clean up.
    and a **Ports step in the create wizard** (`createService` takes `ports` inline).
 5. **Mount management** (`mounts/createMount`, `updateMount`, `deleteMount`) — TUI viewer
    is read-only; the CLI already has `mount-add`.
-6. **Resource limits** (`updateResources`) — CPU/memory per service, TUI + wizard step.
+6. ~~**Resource limits**~~ TUI done in v0.20.0. `L` on a service opens a form (CPU/memory
+   limit + reservation, cores/MB, `0` = unbounded) → `services/{type}/updateResources`;
+   works for every service type. Verified live: the endpoint round-trips the exact decimal
+   numbers the tool sends. **Open:** a resources step in the create wizard (createService
+   takes `resources` inline) — same shape, additive.
 7. **Templates** (`templates/createFromSchema`) — EasyPanel's one-click app catalogue;
    scope a slice (list + deploy one) first.
 8. **Middlewares editor** (`middlewares/listMiddlewares`, `createMiddleware`) — the group

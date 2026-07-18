@@ -268,6 +268,48 @@ pub(super) fn create_domains(form: &Form) -> Option<Value> {
     Some(json!([Value::Object(d)]))
 }
 
+/// Field limit resource. Semua number; kosong = 0 = tak dibatasi (konvensi
+/// EasyPanel: 0 berarti tanpa batas). Satuan mengikuti dashboard EasyPanel —
+/// CPU dalam core (boleh desimal, mis. 0.5), memory dalam MB. inspectService
+/// menyimpan dan mengembalikan angka apa adanya (terverifikasi round-trip live).
+pub(super) fn resource_fields(resources: Option<&Value>) -> Vec<Field> {
+    // resources bisa null (belum diatur) → semua default "0".
+    let get = |ptr: &str| match resources.map(|r| field(r, ptr)) {
+        Some(v) if v != "-" => v,
+        _ => "0".to_string(),
+    };
+    vec![
+        Field::text("CPU limit (core)", &get("/cpuLimit")),
+        Field::text("CPU reservation (core)", &get("/cpuReservation")),
+        Field::text("Memory limit (MB)", &get("/memoryLimit")),
+        Field::text("Memory reservation (MB)", &get("/memoryReservation")),
+    ]
+}
+
+/// Body updateResources dari form. Keempat wajib number (API menolak string);
+/// kosong → 0 (tak dibatasi). Negatif ditolak; angka tak valid ditolak dengan
+/// pesan, bukan diam-diam jadi 0 yang salah.
+pub(super) fn resource_body(form: &Form) -> std::result::Result<Value, String> {
+    let num = |label: &str| -> std::result::Result<f64, String> {
+        let v = form.by_label(label);
+        let v = v.trim();
+        if v.is_empty() {
+            return Ok(0.0);
+        }
+        match v.parse::<f64>() {
+            Ok(n) if n < 0.0 => Err(format!("{label} tak boleh negatif")),
+            Ok(n) => Ok(n),
+            Err(_) => Err(format!("{label} harus angka")),
+        }
+    };
+    Ok(json!({ "resources": {
+        "cpuLimit": num("CPU limit (core)")?,
+        "cpuReservation": num("CPU reservation (core)")?,
+        "memoryLimit": num("Memory limit (MB)")?,
+        "memoryReservation": num("Memory reservation (MB)")?,
+    }}))
+}
+
 pub(super) fn service_extra(form: &Form) -> Value {
     let mut out = serde_json::Map::new();
     for (label, key) in [
@@ -722,6 +764,13 @@ pub(super) enum FormKind {
     BuildEdit {
         project: String,
         service: String,
+    },
+    /// Atur limit CPU/memory sebuah service (semua tipe). `stype` menentukan
+    /// grup endpoint (services/{stype}/updateResources).
+    ResourceEdit {
+        project: String,
+        service: String,
+        stype: String,
     },
 }
 

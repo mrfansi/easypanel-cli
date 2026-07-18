@@ -69,6 +69,21 @@ pub(super) enum Req {
         service: String,
         build: bool,
     },
+    /// Buka form limit resource: inspectService (grup services/{stype}) untuk
+    /// nilai `resources` sekarang.
+    ResourceForm {
+        project: String,
+        service: String,
+        stype: String,
+    },
+    /// Simpan limit resource (updateResources). Grup ikut `stype` sebab resource
+    /// ada di semua tipe service, bukan cuma app.
+    ResourceSave {
+        project: String,
+        service: String,
+        stype: String,
+        resources: Value,
+    },
     /// Info server untuk tab Maintenance (versi Docker, IP, ketersediaan update).
     MaintInfo,
     /// Pembersihan Docker: systemPrune / cleanupDockerImages / cleanupDockerBuilder.
@@ -169,6 +184,13 @@ pub(super) enum Resp {
         services: Vec<Value>,
     },
     ServicesFor(String, Vec<String>),
+    /// Data untuk membuka form limit resource: hasil inspectService.
+    ResourceForm {
+        project: String,
+        service: String,
+        stype: String,
+        data: Value,
+    },
     /// Data untuk membuka form source/build: hasil inspectService + daftar repo.
     ConfigForm {
         project: String,
@@ -365,6 +387,41 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
                         repos,
                     }
                 }
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::ResourceForm {
+            project,
+            service,
+            stype,
+        } => {
+            let ps = json!({ "projectName": project, "serviceName": service });
+            match client.call(&format!("services/{stype}"), "inspectService", ps) {
+                Ok(data) => Resp::ResourceForm {
+                    project,
+                    service,
+                    stype,
+                    data,
+                },
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::ResourceSave {
+            project,
+            service,
+            stype,
+            resources,
+        } => {
+            let mut input = resources;
+            input["projectName"] = json!(project);
+            input["serviceName"] = json!(service);
+            match client.call(&format!("services/{stype}"), "updateResources", input) {
+                // Refresh::None: limit tak tampil di tabel; simpan konfigurasi saja,
+                // deploy yang menerapkannya (sama seperti port).
+                Ok(_) => Resp::Done(
+                    format!("Resource {project}/{service} tersimpan — deploy (d) untuk menerapkan"),
+                    Refresh::None,
+                ),
                 Err(e) => Resp::Err(e.to_string()),
             }
         }

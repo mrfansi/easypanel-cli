@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-07-18
+
+### Added
+
+- **Set CPU and memory limits per service, from the TUI (`L`).** Press `L` on any service
+  and a form opens pre-filled with its current limits — CPU limit / reservation (in cores,
+  decimals allowed) and memory limit / reservation (in MB). `0` means unbounded (EasyPanel's
+  own convention). It works on every service type, not just `app`, because the endpoint
+  group follows the service type (`services/{type}/updateResources`). Saving stores the
+  config; deploy (`d`) applies it — the same store-then-deploy model as ports, so nothing
+  restarts unexpectedly.
+
+  Why it matters: on a host with dozens of services, one runaway container can starve the
+  rest. Until now the only way to cap a service was the web panel; the tool could show you
+  a service eating CPU but not do anything about it. Now the fix is one key away, across
+  every host.
+
+  Verified live against the running server: `updateResources` round-trips the exact numbers
+  it is sent — including the decimal form the tool emits (`cpuLimit: 0.5`, `memoryLimit:
+  1024.0`) — confirmed by reading `inspectService` back. Units mirror the EasyPanel
+  dashboard (cores, MB); the swarm-level translation is EasyPanel's own and was not
+  independently re-derived. Tested with a throwaway `zzz-*` service, then cleaned up.
+
 ## [0.19.2] — 2026-07-18
 
 ### Changed

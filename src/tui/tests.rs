@@ -120,6 +120,61 @@ fn service_row_summarises_source_without_opening_anything() {
 }
 
 #[test]
+fn resource_body_parses_numbers_defaults_zero_and_rejects_junk() {
+    // Prefill dari resources yang ada.
+    let res = json!({ "cpuLimit": 1, "cpuReservation": 0.25,
+                      "memoryLimit": 512, "memoryReservation": 128 });
+    let f = form(resource_fields(Some(&res)));
+    assert_eq!(f.by_label("CPU limit (core)"), "1");
+    assert_eq!(f.by_label("CPU reservation (core)"), "0.25");
+    assert_eq!(f.by_label("Memory limit (MB)"), "512");
+
+    // resources null (belum diatur) -> semua "0".
+    let f0 = form(resource_fields(None));
+    assert_eq!(f0.by_label("Memory limit (MB)"), "0");
+    let body = resource_body(&f0).unwrap();
+    // Number, bukan string (API menolak string). CPU desimal, memory apa adanya.
+    assert_eq!(body["resources"]["cpuLimit"], json!(0.0));
+    assert_eq!(body["resources"]["memoryReservation"], json!(0.0));
+
+    // Isi campur: kosong -> 0, desimal CPU dipertahankan.
+    let mut f = form(resource_fields(None));
+    for (label, val) in [
+        ("CPU limit (core)", "0.5"),
+        ("Memory limit (MB)", "1024"),
+        ("Memory reservation (MB)", ""),
+    ] {
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == label)
+            .unwrap()
+            .value = val.into();
+    }
+    let body = resource_body(&f).unwrap();
+    assert_eq!(body["resources"]["cpuLimit"], json!(0.5));
+    assert_eq!(body["resources"]["memoryLimit"], json!(1024.0));
+    assert_eq!(body["resources"]["memoryReservation"], json!(0.0));
+
+    // Non-angka -> error dengan pesan, bukan diam-diam 0.
+    let mut bad = form(resource_fields(None));
+    bad.fields
+        .iter_mut()
+        .find(|x| x.label == "CPU limit (core)")
+        .unwrap()
+        .value = "banyak".into();
+    assert!(resource_body(&bad).is_err());
+
+    // Negatif ditolak.
+    let mut neg = form(resource_fields(None));
+    neg.fields
+        .iter_mut()
+        .find(|x| x.label == "Memory limit (MB)")
+        .unwrap()
+        .value = "-1".into();
+    assert!(resource_body(&neg).is_err());
+}
+
+#[test]
 fn port_body_parses_numbers_and_rejects_junk() {
     let f = form(port_fields());
     // Kosong -> ditolak dengan pesan, bukan port 0.

@@ -424,6 +424,7 @@ impl App {
             KeyCode::Char('A') => self.toggle_auto_deploy(req),
             KeyCode::Char('U') => self.open_config_form(false, req),
             KeyCode::Char('B') => self.open_config_form(true, req),
+            KeyCode::Char('L') => self.open_resource_form(req),
             KeyCode::Char('E') => self.start_env_edit(),
             KeyCode::Char('t') => {
                 // Terminal ke container: event_loop yang mengerjakannya (ia yang
