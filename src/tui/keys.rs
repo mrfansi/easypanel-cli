@@ -650,6 +650,22 @@ impl App {
                 service: c.service.clone(),
                 index: c.stype.parse().unwrap_or(0),
             }),
+            // redirect-delete butuh stype (services/{stype}); index dititipkan di
+            // `stype` seperti port/mount, jadi stype nyata diambil dari viewer_ctx
+            // (viewer masih terbuka saat konfirmasi).
+            "redirect-delete" => {
+                let stype = self
+                    .viewer_ctx
+                    .as_ref()
+                    .map(|(_, _, _, t)| t.clone())
+                    .unwrap_or_default();
+                req.send(Req::RedirectDelete {
+                    project: c.project.clone(),
+                    service: c.service.clone(),
+                    stype,
+                    index: c.stype.parse().unwrap_or(0),
+                })
+            }
             // Hapus server: perubahan config, bukan panggilan API.
             "server-remove" => {
                 self.server_action = Some(ServerAction::Remove(c.project));
@@ -758,6 +774,8 @@ impl App {
             KeyCode::Char('B') => self.open_config_form(true, req),
             KeyCode::Char('L') => self.open_resource_form(req),
             KeyCode::Char('M') => self.open_mount_form(),
+            KeyCode::Char('f') => self.open_view(View::Redirects, req),
+            KeyCode::Char('F') => self.open_redirect_form(),
             KeyCode::Char('H') => self.open_basic_auth_form(req),
             KeyCode::Char('c') => self.open_clone_form(),
             KeyCode::Char('E') => self.start_env_edit(),
@@ -850,6 +868,7 @@ impl App {
                 let kind = match self.viewer_ctx.as_ref().map(|(v, ..)| *v) {
                     Some(View::Ports) => Some(("port-delete", "port")),
                     Some(View::Mounts) => Some(("mount-delete", "mount")),
+                    Some(View::Redirects) => Some(("redirect-delete", "redirect")),
                     _ => None,
                 };
                 if let (Some((action, noun)), Some((_, project, service, _))) =

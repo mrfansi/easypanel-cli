@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.31.0] — 2026-07-18
+## [0.32.0] — 2026-07-18
+
+### Added
+
+- **Redirect rules from the TUI.** On a web service (app/box/compose/wordpress), `f` shows
+  its redirects and `F` adds one — a source **regex**, a **replacement** (with `${1}`-style
+  groups), **301 vs 302**, and enabled/disabled. In the redirects view, press a rule's
+  number (`[0]`–`[9]`) to delete it after a confirmation. EasyPanel has no per-rule endpoint,
+  so add and delete read the current list, change it, and write the whole array back via
+  `updateRedirects` — verified live that adding two rules keeps both and delete-by-index
+  removes the right one, so existing rules are never clobbered.
+
+
 
 ### Added
 

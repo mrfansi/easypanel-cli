@@ -551,6 +551,33 @@ pub(super) fn port_fields() -> Vec<Field> {
     ]
 }
 
+/// Field form tambah redirect. `Regex` mencocokkan URL sumber, `Replacement`
+/// tujuannya (boleh pakai grup `${1}`). Permanent = 301, kalau tidak 302.
+pub(super) fn redirect_fields() -> Vec<Field> {
+    vec![
+        Field::text("Regex", ""),
+        Field::text("Replacement", ""),
+        Field::boolean("Permanent (301)", true),
+        Field::boolean("Enabled", true),
+    ]
+}
+
+/// Objek redirect untuk updateRedirects: `{enabled, permanent, regex, replacement}`
+/// (keempat wajib per skema). Regex & replacement tak boleh kosong.
+pub(super) fn redirect_body(form: &Form) -> std::result::Result<Value, String> {
+    let regex = form.by_label("Regex");
+    let replacement = form.by_label("Replacement");
+    if regex.trim().is_empty() || replacement.trim().is_empty() {
+        return Err("Regex dan Replacement wajib diisi".into());
+    }
+    Ok(json!({
+        "enabled": form.is_on_label("Enabled"),
+        "permanent": form.is_on_label("Permanent (301)"),
+        "regex": regex,
+        "replacement": replacement,
+    }))
+}
+
 /// Field form basic auth, terisi kredensial pertama yang ada (form ini mengelola
 /// SATU user — kasus umum "lindungi service ini"). Password ikut di-prefill supaya
 /// mengubah username saja tak mengosongkannya.
@@ -859,6 +886,12 @@ pub(super) enum FormKind {
     },
     /// Atur basic auth (proteksi user/password) sebuah service web.
     BasicAuthEdit {
+        project: String,
+        service: String,
+        stype: String,
+    },
+    /// Tambah satu redirect rule ke sebuah service web.
+    RedirectCreate {
         project: String,
         service: String,
         stype: String,

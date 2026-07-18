@@ -83,6 +83,8 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("B", "atur build (service app)"),
             Key("L", "atur limit resource (CPU/memory)"),
             Key("H", "basic auth (proteksi user/password, service web)"),
+            Key("f", "lihat redirects (angka = hapus)"),
+            Key("F", "tambah redirect (regex → replacement)"),
             Key("c", "clone service (config, bukan data)"),
             Key("N", "project baru"),
             Key("X", "hapus project"),
@@ -90,7 +92,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
         Screen::Viewer => &[
             Key("↑↓ / PgUp/PgDn", "scroll (melepas ikut-baris-terakhir)"),
             Key("End", "ikuti baris terakhir lagi (log)"),
-            Key("[0-9]", "hapus port/mount itu (di tampilan Ports/Mounts)"),
+            Key("[0-9]", "hapus baris itu (Ports/Mounts/Redirects)"),
             Key("Esc", "kembali ke Services"),
         ],
         Screen::Terminal => &[Key("Ctrl-Q", "keluar terminal (atau ketik `exit`)")],

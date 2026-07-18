@@ -16,6 +16,7 @@ pub(super) enum View {
     Env,
     Ports,
     Mounts,
+    Redirects,
     Backups,
     Source,
 }
@@ -27,6 +28,7 @@ impl View {
             View::Env => "Env",
             View::Ports => "Ports",
             View::Mounts => "Mounts",
+            View::Redirects => "Redirects",
             View::Backups => "Database backups",
             View::Source => "Source & build",
         }
@@ -201,6 +203,21 @@ pub(super) enum Req {
     MountDelete {
         project: String,
         service: String,
+        index: usize,
+    },
+    /// Tambah satu redirect. Tak ada endpoint per-item: baca redirects sekarang,
+    /// tambahkan, lalu updateRedirects seluruh array (read-modify-write).
+    RedirectAdd {
+        project: String,
+        service: String,
+        stype: String,
+        redirect: Value,
+    },
+    /// Hapus redirect berdasar indeks: baca, buang indeks itu, updateRedirects.
+    RedirectDelete {
+        project: String,
+        service: String,
+        stype: String,
         index: usize,
     },
     DomainDelete(String),
@@ -797,6 +814,43 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req) -> Resp {
             },
             Err(e) => Resp::Err(e.to_string()),
         },
+        Req::RedirectAdd {
+            project,
+            service,
+            stype,
+            redirect,
+        } => match save_redirects(client, &stype, &project, &service, |mut list| {
+            list.push(redirect.clone());
+            list
+        }) {
+            Ok(_) => Resp::Done(
+                format!(
+                    "Redirect ditambahkan ke {project}/{service} — deploy (d) untuk menerapkan"
+                ),
+                Refresh::None,
+            ),
+            Err(e) => Resp::Err(e.to_string()),
+        },
+        Req::RedirectDelete {
+            project,
+            service,
+            stype,
+            index,
+        } => {
+            match save_redirects(client, &stype, &project, &service, |mut list| {
+                if index < list.len() {
+                    list.remove(index);
+                }
+                list
+            }) {
+                // Muat ulang viewer (pola sama dengan port/mount delete).
+                Ok(_) => match fetch_view(client, View::Redirects, &project, &service, &stype) {
+                    Ok(lines) => Resp::Viewer(format!("Redirects · {project}/{service}"), lines),
+                    Err(e) => Resp::Err(e.to_string()),
+                },
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
         Req::DomainDelete(id) => {
             match client.call("domains", "deleteDomain", json!({ "id": id })) {
                 Ok(_) => Resp::Done("Domain dihapus".into(), Refresh::Domains),
@@ -1000,6 +1054,42 @@ pub(super) fn fetch_view(
             }
             lines
         }
+        View::Redirects => {
+            // Redirects ada di inspectService (bukan endpoint list sendiri).
+            let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
+            let arr = v
+                .get("redirects")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if arr.is_empty() {
+                return Ok(vec!["Tidak ada redirect".into()]);
+            }
+            let mut lines: Vec<String> = arr
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    let kind = if r.get("permanent").and_then(Value::as_bool).unwrap_or(false) {
+                        "301"
+                    } else {
+                        "302"
+                    };
+                    let on = if r.get("enabled").and_then(Value::as_bool).unwrap_or(true) {
+                        "on"
+                    } else {
+                        "off"
+                    };
+                    format!(
+                        "[{i}] {} -> {}  ({kind}, {on})",
+                        field(r, "/regex"),
+                        field(r, "/replacement")
+                    )
+                })
+                .collect();
+            lines.push(String::new());
+            lines.push("Tekan angka [0-9] untuk menghapus redirect itu.".into());
+            lines
+        }
         View::Source => {
             let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
             let mut out = Vec::new();
@@ -1070,6 +1160,33 @@ pub(super) fn github_repos(client: &EasypanelClient) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Baca redirects sekarang, ubah lewat `transform`, lalu updateRedirects seluruh
+/// array. updateRedirects mengganti keseluruhan (tak ada endpoint per-item), jadi
+/// menambah/menghapus satu HARUS lewat read-modify-write agar sisanya tak hilang.
+fn save_redirects(
+    client: &EasypanelClient,
+    stype: &str,
+    project: &str,
+    service: &str,
+    transform: impl FnOnce(Vec<Value>) -> Vec<Value>,
+) -> Result<()> {
+    let grp = format!("services/{stype}");
+    let ps = json!({ "projectName": project, "serviceName": service });
+    let cur = client.call(&grp, "inspectService", ps)?;
+    let list = cur
+        .get("redirects")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let next = transform(list);
+    client.call(
+        &grp,
+        "updateRedirects",
+        json!({ "projectName": project, "serviceName": service, "redirects": next }),
+    )?;
+    Ok(())
 }
 
 /// Field yang TAK disalin saat clone: identitas & yang dikelola server. `source`

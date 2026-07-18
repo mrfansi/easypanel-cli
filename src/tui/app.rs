@@ -367,6 +367,7 @@ impl App {
                 ("Env".into(), KeyCode::Char('e')),
                 ("Domain".into(), KeyCode::Char('o')),
                 ("Mount baru".into(), KeyCode::Char('M')),
+                ("Redirect baru".into(), KeyCode::Char('F')),
                 ("Basic auth".into(), KeyCode::Char('H')),
                 ("Resource".into(), KeyCode::Char('L')),
                 ("Clone".into(), KeyCode::Char('c')),
@@ -1027,6 +1028,28 @@ impl App {
         self.status = "Config disalin (bukan data) · Enter clone · Esc batal".into();
     }
 
+    /// Buka form tambah redirect untuk service web yang disorot.
+    pub(super) fn open_redirect_form(&mut self) {
+        let Some((project, service, stype)) = self.selected_row() else {
+            self.status = "Pilih sebuah service dulu".into();
+            return;
+        };
+        if !matches!(stype.as_str(), "app" | "box" | "compose" | "wordpress") {
+            self.status = format!("Redirect hanya untuk service web (ini {stype})");
+            return;
+        }
+        self.form = Some(Form::new(
+            FormKind::RedirectCreate {
+                project,
+                service,
+                stype,
+            },
+            " Redirect baru ",
+            redirect_fields(),
+        ));
+        self.status = "Enter tambah · Esc batal · hapus: 'f' lalu angka".into();
+    }
+
     /// Buka form basic auth untuk service yang disorot. Hanya service web
     /// (app/box/compose/wordpress) yang punya endpoint ini; DB tak relevan.
     pub(super) fn open_basic_auth_form(&mut self, req: &Sender<Req>) {
@@ -1281,6 +1304,24 @@ impl App {
                         service: service.clone(),
                         stype: stype.clone(),
                         basic_auth,
+                    });
+                }
+                Err(msg) => {
+                    self.status = msg;
+                    return;
+                }
+            },
+            FormKind::RedirectCreate {
+                project,
+                service,
+                stype,
+            } => match redirect_body(form) {
+                Ok(redirect) => {
+                    let _ = req.send(Req::RedirectAdd {
+                        project: project.clone(),
+                        service: service.clone(),
+                        stype: stype.clone(),
+                        redirect,
                     });
                 }
                 Err(msg) => {

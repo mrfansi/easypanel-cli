@@ -175,6 +175,35 @@ fn resource_body_parses_numbers_defaults_zero_and_rejects_junk() {
 }
 
 #[test]
+fn redirect_body_builds_shape_and_requires_regex_replacement() {
+    let set = |f: &mut Form, label: &str, val: &str| {
+        f.fields
+            .iter_mut()
+            .find(|x| x.label == label)
+            .unwrap()
+            .value = val.into();
+    };
+    let mut f = form(redirect_fields());
+    set(&mut f, "Regex", "^https://old.test/(.*)");
+    set(&mut f, "Replacement", "https://new.test/${1}");
+    // Permanent & Enabled default ya (301, on).
+    let body = redirect_body(&f).unwrap();
+    assert_eq!(body["regex"], json!("^https://old.test/(.*)"));
+    assert_eq!(body["replacement"], json!("https://new.test/${1}"));
+    assert_eq!(body["permanent"], json!(true));
+    assert_eq!(body["enabled"], json!(true));
+
+    // Permanent = tidak -> 302.
+    set(&mut f, "Permanent (301)", "tidak");
+    assert_eq!(redirect_body(&f).unwrap()["permanent"], json!(false));
+
+    // Regex/replacement kosong -> error.
+    let mut empty = form(redirect_fields());
+    set(&mut empty, "Replacement", "x");
+    assert!(redirect_body(&empty).is_err());
+}
+
+#[test]
 fn basic_auth_body_sets_clears_and_rejects_half() {
     let set = |f: &mut Form, label: &str, val: &str| {
         f.fields

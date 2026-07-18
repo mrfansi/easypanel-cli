@@ -240,15 +240,24 @@ Fill out the management surface. Verify live with a `zzz-*` target and clean up.
    built from the API. `createFromSchema` only deploys a schema the user supplies, which is
    niche without the catalogue. Like alerting: the useful part isn't exposed. Don't build a
    paste-a-schema box and call it templates. If a catalogue JSON feed is ever found, reopen.
-8. **Middlewares editor** (`middlewares/listMiddlewares`, `createMiddleware`) — the group
-   is real (4 endpoints); domains preserve the field but can't edit it.
+8. **Middlewares — large, sprawling, low daily value; deferred (assessed 2026-07-18).**
+   `createMiddleware` is a huge `anyOf` over the whole Traefik middleware catalogue
+   (addPrefix, basicAuth, compress, headers, rateLimit, stripPrefixRegex, …), each with a
+   different config shape, plus per-domain assignment — a big surface for advanced routing
+   most users never touch. The common redirect need is a SEPARATE, simpler endpoint
+   (`updateRedirects`), now shipped (see #10). If middlewares are built later, scope one
+   concrete type end-to-end (form + assign to a domain), not the whole catalogue.
 9. **Cloudflare Tunnel** (`cloudflareTunnel/*`, 11 endpoints) — expose services without a
    public IP; large but high-value for self-hosters.
 10. Small self-contained editors:
     - ~~**Basic auth**~~ done in v0.31.0. `H` on a web service (app/box/compose/wordpress)
       → form (Username + Password, prefilled from current) → `updateBasicAuth`; empty both =
       remove protection. Verified live: set and clear both round-trip via `inspectService`.
-    - **redirects** (`updateRedirects`) — array of rules; open.
+    - ~~**redirects**~~ done in v0.32.0. `f` on a web service views its redirects (digit
+      `[0-9]` deletes), `F` adds one (regex → replacement, 301/302, enabled). No per-item
+      endpoint, so add/delete are read-modify-write on the full `redirects` array via
+      `updateRedirects`. Verified live: two adds preserve each other and delete-by-index
+      removes the right one.
     - **maintenance mode** (`updateMaintenanceMode`) — **wordpress-only** endpoint (checked);
       niche, skip unless a wordpress user needs it.
     - **project env** (`updateProjectEnv`) — `{projectName, env}`. Note: `inspectProject`
