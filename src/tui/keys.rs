@@ -774,11 +774,22 @@ impl App {
             "maint:systemPrune" => req.send(Req::MaintAction("systemPrune")),
             "maint:cleanupDockerImages" => req.send(Req::MaintAction("cleanupDockerImages")),
             "maint:cleanupDockerBuilder" => req.send(Req::MaintAction("cleanupDockerBuilder")),
+            // Same endpoint as a plain deploy, with the layer cache turned off.
+            // Carried as its own action name rather than a flag on Confirm, which
+            // a dozen other call sites construct.
+            "deploy-force" => req.send(Req::Action {
+                project: c.project,
+                service: c.service,
+                stype: c.stype,
+                action: "deploy".to_string(),
+                force: true,
+            }),
             action => req.send(Req::Action {
                 project: c.project,
                 service: c.service,
                 stype: c.stype,
                 action: action.to_string(),
+                force: false,
             }),
         };
         self.status = "Sending...".into();

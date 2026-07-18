@@ -2171,3 +2171,65 @@ fn render_and_the_fade_agree_on_what_counts_as_a_failure() {
         );
     }
 }
+
+#[test]
+fn force_rebuild_is_offered_and_actually_turns_the_cache_off() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![("s".into(), "u".into())]);
+    app.screen = Screen::Projects;
+    app.handle(
+        Resp::AllServices {
+            projects: vec!["proj".into()],
+            services: vec![json!({"projectName": "proj", "name": "web", "type": "app"})],
+        },
+        &tx,
+    );
+    let _ = rx.try_recv(); // drain anything the load queued
+
+    // Offered as its own entry, separate from Deploy: skipping the cache is far
+    // slower and must be a deliberate choice.
+    let life = app.life_menu();
+    let labels: Vec<_> = life.iter().map(|i| i.label.clone()).collect();
+    assert!(
+        labels.iter().any(|l| l.contains("Force rebuild")),
+        "Lifecycle must offer a force rebuild, got: {labels:?}"
+    );
+    assert!(labels.iter().any(|l| l == "Deploy"), "plain Deploy stays");
+
+    // The confirmation says what it will do, not "Deploy-force service".
+    app.services_table.select(Some(1));
+    app.ask_action("deploy-force");
+    let label = app.confirm.as_ref().expect("a confirmation").label.clone();
+    assert!(
+        label.contains("cache") && !label.contains("Deploy-force"),
+        "confirmation must read naturally, got: {label}"
+    );
+
+    // The point of the whole feature: forceRebuild reaches the request.
+    app.confirm_key(KeyCode::Char('y'), &tx);
+    let sent = rx.try_recv().expect("an action was dispatched");
+    match sent {
+        Req::Action {
+            action,
+            force,
+            service,
+            ..
+        } => {
+            assert_eq!(action, "deploy", "it is still the deploy endpoint");
+            assert!(force, "the cache must be turned OFF");
+            assert_eq!(service, "web");
+        }
+        _ => panic!("expected Req::Action"),
+    }
+
+    // A plain deploy must NOT have become a force rebuild.
+    app.ask_action("deploy");
+    app.confirm_key(KeyCode::Char('y'), &tx);
+    match rx.try_recv().expect("dispatched") {
+        Req::Action { action, force, .. } => {
+            assert_eq!(action, "deploy");
+            assert!(!force, "a plain deploy still uses the cache");
+        }
+        _ => panic!("expected Req::Action"),
+    }
+}

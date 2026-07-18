@@ -159,7 +159,7 @@ while dragging** to select/copy.)
 | `o` | **Networking** — domains · ports · redirects · basic auth |
 | `u` | **Build & source** — source · build · auto deploy · resource limits · a database's **config file** |
 | `m` | **Storage** — mounts · backups |
-| `d` | **Lifecycle** — deploy · restart · stop · start (each confirmed) |
+| `d` | **Lifecycle** — deploy · force rebuild (no cache) · restart · stop · start (each confirmed) |
 | `t` | **Shell** — container shell · DB shell |
 | `x` | **Danger** — delete service · delete project |
 
@@ -279,6 +279,7 @@ easypanel project list|create|inspect|destroy
 
 # Lifecycle
 easypanel service create|deploy|restart|start|stop|destroy <project> <service> [--type app]
+easypanel service deploy <project> <service> --force   # rebuild, ignoring the layer cache
 easypanel service logs <project> <service> [--limit 100]
 
 # Environment (set-env replaces everything; reads --file or stdin)

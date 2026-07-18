@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] — 2026-07-19
+
+### Added
+
+- **Force rebuild is now reachable from the TUI** — Lifecycle (`d`) → **Force
+  rebuild (no cache)**. The CLI has supported `service deploy … --force` all
+  along, but the TUI sent `forceRebuild: false` as a hard-coded literal, so no
+  deploy started from the interface could ever skip the layer cache. When a build
+  picks up a stale dependency, the only way out was to drop to the CLI.
+
+  It is a separate menu entry rather than a change to Deploy: ignoring the cache
+  can turn a seconds-long deploy into minutes, so it should be a choice you made
+  rather than a surprise. The confirmation says what it will do — "Rebuild 'app'
+  from scratch, ignoring the build cache?" — and the same "previous deploy still
+  running" warning applies.
+
+  Verified live on a two-step Dockerfile build: an ordinary deploy reported both
+  `RUN` steps `CACHED`, while the force rebuild re-ran both — first against the
+  API directly, then again end-to-end through the menu.
+
 ## [0.45.1] — 2026-07-19
 
 ### Fixed

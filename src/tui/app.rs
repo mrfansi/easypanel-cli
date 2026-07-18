@@ -616,6 +616,12 @@ impl App {
     pub(super) fn life_menu(&self) -> Vec<MenuItem> {
         vec![
             MenuItem::new("Deploy", |a, _| a.ask_action("deploy")),
+            // Its own entry rather than a change to Deploy: skipping the cache can
+            // turn a seconds-long deploy into minutes, so it should be a choice the
+            // user made, not a surprise.
+            MenuItem::new("Force rebuild (no cache)", |a, _| {
+                a.ask_action("deploy-force")
+            }),
             MenuItem::new("Restart", |a, _| a.ask_action("restart")),
             MenuItem::new("Stop", |a, _| a.ask_action("stop")),
             MenuItem::new("Start", |a, _| a.ask_action("start")),
@@ -2156,8 +2162,14 @@ impl App {
             // Debounce deploy: if a deployment is still pending/running, say so in
             // the confirmation dialog so the user doesn't trigger a second build
             // unknowingly.
-            let mut label = format!("{} service '{}'?", cap(action), s);
-            if action == "deploy" && self.is_deploying(&p, &s) {
+            // "deploy-force" is the same endpoint with the layer cache off, so it
+            // needs its own wording — cap() would render it "Deploy-force".
+            let mut label = if action == "deploy-force" {
+                format!("Rebuild '{s}' from scratch, ignoring the build cache?")
+            } else {
+                format!("{} service '{}'?", cap(action), s)
+            };
+            if action.starts_with("deploy") && self.is_deploying(&p, &s) {
                 label.push_str(" ⚠ previous deploy still running");
             }
             self.confirm = Some(Confirm {

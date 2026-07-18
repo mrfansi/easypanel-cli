@@ -61,6 +61,9 @@ pub(super) enum Req {
         service: String,
         stype: String,
         action: String,
+        /// Deploy only: rebuild from scratch instead of reusing the layer cache.
+        /// Ignored by every other action — the endpoint takes no such field.
+        force: bool,
     },
     /// All services across projects in a single call.
     AllServices,
@@ -1022,6 +1025,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             service,
             stype,
             action,
+            force,
         } => {
             // Deploy is DISPATCHED, not awaited. Its build takes an unpredictable
             // time — possibly minutes, depending on the repo — and exceeds any
@@ -1034,7 +1038,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 let c = client.clone();
                 let (grp, input) = (
                     format!("services/{stype}"),
-                    json!({ "projectName": project, "serviceName": service, "forceRebuild": false }),
+                    json!({ "projectName": project, "serviceName": service, "forceRebuild": force }),
                 );
                 // An immediate rejection (bad config, 400, service can't deploy) used
                 // to be swallowed by `let _ =` — the UI said "started" while the
