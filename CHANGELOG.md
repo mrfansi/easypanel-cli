@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.32.0] — 2026-07-18
+## [0.33.0] — 2026-07-18
+
+### Added
+
+- **One-key database shell — a login prompt you never have to type credentials for.** Press
+  `y` on a **mysql, mariadb, postgres, mongo, or redis** service (or right-click → DB shell)
+  and it drops you into that database's own client — `mysql`, `psql`, `mongosh`,
+  `redis-cli` — already logged in as root/superuser, in the embedded terminal pane. The tool
+  reads the stored credentials from the service and launches the right client for the type;
+  the password goes through an env var (`MYSQL_PWD`/`PGPASSWORD`/`REDISCLI_AUTH`), so it
+  never shows up in the process list or a warning. The web panel has nothing like it — you'd
+  normally open a shell, remember the client and flags, and copy-paste the password.
+
+  Every command shape was verified live against the running server: `mysql` (SELECT VERSION
+  → 8.0.46), `psql` (SELECT version → PostgreSQL), `mongosh` (connected with
+  `authSource=admin`), and `redis-cli` (PING → PONG). Credentials are shell-quote-escaped so
+  an apostrophe in a password can't break the command.
+
+
 
 ### Added
 

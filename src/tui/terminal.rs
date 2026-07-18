@@ -30,8 +30,15 @@ pub(super) enum TermMsg {
 }
 
 /// Resolve ID container yang berjalan untuk sebuah service (nama swarm
-/// "{project}_{service}"), lalu bangun URL WebSocket terminalnya.
-pub(super) fn ws_url(client: &EasypanelClient, project: &str, service: &str) -> Result<String> {
+/// "{project}_{service}"), lalu bangun URL WebSocket terminalnya. `command` = apa
+/// yang dijalankan di dalam container (mis. "sh" untuk shell, atau perintah mysql
+/// untuk shell database) — server membungkusnya `docker exec -it … /bin/sh -c`.
+pub(super) fn ws_url(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    command: &str,
+) -> Result<String> {
     let containers = client.call(
         "projects",
         "getDockerContainers",
@@ -45,16 +52,93 @@ pub(super) fn ws_url(client: &EasypanelClient, project: &str, service: &str) -> 
         })
         .and_then(|c| c.get("Id").and_then(Value::as_str))
         .ok_or_else(|| anyhow!("Tak ada container berjalan untuk {project}/{service}"))?;
-    // command = base64("sh") = "c2g="; `-it` memberi TTY → shell interaktif.
     let wss = client
         .url()
         .trim_end_matches('/')
         .replacen("https://", "wss://", 1)
         .replacen("http://", "ws://", 1);
     Ok(format!(
-        "{wss}/ws/containerShell?container={cid}&command=c2g=&token={}",
+        "{wss}/ws/containerShell?container={cid}&command={}&token={}",
+        base64(command.as_bytes()),
         client.token()
     ))
+}
+
+/// base64 standar (dengan padding). Ditulis tangan — encoding sepele, tak perlu
+/// menambah dependency. Dipakai untuk parameter `command` WebSocket terminal.
+pub(super) fn base64(input: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let n = ((chunk[0] as u32) << 16)
+            | ((*chunk.get(1).unwrap_or(&0) as u32) << 8)
+            | (*chunk.get(2).unwrap_or(&0) as u32);
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Perintah shell yang membuka klien database sebuah service memakai kredensial
+/// yang sudah tersimpan (root/superuser). Password lewat env var (tak muncul di
+/// `ps`, tak memicu peringatan "insecure"), dikutip aman untuk sh. None untuk tipe
+/// non-database. Bentuk tiap perintah diverifikasi live ke server.
+///
+/// - mysql/mariadb: `mysql -uroot` (klien `mysql` ada di kedua image)
+/// - postgres: `psql -U <user>`
+/// - mongo: `mongosh` dengan auth (authSource admin, default EasyPanel)
+/// - redis: `redis-cli` (REDISCLI_AUTH)
+pub(super) fn db_command(stype: &str, inspect: &Value) -> Option<String> {
+    let f = |k: &str| inspect.get(k).and_then(Value::as_str).unwrap_or("");
+    // Kutip single-quote untuk sh: ' -> '\'' agar kredensial apa pun aman.
+    let q = |s: &str| s.replace('\'', "'\\''");
+    let db = f("databaseName");
+    match stype {
+        "mysql" | "mariadb" => {
+            let d = if db.is_empty() {
+                String::new()
+            } else {
+                format!(" {db}")
+            };
+            Some(format!(
+                "MYSQL_PWD='{}' mysql -uroot{d}",
+                q(f("rootPassword"))
+            ))
+        }
+        "postgres" => {
+            let user = if f("user").is_empty() {
+                "postgres"
+            } else {
+                f("user")
+            };
+            let d = if db.is_empty() {
+                String::new()
+            } else {
+                format!(" -d {db}")
+            };
+            Some(format!(
+                "PGPASSWORD='{}' psql -U {user}{d}",
+                q(f("password"))
+            ))
+        }
+        "mongo" => Some(format!(
+            "mongosh -u '{}' -p '{}' --authenticationDatabase admin",
+            q(f("user")),
+            q(f("password"))
+        )),
+        "redis" => Some(format!("REDISCLI_AUTH='{}' redis-cli", q(f("password")))),
+        _ => None,
+    }
 }
 
 /// Jalankan sesi WebSocket di thread sendiri. Kembalikan pengirim untuk keystroke

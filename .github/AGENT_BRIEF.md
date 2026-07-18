@@ -7,6 +7,26 @@ before anything else.
 **Goal:** make this project scalable, credible, and genuinely useful to the GitHub
 community. One meaningful improvement per run — quality over volume.
 
+## The north star (owner, restated 2026-07-18)
+
+**This tool exists to COMPLEMENT the EasyPanel web dashboard — to do the things it can't,
+or can't do well.** An enhancement is NOT judged by "does the dashboard/API docs have this
+feature"; it's judged by **"does it have real impact for an EasyPanel operator."** Do not
+anchor on parity with the panel. The features that landed hardest were exactly the ones the
+panel lacks:
+
+- **Clone a service** (config, incl. a DB's replication `configFile`) — no clone in the panel.
+- **Search a keyword across every service's log at once** — the panel is one service at a time.
+- **A shell into any container, embedded in the pane** — the panel has none.
+- **One-key DB shell** (`y`): `mysql`/`psql`/`mongosh`/`redis-cli` already logged in with the
+  service's own stored credentials — you never type a password. Nothing like it in the panel.
+- **All-hosts-at-once** view — the panel shows one server at a time.
+
+So when picking work: ask "what would make an operator's day easier that they can't get from
+the panel?", verify it live, and build it. Convenience, safety, and speed on real operational
+tasks beat filling in a management-surface checkbox. (Still: verify live, no invented shapes,
+one solid change per run.)
+
 ---
 
 ## Ground truth from the server (verified 2026-07-18, EasyPanel 2.32.2)

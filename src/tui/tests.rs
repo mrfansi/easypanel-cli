@@ -175,6 +175,56 @@ fn resource_body_parses_numbers_defaults_zero_and_rejects_junk() {
 }
 
 #[test]
+fn base64_matches_known_values() {
+    use super::terminal::base64;
+    assert_eq!(base64(b"sh"), "c2g="); // yang dipakai shell container
+    assert_eq!(base64(b""), "");
+    assert_eq!(base64(b"M"), "TQ==");
+    assert_eq!(base64(b"Ma"), "TWE=");
+    assert_eq!(base64(b"Man"), "TWFu");
+}
+
+#[test]
+fn db_command_per_type_uses_stored_credentials() {
+    use super::terminal::db_command;
+    // Bentuk tiap perintah diverifikasi live ke server (mysql/postgres/mongo/redis).
+    let mysql = json!({ "rootPassword": "rp", "databaseName": "app" });
+    assert_eq!(
+        db_command("mysql", &mysql).unwrap(),
+        "MYSQL_PWD='rp' mysql -uroot app"
+    );
+    // mariadb pakai klien `mysql` yang sama.
+    assert_eq!(
+        db_command("mariadb", &mysql).unwrap(),
+        "MYSQL_PWD='rp' mysql -uroot app"
+    );
+    let pg = json!({ "user": "u", "password": "pw", "databaseName": "db" });
+    assert_eq!(
+        db_command("postgres", &pg).unwrap(),
+        "PGPASSWORD='pw' psql -U u -d db"
+    );
+    let mo = json!({ "user": "mu", "password": "mp" });
+    assert_eq!(
+        db_command("mongo", &mo).unwrap(),
+        "mongosh -u 'mu' -p 'mp' --authenticationDatabase admin"
+    );
+    assert_eq!(
+        db_command("redis", &json!({ "password": "rp" })).unwrap(),
+        "REDISCLI_AUTH='rp' redis-cli"
+    );
+    // Non-database -> None (key 'y' menolak).
+    assert!(db_command("app", &json!({})).is_none());
+    // Kutip single-quote aman: password ber-apostrof tak memecah perintah sh.
+    assert!(db_command("redis", &json!({ "password": "a'b" }))
+        .unwrap()
+        .contains(r"'a'\''b'"));
+    // postgres tanpa user -> fallback superuser "postgres".
+    assert!(db_command("postgres", &json!({ "password": "x" }))
+        .unwrap()
+        .contains("-U postgres"));
+}
+
+#[test]
 fn redirect_body_builds_shape_and_requires_regex_replacement() {
     let set = |f: &mut Form, label: &str, val: &str| {
         f.fields
@@ -1411,7 +1461,7 @@ fn terminal_ws_roundtrip_live() {
     let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
     let srv = cfg.default().expect("ada server default");
     let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
-    let url = super::terminal::ws_url(&client, "zzz-emb", "zzz-redis").expect("ws_url");
+    let url = super::terminal::ws_url(&client, "zzz-emb", "zzz-redis", "sh").expect("ws_url");
 
     let (out_tx, out_rx) = channel::<Resp>();
     let (in_tx, in_rx) = channel::<super::terminal::TermMsg>();

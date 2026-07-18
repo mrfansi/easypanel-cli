@@ -145,7 +145,10 @@ pub(super) struct App {
     pub(super) edit_field: Option<usize>,
     /// (project, service) yang menunggu dibukakan terminal container; event_loop
     /// yang menyambungkannya (ia yang memegang ServerConfig).
-    pub(super) terminal_req: Option<(String, String)>,
+    /// (project, service, db) — permintaan membuka terminal container. `db` =
+    /// Some(stype) untuk shell database (mysql/mariadb, login root otomatis),
+    /// None untuk shell biasa (sh). event_loop yang menyambungkannya.
+    pub(super) terminal_req: Option<(String, String, Option<String>)>,
     /// Emulator layar terminal aktif (parser vt100 diisi output WebSocket).
     pub(super) term_parser: Option<vt100::Parser>,
     /// Kirim keystroke/resize ke thread WebSocket. Drop = tutup sesi.
@@ -357,22 +360,34 @@ impl App {
     /// menu (mis. tak ada baris terpilih, atau layar tanpa aksi baris).
     pub(super) fn context_items(&self) -> Vec<(String, KeyCode)> {
         match self.screen {
-            Screen::Projects if self.selected_row().is_some() => vec![
-                ("Logs".into(), KeyCode::Enter),
-                ("Terminal".into(), KeyCode::Char('t')),
-                ("Deploy".into(), KeyCode::Char('d')),
-                ("Restart".into(), KeyCode::Char('R')),
-                ("Stop".into(), KeyCode::Char('S')),
-                ("Start".into(), KeyCode::Char('T')),
-                ("Env".into(), KeyCode::Char('e')),
-                ("Domain".into(), KeyCode::Char('o')),
-                ("Mount baru".into(), KeyCode::Char('M')),
-                ("Redirect baru".into(), KeyCode::Char('F')),
-                ("Basic auth".into(), KeyCode::Char('H')),
-                ("Resource".into(), KeyCode::Char('L')),
-                ("Clone".into(), KeyCode::Char('c')),
-                ("Hapus".into(), KeyCode::Char('x')),
-            ],
+            Screen::Projects if self.selected_row().is_some() => {
+                let mut items = vec![
+                    ("Logs".into(), KeyCode::Enter),
+                    ("Terminal".into(), KeyCode::Char('t')),
+                ];
+                // Shell DB (login otomatis) hanya relevan untuk service database.
+                if matches!(
+                    self.selected_row().map(|(_, _, t)| t).as_deref(),
+                    Some("mysql" | "mariadb" | "postgres" | "mongo" | "redis")
+                ) {
+                    items.push(("DB shell (login otomatis)".into(), KeyCode::Char('y')));
+                }
+                items.extend([
+                    ("Deploy".into(), KeyCode::Char('d')),
+                    ("Restart".into(), KeyCode::Char('R')),
+                    ("Stop".into(), KeyCode::Char('S')),
+                    ("Start".into(), KeyCode::Char('T')),
+                    ("Env".into(), KeyCode::Char('e')),
+                    ("Domain".into(), KeyCode::Char('o')),
+                    ("Mount baru".into(), KeyCode::Char('M')),
+                    ("Redirect baru".into(), KeyCode::Char('F')),
+                    ("Basic auth".into(), KeyCode::Char('H')),
+                    ("Resource".into(), KeyCode::Char('L')),
+                    ("Clone".into(), KeyCode::Char('c')),
+                    ("Hapus".into(), KeyCode::Char('x')),
+                ]);
+                items
+            }
             Screen::Domains if self.domains_state.selected().is_some() => vec![
                 ("Edit".into(), KeyCode::Char('e')),
                 ("Jadikan primary".into(), KeyCode::Char('P')),

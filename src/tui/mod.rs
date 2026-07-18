@@ -233,11 +233,35 @@ fn event_loop(
         // Terminal container: resolve URL WebSocket (butuh ServerConfig, hanya di
         // sini), lalu jalankan sesi di thread. Output → Resp::TermOutput ke parser
         // vt100; keystroke dikirim balik lewat channel. Tabs & status tetap tampil.
-        if let Some((project, service)) = app.terminal_req.take() {
+        if let Some((project, service, db)) = app.terminal_req.take() {
             match cfg.get(&app.server_name) {
                 Some(server) => {
                     let client = EasypanelClient::new(&server.url, &server.token);
-                    match terminal::ws_url(&client, &project, &service) {
+                    // Shell DB: ambil rootPassword + nama database dari inspectService,
+                    // bangun perintah klien mysql. Shell biasa: "sh".
+                    let command = match &db {
+                        Some(stype) => {
+                            match client.call(
+                                &format!("services/{stype}"),
+                                "inspectService",
+                                json!({ "projectName": project, "serviceName": service }),
+                            ) {
+                                Ok(v) => match terminal::db_command(stype, &v) {
+                                    Some(cmd) => cmd,
+                                    None => {
+                                        app.status = format!("Shell DB tak didukung untuk {stype}");
+                                        continue;
+                                    }
+                                },
+                                Err(e) => {
+                                    app.status = format!("Shell DB gagal: {e}");
+                                    continue;
+                                }
+                            }
+                        }
+                        None => "sh".to_string(),
+                    };
+                    match terminal::ws_url(&client, &project, &service, &command) {
                         Ok(url) => {
                             let (cols, rows) =
                                 ratatui::crossterm::terminal::size().unwrap_or((80, 24));
@@ -247,7 +271,9 @@ fn event_loop(
                             let (tx, rx) = std::sync::mpsc::channel();
                             app.term_parser = Some(vt100::Parser::new(trows, tcols, 0));
                             app.term_input = Some(tx);
-                            app.term_title = format!("{project}/{service}");
+                            let label =
+                                db.as_deref().map(|s| format!(" ({s})")).unwrap_or_default();
+                            app.term_title = format!("{project}/{service}{label}");
                             terminal::spawn_session(url, w.resp_tx.clone(), rx, tcols, trows);
                             app.screen = Screen::Terminal;
                             app.status = "Terminal — ketik `exit` atau Ctrl-Q untuk keluar".into();

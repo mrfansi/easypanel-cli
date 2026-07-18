@@ -62,6 +62,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("/", "cari service"),
             Key("g", "cari kata di log SEMUA service"),
             Key("t", "terminal ke dalam container"),
+            Key("y", "shell DB (login otomatis: mysql/postgres/mongo/redis)"),
             Key("Enter", "logs"),
             Key("n", "service baru"),
             Key("x", "hapus service"),

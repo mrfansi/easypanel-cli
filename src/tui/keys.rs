@@ -781,13 +781,29 @@ impl App {
             KeyCode::Char('E') => self.start_env_edit(),
             KeyCode::Char('t') => {
                 // Terminal ke container: event_loop yang mengerjakannya (ia yang
-                // memegang terminal untuk serah-terima raw mode).
+                // memegang terminal untuk serah-terima raw mode). None = shell biasa.
                 if let Some((project, service, _)) = self.selected_row() {
-                    self.terminal_req = Some((project, service));
+                    self.terminal_req = Some((project, service, None));
                 } else {
                     self.status = "Pilih sebuah service dulu".into();
                 }
             }
+            // Shell database: login otomatis ke klien DB pakai kredensial tersimpan
+            // (mysql/mariadb/postgres/mongo/redis). Fitur yang tak ada di dashboard web.
+            KeyCode::Char('y') => match self.selected_row() {
+                Some((project, service, stype))
+                    if matches!(
+                        stype.as_str(),
+                        "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
+                    ) =>
+                {
+                    self.terminal_req = Some((project, service, Some(stype)));
+                }
+                Some((_, _, stype)) => {
+                    self.status = format!("Shell DB hanya untuk service database (ini {stype})");
+                }
+                None => self.status = "Pilih sebuah service dulu".into(),
+            },
             KeyCode::Char('g') => {
                 self.form = Some(Form::new(
                     FormKind::LogSearch,
