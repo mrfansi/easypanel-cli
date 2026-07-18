@@ -25,6 +25,10 @@ impl App {
             self.help = false;
             return;
         }
+        if self.palette.is_some() {
+            self.palette_key(code, req);
+            return;
+        }
         if self.menu.is_some() {
             self.menu_key(code, req);
             return;
@@ -80,6 +84,9 @@ impl App {
                 let items = self.context_items();
                 self.open_menu(items);
             }
+            // Global search / command palette: navigasi cepat ke service/tab tanpa
+            // menu. Alternatif keyboard untuk yang tak suka menyusuri menu.
+            KeyCode::Char(':') => self.open_palette(),
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('r') => self.refresh(req),
@@ -106,6 +113,10 @@ impl App {
     /// (form/picker/konfirmasi/dropdown/bantuan) menelannya — klik tak boleh
     /// diam-diam mengganti tab di belakang dialog. Sesi terminal mengabaikannya.
     pub(super) fn on_mouse(&mut self, m: MouseEvent, req: &Sender<Req>) {
+        // Palette digerakkan keyboard; telan mouse supaya klik tak tembus ke tabel.
+        if self.palette.is_some() {
+            return;
+        }
         // Menu konteks & dropdown menangkap mouse sendiri (hover/klik itemnya).
         if self.menu.is_some() {
             self.menu_mouse(m, req);
@@ -412,6 +423,36 @@ impl App {
         // bisa kembali. Kalau `run` aksi leaf (menu tetap None), induk dibuang.
         if let (Some(child), Some(parent)) = (self.menu.as_mut(), parent) {
             child.parent = Some(Box::new(parent));
+        }
+    }
+
+    /// Command palette: ketik memfilter, ↑↓ pilih (dalam daftar ter-filter), Enter
+    /// lompat, Esc tutup, Backspace hapus. Mengetik mereset sorotan ke atas.
+    fn palette_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        let Some(pal) = self.palette.as_mut() else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => self.palette = None,
+            KeyCode::Enter => self.palette_run(req),
+            KeyCode::Up => {
+                let i = pal.state.selected().unwrap_or(0);
+                pal.state.select(Some(i.saturating_sub(1)));
+            }
+            KeyCode::Down => {
+                let last = pal.matches().len().saturating_sub(1);
+                let i = pal.state.selected().unwrap_or(0);
+                pal.state.select(Some((i + 1).min(last)));
+            }
+            KeyCode::Backspace => {
+                pal.query.pop();
+                pal.state.select(Some(0));
+            }
+            KeyCode::Char(c) => {
+                pal.query.push(c);
+                pal.state.select(Some(0));
+            }
+            _ => {}
         }
     }
 

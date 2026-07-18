@@ -20,6 +20,7 @@ pub(super) struct Key(pub(super) &'static str, pub(super) &'static str);
 pub(super) const GLOBAL_KEYS: &[Key] = &[
     Key("1-7 / Tab / ←→", "pindah tab"),
     Key("?", "bantuan ini"),
+    Key(":", "cari & lompat cepat ke service / tab (global search)"),
     Key("s", "daftar server (pilih/tambah/edit/hapus)"),
     Key("r", "refresh"),
     Key("Esc", "batal: tutup form/dropdown/konfirmasi/filter"),
@@ -161,6 +162,40 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
     if app.menu.is_some() {
         render_menu(f, app);
     }
+    if app.palette.is_some() {
+        render_palette(f, app);
+    }
+}
+
+/// Command palette (global search): baris query + daftar ter-filter.
+pub(super) fn render_palette(f: &mut Frame, app: &mut App) {
+    let Some(pal) = app.palette.as_mut() else {
+        return;
+    };
+    let area = centered(60, 70, f.area());
+    f.render_widget(Clear, area);
+    let matches = pal.matches();
+    let count = matches.len();
+    // Sorotan indeks ke daftar TER-FILTER; jaga tetap dalam rentang.
+    if let Some(sel) = pal.state.selected() {
+        if sel >= count {
+            pal.state.select(Some(count.saturating_sub(1)));
+        }
+    }
+    let items: Vec<ListItem> = matches
+        .iter()
+        .map(|&i| ListItem::new(format!("  {}", pal.items[i].label)))
+        .collect();
+    pal.rect = area;
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .title(format!(" Cari: {}▏ ", pal.query))
+                .title_bottom(format!(" {count} hasil · Enter lompat · Esc tutup "))
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(list, area, &mut pal.state);
 }
 
 /// Menu konteks klik-kanan: popup kecil di kursor, dijepit agar tetap di layar.

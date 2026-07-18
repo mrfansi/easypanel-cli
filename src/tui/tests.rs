@@ -537,6 +537,44 @@ fn space_opens_the_row_action_menu() {
 }
 
 #[test]
+fn palette_filters_then_jumps_to_service() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["proj".into()];
+    app.all_services = vec![
+        json!({ "projectName": "proj", "name": "web", "type": "app" }),
+        json!({ "projectName": "proj", "name": "db", "type": "mysql" }),
+    ];
+    app.open_palette();
+    // Entri = semua tab + tiap service.
+    assert_eq!(
+        app.palette.as_ref().unwrap().items.len(),
+        TAB_SCREENS.len() + 2
+    );
+    // Tanpa query, semua cocok.
+    assert_eq!(
+        app.palette.as_ref().unwrap().matches().len(),
+        TAB_SCREENS.len() + 2
+    );
+
+    // Filter "web" → satu service.
+    app.palette.as_mut().unwrap().query = "web".into();
+    let m = app.palette.as_ref().unwrap().matches();
+    assert_eq!(m.len(), 1);
+    assert!(app.palette.as_ref().unwrap().items[m[0]]
+        .label
+        .contains("web"));
+
+    // Enter menjalankan entri terpilih: lompat ke Services, tutup palette, ada
+    // baris terpilih.
+    app.palette.as_mut().unwrap().state.select(Some(0));
+    app.palette_run(&tx);
+    assert!(app.palette.is_none());
+    assert!(matches!(app.screen, Screen::Projects));
+    assert!(app.services_table.selected().is_some());
+}
+
+#[test]
 fn spinner_shows_only_while_loading() {
     // Spinner = umpan balik "sedang bekerja". Muncul saat status diakhiri "..." /
     // "…" (Memuat…/Mengirim…/Mencari…), diam saat status biasa.

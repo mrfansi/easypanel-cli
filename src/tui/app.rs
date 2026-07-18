@@ -245,6 +245,8 @@ pub(super) struct App {
     pub(super) table_area: Rect,
     /// Menu konteks (klik kanan). Item = (label, tombol yang disimulasikan).
     pub(super) menu: Option<Menu>,
+    /// Command palette (global search) — navigasi cepat ke service/tab.
+    pub(super) palette: Option<Palette>,
 }
 
 /// Aksi sebuah item menu: fungsi yang dijalankan saat item dipilih.
@@ -301,6 +303,42 @@ impl Menu {
         }
         let i = (row - r.y - 1) as usize;
         (i < self.items.len()).then_some(i)
+    }
+}
+
+/// Aksi sebuah entri command palette (global search).
+pub(super) enum PaletteAction {
+    /// Lompat ke sebuah service (pindah ke Services, sorot barisnya).
+    Service { project: String, service: String },
+    /// Pindah ke sebuah tab.
+    Tab(Screen),
+}
+
+pub(super) struct PaletteItem {
+    pub(super) label: String,
+    pub(super) action: PaletteAction,
+}
+
+/// Command palette: pencarian global untuk navigasi cepat ke service/tab tanpa
+/// menyusuri menu. Ketik untuk memfilter, ↑↓ pilih, Enter lompat, Esc tutup.
+pub(super) struct Palette {
+    pub(super) query: String,
+    pub(super) items: Vec<PaletteItem>,
+    pub(super) state: ListState,
+    /// Kotak yang digambar (untuk klik, diisi saat render).
+    pub(super) rect: Rect,
+}
+
+impl Palette {
+    /// Indeks item yang cocok query (substring, tak peduli huruf besar/kecil).
+    pub(super) fn matches(&self) -> Vec<usize> {
+        let q = self.query.to_lowercase();
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| q.is_empty() || it.label.to_lowercase().contains(&q))
+            .map(|(i, _)| i)
+            .collect()
     }
 }
 
@@ -364,6 +402,7 @@ impl App {
             tab_row: 0,
             table_area: Rect::default(),
             menu: None,
+            palette: None,
         }
     }
 
@@ -573,6 +612,75 @@ impl App {
             row,
             rect: Rect::default(),
         });
+    }
+
+    /// Buka command palette (global search): semua service server ini + tab
+    /// sebagai entri. Alternatif menu konteks untuk navigasi cepat pakai keyboard.
+    pub(super) fn open_palette(&mut self) {
+        let mut items = Vec::new();
+        for s in TAB_SCREENS {
+            items.push(PaletteItem {
+                label: format!("⇥  Tab: {}", TABS[s.index()]),
+                action: PaletteAction::Tab(s),
+            });
+        }
+        let mut svcs: Vec<&Value> = self.all_services.iter().collect();
+        svcs.sort_by_key(|s| (field(s, "/projectName"), field(s, "/name")));
+        for s in svcs {
+            let (project, service, t) = (
+                field(s, "/projectName"),
+                field(s, "/name"),
+                field(s, "/type"),
+            );
+            items.push(PaletteItem {
+                label: format!("{project} / {service}  ·  {t}"),
+                action: PaletteAction::Service { project, service },
+            });
+        }
+        let mut state = ListState::default();
+        state.select(Some(0));
+        self.palette = Some(Palette {
+            query: String::new(),
+            items,
+            state,
+            rect: Rect::default(),
+        });
+    }
+
+    /// Jalankan entri palette terpilih (dari daftar TER-FILTER), lalu tutup.
+    pub(super) fn palette_run(&mut self, req: &Sender<Req>) {
+        let Some(pal) = self.palette.take() else {
+            return;
+        };
+        let matches = pal.matches();
+        let Some(&item_idx) = pal.state.selected().and_then(|i| matches.get(i)) else {
+            return;
+        };
+        match &pal.items[item_idx].action {
+            PaletteAction::Tab(s) => self.goto(*s, req),
+            PaletteAction::Service { project, service } => {
+                let (p, s) = (project.clone(), service.clone());
+                self.jump_to_service(&p, &s, req);
+            }
+        }
+    }
+
+    /// Pindah ke Services dan sorot service ini (navigasi cepat dari palette).
+    fn jump_to_service(&mut self, project: &str, service: &str, req: &Sender<Req>) {
+        self.goto(Screen::Projects, req);
+        self.filter.clear();
+        self.filter_input = false;
+        let idx = self.visible_rows().iter().position(|r| {
+            matches!(r, Line2::Service(s)
+                if field(s, "/projectName") == project && field(s, "/name") == service)
+        });
+        match idx {
+            Some(i) => {
+                self.services_table.select(Some(i));
+                self.status = format!("→ {project}/{service}");
+            }
+            None => self.status = format!("{project}/{service} tak ada di daftar sekarang"),
+        }
     }
 
     /// Sunting Config File (Advanced) service database terpilih di $EDITOR.

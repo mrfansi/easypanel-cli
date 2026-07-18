@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-07-18
+
+### Added
+
+- **Global search / command palette (`:`)** — a fast, keyboard-only way to jump
+  anywhere without hunting through menus. Press `:` from any screen, type to
+  fuzzy-filter across every service (project / name / type) and every tab, then
+  `Enter` to jump straight there (a service selects its row on the Services tab).
+  `↑↓` to pick, `Esc` to close. This is the alternative for operators who would
+  rather not navigate via the context menu.
+
 ## [0.38.0] — 2026-07-18
 
 ### Added
