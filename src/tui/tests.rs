@@ -1969,3 +1969,24 @@ fn help_shows_everything_it_has_even_on_a_short_terminal() {
         "the last section must be reachable:\n{bottom}"
     );
 }
+
+#[test]
+fn palette_says_so_when_nothing_matches() {
+    // Enter on a query with no results used to take the palette away in silence,
+    // which looks exactly like having run something.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.all_services = vec![json!({ "projectName": "p", "name": "web", "type": "app" })];
+    app.open_palette();
+    app.palette.as_mut().unwrap().query = "nosuchthing".into();
+    assert!(app.palette.as_ref().unwrap().matches().is_empty());
+
+    app.status = "Ready".into();
+    app.palette_run(&tx);
+    assert!(app.palette.is_none(), "the palette still closes");
+    assert!(
+        app.status.contains("Nothing matches"),
+        "the dead end must be visible, got: {}",
+        app.status
+    );
+}

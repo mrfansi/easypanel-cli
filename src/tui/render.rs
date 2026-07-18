@@ -241,7 +241,18 @@ pub(super) fn render_menu(f: &mut Frame, app: &mut App) {
                 .border_style(Style::default().fg(Color::Yellow)),
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    f.render_widget(Clear, rect);
+    // Clear one column to the RIGHT of the popup. Without it the row underneath
+    // continues hard against the border — "┐d", "│dio-db (5)" — which reads as
+    // corrupted text rather than a menu floating over the table. Only the right:
+    // the column to the left carries the "›" marker for the row this menu acts on,
+    // and blanking that would drop the very context the menu belongs to.
+    let gutter = Rect {
+        x: rect.x,
+        y: rect.y,
+        width: (rect.width + 1).min(full.width.saturating_sub(rect.x)),
+        height: rect.height,
+    };
+    f.render_widget(Clear, gutter);
     f.render_stateful_widget(list, rect, &mut menu.state);
 }
 

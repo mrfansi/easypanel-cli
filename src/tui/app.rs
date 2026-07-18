@@ -739,6 +739,9 @@ impl App {
         };
         let matches = pal.matches();
         let Some(&item_idx) = pal.state.selected().and_then(|i| matches.get(i)) else {
+            // Enter on a query that matches nothing used to close the palette in
+            // silence — indistinguishable from having run something.
+            self.status = format!("Nothing matches '{}'", pal.query);
             return;
         };
         match &pal.items[item_idx].action {

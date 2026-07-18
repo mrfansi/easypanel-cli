@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.3] — 2026-07-18
+
+### Fixed
+
+- **The action menu read as corrupted text.** The popup sat flush against the row
+  behind it, so the table continued hard at its border — `┐d`, `│dio-db (5)` — which
+  looks like a rendering fault rather than a menu floating over a table. There is now
+  a blank column to its right. Only to the right: the column on its left carries the
+  `›` marker for the row the menu acts on.
+- **The command palette closed in silence when nothing matched.** Pressing `Enter`
+  on a query with no results simply took the palette away — indistinguishable from
+  having run something. It now says `Nothing matches '<query>'`.
+
 ## [0.43.2] — 2026-07-18
 
 ### Fixed
