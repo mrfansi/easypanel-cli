@@ -306,28 +306,13 @@ impl Menu {
     }
 }
 
-/// Quick action yang bisa dijalankan dari palette pada sebuah service.
-#[derive(Clone, Copy)]
-pub(super) enum PaletteVerb {
-    Deploy,
-    Restart,
-    Stop,
-    Start,
-    Logs,
-    Terminal,
-    DbShell,
-}
-
 /// Aksi sebuah entri command palette (global search).
 pub(super) enum PaletteAction {
     /// Lompat ke sebuah service (pindah ke Services, sorot barisnya).
     Service { project: String, service: String },
-    /// Jalankan quick action pada sebuah service (sorot lalu jalankan aksinya).
-    ServiceAction {
-        project: String,
-        service: String,
-        verb: PaletteVerb,
-    },
+    /// Jalankan aksi kontekstual pada BARIS yang sedang dipilih (fungsi aksi dari
+    /// menu/leaf yang sama). Baris sudah tersorot, jadi aksi mengenai yang benar.
+    Run(MenuRun),
     /// Pindah ke sebuah tab.
     Tab(Screen),
 }
@@ -639,14 +624,66 @@ impl App {
 
     /// Buka command palette (global search): semua service server ini + tab
     /// sebagai entri. Alternatif menu konteks untuk navigasi cepat pakai keyboard.
+    /// SEMUA leaf action untuk service terpilih, diratakan dari builder submenu —
+    /// jadi palette punya aksi selengkap menu (bukan cuma lifecycle).
+    fn service_leaf_actions(&self) -> Vec<MenuItem> {
+        let mut v = vec![MenuItem::new("Logs", |a, r| a.open_view(View::Logs, r))];
+        v.extend(self.env_menu());
+        v.extend(self.net_menu());
+        v.extend(self.build_menu());
+        v.extend(self.store_menu());
+        v.extend(self.life_menu());
+        v.extend(self.shell_menu());
+        v.push(MenuItem::new("Clone", |a, r| {
+            a.on_key(KeyCode::Char('c'), r)
+        }));
+        v.extend(self.danger_menu());
+        v
+    }
+
+    /// Aksi kontekstual untuk baris yang dipilih di layar aktif, sebagai
+    /// (label, fungsi). Services → daftar penuh dengan sufiks id; layar lain →
+    /// aksi menu konteksnya dengan awalan nama layar. Kosong bila tak ada baris.
+    fn palette_context_actions(&self) -> Vec<(String, MenuRun)> {
+        if self.screen == Screen::Projects {
+            let Some((project, service, _)) = self.selected_row() else {
+                return vec![];
+            };
+            let id = format!("{project}/{service}");
+            self.service_leaf_actions()
+                .into_iter()
+                .map(|it| (format!("{}  ·  {id}", it.label), it.run))
+                .collect()
+        } else {
+            let scr = TABS[self.screen.index()];
+            self.context_items()
+                .into_iter()
+                .map(|it| (format!("{scr}: {}", it.label), it.run))
+                .collect()
+        }
+    }
+
     pub(super) fn open_palette(&mut self) {
         let mut items = Vec::new();
+        // Aksi bersifat KONTEKSTUAL: hanya untuk BARIS yang sedang dipilih di layar
+        // aktif (mencegah ratusan entri/bloating). SEMUA aksi baris itu diratakan —
+        // service dapat daftar penuh (env/jaringan/build/mount/lifecycle/shell/
+        // clone/hapus), layar lain dapat aksi menu konteksnya. Tanpa baris terpilih
+        // = palette murni navigasi.
+        for (label, run) in self.palette_context_actions() {
+            items.push(PaletteItem {
+                label,
+                action: PaletteAction::Run(run),
+            });
+        }
+        // Navigasi: pindah tab.
         for s in TAB_SCREENS {
             items.push(PaletteItem {
                 label: format!("⇥  Tab: {}", TABS[s.index()]),
                 action: PaletteAction::Tab(s),
             });
         }
+        // Navigasi: lompat ke service mana pun.
         let mut svcs: Vec<&Value> = self.all_services.iter().collect();
         svcs.sort_by_key(|s| (field(s, "/projectName"), field(s, "/name")));
         for s in svcs {
@@ -655,40 +692,10 @@ impl App {
                 field(s, "/name"),
                 field(s, "/type"),
             );
-            let id = format!("{project}/{service}");
-            // Navigasi.
             items.push(PaletteItem {
-                label: format!("Buka  {id}  ·  {t}"),
-                action: PaletteAction::Service {
-                    project: project.clone(),
-                    service: service.clone(),
-                },
+                label: format!("Buka  {project}/{service}  ·  {t}"),
+                action: PaletteAction::Service { project, service },
             });
-            // Quick actions — jalankan langsung dari palette.
-            let mut verbs: Vec<(&str, PaletteVerb)> = vec![
-                ("Deploy", PaletteVerb::Deploy),
-                ("Restart", PaletteVerb::Restart),
-                ("Stop", PaletteVerb::Stop),
-                ("Start", PaletteVerb::Start),
-                ("Logs", PaletteVerb::Logs),
-                ("Terminal", PaletteVerb::Terminal),
-            ];
-            if matches!(
-                t.as_str(),
-                "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
-            ) {
-                verbs.push(("DB shell", PaletteVerb::DbShell));
-            }
-            for (name, verb) in verbs {
-                items.push(PaletteItem {
-                    label: format!("{name}  {id}"),
-                    action: PaletteAction::ServiceAction {
-                        project: project.clone(),
-                        service: service.clone(),
-                        verb,
-                    },
-                });
-            }
         }
         let mut state = ListState::default();
         state.select(Some(0));
@@ -715,24 +722,7 @@ impl App {
                 let (p, s) = (project.clone(), service.clone());
                 self.jump_to_service(&p, &s, req);
             }
-            PaletteAction::ServiceAction {
-                project,
-                service,
-                verb,
-            } => {
-                let (p, s, verb) = (project.clone(), service.clone(), *verb);
-                // Sorot dulu service-nya (aksi memakai baris terpilih), lalu jalankan.
-                self.jump_to_service(&p, &s, req);
-                match verb {
-                    PaletteVerb::Deploy => self.ask_action("deploy"),
-                    PaletteVerb::Restart => self.ask_action("restart"),
-                    PaletteVerb::Stop => self.ask_action("stop"),
-                    PaletteVerb::Start => self.ask_action("start"),
-                    PaletteVerb::Logs => self.open_view(View::Logs, req),
-                    PaletteVerb::Terminal => self.start_terminal(),
-                    PaletteVerb::DbShell => self.start_db_shell(),
-                }
-            }
+            PaletteAction::Run(run) => run(self, req),
         }
     }
 

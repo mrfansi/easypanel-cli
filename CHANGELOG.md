@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0] — 2026-07-18
+
+### Changed
+
+- **Command palette actions are now context-aware and complete.** In 0.40.0 the
+  palette listed a fixed set of actions for *every* service (hundreds of entries,
+  and only lifecycle verbs). Now it shows actions for the **currently selected
+  row only**, and the **full** set for it — for a service that means everything
+  its menu offers (env view/edit/replace/toggle, domain, ports, redirects, basic
+  auth, source, build, auto-deploy, resources, mounts, backups, lifecycle,
+  terminal, DB shell, config file, clone, delete). The same applies to other
+  screens: on Domains a selected domain contributes Edit / Set primary / Delete,
+  on Actions the selected row contributes View detail. With no row selected the
+  palette is pure navigation. Multi-word search still applies, so `deploy karir`
+  jumps straight to that action.
+
 ## [0.40.0] — 2026-07-18
 
 ### Added

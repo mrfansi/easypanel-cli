@@ -545,7 +545,6 @@ fn palette_filters_then_jumps_to_service() {
         json!({ "projectName": "proj", "name": "web", "type": "app" }),
         json!({ "projectName": "proj", "name": "db", "type": "mysql" }),
     ];
-    app.open_palette();
     let labels = |a: &App| -> Vec<String> {
         a.palette
             .as_ref()
@@ -555,24 +554,75 @@ fn palette_filters_then_jumps_to_service() {
             .map(|i| i.label.clone())
             .collect()
     };
-    // Entri berisi navigasi + quick action. DB shell hanya untuk service db.
+
+    // Tanpa service terpilih (bukan di Services): palette MURNI navigasi — tak ada
+    // entri aksi (mencegah bloating ratusan entri).
+    app.screen = Screen::Dashboard;
+    app.open_palette();
+    let nav = labels(&app);
+    assert!(nav.iter().any(|x| x == "Buka  proj/web  ·  app"));
+    assert!(!nav.iter().any(|x| x.starts_with("Deploy")));
+    app.palette = None;
+
+    // Dengan service web (app) terpilih di Services: muncul aksi service ITU saja.
+    app.screen = Screen::Projects;
+    // visible_rows terurut nama: [header "proj", "db"(mysql), "web"(app)].
+    app.services_table.select(Some(2)); // web
+    app.open_palette();
     let l = labels(&app);
-    assert!(l.iter().any(|x| x == "Buka  proj/web  ·  app"));
-    assert!(l.iter().any(|x| x == "Deploy  proj/web"));
-    assert!(l.iter().any(|x| x == "DB shell  proj/db"));
-    assert!(!l.iter().any(|x| x == "DB shell  proj/web")); // app bukan db
+    // Daftar aksi PENUH (bukan cuma lifecycle): lifecycle + env + jaringan + dst.
+    assert!(l.iter().any(|x| x == "Deploy  ·  proj/web"));
+    assert!(l.iter().any(|x| x == "Lihat env  ·  proj/web"));
+    assert!(l.iter().any(|x| x == "Domain  ·  proj/web"));
+    assert!(l.iter().any(|x| x == "Basic auth  ·  proj/web"));
+    assert!(l.iter().any(|x| x == "Hapus service  ·  proj/web"));
+    assert!(!l.iter().any(|x| x.starts_with("DB shell"))); // app bukan db
+    assert!(!l.iter().any(|x| x == "Deploy  ·  proj/db")); // hanya service terpilih
+    app.palette = None;
 
-    // Pencarian multi-kata (token-AND): "deploy web" cocok tepat ke Deploy web.
+    // db (mysql) terpilih → aksinya menyertakan DB shell + Config file (Advanced).
+    app.services_table.select(Some(1)); // db
+    app.open_palette();
+    let ldb = labels(&app);
+    assert!(ldb
+        .iter()
+        .any(|x| x.starts_with("DB shell") && x.contains("proj/db")));
+    assert!(ldb
+        .iter()
+        .any(|x| x == "Config file (Advanced)  ·  proj/db"));
+    app.palette = None;
+
+    // Konteks juga untuk baris NON-service: Domains dengan domain terpilih →
+    // aksi menu konteks domain (Edit/Primary/Hapus) muncul di palette.
+    app.screen = Screen::Domains;
+    app.domains = vec![json!({ "host": "x.test", "id": "d1" })];
+    app.domains_state.select(Some(0));
+    app.open_palette();
+    assert!(labels(&app).iter().any(|x| x == "Domains: Hapus"));
+    app.palette = None;
+
+    // Balik ke Services untuk uji jalankan aksi service.
+    app.screen = Screen::Projects;
+
+    // Kembali ke web, uji jalankan aksi.
+    app.services_table.select(Some(2)); // web
+    app.open_palette();
+
+    // Pencarian multi-kata (token-AND): "deploy web" mempersempit ke entri yang
+    // memuat kedua kata (mis. "Deploy …/web" dan "Auto deploy …/web").
     app.palette.as_mut().unwrap().query = "deploy web".into();
-    let m = app.palette.as_ref().unwrap().matches();
-    assert_eq!(m.len(), 1);
-    assert_eq!(
-        app.palette.as_ref().unwrap().items[m[0]].label,
-        "Deploy  proj/web"
-    );
-
-    // Enter menjalankan quick action: sorot service lalu picu deploy (confirm).
-    app.palette.as_mut().unwrap().state.select(Some(0));
+    let pal = app.palette.as_ref().unwrap();
+    let m = pal.matches();
+    assert!(m.iter().all(|&i| {
+        let l = pal.items[i].label.to_lowercase();
+        l.contains("deploy") && l.contains("web")
+    }));
+    // Ambil entri aksi Deploy (bukan "Auto deploy…") dan jalankan.
+    let pos = m
+        .iter()
+        .position(|&i| pal.items[i].label.starts_with("Deploy  "))
+        .unwrap();
+    app.palette.as_mut().unwrap().state.select(Some(pos));
     app.palette_run(&tx);
     assert!(app.palette.is_none());
     assert!(matches!(app.screen, Screen::Projects));

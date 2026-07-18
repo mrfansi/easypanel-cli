@@ -22,7 +22,7 @@ pub(super) const GLOBAL_KEYS: &[Key] = &[
     Key("?", "bantuan ini"),
     Key(
         ":",
-        "global search: lompat ATAU aksi cepat (deploy/restart/logs/terminal…) ke service mana pun",
+        "global search: lompat ke service/tab; aksi cepat (deploy/restart/logs/…) untuk service yang sedang dipilih",
     ),
     Key("s", "daftar server (pilih/tambah/edit/hapus)"),
     Key("r", "refresh"),
