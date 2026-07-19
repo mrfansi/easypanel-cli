@@ -1883,11 +1883,11 @@ impl App {
                 .into_iter()
                 .map(|f| f.when("Kind", "app").step(1)),
         );
-        fields.extend(
-            build_fields(None)
-                .into_iter()
-                .map(|f| f.when("Kind", "app").step(2)),
-        );
+        fields.extend(build_fields(None).into_iter().map(|f| {
+            f.when("Kind", "app")
+                .when("Source", "github,git,dockerfile")
+                .step(2)
+        }));
         // Continuing the dashboard flow: Environment then Domains. Both are accepted
         // inline by createService (`env` string, `domains` array; only `host`
         // required). The domain labels are prefixed with "Domain " so "Path" doesn't

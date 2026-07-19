@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.5] — 2026-07-19
+
+### Fixed
+
+- **Creating a service from a Docker image no longer asks how to build it.** The
+  wizard walked every new service through a Build step — install command, build
+  command, Nix packages — even when the source was a prebuilt image, which is
+  pulled and never built. Verified against a live panel: those settings were
+  stored by `createService` and then wiped the moment the image source was set,
+  so the page could only ever collect answers destined for the bin. An image
+  source now skips the step entirely (four pages instead of five), and the
+  settings are no longer sent.
+
+- **A refusal no longer outlives the field it names.** A validation message
+  stayed on the form border until the next successful step, so it survived the
+  very edit that answered it. Switching the source from Dockerfile to image left
+  "Dockerfile is still empty" pinned under a form that no longer had a Dockerfile
+  field. Any keystroke now dismisses it; a step that still can't be satisfied
+  says so again.
+
 ## [0.50.4] — 2026-07-19
 
 ### Fixed

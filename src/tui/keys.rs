@@ -727,6 +727,12 @@ impl App {
             return;
         };
         let typed = form.fields[form.focus].kind.is_typed();
+        // A validation message describes the form as it was when Enter was pressed.
+        // Keeping it until the NEXT successful Enter meant it outlived the field it
+        // named: switch Source from dockerfile to image and "Dockerfile is still
+        // empty" stayed on the border, pointing at a field no longer on screen. Any
+        // key dismisses it; a still-failing Enter re-raises it below.
+        form.error = None;
 
         match code {
             // Wizard: Esc steps back one, and cancels only on the first step. A
@@ -766,10 +772,7 @@ impl App {
             // before.
             KeyCode::Enter => match form.next_present_step() {
                 Some(step) => match validate_step(form) {
-                    Ok(()) => {
-                        form.error = None;
-                        form.goto_step(step);
-                    }
+                    Ok(()) => form.goto_step(step),
                     // Stay put. The field at fault is on THIS step, where the
                     // user can see it.
                     Err(e) => form.error = Some(e),

@@ -3545,6 +3545,63 @@ fn a_database_service_does_not_inherit_env_typed_for_an_app() {
 }
 
 #[test]
+fn a_validation_message_does_not_outlive_the_field_it_names() {
+    // The refusal used to stay on the border until the next SUCCESSFUL Enter, so
+    // it survived the very edit that answered it — and could end up naming a
+    // field that a source switch had taken off screen entirely.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["p".into()];
+    app.new_service_form(&tx);
+
+    app.form_key(KeyCode::Enter, &tx);
+    assert!(app.form.as_ref().unwrap().error.is_some(), "no name yet");
+
+    // Typing the answer dismisses the complaint about it.
+    app.form_key(KeyCode::Char('w'), &tx);
+    assert_eq!(app.form.as_ref().unwrap().error, None);
+}
+
+#[test]
+fn an_image_source_has_no_build_step() {
+    // A prebuilt image is pulled, not built. Verified against a live panel:
+    // createService STORES the build, then updateSourceImage nulls it — so the
+    // wizard was asking for nixpacks settings it knew would be discarded.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["p".into()];
+    app.new_service_form(&tx);
+
+    let set = |app: &mut App, label: &str, v: &str| {
+        app.form
+            .as_mut()
+            .unwrap()
+            .fields
+            .iter_mut()
+            .find(|f| f.label == label)
+            .unwrap()
+            .value = v.into();
+    };
+    set(&mut app, "Name", "web");
+    set(&mut app, "Install command", "npm ci");
+
+    // Built from a repo, the build step is there and is sent.
+    let form = app.form.as_ref().unwrap();
+    assert!(form.steps_present().contains(&2), "repo source builds");
+    assert!(create_build(form).is_some());
+
+    // From an image there is nothing to build: the page is gone, and the
+    // settings typed before the switch do not follow it.
+    set(&mut app, "Source", "image");
+    let form = app.form.as_ref().unwrap();
+    assert!(
+        !form.steps_present().contains(&2),
+        "no build page for image"
+    );
+    assert_eq!(create_build(form), None, "nor a build in the payload");
+}
+
+#[test]
 fn r_refetches_an_action_detail_instead_of_only_claiming_to() {
     // An action detail has no viewer_ctx, so refresh had nothing to re-send: `r`
     // reported "Refreshing..." and left a RUNNING deploy's log frozen where it

@@ -241,8 +241,12 @@ pub(super) fn create_source(form: &Form) -> std::result::Result<Option<SourceCal
 /// build; databases are created by the server with no build step. build_body()
 /// already maps each engine to its key (nixpacksVersion vs railpackVersion, etc.),
 /// so just call it and take the contents.
+/// An image source has nothing to build: the server itself nulls the build the
+/// moment `updateSourceImage` runs (verified against a live panel — the build is
+/// stored by createService, then wiped). Sending it writes a value that is
+/// guaranteed to be thrown away.
 pub(super) fn create_build(form: &Form) -> Option<Value> {
-    if form.by_label("Kind") != "app" {
+    if form.by_label("Kind") != "app" || form.by_label("Source") == "image" {
         return None;
     }
     build_body(form).ok().and_then(|b| b.get("build").cloned())
