@@ -729,6 +729,14 @@ found by a **human looking at the screen**, never by a test:
 | A test named `empty_project_shows_no_metrics_not_negative_zero` passed | `-0.0 %` had been on screen for two releases |
 | `destroy` returned OK | The deleted row stayed in the table until a manual refresh |
 
+**Walk one workflow END TO END, don't spot-check.** Five rounds of screen-by-screen
+critique had gone dry. Driving a single create-service run start to finish — pick a
+project, name it, choose each source type, submit, inspect the result — found two
+defects in one screen within minutes (v0.50.5): a Build step offered for a prebuilt
+image, and a refusal left pinned to the border after the field it named was gone.
+Critique looks at screens in isolation; a walk exercises the *transitions between*
+them, which is where state goes stale.
+
 Unit tests here check *shapes*. They cannot see a form you cannot escape, a key that
 does nothing, a column that never updates, or a 100-second wait with no feedback. So:
 
