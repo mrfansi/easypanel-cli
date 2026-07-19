@@ -729,6 +729,29 @@ found by a **human looking at the screen**, never by a test:
 | A test named `empty_project_shows_no_metrics_not_negative_zero` passed | `-0.0 %` had been on screen for two releases |
 | `destroy` returned OK | The deleted row stayed in the table until a manual refresh |
 
+### Verified capability matrix per service type (probed live, 2026-07-20)
+
+`-` = the route does NOT exist (bare `{"error":"Not found"}`); `yes` = it does (a bad
+argument answers with a tRPC `NOT_FOUND`/400 instead). Probe with a nonexistent service
+name — the two shapes stay distinguishable, cross-checked against a real service.
+
+| operation           | app | compose | box | wordpress | mysql/mariadb/postgres/mongo/redis |
+|---------------------|-----|---------|-----|-----------|------------------------------------|
+| inspectService      | yes | yes     | yes | yes       | yes                                |
+| deployService       | yes | yes     | -   | -         | -                                  |
+| restart/stop/start  | yes | yes     | yes | yes       | -                                  |
+| enable/disableService | - | -       | -   | -         | yes                                |
+| destroyService      | yes | yes     | yes | yes       | yes                                |
+| updateEnv           | yes | yes     | yes | yes       | -  (env lives in updateAdvanced)    |
+| updateAdvanced      | -   | -       | yes | -         | yes                                |
+| updateResources     | yes | -       | yes | yes       | yes                                |
+| updateBasicAuth     | yes | yes     | yes | yes       | -                                  |
+| updateRedirects     | yes | yes     | yes | yes       | -                                  |
+| updateSource*/updateBuild/enableGithubDeploy | yes | - | - | -        | -                                  |
+
+Ports, mounts and database backups are NOT under `services/*` at all — they have their own
+groups (`ports`, `mounts`, `databaseBackups`), so their absence there is not a gap.
+
 **Not every service type has the same verbs** (v0.52.0). `services/{type}/{action}Service`
 was assumed to exist for all of them. It does not: databases (mysql, mariadb, postgres,
 mongo, redis) have NO deploy/restart/stop/start route — they cycle through

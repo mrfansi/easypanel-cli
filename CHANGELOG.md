@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.1] — 2026-07-20
+
+### Fixed
+
+- **Resource limits are no longer offered on a compose service.** `compose` has no
+  `updateResources` route — a compose stack sets its limits in its own file — so
+  both the menu entry and the `L` key could only ever produce a 404. The key is
+  guarded as well as the menu, because the leaf keys stay live even where the menu
+  hides an entry, which is the gap that left the Lifecycle menu broken for
+  databases until v0.52.0.
+
+### Added
+
+- **`box` services can now edit their Config File (Advanced).** They have an
+  `updateAdvanced` route, but the editor was restricted to databases, so the panel
+  offered something the tool did not.
+
+These came out of probing every operation this tool sends against every service
+type on a live panel; the resulting capability matrix is recorded in
+`.github/AGENT_BRIEF.md`. Most assumptions held — `save_env` already routes
+databases through `updateAdvanced`, and source, build and auto-deploy were already
+app-only. Both changes above concern service types that were not present on the
+panel used, so they rest on the route probe rather than on a running service.
+
 ## [0.52.0] — 2026-07-20
 
 ### Fixed

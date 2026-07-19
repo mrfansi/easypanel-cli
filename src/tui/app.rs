@@ -1699,6 +1699,14 @@ impl App {
             self.status = "Select a service first".into();
             return;
         };
+        // The menu hides this for a compose service; `L` still reaches here, and
+        // without the same guard the leaf key would 404 where the menu no longer
+        // can — the gap that made the whole Lifecycle menu wrong for databases.
+        if !crate::lifecycle::has_resource_limits(&stype) {
+            self.status =
+                format!("A {stype} service sets its limits in the compose file, not here");
+            return;
+        }
         let _ = req.send(Req::ResourceForm {
             project,
             service,

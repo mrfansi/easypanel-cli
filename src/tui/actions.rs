@@ -312,6 +312,7 @@ impl App {
         // database runs an image EasyPanel picks, and the handler refuses with
         // "only for app services". Offering it anyway makes the menu a list of
         // things that might work.
+        let stype = self.selected_row().map(|(_, _, t)| t).unwrap_or_default();
         let mut v = Vec::new();
         if self.is_selected_type(&["app"]) {
             v.push(MenuItem::new("Source & build", |a, r| {
@@ -321,12 +322,17 @@ impl App {
                 a.on_key(KeyCode::Char('A'), r)
             }));
         }
-        v.push(MenuItem::new("Resource limit", |a, r| {
-            a.on_key(KeyCode::Char('L'), r)
-        }));
-        // Config File (Advanced) only exists on database services — that's where
-        // EasyPanel uses `configFile` (e.g. MySQL replication config).
-        if self.is_selected_type(&["mysql", "mariadb", "postgres", "mongo", "redis"]) {
+        // A compose service has no updateResources route: its limits belong in the
+        // compose file, and the entry could only ever draw a 404.
+        if crate::lifecycle::has_resource_limits(&stype) {
+            v.push(MenuItem::new("Resource limit", |a, r| {
+                a.on_key(KeyCode::Char('L'), r)
+            }));
+        }
+        // Config File (Advanced) = updateAdvanced. The databases have it (that's
+        // where a MySQL replication config lives) and so does `box`, which used to
+        // be left out even though the panel offers it there.
+        if crate::lifecycle::has_config_file(&stype) {
             v.push(MenuItem::new("Config file (Advanced)", |a, _| {
                 a.start_config_edit()
             }));
