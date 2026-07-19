@@ -1365,10 +1365,7 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
     // "press the digit on the line" had.
     // An empty collection has a PLACEHOLDER line, not a row. Highlighting it made
     // "No ports yet" look like something you had selected and could delete.
-    let has_rows = app
-        .viewer_lines
-        .iter()
-        .any(|l| l.trim_start().starts_with('['));
+    let has_rows = app.viewer_lines.iter().any(|l| is_row(l));
     if has_rows
         && app
             .viewer_ctx

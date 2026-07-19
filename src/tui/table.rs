@@ -261,3 +261,30 @@ pub(super) fn columns_that_fit(min_widths: &[u16], area_width: u16) -> Vec<usize
         .map(|(i, _)| i)
         .collect()
 }
+
+/// A collection row carries its own index: `[3] volume data -> /data`.
+///
+/// Three modules depend on that shape, and each used to spell it out for itself:
+/// the worker WRITES it, `render` DETECTS it to choose a selectable table over
+/// prose, and `keys` PARSES it back into the index a delete sends. Change the
+/// format in one of them and the other two fail SILENTLY — the list quietly
+/// renders as text, or `x` quietly stops finding anything to delete. One
+/// definition, one writer, one reader.
+pub(super) fn row_marker(i: usize) -> String {
+    format!("[{i}]")
+}
+
+/// The index a collection row carries, if it is a row at all.
+pub(super) fn row_index(line: &str) -> Option<usize> {
+    line.trim_start()
+        .strip_prefix('[')?
+        .split_once(']')?
+        .0
+        .parse()
+        .ok()
+}
+
+/// Is this line a collection ROW, rather than a placeholder or a note?
+pub(super) fn is_row(line: &str) -> bool {
+    row_index(line).is_some()
+}

@@ -10,6 +10,8 @@ use serde_json::{json, Value};
 use crate::client::EasypanelClient;
 use crate::output::field;
 
+use super::table::row_marker;
+
 // ---------- Worker (networking on a separate thread so the UI doesn't freeze) ----------
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1234,7 +1236,8 @@ pub(super) fn fetch_view(
             let v = client.call("ports", "listPorts", ps)?;
             let lines = list_or_empty(&v, "No ports yet — press n to add one", |i, p| {
                 format!(
-                    "[{i}] {} {}->{}",
+                    "{} {} {}->{}",
+                    row_marker(i),
                     field(p, "/protocol"),
                     field(p, "/published"),
                     field(p, "/target")
@@ -1252,7 +1255,7 @@ pub(super) fn fetch_view(
                     "volume" => format!("{} -> {}", field(m, "/name"), field(m, "/mountPath")),
                     _ => field(m, "/mountPath"),
                 };
-                format!("[{i}] {}  {detail}", field(m, "/type"))
+                format!("{} {}  {detail}", row_marker(i), field(m, "/type"))
             });
             lines
         }
@@ -1282,7 +1285,8 @@ pub(super) fn fetch_view(
                         "off"
                     };
                     format!(
-                        "[{i}] {} -> {}  ({kind}, {on})",
+                        "{} {} -> {}  ({kind}, {on})",
+                        row_marker(i),
                         field(r, "/regex"),
                         field(r, "/replacement")
                     )

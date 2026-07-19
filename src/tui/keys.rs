@@ -1124,8 +1124,7 @@ impl App {
                     .viewer_row
                     .selected()
                     .and_then(|i| self.viewer_lines.get(i))
-                    .and_then(|l| l.split_once(']').map(|(h, _)| h))
-                    .and_then(|h| h.strip_prefix('[').and_then(|n| n.parse::<usize>().ok()));
+                    .and_then(|l| row_index(l));
                 match picked {
                     Some(idx) => {
                         let label = format!("Delete {noun} [{idx}] from {service}?");
