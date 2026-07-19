@@ -82,13 +82,21 @@ impl App {
             // cancel, it does nothing. Closing the TUI on a single reflexive Esc
             // is losing context without warning. Quit: 'q' or Ctrl-C.
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('1') => self.screen = Screen::Dashboard,
-            KeyCode::Char('2') => self.goto(Screen::Hosts, req),
-            KeyCode::Char('3') => self.goto(Screen::Maintenance, req),
-            KeyCode::Char('4') => self.goto(Screen::Actions, req),
-            KeyCode::Char('5') => self.goto(Screen::Monitor, req),
-            KeyCode::Char('6') => self.goto(Screen::Domains, req),
-            KeyCode::Char('7') => self.goto(Screen::Projects, req),
+            // The viewer owns its digits: they delete the row with that index,
+            // which is the ONLY delete a collection has now that each one is a
+            // single screen. Taken globally, 1-7 threw the user onto another tab
+            // instead — the border said "[0-9] delete" and seven of ten digits
+            // silently navigated away. Same collision, and same fix, as ←/→
+            // below. Esc then the digit still switches tab.
+            KeyCode::Char('1') if self.screen != Screen::Viewer => self.screen = Screen::Dashboard,
+            KeyCode::Char('2') if self.screen != Screen::Viewer => self.goto(Screen::Hosts, req),
+            KeyCode::Char('3') if self.screen != Screen::Viewer => {
+                self.goto(Screen::Maintenance, req)
+            }
+            KeyCode::Char('4') if self.screen != Screen::Viewer => self.goto(Screen::Actions, req),
+            KeyCode::Char('5') if self.screen != Screen::Viewer => self.goto(Screen::Monitor, req),
+            KeyCode::Char('6') if self.screen != Screen::Viewer => self.goto(Screen::Domains, req),
+            KeyCode::Char('7') if self.screen != Screen::Viewer => self.goto(Screen::Projects, req),
             KeyCode::Tab => self.goto(self.screen.next(), req),
             // ←/→ move between tabs (e.g. Services ↔ Domains). Menus & forms grab
             // the arrows first (above), so this only applies in ordinary table
@@ -1066,8 +1074,19 @@ impl App {
                     (Some(View::Source), KeyCode::Char('b')) => Some('B'),
                     _ => None,
                 };
-                if let Some(k) = leaf {
-                    self.services_key(KeyCode::Char(k), req);
+                match leaf {
+                    Some(k) => self.services_key(KeyCode::Char(k), req),
+                    // Not every viewer takes every key. Doing nothing at all left
+                    // the user unable to tell "wrong key here" from "the app is
+                    // stuck" — so say what THIS screen accepts.
+                    None => {
+                        let keys = super::render::viewer_actions(self);
+                        self.status = if keys.trim().is_empty() {
+                            "Nothing to change on this screen".into()
+                        } else {
+                            format!("Not here —{keys}")
+                        };
+                    }
                 }
             }
             // In the Ports/Mounts viewer, a digit selects row [idx] to delete
@@ -1088,7 +1107,18 @@ impl App {
                         .viewer_lines
                         .iter()
                         .any(|l| l.starts_with(&format!("[{idx}]")));
-                    if exists {
+                    if !exists {
+                        // A digit with no row behind it used to do nothing at
+                        // all, which reads as a broken key rather than a miss.
+                        // The [10]+ ceiling is real and is named here, because a
+                        // silent wall is the worst way to meet it.
+                        self.status = match self.viewer_lines.len() {
+                            n if n > 10 => {
+                                format!("No {noun} [{idx}] — only [0]-[9] can be deleted by digit")
+                            }
+                            _ => format!("No {noun} [{idx}] here"),
+                        };
+                    } else {
                         let label = format!("Delete {noun} [{idx}] from {service}?");
                         self.confirm = Some(Confirm {
                             action: action.into(),

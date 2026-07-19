@@ -1351,7 +1351,7 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
 /// Each collection is one screen — see it, add to it, delete from it — so the
 /// screen says which keys do that. These were separate menu entries: findable,
 /// but disconnected from the thing they act on.
-fn viewer_actions(app: &App) -> String {
+pub(super) fn viewer_actions(app: &App) -> String {
     use super::worker::View;
     match app.viewer_ctx.as_ref().map(|(v, ..)| *v) {
         Some(View::Env) => " e edit ".into(),

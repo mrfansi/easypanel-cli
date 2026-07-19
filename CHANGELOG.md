@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.2] — 2026-07-19
+
+### Fixed
+
+- **`[0-9]` deleted nothing for seven digits out of ten — it threw you onto
+  another tab instead.** `1`–`7` were global tab-switch keys, so pressing `2` in
+  a Ports viewer to delete the second port jumped to the Hosts screen with the
+  port still there, no message, nothing to explain it. The viewer's own border
+  advertised `[0-9] delete` the whole time, and since each collection became a
+  single screen this is its *only* delete.
+
+  The viewer now owns its digits. `Esc` then the digit still switches tab, the
+  same arrangement `←`/`→` already use there.
+
+- **Two silent keys in the viewer now speak.** A digit with no row behind it did
+  nothing at all — indistinguishable from a broken key — and so did `a`/`e`/`b`
+  in a viewer that does not take them. They now say either that the row is absent
+  (naming the `[0]`–`[9]` limit when the list is longer) or what this particular
+  screen does accept: `Not here — e edit`.
+
 ## [0.49.1] — 2026-07-19
 
 ### Fixed

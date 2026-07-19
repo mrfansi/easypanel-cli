@@ -400,6 +400,41 @@ Still open, in the order I would take them:
    stronger fix: there is nothing left there to go stale. The status line is back to being
    only a transient toast.
 
+### UI/UX critique, round 3 (2026-07-19)
+
+Fixed in v0.49.2:
+
+- ~~**`[0-9] delete` was dead for digits 1-7**~~ — CONFIRMED on screen. They were global
+  tab keys, so seven digits out of ten threw the user onto another tab while the viewer's
+  own border advertised "[0-9] delete". Since each collection became a single screen this
+  was its ONLY delete. Same collision and same fix as ←/→ before it: the viewer now owns
+  its digits; Esc then the digit still switches tab.
+- ~~**Silent misses in the viewer**~~ — a digit with no row behind it, and `a`/`e`/`b` in a
+  viewer that does not take them, both did nothing at all. They now say what this screen
+  accepts ("Not here — e edit") or that the row is absent.
+
+Still open, with evidence, in the order I would take them:
+
+1. **Digit-delete has a hard ceiling at [9] by construction** (`keys.rs`, `idx` from one
+   char). A service with a dozen mounts cannot remove the last few. The miss is no longer
+   silent — it now says "only [0]-[9] can be deleted by digit" — but the wall is real. The
+   proper fix is a SELECTED row in the viewer (↑↓) deleted with `x`, which removes the
+   ceiling and finding 2 below at the same time. That needs the viewer to become a list
+   with a selection rather than a Paragraph, so it is its own run.
+2. **Add/delete verbs disagree across the three screens that have them**: Domains and the
+   server picker use `n`/`e`/`x`; the viewer uses `a`/`e`/`[0-9]`. `x` also means "Danger
+   menu" on Services. The viewer is the freshest surface, so it is the one users will
+   generalise from — and it generalises wrongly in both directions. Standardising the
+   viewer on `n`/`e`/`x` subsumes item 1.
+3. **The server picker truncates the URLs that exist to disambiguate servers**, at 80
+   columns, with no ellipsis — `https://panel.exa` reads as a complete host. Its own
+   comment says the name alone is not enough to be sure which host is about to be edited
+   or deleted. Every table got `columns_that_fit` and pre-truncation; this overlay was
+   missed. NOT yet verified on screen.
+4. **Unverified, worth checking**: empty states for Domains/Backups/the viewers (do they
+   say "nothing here yet, press n"?), and whether a log search with zero matches is
+   distinguishable from one still running.
+
 ### Audit: one door per thing (owner, 2026-07-19)
 
 The owner asked why "View env", "Edit env (partial)" and "Replace entire env" were three

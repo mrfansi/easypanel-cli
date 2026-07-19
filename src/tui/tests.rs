@@ -3204,3 +3204,67 @@ fn a_maintenance_row_that_failed_does_not_read_like_a_value() {
         "the [p] consequence must not be cut"
     );
 }
+
+#[test]
+fn the_viewer_owns_its_digits_instead_of_being_thrown_off_screen() {
+    // [0-9] deletes the row with that index, and since each collection became a
+    // single screen it is the ONLY delete a collection has. But 1-7 were global
+    // tab keys, so seven digits out of ten silently threw the user onto another
+    // tab while the viewer's own border advertised "[0-9] delete".
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer_from = Screen::Projects;
+    app.viewer_ctx = Some((View::Ports, "proj".into(), "web".into(), "app".into()));
+    app.viewer_lines = (0..4).map(|i| format!("[{i}] 800{i}:80/tcp")).collect();
+
+    for d in ['1', '2', '3'] {
+        app.confirm = None;
+        app.on_key(KeyCode::Char(d), &tx);
+        assert!(
+            matches!(app.screen, Screen::Viewer),
+            "digit {d} must stay in the viewer, not switch tab"
+        );
+        let label = app
+            .confirm
+            .as_ref()
+            .map(|c| c.label.clone())
+            .unwrap_or_default();
+        assert!(
+            label.contains(&format!("[{d}]")),
+            "digit {d} must offer that row: {label}"
+        );
+    }
+
+    // A digit with no row behind it says so instead of doing nothing at all.
+    app.confirm = None;
+    app.on_key(KeyCode::Char('9'), &tx);
+    assert!(app.confirm.is_none());
+    assert!(app.status.contains("No port [9]"), "got: {}", app.status);
+
+    // Outside the viewer the digits still switch tabs.
+    app.screen = Screen::Projects;
+    app.on_key(KeyCode::Char('2'), &tx);
+    assert!(
+        matches!(app.screen, Screen::Hosts),
+        "tabs still work elsewhere"
+    );
+}
+
+#[test]
+fn a_key_the_viewer_does_not_take_says_what_it_does() {
+    // `a`/`e`/`b` are per-view: `a` adds a port but means nothing in Env. Doing
+    // nothing at all read as a stuck app rather than a wrong key.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer_from = Screen::Projects;
+    app.viewer_ctx = Some((View::Env, "proj".into(), "web".into(), "app".into()));
+
+    app.on_key(KeyCode::Char('a'), &tx);
+    assert!(
+        app.status.contains("e edit"),
+        "it must name what this screen accepts, got: {}",
+        app.status
+    );
+}
