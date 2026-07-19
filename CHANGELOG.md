@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.55.0] — 2026-07-20
+
+### Added
+
+- **Choose WHICH database to back up — including all of them at once.** Reported
+  from real use: a MySQL service holds many databases, but "Backup now" only ever
+  backed up the one EasyPanel recorded when the service was created, with no way
+  to pick another.
+
+  It now asks the engine what it actually holds and offers the real list, with
+  "All N databases" first. Verified live on a service holding three: all three
+  were backed up in one confirmation, each producing its own file of its own
+  size, and no leftover schedules.
+
+  Two things made this possible, both checked rather than assumed. The backup
+  endpoint accepts ANY database name in the service, not just the configured one
+  — backing up a schema the panel had never heard of produced a real dump of
+  exactly that schema. And nothing in the API lists the databases inside a
+  service, so the engine is asked directly through the container shell
+  (`SHOW DATABASES` for MySQL/MariaDB, `pg_database` for PostgreSQL), skipping
+  the engine's own bookkeeping schemas. Engines with no such listing, or a shell
+  that cannot answer, fall back to the single name the panel knows rather than
+  becoming a dead end.
+
+  Restoring already handled this: every backup records its own database in the
+  action history, so the restore picker names it and puts each file back where it
+  belongs.
+
 ## [0.54.1] — 2026-07-20
 
 ### Fixed

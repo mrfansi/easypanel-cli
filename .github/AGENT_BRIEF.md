@@ -747,6 +747,10 @@ found by a **human looking at the screen**, never by a test:
   `local` provider stores on that host's disk, so cross-host restore needs a shared
   REMOTE provider configured in the dashboard on both hosts.
 - A backup of a database that is not running fails with `Invariant failed`.
+- **`databaseName` may be ANY database inside the service**, not just the one the panel
+  created — verified by backing up a schema the panel never knew about and getting a real
+  dump of it. Nothing in the API lists them, so ask the engine through `containerShell`
+  (`SHOW DATABASES` / `pg_database`) and drop the bookkeeping schemas.
 
 ### Cross-host restore — verified on TWO live panels (2026-07-20)
 

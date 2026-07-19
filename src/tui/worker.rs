@@ -92,6 +92,16 @@ pub(super) enum Req {
     /// way to create one over the API, so this only ever reads what the
     /// dashboard already has.
     StorageProviders,
+    /// Which databases this service actually holds.
+    ///
+    /// EasyPanel records only the one it created, but a server holds many and the
+    /// backup endpoint accepts any of them. No API lists them, so the engine is
+    /// asked directly through the container shell.
+    DatabasesIn {
+        project: String,
+        service: String,
+        stype: String,
+    },
     /// Back this database up ONCE, right now.
     ///
     /// There is no such endpoint: `runDatabaseBackup` only runs a SCHEDULE. So a
@@ -363,6 +373,12 @@ pub(super) enum Resp {
     /// backup written there can never be restored onto another host — verified,
     /// and the reason cross-server restore refuses one.
     StorageProviders(Vec<(String, String, String)>),
+    /// The databases a service holds, for choosing what to back up.
+    DatabasesIn {
+        project: String,
+        service: String,
+        names: Vec<String>,
+    },
     /// The restorable backups found on ANOTHER host. `hidden` counts the ones
     /// left out because they sit on that host's local disk and cannot be read
     /// from here — said out loud, so a short list is never mistaken for "there
@@ -659,6 +675,45 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 // Not fatal: without a provider the backup action explains itself
                 // rather than the whole TUI failing to start.
                 Err(_) => Resp::StorageProviders(Vec::new()),
+            }
+        }
+        Req::DatabasesIn {
+            project,
+            service,
+            stype,
+        } => {
+            let ps = json!({ "projectName": project, "serviceName": service });
+            let cur = match client.call(&format!("services/{stype}"), "inspectService", ps) {
+                Ok(v) => v,
+                Err(e) => return Resp::Err(e.to_string()),
+            };
+            let configured = field(&cur, "/databaseName");
+            let cmd = crate::backup::list_databases_command(
+                &stype,
+                &field(&cur, "/user"),
+                &field(&cur, "/rootPassword"),
+            );
+            // No listing for this engine, or the shell could not answer: fall
+            // back to the ONE name the panel knows. Better a working backup of
+            // the obvious database than a dead end.
+            let names = match cmd {
+                Some(c) => match super::terminal::run_once(client, &project, &service, &c) {
+                    Ok(out) => {
+                        let n = crate::backup::parse_databases(&out);
+                        if n.is_empty() {
+                            vec![configured.clone()]
+                        } else {
+                            n
+                        }
+                    }
+                    Err(_) => vec![configured.clone()],
+                },
+                None => vec![configured.clone()],
+            };
+            Resp::DatabasesIn {
+                project,
+                service,
+                names,
             }
         }
         Req::BackupNow {

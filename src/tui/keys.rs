@@ -873,19 +873,26 @@ impl App {
             }
             // The file was chosen in the picker, not typed, so its three parts
             // travel in `pending_restore` rather than being squeezed into Confirm.
-            "backup" => match self.pending_backup.take() {
-                Some((database, provider)) => {
-                    let path = crate::backup::default_path(&c.project);
-                    req.send(Req::BackupNow {
-                        project: c.project,
-                        service: c.service,
-                        database,
-                        provider,
-                        path,
-                    })
+            // One request per database: the endpoint takes a single name, and a
+            // failure on one must not silently take the others with it.
+            "backup" => {
+                let names = std::mem::take(&mut self.pending_backups);
+                if names.is_empty() {
+                    return;
                 }
-                None => return,
-            },
+                let path = crate::backup::default_path(&c.project);
+                for database in names {
+                    let _ = req.send(Req::BackupNow {
+                        project: c.project.clone(),
+                        service: c.service.clone(),
+                        database,
+                        provider: c.stype.clone(),
+                        path: path.clone(),
+                    });
+                }
+                self.status = "Backing up...".into();
+                return;
+            }
             "restore" => match self.pending_restore.take() {
                 Some((database, provider, path)) => req.send(Req::RestoreBackup {
                     project: c.project,
@@ -1139,10 +1146,14 @@ impl App {
             KeyCode::Esc => {
                 self.restore_target = None;
                 self.restore_files.clear();
+                self.backup_target = None;
+                self.backup_names.clear();
                 self.screen = self.viewer_from;
             }
             // In the restore picker, Enter acts on the selected backup.
             KeyCode::Enter if self.restore_target.is_some() => self.ask_restore(),
+            // …and in the database picker, on the selected database.
+            KeyCode::Enter if self.backup_target.is_some() => self.ask_backup(),
             // Scrolling up releases the follow: otherwise a newly arriving log line
             // would drag the view back to the bottom right as the user is reading
             // something above.

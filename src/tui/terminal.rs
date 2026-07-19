@@ -92,6 +92,53 @@ pub(super) fn base64(input: &[u8]) -> String {
     out
 }
 
+/// Run ONE command in a container and return what it printed.
+///
+/// The interactive session in `spawn_session` is a long-lived conversation; this
+/// is the opposite — connect, let the command run, collect, close. It exists so
+/// the tool can ask a database engine what schemas it holds, which no EasyPanel
+/// endpoint will tell you.
+///
+/// Output stops being collected after `quiet` with nothing new, so a command that
+/// hangs (a database still starting) returns what it managed to say instead of
+/// blocking the worker forever.
+pub(super) fn run_once(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    command: &str,
+) -> Result<String> {
+    const QUIET: Duration = Duration::from_millis(1200);
+    const CAP: Duration = Duration::from_secs(20);
+
+    let url = ws_url(client, project, service, command)?;
+    let (mut ws, _) = tungstenite::connect(&url)?;
+    set_read_timeout(&mut ws, Duration::from_millis(200));
+    let (start, mut last) = (std::time::Instant::now(), std::time::Instant::now());
+    let mut out = String::new();
+    while start.elapsed() < CAP && last.elapsed() < QUIET {
+        match ws.read() {
+            Ok(Message::Text(t)) => {
+                if let Some(o) = serde_json::from_str::<Value>(&t)
+                    .ok()
+                    .and_then(|v| v.get("output").and_then(Value::as_str).map(String::from))
+                {
+                    out.push_str(&o);
+                    last = std::time::Instant::now();
+                }
+            }
+            Ok(Message::Close(_)) => break,
+            Ok(_) => {}
+            // A read timeout is the normal quiet case, not a failure.
+            Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+    }
+    let _ = ws.close(None);
+    Ok(out)
+}
+
 /// The shell command that opens a service's database client using its already
 /// stored credentials (root/superuser). The password is passed via an env var
 /// (doesn't show up in `ps`, doesn't trigger an "insecure" warning), safely

@@ -272,8 +272,13 @@ pub(super) struct App {
     pub(super) restore_files: Vec<(String, String, String)>,
     /// Which service the picker would restore INTO.
     pub(super) restore_target: Option<(String, String)>,
-    /// The backup a confirmation is about to take: (database, providerId).
-    pub(super) pending_backup: Option<(String, String)>,
+    /// The databases the picker is offering, and which service they belong to.
+    pub(super) backup_names: Vec<String>,
+    pub(super) backup_target: Option<(String, String)>,
+    /// The provider a backup will go to: (id, how it is described to the user).
+    pub(super) backup_provider: Option<(String, String)>,
+    /// The databases a confirmation is about to back up.
+    pub(super) pending_backups: Vec<String>,
     /// The backup a confirmation is currently asking about: (database, provider,
     /// path). Its own field rather than smuggled through `Confirm`, which has no
     /// room for three values and would have to encode them into one.
@@ -382,7 +387,10 @@ impl App {
             viewer_follow: false,
             restore_files: Vec::new(),
             restore_target: None,
-            pending_backup: None,
+            backup_names: Vec::new(),
+            backup_target: None,
+            backup_provider: None,
+            pending_backups: Vec::new(),
             pending_restore: None,
             storage_providers: Vec::new(),
             marked: HashSet::new(),
@@ -748,6 +756,11 @@ impl App {
             // error: this database has never been backed up, and saying so beats
             // an empty box.
             Resp::StorageProviders(list) => self.storage_providers = list,
+            Resp::DatabasesIn {
+                project,
+                service,
+                names,
+            } => self.open_backup_picker(project, service, names),
             Resp::BackupHistoryFrom {
                 src_name,
                 project,
@@ -1696,6 +1709,7 @@ impl App {
     /// scrolled like prose in another.
     pub(super) fn viewer_is_collection(&self) -> bool {
         self.restore_target.is_some()
+            || self.backup_target.is_some()
             || self
                 .viewer_ctx
                 .as_ref()
@@ -1703,13 +1717,9 @@ impl App {
     }
 
     /// Back the selected database up once, into the panel's storage provider.
-    pub(super) fn backup_now(&mut self) {
+    pub(super) fn backup_now(&mut self, req: &Sender<Req>) {
         let Some((project, service, stype)) = self.selected_row() else {
             self.status = "Select a database first".into();
-            return;
-        };
-        let Some(database) = self.selected_database_name() else {
-            self.status = format!("A {stype} service has no database to back up");
             return;
         };
         let Some((id, name, ptype)) = crate::backup::preferred_provider(&self.storage_providers)
@@ -1718,21 +1728,99 @@ impl App {
                 "No storage provider configured — add one in the EasyPanel dashboard first".into();
             return;
         };
-        // Named before it runs, not after. Which provider a backup lands on
-        // decides whether it can EVER be restored onto another host, and picking
-        // one silently is how that is discovered on the bad day.
-        let where_to = if crate::backup::is_remote(ptype) {
-            format!("{name} — restorable on any host sharing it")
-        } else {
-            format!("{name} — stays on THIS host, cannot be restored elsewhere")
+        // Which provider a backup lands on decides whether it can EVER be
+        // restored onto another host, so it is named before anything runs.
+        self.backup_provider = Some((
+            id.clone(),
+            if crate::backup::is_remote(ptype) {
+                format!("{name} — restorable on any host sharing it")
+            } else {
+                format!("{name} — stays on THIS host, cannot be restored elsewhere")
+            },
+        ));
+        // A service holds many databases; the panel records only the one it
+        // created. Ask the engine what is actually in there rather than assuming.
+        let _ = req.send(Req::DatabasesIn {
+            project,
+            service,
+            stype,
+        });
+        self.status = "Reading the databases in this service...".into();
+    }
+
+    /// Ask which database to back up, once the engine has said what it holds.
+    ///
+    /// "All databases" leads, because backing up everything is the common intent
+    /// and doing it by hand meant repeating the whole flow per schema.
+    fn open_backup_picker(&mut self, project: String, service: String, names: Vec<String>) {
+        let Some((_, where_to)) = self.backup_provider.clone() else {
+            return;
         };
-        self.pending_backup = Some((database.clone(), id.clone()));
+        let mut lines = vec![
+            format!("Back up from {project}/{service} to {where_to}"),
+            String::new(),
+        ];
+        lines.push(format!("{} All {} databases", row_marker(0), names.len()));
+        lines.extend(
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| format!("{} {n}", row_marker(i + 1))),
+        );
+        self.backup_names = names;
+        self.backup_target = Some((project, service));
+        self.viewer_title = "Which database?".into();
+        self.viewer_lines = lines;
+        self.viewer_scroll = 0;
+        self.viewer_hscroll = 0;
+        let first = self.viewer_lines.iter().position(|l| is_row(l));
+        self.viewer_row = TableState::default().with_selected(first);
+        self.viewer_ctx = None;
+        self.viewer_from = self.screen;
+        self.screen = Screen::Viewer;
+        self.status = "[Enter] back up the selected one · [Esc] cancel".into();
+    }
+
+    /// Confirm the backup of whatever the picker has selected.
+    pub(super) fn ask_backup(&mut self) {
+        let Some((project, service)) = self.backup_target.clone() else {
+            return;
+        };
+        let Some((provider, where_to)) = self.backup_provider.clone() else {
+            return;
+        };
+        // Index from the printed `[n]`, not the cursor position: row 0 is a
+        // heading here too.
+        let Some(i) = self
+            .viewer_row
+            .selected()
+            .and_then(|r| self.viewer_lines.get(r))
+            .and_then(|l| row_index(l))
+        else {
+            self.status = "Select a database row first".into();
+            return;
+        };
+        // Row 0 is "All", so the real names start at 1.
+        let chosen: Vec<String> = if i == 0 {
+            self.backup_names.clone()
+        } else {
+            match self.backup_names.get(i - 1) {
+                Some(n) => vec![n.clone()],
+                None => return,
+            }
+        };
+        let what = if chosen.len() == 1 {
+            format!("'{}'", chosen[0])
+        } else {
+            format!("{} databases ({})", chosen.len(), chosen.join(", "))
+        };
+        self.pending_backups = chosen;
         self.confirm = Some(Confirm {
             action: "backup".into(),
             project,
             service,
-            stype: String::new(),
-            label: format!("Back '{database}' up to {where_to}?"),
+            stype: provider,
+            label: format!("Back {what} up to {where_to}?"),
         });
     }
 
@@ -1787,13 +1875,6 @@ impl App {
         };
         let _ = req.send(Req::BackupHistory { project, service });
         self.status = "Reading backup history...".into();
-    }
-
-    /// The database a service holds, for backup/restore. Databases carry it as
-    /// `databaseName`; anything else has none.
-    fn selected_database_name(&self) -> Option<String> {
-        let name = field(self.selected_service()?, "/databaseName");
-        (!name.is_empty()).then_some(name)
     }
 
     /// Ask before restoring the backup under the cursor.

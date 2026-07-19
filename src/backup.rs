@@ -150,6 +150,60 @@ pub fn restore_body(
     })
 }
 
+/// MySQL/MariaDB and PostgreSQL keep their own bookkeeping schemas; nobody wants
+/// to back those up, and restoring one would be actively harmful.
+const INTERNAL: &[&str] = &[
+    "information_schema",
+    "mysql",
+    "performance_schema",
+    "sys",
+    "postgres",
+    "template0",
+    "template1",
+];
+
+/// The databases a service actually holds, from a `SHOW DATABASES`-style listing.
+///
+/// EasyPanel records ONE `databaseName` per service — the one it created — but a
+/// server happily holds many, and `createDatabaseBackup` accepts any of them
+/// (verified live: backing up a schema the panel never heard of produced a real
+/// dump of exactly that schema). There is no API that lists them, so the list is
+/// read from the database itself through the container shell.
+pub fn parse_databases(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| {
+            !l.is_empty()
+                && !INTERNAL.contains(&l.to_ascii_lowercase().as_str())
+                // Shell noise: warnings, prompts, anything with a space or a
+                // colon is not a database name.
+                && !l.contains(' ')
+                && !l.contains(':')
+        })
+        .map(String::from)
+        .collect()
+}
+
+/// The command that lists a service's databases, for the engines where one
+/// exists. `None` = this engine has no such listing here, so the caller falls
+/// back to the single name the panel recorded.
+pub fn list_databases_command(stype: &str, user: &str, password: &str) -> Option<String> {
+    let q = |s: &str| s.replace('\'', "'\\''");
+    match stype {
+        "mysql" | "mariadb" => Some(format!(
+            "MYSQL_PWD='{}' mysql -uroot -N -B -e 'SHOW DATABASES'",
+            q(password)
+        )),
+        "postgres" => Some(format!(
+            "PGPASSWORD='{}' psql -U {} -tAc 'SELECT datname FROM pg_database WHERE NOT datistemplate'",
+            q(password),
+            if user.is_empty() { "postgres" } else { user }
+        )),
+        _ => None,
+    }
+}
+
 /// A `local` provider writes to the host's own disk, so nothing on another host
 /// can read it. Anything else is remote and therefore shareable.
 pub fn is_remote(provider_type: &str) -> bool {
@@ -230,6 +284,29 @@ mod tests {
         assert_eq!(all.len(), 2, "both services, no failed run");
         assert_eq!(all[0].0, "shopco/db");
         assert_eq!(all[1].0, "shopco/other");
+    }
+
+    #[test]
+    fn listing_databases_skips_the_engines_own_bookkeeping() {
+        // Real `SHOW DATABASES` output, plus the warning mysql prints on stderr.
+        let out =
+            "mysql: [Warning] Using a password on the command line interface can be insecure.\n\
+                   information_schema\nmysql\nperformance_schema\nsys\ntoko\ngudang\nutama\n";
+        assert_eq!(parse_databases(out), vec!["toko", "gudang", "utama"]);
+        // Postgres bookkeeping goes too.
+        assert_eq!(
+            parse_databases("postgres\ntemplate0\ntemplate1\nshop\n"),
+            vec!["shop"]
+        );
+    }
+
+    #[test]
+    fn only_engines_that_can_list_their_databases_are_asked_to() {
+        assert!(list_databases_command("mysql", "app", "pw").is_some());
+        assert!(list_databases_command("postgres", "app", "pw").is_some());
+        // Redis has no schemas to choose between; mongo is not offered one here.
+        assert!(list_databases_command("redis", "", "pw").is_none());
+        assert!(list_databases_command("mongo", "u", "pw").is_none());
     }
 
     #[test]
