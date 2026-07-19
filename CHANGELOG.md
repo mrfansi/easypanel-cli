@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.0] — 2026-07-20
+
+### Added
+
+- **Bulk actions: deploy, force rebuild, restart, stop or start many services at
+  once.** Services are chosen three ways, all feeding one set: `v` marks the row
+  under the cursor — or, on a project header, every service in that project; `V`
+  marks everything the current filter shows; `Esc` clears the marks. Marked rows
+  carry a ✓ and the count stays in the table title, so a set built across several
+  screens never becomes invisible. The action menu then offers the bulk entries at
+  the top, each naming its count, and the confirmation lists the services it is
+  about to touch — a bulk action is never reachable by the same words as a
+  single-service one.
+
+  EasyPanel has no batch endpoint (every candidate route answers 404), so this is
+  a client-side fan-out, capped so marking a whole panel can't open one connection
+  per service at once. Because each call can fail on its own, **a partial failure
+  is reported per service**: any run with a failure opens a list naming what broke
+  and why (`✗ project/service — [404] Service not found.`) alongside what
+  succeeded, instead of a "9 of 12" that hides which three. Deploys are dispatched
+  rather than awaited, as a single deploy already is — their builds outlive any
+  proxy timeout.
+
 ## [0.50.5] — 2026-07-19
 
 ### Fixed

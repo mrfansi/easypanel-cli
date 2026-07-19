@@ -77,6 +77,17 @@ pub(super) enum Req {
         /// Ignored by every other action — the endpoint takes no such field.
         force: bool,
     },
+    /// The same lifecycle action across many services at once.
+    ///
+    /// EasyPanel has NO batch endpoint — every candidate (`projects/deployProject`,
+    /// `services/deployMany`, …) answers with the bare 404 an unknown route gives,
+    /// not the 400 a real op gives for a bad argument. So bulk is a client-side
+    /// fan-out over the per-service calls, and each one can fail on its own.
+    Bulk {
+        targets: Vec<(String, String, String)>,
+        action: String,
+        force: bool,
+    },
     /// All services across projects in a single call.
     AllServices,
     /// Load a project's services for a form dropdown (not the Projects panel).
@@ -292,6 +303,17 @@ pub(super) enum Resp {
     AllServices {
         projects: Vec<String>,
         services: Vec<Value>,
+    },
+    /// The outcome of a bulk action, per service.
+    ///
+    /// Failures are carried individually rather than counted: "9 of 12 done" tells
+    /// you something broke but not WHAT, and a bulk action that half-worked is
+    /// exactly when the names matter. `ok` holds "project/service", `failed` holds
+    /// it with the reason.
+    BulkDone {
+        action: String,
+        ok: Vec<String>,
+        failed: Vec<(String, String)>,
     },
     ServicesFor(String, Vec<String>),
     /// Data to open the resource limit form: the inspectService result.
@@ -537,6 +559,11 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
+        Req::Bulk {
+            targets,
+            action,
+            force,
+        } => bulk_action(client, resp_tx, targets, &action, force),
         Req::LogSearch { query } => log_search(client, &query),
         Req::Repos => Resp::Repos(github_repos(client)),
         Req::ConfigForm {
@@ -1131,6 +1158,101 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
+    }
+}
+
+/// One lifecycle action across many services.
+///
+/// Two different shapes hide behind one call, because the endpoints behave
+/// differently (both measured against a live panel):
+///
+/// - **deploy** BLOCKS until the build finishes — 51 seconds for a trivial
+///   Dockerfile, minutes for anything real, past every proxy limit. Awaiting a
+///   dozen of those would freeze the UI for as long as the slowest build. They are
+///   DISPATCHED like a single deploy: fired on their own threads, reported as
+///   started, with only outright refusals (4xx) coming back later. The Status
+///   column and the Actions tab carry the real outcome.
+/// - **start/stop/restart** return when the server is done (0.2-5 s), so these ARE
+///   awaited and reported per service — that is the whole point of a bulk run.
+///
+/// `CHUNK` bounds how many run at once. Without it, marking a whole panel would
+/// open one connection per service simultaneously.
+/// ponytail: fixed chunks, not a real pool — the tail of each chunk waits for its
+/// slowest member. Swap in a pool if bulk over hundreds of services gets slow.
+fn bulk_action(
+    client: &EasypanelClient,
+    resp_tx: &Sender<Resp>,
+    targets: Vec<(String, String, String)>,
+    action: &str,
+    force: bool,
+) -> Resp {
+    const CHUNK: usize = 6;
+
+    if targets.is_empty() {
+        return Resp::Err("Nothing marked".into());
+    }
+
+    if action == "deploy" {
+        for (project, service, stype) in &targets {
+            let c = client.clone();
+            let tx = resp_tx.clone();
+            let (grp, p, s) = (
+                format!("services/{stype}"),
+                project.clone(),
+                service.clone(),
+            );
+            let input = json!({ "projectName": p, "serviceName": s, "forceRebuild": force });
+            let (pe, se) = (p.clone(), s.clone());
+            thread::spawn(move || {
+                if let Err(e) = c.call(&grp, "deployService", input) {
+                    if !crate::client::gave_up_waiting(&e) {
+                        let _ = tx.send(Resp::Err(format!("Deploy {pe}/{se} failed: {e}")));
+                    }
+                }
+            });
+        }
+        return Resp::Done(
+            format!(
+                "Deploy started for {} services — watch the Status column",
+                targets.len()
+            ),
+            Refresh::None,
+        );
+    }
+
+    let mut ok = Vec::new();
+    let mut failed = Vec::new();
+    for group in targets.chunks(CHUNK) {
+        let handles: Vec<_> = group
+            .iter()
+            .map(|(project, service, stype)| {
+                let c = client.clone();
+                let (grp, op) = (format!("services/{stype}"), format!("{action}Service"));
+                let (p, s) = (project.clone(), service.clone());
+                thread::spawn(move || {
+                    let input = json!({ "projectName": p, "serviceName": s });
+                    let name = format!("{p}/{s}");
+                    match c.call(&grp, &op, input) {
+                        Ok(_) => Ok(name),
+                        Err(e) => Err((name, e.to_string())),
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            // A panicked thread is a failure too, not a silent omission: the
+            // summary must account for every service that was marked.
+            match h.join() {
+                Ok(Ok(name)) => ok.push(name),
+                Ok(Err(f)) => failed.push(f),
+                Err(_) => failed.push(("(unknown)".into(), "worker thread panicked".into())),
+            }
+        }
+    }
+    Resp::BulkDone {
+        action: action.to_string(),
+        ok,
+        failed,
     }
 }
 

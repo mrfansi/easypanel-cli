@@ -77,6 +77,13 @@ impl App {
             // (not just clearing its scope filter).
             KeyCode::Esc if self.domain_scope.is_some() => self.goto(Screen::Projects, req),
             KeyCode::Esc if !self.filter.is_empty() => self.clear_filter(),
+            // Marks outlive the filter that helped make them, so Esc clears them
+            // too — after the filter, since a filtered view is usually the thing
+            // the user wants out of first.
+            KeyCode::Esc if !self.marked.is_empty() => {
+                self.marked.clear();
+                self.status = "Marks cleared".into();
+            }
             // Esc does NOT quit the app. Esc means "cancel": it closes a form,
             // dropdown, confirmation, or filter — and when there's nothing to
             // cancel, it does nothing. Closing the TUI on a single reflexive Esc
@@ -838,6 +845,22 @@ impl App {
             "maint:systemPrune" => req.send(Req::MaintAction("systemPrune")),
             "maint:cleanupDockerImages" => req.send(Req::MaintAction("cleanupDockerImages")),
             "maint:cleanupDockerBuilder" => req.send(Req::MaintAction("cleanupDockerBuilder")),
+            // A bulk run reads its targets from the marks at the moment it is
+            // CONFIRMED, not when it was offered: the confirmation shows a count
+            // the user just agreed to, and re-deriving it here keeps the two from
+            // ever disagreeing. `stype` carries the force flag for a bulk rebuild.
+            bulk if bulk.starts_with("bulk-") => {
+                let targets = self.bulk_targets();
+                if targets.is_empty() {
+                    self.status = "Nothing marked any more — cancelled".into();
+                    return;
+                }
+                req.send(Req::Bulk {
+                    targets,
+                    action: bulk.trim_start_matches("bulk-").to_string(),
+                    force: c.stype == "force",
+                })
+            }
             // Same endpoint as a plain deploy, with the layer cache turned off.
             // Carried as its own action name rather than a flag on Confirm, which
             // a dozen other call sites construct.
@@ -938,6 +961,11 @@ impl App {
     pub(super) fn services_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
             KeyCode::Enter => self.open_view(View::Logs, req),
+            // Marking, the three ways of choosing a set: `v` takes the row (or a
+            // whole project from its header), `V` takes everything the filter has
+            // left on screen. Space then acts on them — see service_menu().
+            KeyCode::Char('v') => self.toggle_mark(),
+            KeyCode::Char('V') => self.mark_all_visible(),
             // These seven letters open a group MENU (not a single action) — the
             // heart of the UX consolidation: related actions no longer scatter into
             // loose keys. Their leaf keys (E/w/./p/P/f/F/H/b/U/B/A/L/M/y/R/S/T/X)

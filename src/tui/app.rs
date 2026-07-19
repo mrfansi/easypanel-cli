@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
@@ -256,6 +256,14 @@ pub(super) struct App {
     /// this a new line arrives off-screen and the tail looks dead.
     pub(super) viewer_follow: bool,
 
+    /// Services marked for a bulk action, as (project, service).
+    ///
+    /// The service TYPE is deliberately not stored: it is looked up at dispatch
+    /// time, so a mark can never carry a stale group into the API call. A mark
+    /// for a service that has since disappeared simply finds nothing and is
+    /// dropped — see `bulk_targets`.
+    pub(super) marked: HashSet<(String, String)>,
+
     /// The filter text for the active screen's table ("" = no filter).
     pub(super) filter: String,
     /// Currently typing a filter (keys go to the filter, not to the screen).
@@ -344,6 +352,7 @@ impl App {
             viewer_ctx: None,
             log_cursor: None,
             viewer_follow: false,
+            marked: HashSet::new(),
             filter: String::new(),
             filter_input: false,
             help: false,
@@ -701,6 +710,40 @@ impl App {
                         );
                     }
                 }
+            }
+            // A bulk run that fully succeeded is a status line. One with ANY
+            // failure opens the list instead: a message that fades cannot carry
+            // three service names, and "9 of 12" without the missing three is the
+            // half-truth this project keeps having to fix.
+            Resp::BulkDone { action, ok, failed } => {
+                self.marked.clear();
+                let _ = req.send(Req::AllServices);
+                if failed.is_empty() {
+                    self.status = format!("{} done on {} services", cap(&action), ok.len());
+                    return;
+                }
+                let mut lines = vec![
+                    format!(
+                        "{}: {} succeeded, {} FAILED",
+                        cap(&action),
+                        ok.len(),
+                        failed.len()
+                    ),
+                    String::new(),
+                ];
+                lines.extend(failed.iter().map(|(name, why)| format!("✗ {name} — {why}")));
+                if !ok.is_empty() {
+                    lines.push(String::new());
+                    lines.extend(ok.iter().map(|name| format!("✓ {name}")));
+                }
+                self.viewer_title = format!("Bulk {action} — {} failed", failed.len());
+                self.viewer_lines = lines;
+                self.viewer_scroll = 0;
+                self.viewer_hscroll = 0;
+                self.viewer_row = TableState::default();
+                self.viewer_ctx = None;
+                self.screen = Screen::Viewer;
+                self.status = format!("{} of {} failed", failed.len(), failed.len() + ok.len());
             }
             Resp::Viewer(title, lines) => {
                 self.viewer_title = title;
@@ -1436,6 +1479,138 @@ impl App {
                 )
             })
             .collect()
+    }
+
+    /// Ask before running `action` on every marked service.
+    ///
+    /// The confirmation NAMES them (up to a few) instead of only counting: marks
+    /// are made over time and scroll off screen, so "Restart 12 services?" asks
+    /// the user to approve a set they can no longer see.
+    pub(super) fn open_bulk_confirm(&mut self, action: &str, force: bool) {
+        let targets = self.bulk_targets();
+        if targets.is_empty() {
+            self.status = "Mark some services first — [v] marks the row".into();
+            return;
+        }
+        const NAMED: usize = 5;
+        let mut names: Vec<String> = targets
+            .iter()
+            .take(NAMED)
+            .map(|(p, s, _)| format!("{p}/{s}"))
+            .collect();
+        if targets.len() > NAMED {
+            names.push(format!("and {} more", targets.len() - NAMED));
+        }
+        let verb = if force {
+            "Force rebuild".to_string()
+        } else {
+            cap(action)
+        };
+        self.confirm = Some(Confirm {
+            action: format!("bulk-{action}"),
+            project: String::new(),
+            service: String::new(),
+            // Reusing `stype` as the force flag, the same way port/mount delete
+            // stash an index in it.
+            stype: if force { "force".into() } else { String::new() },
+            label: format!("{verb} {} services? {}", targets.len(), names.join(", ")),
+        });
+    }
+
+    /// Is this service marked for a bulk action?
+    pub(super) fn is_marked(&self, project: &str, service: &str) -> bool {
+        self.marked
+            .contains(&(project.to_string(), service.to_string()))
+    }
+
+    /// Toggle the mark under the cursor.
+    ///
+    /// On a project header this covers the whole project, which is the common
+    /// case ("restart everything here") and needs no per-row work. It marks all
+    /// of them unless they are ALREADY all marked, in which case it clears them
+    /// — otherwise a second press on a fully marked project would do nothing and
+    /// read as a dead key.
+    pub(super) fn toggle_mark(&mut self) {
+        if let Some((project, service, _)) = self.selected_row() {
+            if !self.marked.remove(&(project.clone(), service.clone())) {
+                self.marked.insert((project, service));
+            }
+        } else if let Some(project) = self.selected_project() {
+            let kids: Vec<(String, String)> = self
+                .project_services(&project)
+                .into_iter()
+                .map(|(p, s, _)| (p, s))
+                .collect();
+            if kids.is_empty() {
+                self.status = format!("{project} has no services to mark");
+                return;
+            }
+            if kids.iter().all(|k| self.marked.contains(k)) {
+                self.marked.retain(|k| !kids.contains(k));
+            } else {
+                self.marked.extend(kids);
+            }
+        } else {
+            self.status = "Select a row first".into();
+            return;
+        }
+        self.report_marks();
+    }
+
+    /// Mark every service the filter currently shows — the third way of choosing
+    /// a set: narrow the table, then take what is left. Marks everything unless
+    /// it is all marked already, so the same key clears it again.
+    pub(super) fn mark_all_visible(&mut self) {
+        let shown: Vec<(String, String)> = self
+            .visible_rows()
+            .iter()
+            .filter_map(|l| match l {
+                Line2::Service(s) => Some((field(s, "/projectName"), field(s, "/name"))),
+                Line2::Project { .. } => None,
+            })
+            .collect();
+        if shown.is_empty() {
+            self.status = "Nothing to mark".into();
+            return;
+        }
+        if shown.iter().all(|k| self.marked.contains(k)) {
+            self.marked.retain(|k| !shown.contains(k));
+        } else {
+            self.marked.extend(shown);
+        }
+        self.report_marks();
+    }
+
+    /// Say what is marked. A mark is a small ✓ far from the cursor, so a count in
+    /// the status line is the only feedback that survives a long table.
+    fn report_marks(&mut self) {
+        self.status = match self.marked.len() {
+            0 => "No services marked".into(),
+            n => format!("{n} service(s) marked — [Space] to act on them, [Esc] to clear"),
+        };
+    }
+
+    /// The services a bulk action would hit, with their CURRENT type.
+    ///
+    /// Marks are looked up against the live service list rather than trusted, so
+    /// a service destroyed elsewhere (or by an earlier bulk run) silently drops
+    /// out instead of sending a call for something that no longer exists.
+    /// Sorted, so the confirmation lists them in the order the table shows.
+    pub(super) fn bulk_targets(&self) -> Vec<(String, String, String)> {
+        let mut out: Vec<(String, String, String)> = self
+            .all_services
+            .iter()
+            .map(|s| {
+                (
+                    field(s, "/projectName"),
+                    field(s, "/name"),
+                    field(s, "/type"),
+                )
+            })
+            .filter(|(p, s, _)| self.is_marked(p, s))
+            .collect();
+        out.sort();
+        out
     }
 
     /// Open the add-redirect form for the highlighted web service.

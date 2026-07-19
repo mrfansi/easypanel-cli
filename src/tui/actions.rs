@@ -141,7 +141,53 @@ impl App {
     ///
     /// On Projects this is a nested menu: related actions are grouped
     /// (Env/Networking/Build/…) so they don't scatter into 25 loose keys.
+    /// Bulk entries, shown ONLY while something is marked.
+    ///
+    /// They sit at the top of whatever menu opens, and every label carries the
+    /// count. A bulk action must never be reachable by the same words as a
+    /// single-service one: "Restart" acting on 12 services because of marks made
+    /// several screens ago is precisely the silent action this UI refuses.
+    fn bulk_items(&self) -> Vec<MenuItem> {
+        let n = self.marked.len();
+        if n == 0 {
+            return vec![];
+        }
+        vec![
+            MenuItem::new(format!("Deploy {n} marked services"), |a, _| {
+                a.open_bulk_confirm("deploy", false)
+            }),
+            MenuItem::new(format!("Force rebuild {n} marked services"), |a, _| {
+                a.open_bulk_confirm("deploy", true)
+            }),
+            MenuItem::new(format!("Restart {n} marked services"), |a, _| {
+                a.open_bulk_confirm("restart", false)
+            }),
+            MenuItem::new(format!("Stop {n} marked services"), |a, _| {
+                a.open_bulk_confirm("stop", false)
+            }),
+            MenuItem::new(format!("Start {n} marked services"), |a, _| {
+                a.open_bulk_confirm("start", false)
+            }),
+            MenuItem::new(format!("Clear the {n} marks"), |a, _| {
+                a.marked.clear();
+                a.status = "Marks cleared".into();
+            }),
+        ]
+    }
+
     pub(super) fn context_items(&self) -> Vec<MenuItem> {
+        let bulk = self.bulk_items();
+        if !bulk.is_empty() && self.screen == Screen::Projects {
+            // The single-service actions stay reachable underneath: marking some
+            // rows must not lock you out of acting on the one under the cursor.
+            let mut items = bulk;
+            items.extend(self.single_context_items());
+            return items;
+        }
+        self.single_context_items()
+    }
+
+    fn single_context_items(&self) -> Vec<MenuItem> {
         match self.screen {
             Screen::Projects if self.selected_row().is_some() => self.service_menu(),
             // A project header row: the actions that apply to the PROJECT. It used

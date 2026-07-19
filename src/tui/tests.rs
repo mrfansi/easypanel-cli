@@ -410,6 +410,74 @@ fn replica_stats_distinguish_down_from_stopped() {
     assert_eq!(service_status(&off, None, Some((0, 1))), "disabled");
 }
 
+/// An app with two projects, the cursor on the first row (a project header).
+fn marking_app() -> App {
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["alpha".into(), "beta".into()];
+    app.all_services = vec![
+        svc("alpha", "api", "app"),
+        svc("alpha", "web", "app"),
+        svc("beta", "db", "mysql"),
+    ];
+    app.services_table.select(Some(0));
+    app
+}
+
+#[test]
+fn marking_a_project_header_marks_everything_under_it() {
+    let mut app = marking_app();
+    // Row 0 is the "alpha" header, not a service.
+    assert!(app.selected_row().is_none());
+    app.toggle_mark();
+    assert_eq!(app.marked.len(), 2, "both of alpha's services");
+    assert!(app.is_marked("alpha", "api") && app.is_marked("alpha", "web"));
+    assert!(!app.is_marked("beta", "db"));
+
+    // Pressing it again on a fully marked project clears it, rather than being
+    // a key that visibly does nothing.
+    app.toggle_mark();
+    assert!(app.marked.is_empty());
+}
+
+#[test]
+fn marking_follows_the_filter_and_forgets_services_that_vanish() {
+    let mut app = marking_app();
+    app.filter = "alpha".into();
+    app.mark_all_visible();
+    assert_eq!(app.marked.len(), 2, "only what the filter shows");
+
+    // The set a bulk action would hit carries each service's CURRENT type,
+    // resolved at dispatch, so the API group can't go stale.
+    let targets = app.bulk_targets();
+    assert_eq!(
+        targets,
+        vec![
+            ("alpha".to_string(), "api".to_string(), "app".to_string()),
+            ("alpha".to_string(), "web".to_string(), "app".to_string()),
+        ]
+    );
+
+    // A service destroyed elsewhere drops out of the targets instead of being
+    // sent as a call for something that no longer exists.
+    app.all_services.retain(|s| field(s, "/name") != "api");
+    assert_eq!(app.bulk_targets().len(), 1);
+}
+
+#[test]
+fn a_bulk_action_needs_a_confirmation_that_names_its_targets() {
+    let mut app = marking_app();
+    // Nothing marked: no confirmation, and a hint on how to mark.
+    app.open_bulk_confirm("restart", false);
+    assert!(app.confirm.is_none());
+
+    app.toggle_mark();
+    app.open_bulk_confirm("restart", false);
+    let c = app.confirm.as_ref().expect("must ask first");
+    assert_eq!(c.action, "bulk-restart");
+    assert!(c.label.contains('2'), "the count: {}", c.label);
+    assert!(c.label.contains("alpha/api"), "the names: {}", c.label);
+}
+
 #[test]
 fn is_deploying_tracks_running_deployment_actions_only() {
     let mut app = App::new("s".into(), vec![]);
@@ -1987,6 +2055,40 @@ fn a_confirmation_never_hides_the_question_or_the_keys() {
     assert!(
         screen.contains("ENTIRE host"),
         "the blast radius must stay on screen:\n{screen}"
+    );
+}
+
+#[test]
+fn a_bulk_confirmation_does_not_claim_to_affect_the_whole_host() {
+    // The blast-radius line was INFERRED from an empty project, which until bulk
+    // existed only ever meant a maintenance action. A bulk run has no single
+    // target either, so restarting three marked services announced itself as
+    // affecting the ENTIRE host — seen on screen against a live server.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = marking_app();
+    app.toggle_mark();
+    app.open_bulk_confirm("restart", false);
+
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(80)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        !screen.contains("ENTIRE host"),
+        "a bulk action is not host-wide:\n{screen}"
+    );
+    assert!(
+        screen.contains("marked services"),
+        "it must still state its blast radius:\n{screen}"
     );
 }
 

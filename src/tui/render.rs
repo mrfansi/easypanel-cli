@@ -84,6 +84,11 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             ),
             Key("m", "Storage menu — mounts / backups"),
             Key("d", "Lifecycle menu — deploy / restart / stop / start"),
+            Key(
+                "v",
+                "mark this service for a bulk action (on a project header: all of its services)",
+            ),
+            Key("V", "mark every service the filter shows"),
             Key("t", "Shell menu — terminal / DB shell"),
             Key("x", "Danger menu — delete service / project"),
             Key("p", "view ports"),
@@ -563,8 +568,16 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     // metrics two or three times per service, actions once per service.
     let metrics = app.metric_index();
     let deploying_set = app.deploying_index();
-    let rows: Vec<(Vec<String>, bool)> = app
-        .visible_rows()
+    let lines = app.visible_rows();
+    // Counted from the ROWS, not from their text. It used to be derived by
+    // testing row[0] for the two-space indent, which quietly made the indent
+    // load-bearing: the mark below replaces it with "✓ " on marked services and
+    // the header count would have silently dropped every one of them.
+    let shown = lines
+        .iter()
+        .filter(|l| matches!(l, Line2::Service(_)))
+        .count();
+    let rows: Vec<(Vec<String>, bool)> = lines
         .iter()
         .map(|r| match r {
             // Project header: an aggregate of its children, like the Monitor tab.
@@ -604,7 +617,15 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
                 }
                 // The Project column is folded into the header; the service just
                 // indents beneath it.
-                let name = format!("  {}", row.remove(1));
+                // The mark replaces the indent rather than widening the column:
+                // a ✓ that shifted every name two columns would make the table
+                // jump sideways each time one was marked.
+                let indent = if app.is_marked(&project, &service) {
+                    "✓ "
+                } else {
+                    "  "
+                };
+                let name = format!("{indent}{}", row.remove(1));
                 row.remove(0);
                 let mut out = vec![name];
                 out.extend(row);
@@ -614,8 +635,12 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
     let total = app.all_services.len();
-    let shown = rows.iter().filter(|(r, _)| r[0].starts_with("  ")).count();
     let mut title = count_title("Services", shown, total, app);
+    // Marks are the one piece of state a user builds up deliberately and can
+    // scroll away from; the title is the only place it stays visible.
+    if !app.marked.is_empty() {
+        title.push_str(&format!(" · ✓ {} marked", app.marked.len()));
+    }
     let down = app.down_count();
     if down > 0 {
         title.push_str(&format!(" · ⚠ {down} down"));
@@ -1639,7 +1664,12 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm) {
     // Name the actual target. The line "Affects a real service" used to be shown on
     // every confirmation — wrong for a maintenance action, which affects the whole
     // host, not a single service.
+    // A bulk run names its services in the label and has no single target, so it
+    // must be matched BEFORE the empty-project case — which reads an empty
+    // project as "maintenance" and would otherwise warn that restarting three
+    // marked services affects the whole host.
     let target = match (c.project.as_str(), c.service.as_str()) {
+        _ if c.action.starts_with("bulk-") => "Affects only the marked services.".to_string(),
         ("", _) => "Affects the ENTIRE host.".to_string(),
         (p, "") => format!("Target: {p}"),
         (p, s) => format!("Target: {p}/{s}"),
