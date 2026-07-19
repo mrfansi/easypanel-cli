@@ -3267,3 +3267,56 @@ fn a_key_the_viewer_does_not_take_says_what_it_does() {
         app.status
     );
 }
+
+#[test]
+fn the_server_picker_never_cuts_the_url_that_tells_hosts_apart() {
+    // At 46% of an 80-column terminal this box was 36 wide: its own title lost
+    // "x delete", and every URL was cut with no ellipsis —
+    // "https://panel.internal.exa" reads as a complete, different host. The URL
+    // is shown precisely so you can be sure which server you are about to edit
+    // or DELETE.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("aurel".into(), vec![]);
+    app.all_servers = vec![
+        ("aurel".into(), "https://aurel.kkbahagia.com".into()),
+        ("prod".into(), "https://panel.internal.example.com".into()),
+        (
+            "staging".into(),
+            "https://panel-staging.internal.example.com".into(),
+        ),
+    ];
+    app.picker = Some(ratatui::widgets::ListState::default());
+
+    let mut t = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let buf = t.backend().buffer().clone();
+    let shown: String = buf
+        .content()
+        .chunks(80)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // The two look-alike hosts stay distinguishable.
+    assert!(
+        shown.contains("panel.internal.example.com"),
+        "the URL must survive:\n{shown}"
+    );
+    assert!(
+        shown.contains("panel-staging.internal"),
+        "and so must the one it could be confused with:\n{shown}"
+    );
+    // If anything is ever cut, it says so.
+    for line in shown.lines().filter(|l| l.contains("https://")) {
+        let url_part = line.split("https://").nth(1).unwrap_or("");
+        let cut = url_part.trim_end_matches(['│', ' ']);
+        assert!(
+            !cut.ends_with("exa") && !cut.ends_with(".i"),
+            "a cut URL must end in an ellipsis, got: {line}"
+        );
+    }
+    // The destructive key is not the one that falls off the end.
+    assert!(shown.contains("x delete"), "keys must fit:\n{shown}");
+}

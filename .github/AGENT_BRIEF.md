@@ -427,11 +427,14 @@ Still open, with evidence, in the order I would take them:
    so `End` selected a non-row and offered to delete `[13]` of 12); and those "Press a
    digit [0-9] to delete" hint lines were both wrong and redundant once the border carried
    the keys.
-3. **The server picker truncates the URLs that exist to disambiguate servers**, at 80
-   columns, with no ellipsis — `https://panel.exa` reads as a complete host. Its own
-   comment says the name alone is not enough to be sure which host is about to be edited
-   or deleted. Every table got `columns_that_fit` and pre-truncation; this overlay was
-   missed. NOT yet verified on screen.
+3. ~~**The server picker truncates the URLs that exist to disambiguate servers**~~ —
+   CONFIRMED on screen and fixed in v0.50.1. At 46% of an 80-column terminal the box was 36
+   wide: the title lost "x delete" and all three URLs were cut with no ellipsis. It is now
+   sized from its content, the keys go through `fit_hints` (dropped whole, never cut), and
+   a URL that still does not fit ends in "…".
+
+   Note `centered_abs` takes a PERCENTAGE despite its name — that is how this happened.
+   `centered_abs_w` is the real absolute-width helper.
 4. **Unverified, worth checking**: empty states for Domains/Backups/the viewers (do they
    say "nothing here yet, press n"?), and whether a log search with zero matches is
    distinguishable from one still running.

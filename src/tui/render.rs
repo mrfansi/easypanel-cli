@@ -1643,8 +1643,19 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm) {
 }
 
 pub(super) fn render_picker(f: &mut Frame, app: &mut App) {
-    let area = centered(46, 50, f.area());
+    // Sized from the content, not as a percentage of the screen. At 46% of an
+    // 80-column terminal this box was 36 wide: its own title lost "x delete", and
+    // every URL was cut without an ellipsis — "https://panel.internal.exa" reads
+    // as a complete, different host. The URL is here precisely so you can tell
+    // which server you are about to edit or DELETE, so it is the last thing that
+    // should be guessed at.
+    let full = f.area();
+    let w = 72.min(full.width.saturating_sub(4)).max(30);
+    let h = (app.all_servers.len() as u16 + 3).clamp(5, full.height.saturating_sub(2));
+    let area = centered_abs_w(w, h, full);
     f.render_widget(Clear, area);
+
+    let inner = w.saturating_sub(4) as usize;
     let items: Vec<ListItem> = app
         .all_servers
         .iter()
@@ -1654,18 +1665,35 @@ pub(super) fn render_picker(f: &mut Frame, app: &mut App) {
             } else {
                 ""
             };
-            // The URL is shown too: the name alone isn't enough to be sure which
-            // host is about to be edited or deleted.
+            let head = format!("{n}{mark}  ");
+            // Whatever is left after the name — and if the URL still does not
+            // fit, it ends in "…" rather than looking like a shorter host.
+            let room = inner.saturating_sub(head.chars().count()).max(8);
             ListItem::new(Line::from(vec![
-                Span::raw(format!("{n}{mark}  ")),
-                Span::styled(url.clone(), Style::default().fg(Color::DarkGray)),
+                Span::raw(head),
+                Span::styled(
+                    crate::output::first_line(url, room),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]))
         })
         .collect();
     let list = List::new(items)
         .block(
             Block::bordered()
-                .title(" Server: Enter select · n new · e edit · x delete ")
+                .title(" Servers ")
+                // Dropped whole rather than cut mid-word, the same rule the form
+                // footers use.
+                .title_bottom(fit_hints(
+                    &[
+                        "Enter select".into(),
+                        "n new".into(),
+                        "e edit".into(),
+                        "x delete".into(),
+                        "Esc close".into(),
+                    ],
+                    w.saturating_sub(2),
+                ))
                 .border_style(Style::default().fg(Color::Yellow)),
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -1721,6 +1749,21 @@ pub(super) fn fit_hints(parts: &[String], width: u16) -> String {
         used += sep + len;
     }
     out
+}
+
+/// Centre a box of an ABSOLUTE width and height.
+///
+/// `centered_abs` takes a PERCENTAGE for its width despite the name, which is
+/// how the server picker ended up 36 columns wide on an 80-column terminal.
+pub(super) fn centered_abs_w(width: u16, height: u16, r: Rect) -> Rect {
+    let x = r.x + (r.width.saturating_sub(width)) / 2;
+    let y = r.y + (r.height.saturating_sub(height)) / 2;
+    Rect {
+        x,
+        y,
+        width: width.min(r.width),
+        height: height.min(r.height),
+    }
 }
 
 pub(super) fn centered_abs(pct_x: u16, height: u16, r: Rect) -> Rect {

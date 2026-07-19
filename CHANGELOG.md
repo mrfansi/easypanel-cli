@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.1] — 2026-07-19
+
+### Fixed
+
+- **The server list cut the URLs that exist to tell servers apart.** The box was
+  sized as a percentage of the screen, so on an 80-column terminal it was 36 wide:
+  `https://panel.internal.example.com` rendered as `https://panel.internal.exa`
+  and `https://panel-staging.internal.example.com` as `https://panel-staging.i` —
+  no ellipsis, both reading as complete and different hosts. Its own title lost
+  `x delete` the same way.
+
+  This is the screen you pick a server to **edit or delete** on, and the URL is
+  there precisely because the name alone is not enough to be sure which one. The
+  box is now sized from its content, a URL that still does not fit ends in `…`,
+  and the keys are dropped whole rather than cut — the same rule the form footers
+  already used.
+
 ## [0.50.0] — 2026-07-19
 
 ### Changed
