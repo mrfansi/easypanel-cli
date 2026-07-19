@@ -748,6 +748,18 @@ found by a **human looking at the screen**, never by a test:
   REMOTE provider configured in the dashboard on both hosts.
 - A backup of a database that is not running fails with `Invariant failed`.
 
+### Cross-host restore — verified on TWO live panels (2026-07-20)
+
+- **Storage provider ids are PER-PANEL.** The same R2 bucket is `cmrs9o1r…` on one host
+  and `cmrs9n1b…` on the other. Never carry an id across; resolve the destination's own.
+- A `local` provider is unreadable from anywhere else — exclude those from a cross-host
+  list and SAY how many were excluded.
+- `restoreDatabaseBackup` on host B, with B's provider id and the path recorded by A,
+  restores A's data. Proven: rows written on aurel were read back on angelia.
+- After a restore the target container can stop answering for a while — the DB client
+  AND `containerShell` both went silent on angelia, while the container still reported
+  `running`. Don't read that as a failed restore, and don't trust an immediate re-query.
+
 ### Verified capability matrix per service type (probed live, 2026-07-20)
 
 `-` = the route does NOT exist (bare `{"error":"Not found"}`); `yes` = it does (a bad

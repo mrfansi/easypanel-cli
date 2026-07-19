@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.54.0] — 2026-07-20
+
+### Added
+
+- **Restore a database backup taken on ANOTHER EasyPanel host.** Storage ▸
+  *Restore from another server* on any database: pick the other host, and its
+  backups are listed for you to restore into the service you are on. Proven
+  against two live panels — data written on one host was read back on the other.
+
+  Three things this had to get right, all verified rather than assumed:
+
+  - **Provider ids are per-panel.** The same Cloudflare R2 bucket has a different
+    id on each host, so the id recorded with the backup is meaningless on the
+    destination. Every file is re-pointed at the destination's own remote
+    provider, which is what actually reads the bucket.
+  - **A local-disk backup can never travel.** It lives on that host's filesystem,
+    so those are left out of the list — and the count is stated ("8 more exist
+    there on local disk, unreadable from here") so a short list is never mistaken
+    for "there are no backups".
+  - **The names need not match.** Backups from every project on the source are
+    offered, each showing where it came from, so `shop/db` can be restored into
+    `shop-staging/db`. Filtering the source by the destination's own names would
+    have shown an empty list and explained nothing.
+
+- **"Backup now" says where the backup is going, before it runs.** With more than
+  one storage provider configured, which one is used decides whether the backup
+  can EVER be restored onto another host. A remote provider is preferred, and the
+  confirmation spells out the consequence either way ("restorable on any host
+  sharing it" / "stays on THIS host").
+
+### Note
+
+The full path was verified across two hosts by API, and every step of the TUI
+flow was verified on screen — the picker, what it hides and why, the
+confirmation, and the restore reporting success. Re-reading the data through the
+container shell after that last TUI-triggered restore was NOT possible: the
+target container stopped answering (both the database client and the shell
+itself) after the restore, on that host. Worth knowing if you restore onto a
+database and find it briefly unreachable.
+
 ## [0.53.0] — 2026-07-20
 
 ### Added

@@ -914,6 +914,11 @@ pub(super) enum FormKind {
     },
     /// Search for a keyword in the logs of all services at once.
     LogSearch,
+    /// Pick which OTHER server to read backups from, to restore one here.
+    RestoreFrom {
+        project: String,
+        service: String,
+    },
     SourceEdit {
         project: String,
         service: String,

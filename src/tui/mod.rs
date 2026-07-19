@@ -278,6 +278,23 @@ fn event_loop(
             }
         }
 
+        // Reading another host's backups: same reason as a migration — the App
+        // knows the server by name, its token lives only here.
+        if let Some((name, project, service)) = app.restore_from_req.take() {
+            match cfg.get(&name) {
+                Some(server) => {
+                    let _ = w.user.send(Req::BackupHistoryFrom {
+                        src_url: server.url,
+                        src_token: server.token,
+                        src_name: name,
+                        project,
+                        service,
+                    });
+                }
+                None => app.status = format!("Server '{name}' is no longer configured"),
+            }
+        }
+
         // Edit a form field (Dockerfile) in $EDITOR. Unlike env: the contents are
         // already in the form, so there's nothing to fetch from the server.
         if let Some(idx) = app.edit_field.take() {

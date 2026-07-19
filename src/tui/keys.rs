@@ -839,6 +839,19 @@ impl App {
             }
             // The file was chosen in the picker, not typed, so its three parts
             // travel in `pending_restore` rather than being squeezed into Confirm.
+            "backup" => match self.pending_backup.take() {
+                Some((database, provider)) => {
+                    let path = crate::backup::default_path(&c.project);
+                    req.send(Req::BackupNow {
+                        project: c.project,
+                        service: c.service,
+                        database,
+                        provider,
+                        path,
+                    })
+                }
+                None => return,
+            },
             "restore" => match self.pending_restore.take() {
                 Some((database, provider, path)) => req.send(Req::RestoreBackup {
                     project: c.project,

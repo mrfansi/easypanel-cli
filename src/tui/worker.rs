@@ -111,6 +111,16 @@ pub(super) enum Req {
         project: String,
         service: String,
     },
+    /// The same, but read from ANOTHER host — so a backup taken there can be
+    /// restored here. Only backups on a REMOTE provider are usable: a local-disk
+    /// one physically lives on that host and this one cannot read it.
+    BackupHistoryFrom {
+        src_url: String,
+        src_token: String,
+        src_name: String,
+        project: String,
+        service: String,
+    },
     /// Restore one backup file INTO this service.
     RestoreBackup {
         project: String,
@@ -347,7 +357,24 @@ pub(super) enum Resp {
         refresh: Refresh,
     },
     /// The storage provider ids/names configured on this panel.
-    StorageProviders(Vec<String>),
+    /// The storage providers configured on this panel: (id, name, type).
+    ///
+    /// The TYPE matters: a `local` provider stores on THIS host's disk, so a
+    /// backup written there can never be restored onto another host — verified,
+    /// and the reason cross-server restore refuses one.
+    StorageProviders(Vec<(String, String, String)>),
+    /// The restorable backups found on ANOTHER host. `hidden` counts the ones
+    /// left out because they sit on that host's local disk and cannot be read
+    /// from here — said out loud, so a short list is never mistaken for "there
+    /// are no backups".
+    BackupHistoryFrom {
+        src_name: String,
+        project: String,
+        service: String,
+        hidden: usize,
+        rows: Vec<String>,
+        files: Vec<(String, String, String)>,
+    },
     /// The restorable backups for a service: display rows plus, in the same
     /// order, what each one needs to actually be restored. Kept side by side so
     /// the restore reads its arguments from the LIST rather than parsing them
@@ -622,7 +649,11 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             match client.call("storageProviders/common", "list", Value::Null) {
                 Ok(v) => Resp::StorageProviders(
                     v.as_array()
-                        .map(|a| a.iter().map(|p| field(p, "/id")).collect())
+                        .map(|a| {
+                            a.iter()
+                                .map(|p| (field(p, "/id"), field(p, "/name"), field(p, "/type")))
+                                .collect()
+                        })
                         .unwrap_or_default(),
                 ),
                 // Not fatal: without a provider the backup action explains itself
@@ -637,6 +668,54 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             provider,
             path,
         } => backup_now(client, &project, &service, &database, &provider, &path),
+        Req::BackupHistoryFrom {
+            src_url,
+            src_token,
+            src_name,
+            project,
+            service,
+        } => {
+            let src = EasypanelClient::new(&src_url, &src_token);
+            let remote: Vec<String> = match src.call("storageProviders/common", "list", Value::Null)
+            {
+                Ok(v) => v
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter(|p| crate::backup::is_remote(&field(p, "/type")))
+                            .map(|p| field(p, "/id"))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                Err(e) => return Resp::Err(format!("{src_name}: {e}")),
+            };
+            match src.call("actions", "listActions", json!({ "limit": 200 })) {
+                Ok(v) => {
+                    let acts = v.as_array().cloned().unwrap_or_default();
+                    let all = crate::backup::history_all(&acts);
+                    let total = all.len();
+                    let usable: Vec<_> = all
+                        .into_iter()
+                        .filter(|(_, f)| remote.contains(&f.storage_provider_id))
+                        .collect();
+                    Resp::BackupHistoryFrom {
+                        src_name,
+                        project,
+                        service,
+                        hidden: total - usable.len(),
+                        rows: usable
+                            .iter()
+                            .map(|(origin, f)| format!("{:<21}{:<20}{}", f.when, origin, f.path))
+                            .collect(),
+                        files: usable
+                            .into_iter()
+                            .map(|(_, f)| (f.database, f.storage_provider_id, f.path))
+                            .collect(),
+                    }
+                }
+                Err(e) => Resp::Err(format!("{src_name}: {e}")),
+            }
+        }
         Req::BackupHistory { project, service } => {
             match client.call("actions", "listActions", json!({ "limit": 200 })) {
                 Ok(v) => {

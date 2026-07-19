@@ -82,6 +82,36 @@ pub fn history(actions: &[Value], project: &str, service: &str) -> Vec<BackupFil
         .collect()
 }
 
+/// Every restorable backup on a host, whatever project it came from.
+///
+/// Restoring ACROSS hosts must not assume the two sides use the same names: a
+/// backup of `shop/db` is a perfectly good thing to load into `shop-staging/db`
+/// on another machine. Filtering the source by the destination's names would
+/// have shown an empty list and explained nothing. The project and service are
+/// carried in the row instead, so the user can see where each one came from.
+pub fn history_all(actions: &[Value]) -> Vec<(String, BackupFile)> {
+    actions
+        .iter()
+        .filter(|a| field(a, "/type") == "backup" && field(a, "/status") == "done")
+        .filter_map(|a| {
+            let path = field(a, "/meta/path");
+            if path.is_empty() {
+                return None;
+            }
+            let origin = format!("{}/{}", field(a, "/projectName"), field(a, "/serviceName"));
+            Some((
+                origin,
+                BackupFile {
+                    when: field(a, "/createdAt"),
+                    database: field(a, "/meta/databaseName"),
+                    path,
+                    storage_provider_id: field(a, "/meta/storageProviderId"),
+                },
+            ))
+        })
+        .collect()
+}
+
 /// The body for `createDatabaseBackup` / `updateDatabaseBackup`.
 pub fn schedule_body(
     project: &str,
@@ -118,6 +148,27 @@ pub fn restore_body(
         "storageProviderId": provider,
         "path": path,
     })
+}
+
+/// A `local` provider writes to the host's own disk, so nothing on another host
+/// can read it. Anything else is remote and therefore shareable.
+pub fn is_remote(provider_type: &str) -> bool {
+    provider_type != "local"
+}
+
+/// Which provider a backup should go to, given what the panel has.
+///
+/// A REMOTE one wins when there is one: a backup you can restore anywhere is
+/// strictly more useful than one locked to a single host, and choosing local
+/// silently is how someone discovers on the bad day that their backup cannot
+/// leave the machine. The caller still names the choice before running.
+pub fn preferred_provider(
+    providers: &[(String, String, String)],
+) -> Option<&(String, String, String)> {
+    providers
+        .iter()
+        .find(|(_, _, t)| is_remote(t))
+        .or_else(|| providers.first())
 }
 
 /// Where a one-off backup is filed under the storage provider.
@@ -163,6 +214,37 @@ mod tests {
     fn an_action_without_a_path_is_not_a_restorable_backup() {
         let actions = vec![action("backup", "done", "db", "")];
         assert!(history(&actions, "shopco", "db").is_empty());
+    }
+
+    #[test]
+    fn a_cross_host_list_keeps_every_project_and_says_where_each_came_from() {
+        // Across hosts the names need not match, so filtering by the
+        // destination's project/service would show an empty list and explain
+        // nothing.
+        let actions = vec![
+            action("backup", "done", "db", "shopco/a.sql.gz"),
+            action("backup", "done", "other", "shopco/b.sql.gz"),
+            action("backup", "error", "db", "shopco/bad.sql.gz"),
+        ];
+        let all = history_all(&actions);
+        assert_eq!(all.len(), 2, "both services, no failed run");
+        assert_eq!(all[0].0, "shopco/db");
+        assert_eq!(all[1].0, "shopco/other");
+    }
+
+    #[test]
+    fn a_remote_provider_is_preferred_over_the_local_disk() {
+        let p = |i: &str, n: &str, t: &str| (i.into(), n.into(), t.into());
+        let both = vec![p("1", "Local Disk", "local"), p("2", "R2", "s3")];
+        assert_eq!(preferred_provider(&both).unwrap().1, "R2");
+        // Order must not decide it: a backup that can leave the host wins either way.
+        let flipped = vec![p("2", "R2", "s3"), p("1", "Local Disk", "local")];
+        assert_eq!(preferred_provider(&flipped).unwrap().1, "R2");
+        // Only a local one? Still usable — just not off this host.
+        let only_local = vec![p("1", "Local Disk", "local")];
+        assert_eq!(preferred_provider(&only_local).unwrap().1, "Local Disk");
+        assert!(preferred_provider(&[]).is_none());
+        assert!(!is_remote("local") && is_remote("s3"));
     }
 
     #[test]

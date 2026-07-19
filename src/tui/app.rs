@@ -172,6 +172,9 @@ pub(super) struct App {
     /// Set by the migrate form; event_loop resolves the destination token and
     /// hands the work to the worker.
     pub(super) migrate_req: Option<MigrateReq>,
+    /// A pending "read the backups on another server": (server name, project,
+    /// service). Resolved to a url+token by event_loop, which alone holds them.
+    pub(super) restore_from_req: Option<(String, String, String)>,
     /// Shared with the worker's user lane: non-zero while a request the user asked
     /// for is still running. Owned as an Arc so the worker can clear it from its
     /// own thread the instant the work ends.
@@ -269,14 +272,16 @@ pub(super) struct App {
     pub(super) restore_files: Vec<(String, String, String)>,
     /// Which service the picker would restore INTO.
     pub(super) restore_target: Option<(String, String)>,
+    /// The backup a confirmation is about to take: (database, providerId).
+    pub(super) pending_backup: Option<(String, String)>,
     /// The backup a confirmation is currently asking about: (database, provider,
     /// path). Its own field rather than smuggled through `Confirm`, which has no
     /// room for three values and would have to encode them into one.
     pub(super) pending_restore: Option<(String, String, String)>,
-    /// The storage provider backups are written to. EasyPanel exposes a list but
-    /// no way to create one, so this is whatever the dashboard already has; None
-    /// until it loads, or if none is configured at all.
-    pub(super) storage_provider: Option<String>,
+    /// The storage providers this panel has: (id, name, type). EasyPanel exposes
+    /// a list but no way to create one, so this is whatever the dashboard already
+    /// has; empty until it loads, or if none is configured at all.
+    pub(super) storage_providers: Vec<(String, String, String)>,
 
     /// Services marked for a bulk action, as (project, service).
     ///
@@ -337,6 +342,7 @@ impl App {
             chooser: None,
             server_action: None,
             migrate_req: None,
+            restore_from_req: None,
             busy: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             edit_env: None,
             edit_config: None,
@@ -376,8 +382,9 @@ impl App {
             viewer_follow: false,
             restore_files: Vec::new(),
             restore_target: None,
+            pending_backup: None,
             pending_restore: None,
-            storage_provider: None,
+            storage_providers: Vec::new(),
             marked: HashSet::new(),
             filter: String::new(),
             filter_input: false,
@@ -740,7 +747,67 @@ impl App {
             // The restore picker. An empty history is a real answer, not an
             // error: this database has never been backed up, and saying so beats
             // an empty box.
-            Resp::StorageProviders(ids) => self.storage_provider = ids.into_iter().next(),
+            Resp::StorageProviders(list) => self.storage_providers = list,
+            Resp::BackupHistoryFrom {
+                src_name,
+                project,
+                service,
+                hidden,
+                rows,
+                files,
+            } => {
+                // The provider id from the SOURCE panel is meaningless here: ids
+                // are per-panel (verified — the same R2 bucket has a different id
+                // on each host). Every file is re-pointed at THIS host's remote
+                // provider, which is what actually reads the bucket.
+                let local = self
+                    .storage_providers
+                    .iter()
+                    .find(|(_, _, t)| crate::backup::is_remote(t))
+                    .map(|(id, ..)| id.clone());
+                let Some(local) = local else {
+                    self.status = "This host has no remote storage to read that backup from".into();
+                    return;
+                };
+                let mut lines = vec![format!(
+                    "From {src_name} · restoring into {project}/{service}"
+                )];
+                if hidden > 0 {
+                    lines.push(format!(
+                        "({hidden} more exist there on local disk, unreadable from here)"
+                    ));
+                }
+                lines.push(String::new());
+                if rows.is_empty() {
+                    lines.push("No backups on shared remote storage.".into());
+                } else {
+                    lines.push(format!("    {:<21}{:<20}{}", "When", "From", "File"));
+                    lines.extend(
+                        rows.iter()
+                            .enumerate()
+                            .map(|(i, r)| format!("{} {r}", row_marker(i))),
+                    );
+                }
+                self.restore_files = files
+                    .into_iter()
+                    .map(|(db, _, path)| (db, local.clone(), path))
+                    .collect();
+                self.restore_target = Some((project, service));
+                self.viewer_title = format!("Restore from {src_name}");
+                self.viewer_lines = lines;
+                self.viewer_scroll = 0;
+                self.viewer_hscroll = 0;
+                let first = self.viewer_lines.iter().position(|l| is_row(l));
+                self.viewer_row = TableState::default().with_selected(first);
+                self.viewer_ctx = None;
+                self.viewer_from = self.screen;
+                self.screen = Screen::Viewer;
+                self.status = if self.restore_files.is_empty() {
+                    "Nothing there that this host can read".into()
+                } else {
+                    "[Enter] restore the selected backup · [Esc] back".into()
+                };
+            }
             Resp::BackupHistory {
                 project,
                 service,
@@ -1636,7 +1703,7 @@ impl App {
     }
 
     /// Back the selected database up once, into the panel's storage provider.
-    pub(super) fn backup_now(&mut self, req: &Sender<Req>) {
+    pub(super) fn backup_now(&mut self) {
         let Some((project, service, stype)) = self.selected_row() else {
             self.status = "Select a database first".into();
             return;
@@ -1645,20 +1712,71 @@ impl App {
             self.status = format!("A {stype} service has no database to back up");
             return;
         };
-        let Some(provider) = self.storage_provider.clone() else {
+        let Some((id, name, ptype)) = crate::backup::preferred_provider(&self.storage_providers)
+        else {
             self.status =
                 "No storage provider configured — add one in the EasyPanel dashboard first".into();
             return;
         };
-        let path = crate::backup::default_path(&project);
-        let _ = req.send(Req::BackupNow {
+        // Named before it runs, not after. Which provider a backup lands on
+        // decides whether it can EVER be restored onto another host, and picking
+        // one silently is how that is discovered on the bad day.
+        let where_to = if crate::backup::is_remote(ptype) {
+            format!("{name} — restorable on any host sharing it")
+        } else {
+            format!("{name} — stays on THIS host, cannot be restored elsewhere")
+        };
+        self.pending_backup = Some((database.clone(), id.clone()));
+        self.confirm = Some(Confirm {
+            action: "backup".into(),
             project,
             service,
-            database,
-            provider,
-            path,
+            stype: String::new(),
+            label: format!("Back '{database}' up to {where_to}?"),
         });
-        self.status = "Backing up...".into();
+    }
+
+    /// Choose another server whose backups can be restored into this service.
+    ///
+    /// Only worth offering when this panel has a REMOTE provider: a backup taken
+    /// elsewhere has to be readable from here, and a local-disk provider by
+    /// definition is not.
+    pub(super) fn open_restore_from(&mut self) {
+        let Some((project, service, _)) = self.selected_row() else {
+            self.status = "Select a database first".into();
+            return;
+        };
+        let others: Vec<String> = self
+            .all_servers
+            .iter()
+            .map(|(n, _)| n.clone())
+            .filter(|n| *n != self.server_name)
+            .collect();
+        if others.is_empty() {
+            self.status = "No other server configured — add one on the Hosts screen first".into();
+            return;
+        }
+        if !self
+            .storage_providers
+            .iter()
+            .any(|(_, _, t)| crate::backup::is_remote(t))
+        {
+            self.status =
+                "This host has only local-disk storage, so it cannot read another host's backups"
+                    .into();
+            return;
+        }
+        let fields = vec![Field::choice_owned("Server", others.clone(), &others[0])];
+        self.form = Some(
+            Form::new(
+                FormKind::RestoreFrom { project, service },
+                " Restore from another server ",
+                fields,
+            )
+            .with_note(
+                "lists that server's backups; only ones on shared remote storage".to_string(),
+            ),
+        );
     }
 
     /// Open the list of backups that can be restored INTO the selected service.
@@ -2155,6 +2273,16 @@ impl App {
                     return;
                 }
             },
+            FormKind::RestoreFrom { project, service } => {
+                // The server is known by NAME here; only event_loop holds its
+                // token, so the request is parked for it to resolve — the same
+                // route a migration takes.
+                self.restore_from_req =
+                    Some((form.by_label("Server"), project.clone(), service.clone()));
+                self.status = "Reading that server's backups...".into();
+                self.form = None;
+                return;
+            }
             FormKind::LogSearch => {
                 let query = form.by_label("Keyword");
                 if query.is_empty() {
