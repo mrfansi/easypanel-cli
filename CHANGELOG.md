@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.6] — 2026-07-19
+
+### Fixed
+
+- **The gauge percentage was unreadable once the bar reached it.** ratatui swaps
+  foreground and background for the part of a gauge's label that sits on the
+  filled bar, and the style set no background — so that half rendered as the
+  terminal's *default* text colour on green: light on light in a dark theme. The
+  Memory gauge at 54.4% was the reported case, and it fails exactly when the
+  number is worth reading. The label now has a real colour on both sides of the
+  boundary.
+
+- **"CPU History (%)" was not showing percentages.** The sparkline rescaled each
+  window to its own minimum and maximum, so the lowest sample was *always* an
+  empty bar and the highest *always* a full one, whatever the real load. Measured
+  against a live host: CPU moving between 7.80% and 19.35% — a quiet 11-point
+  band — was drawn as a chart sweeping from empty to full under a panel titled
+  "(%)". It read as a machine pegged at 100% while it idled.
+
+  Percentage series (CPU, Memory, Disk) are now drawn at their true height. The
+  axis adapts in steps and **says what it is** — `CPU History (0–25%)` — so an
+  idle host stays readable without the chart claiming a load that isn't there.
+  Network rates keep the window-relative scaling, which is the only sensible
+  choice for a series with no ceiling, and their tiles print the actual rate.
+
 ## [0.48.5] — 2026-07-19
 
 ### Fixed

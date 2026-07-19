@@ -83,14 +83,37 @@ pub fn series_last(v: &Value, key: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// The last `n` points of a series, normalized to 0..100 against its own
-/// data range (min..max), for a sparkline.
+/// A percentage series drawn at its TRUE height, for a sparkline with `.max(100)`.
 ///
-/// An absolute scale isn't useful here: disk usage that's always ~16% would
-/// make every bar full (a solid block) if scaled 0..max, and CPU at 1-5% would
-/// be invisible if scaled 0..100. What a sparkline should show is *the shape of
-/// the change* — the absolute value is already printed right next to it. A flat
-/// series is rendered at half height so it reads as a level line, not empty.
+/// `series_spark` rescales to the window's own min..max, which is right for a
+/// series with no ceiling but a lie for a percentage: measured against a live
+/// host, CPU moving between 7.8% and 19.4% was drawn from an empty bar to a FULL
+/// one, under a panel titled "CPU History (%)". The chart said the machine was
+/// pegged; it was idling. The lowest sample in any window was always empty and
+/// the highest always full, whatever the real numbers were.
+///
+/// This does trade something away, and the trade is deliberate. Window-relative
+/// scaling shows the SHAPE of small movements; a true scale draws an idle machine
+/// as a low flat band, which looks boring. That is the correct answer: the panel
+/// is titled "(%)" and the question it exists to answer is "is this host under
+/// load?". A real spike still stands out, because it really is taller.
+pub fn series_percent(v: &Value, key: &str, n: usize) -> Vec<u64> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .rev()
+                .take(n)
+                .rev()
+                .map(|p| point_value(p).clamp(0.0, 100.0).round() as u64)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A series rescaled to its own window, for values with NO fixed ceiling — a
+/// network rate, where "what counts as full" only makes sense relative to what
+/// else happened. Never use it for a percentage: see `series_percent`.
 pub fn series_spark(v: &Value, key: &str, n: usize) -> Vec<u64> {
     let vals: Vec<f64> = v
         .get(key)
@@ -275,6 +298,30 @@ mod tests {
         assert!(format_bytes(1024f64.powi(6)).ends_with(" TB"));
         assert!(format_bytes(f64::MAX).ends_with(" TB"));
         assert_eq!(format_bytes(f64::INFINITY), "inf TB");
+    }
+
+    #[test]
+    fn a_percentage_series_is_drawn_at_its_real_height() {
+        // Measured against a live host: CPU between 7.8% and 19.4% was drawn from
+        // an EMPTY bar to a FULL one under a panel titled "CPU History (%)" —
+        // the chart said the machine was pegged while it idled.
+        let v = json!({ "cpu": [
+            ["1", "7.8"], ["2", "8.7"], ["3", "19.4"]
+        ]});
+        assert_eq!(series_percent(&v, "cpu", 10), vec![8, 9, 19]);
+        // The same data through the window-relative helper is what the bug looked
+        // like: the low sample empty, the high one full.
+        assert_eq!(series_spark(&v, "cpu", 10), vec![0, 8, 100]);
+
+        // Out-of-range values are clamped rather than blowing past the ceiling.
+        let odd = json!({ "cpu": [["1", "-5"], ["2", "140"]] });
+        assert_eq!(series_percent(&odd, "cpu", 10), vec![0, 100]);
+        // Empty and missing behave like the other helpers: nothing, not a fake 0.
+        assert!(series_percent(&json!({ "cpu": [] }), "cpu", 10).is_empty());
+        assert!(series_percent(&json!({}), "cpu", 10).is_empty());
+        // The window keeps the LAST n points.
+        let many = json!({ "cpu": [["1","1"],["2","2"],["3","3"]] });
+        assert_eq!(series_percent(&many, "cpu", 2), vec![2, 3]);
     }
 
     #[test]

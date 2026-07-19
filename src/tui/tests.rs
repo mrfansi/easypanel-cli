@@ -2759,3 +2759,33 @@ fn bench_render_cost() {
         }
     }
 }
+
+#[test]
+fn a_gauge_label_stays_readable_where_the_bar_covers_it() {
+    // ratatui swaps fg/bg for the part of the label sitting ON the filled bar.
+    // With no bg set, that half rendered as the terminal's DEFAULT foreground on
+    // green — light on light in a dark theme, unreadable at exactly the moment
+    // the number is worth reading. Reported from a screenshot at 54.4%.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    for pct in [10.6_f64, 54.4, 95.0] {
+        let mut t = Terminal::new(TestBackend::new(40, 3)).unwrap();
+        t.draw(|f| super::render::render_gauge(f, f.area(), "Memory", pct))
+            .unwrap();
+        let buf = t.backend().buffer().clone();
+        let row: Vec<_> = buf.content().chunks(40).nth(1).unwrap().to_vec();
+        for c in row
+            .iter()
+            .filter(|c| c.symbol().chars().any(|ch| ch.is_ascii_digit()))
+        {
+            assert_ne!(
+                c.fg,
+                ratatui::style::Color::Reset,
+                "at {pct}% a label cell falls back to the terminal default, which \
+                 has no guaranteed contrast against the bar"
+            );
+            assert_ne!(c.fg, c.bg, "at {pct}% the label is invisible");
+        }
+    }
+}

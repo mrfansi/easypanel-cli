@@ -5,7 +5,9 @@ use ratatui::widgets::{
 use serde_json::Value;
 
 use crate::commands;
-use crate::output::{field, format_bytes, format_rate, num, series_last, series_spark};
+use crate::output::{
+    field, format_bytes, format_rate, num, series_last, series_percent, series_spark,
+};
 
 use super::app::*;
 use super::form::*;
@@ -468,20 +470,46 @@ pub(super) fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
         left[3],
     );
 
+    // True percentages, on an axis that SAYS what it is. Drawn against a fixed
+    // 0-100 an idle host is a flat sliver — truthful but unreadable; drawn
+    // against the window's own range (what this used to do) 8% reached the top
+    // of a panel titled "(%)". An adaptive ceiling, named in the title, keeps the
+    // shape visible without the chart claiming a load that isn't there.
+    let cpu = series_percent(&stats, "cpu", 120);
+    let ceiling = axis_ceiling(cpu.iter().copied().max().unwrap_or(0));
     let spark = Sparkline::default()
-        .block(Block::bordered().title(" CPU History (%) "))
-        .data(series_spark(&stats, "cpu", 120))
-        .max(100)
+        .block(Block::bordered().title(format!(" CPU History (0–{ceiling}%) ")))
+        .data(cpu)
+        .max(ceiling)
         .style(Style::default().fg(Color::Cyan));
     f.render_widget(spark, top[1]);
 
     render_nodes(f, rows[1], app);
 }
 
+/// The smallest sensible top-of-axis for a percentage chart peaking at `max`.
+///
+/// Steps rather than "exactly the peak" so the axis does not jitter with every
+/// sample, and so the number in the title stays round enough to read.
+pub(super) fn axis_ceiling(max: u64) -> u64 {
+    [10, 25, 50, 100]
+        .into_iter()
+        .find(|c| max <= *c)
+        .unwrap_or(100)
+}
+
 pub(super) fn render_gauge(f: &mut Frame, area: Rect, label: &str, pct: f64) {
     let g = Gauge::default()
         .block(Block::bordered().title(format!(" {label} ")))
-        .gauge_style(Style::default().fg(gauge_color(pct)))
+        // The bg matters: ratatui swaps fg/bg for the part of the label that sits
+        // ON the filled bar, so leaving bg unset made that half render as the
+        // terminal's DEFAULT foreground on green — light on light, unreadable at
+        // exactly the moment the number is worth reading.
+        .gauge_style(
+            Style::default()
+                .fg(gauge_color(pct))
+                .bg(Color::Indexed(235)),
+        )
         .ratio((pct / 100.0).clamp(0.0, 1.0))
         .label(format!("{pct:.1}%"));
     f.render_widget(g, area);
@@ -1056,21 +1084,21 @@ pub(super) fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
                 format!("load {}", commands::load_avg(&s)),
                 format!("{} cores", field(&s, "/cpuCores")),
             ],
-            series_spark(&s, "cpu", 60),
+            series_percent(&s, "cpu", 60),
             Color::Yellow,
         ),
         (
             "Memory",
             format!("{:.1}%", series_last(&s, "memory")),
             pair("/memoryUsedBytes", "/memoryTotalBytes"),
-            series_spark(&s, "memory", 60),
+            series_percent(&s, "memory", 60),
             Color::Blue,
         ),
         (
             "Disk",
             format!("{:.1}%", series_last(&s, "disk")),
             pair("/diskUsedBytes", "/diskTotalBytes"),
-            series_spark(&s, "disk", 60),
+            series_percent(&s, "disk", 60),
             Color::Green,
         ),
         (
