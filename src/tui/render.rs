@@ -765,6 +765,8 @@ pub(super) fn render_table(
 /// Server info + Docker cleanup. The actions are destructive and irreversible, so
 /// the keys are written plainly along with their consequences, not disguised.
 pub(super) fn render_maintenance(f: &mut Frame, area: Rect, app: &App) {
+    /// Width of the label column ("  {k:<24}" minus its leading two spaces).
+    const LABEL_W: usize = 24;
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
             format!(" Active server: {}", app.server_name),
@@ -776,10 +778,38 @@ pub(super) fn render_maintenance(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from("  loading…"));
     }
     for (k, v) in &app.maint {
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {k:<24}"), Style::default().fg(Color::DarkGray)),
-            Span::raw(v.clone()),
-        ]));
+        // A row that FAILED to load must not read like a value that loaded. It
+        // used to render in the terminal's ordinary text colour, identical to a
+        // real Docker version sitting directly above it — and this screen offers
+        // three irreversible host-wide actions.
+        let label = Span::styled(format!("  {k:<24}"), Style::default().fg(Color::DarkGray));
+        match v {
+            Ok(value) => lines.push(Line::from(vec![label, Span::raw(value.clone())])),
+            Err(e) => {
+                let style = Style::default()
+                    .fg(Color::Indexed(210))
+                    .add_modifier(Modifier::BOLD);
+                // Wrapped with a hanging indent so the reason stays in the value
+                // column. Letting the paragraph wrap it sent the continuation back
+                // to column 0, which reads as a new row rather than the rest of
+                // this one — on a screen you are looking at BECAUSE it is broken.
+                // Two borders + the 26-column label ("  " + 24). Getting this
+                // wrong by one made the paragraph re-wrap the indented line and
+                // spill a single character onto a row of its own.
+                let avail = (area.width as usize).saturating_sub(LABEL_W + 4).max(20);
+                let text = format!("could not load — {e}");
+                for (i, part) in wrap_words(&text, avail).into_iter().enumerate() {
+                    lines.push(if i == 0 {
+                        Line::from(vec![label.clone(), Span::styled(part, style)])
+                    } else {
+                        Line::from(Span::styled(
+                            format!("{:<w$}{part}", "", w = LABEL_W + 2),
+                            style,
+                        ))
+                    });
+                }
+            }
+        }
     }
     lines.extend([
         Line::from(""),
@@ -792,7 +822,12 @@ pub(super) fn render_maintenance(f: &mut Frame, area: Rect, app: &App) {
         Line::from("    [c] remove the Docker build cache"),
     ]);
     f.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" Maintenance ")),
+        // Wrapped: a transport error and the "[p] prune system — …" consequence
+        // line both run past 74 columns, and a destructive key whose stated
+        // consequence has been cut off is worse than no help at all.
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(" Maintenance ")),
         area,
     );
 }

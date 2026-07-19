@@ -255,7 +255,7 @@ pub(super) struct App {
     /// and silently hiding half of it is worse than no help at all.
     pub(super) help_scroll: u16,
     /// The Maintenance tab info rows: (label, value).
-    pub(super) maint: Vec<(String, String)>,
+    pub(super) maint: Vec<(String, Result<String, String>)>,
     pub(super) hosts: Vec<HostRow>,
     pub(super) hosts_state: TableState,
     /// Set when the Hosts screen needs data; its fan-out is run by event_loop.

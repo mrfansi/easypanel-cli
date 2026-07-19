@@ -315,7 +315,11 @@ pub(super) enum Resp {
     Repos(Vec<String>),
     /// Err = the branch list couldn't load (e.g. the GitHub token in EasyPanel is dead).
     Branches(std::result::Result<Vec<String>, String>),
-    MaintInfo(Vec<(String, String)>),
+    /// Per-row result. Typed rather than a stringly-typed "error: …" value, so
+    /// the renderer can COLOUR a failure instead of drawing it in the same ink as
+    /// a real reading — on the screen that carries three irreversible host-wide
+    /// actions.
+    MaintInfo(Vec<(String, Result<String, String>)>),
     /// The result for one host on the Hosts screen; each host arrives on its own so
     /// a slow/dead host doesn't hold up the others.
     HostStat {
@@ -623,8 +627,8 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             // Each row stands on its own: one endpoint failing must not empty the
             // whole tab.
             let one = |op: &str| match client.call("settings", op, Value::Null) {
-                Ok(v) => field(&v, ""),
-                Err(e) => format!("error: {e}"),
+                Ok(v) => Ok(field(&v, "")),
+                Err(e) => Err(e.to_string()),
             };
             Resp::MaintInfo(vec![
                 ("Docker".into(), one("getDockerVersion")),

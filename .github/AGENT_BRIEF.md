@@ -456,9 +456,15 @@ fixing it.
    ellipsis, next to `x delete`. Now uses `columns_that_fit` (ID dropped first, Source never
    dropped) AND pre-truncates each cell with `first_line`, so what does not fit ends in "…"
    rather than reading as a complete, different host.
-5. **Maintenance renders per-row fetch failures as ordinary body text** — `"error: …"` in
-   the same colour as a real value, on the screen with three irreversible host-wide
-   actions. Suggested: carry `Result` per row and colour the error variant.
+5. ~~**Maintenance renders per-row fetch failures as ordinary body text**~~ — CONFIRMED
+   and fixed in v0.49.1. The escape codes showed it exactly: the label was `38;5;8` and the
+   error value was `[39m`, the terminal's DEFAULT foreground — identical ink to a real
+   Docker version above it. Rows now carry `Result<String, String>` and a failure is drawn
+   bold in the error colour, wrapped with a hanging indent so the reason stays readable in
+   full.
+
+**The round-2 critique list is now empty.** The next run should start a fresh critique
+pass — these screens have changed a great deal since round 2 was written.
 
 ### Scalability — the tool must not fold at real scale
 

@@ -3129,3 +3129,76 @@ fn each_collection_has_one_door_not_two() {
         "`e` in the Env viewer must edit it"
     );
 }
+
+#[test]
+fn a_maintenance_row_that_failed_does_not_read_like_a_value() {
+    // It rendered in the terminal's ordinary text colour — identical to a real
+    // Docker version directly above it. This is the screen that offers three
+    // irreversible host-wide actions, so a reading that was never fetched must
+    // not look like one that was.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Maintenance;
+    app.maint = vec![
+        ("Docker".into(), Ok("29.6.1".into())),
+        (
+            "Daily cleanup".into(),
+            Err("error sending request for url (https://10.255.255.1/api/rpc/settings/x)".into()),
+        ),
+    ];
+
+    let mut t = Terminal::new(TestBackend::new(80, 16)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let buf = t.backend().buffer().clone();
+    let row_of = |needle: &str| -> usize {
+        buf.content()
+            .chunks(80)
+            .position(|r| {
+                r.iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .unwrap_or_else(|| panic!("{needle} not drawn"))
+    };
+    let cell = |row: usize, needle: &str| {
+        let line: String = buf
+            .content()
+            .chunks(80)
+            .nth(row)
+            .unwrap()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        let col = line.find(needle).unwrap();
+        buf.content()[row * 80 + col].clone()
+    };
+
+    let ok = cell(row_of("29.6.1"), "29.6.1");
+    let bad = cell(row_of("could not load"), "could not load");
+    assert_ne!(
+        bad.fg, ok.fg,
+        "a failed row must not be drawn in the same ink as a real value"
+    );
+    assert_ne!(
+        bad.fg,
+        ratatui::style::Color::Reset,
+        "and not in the terminal default, which has no meaning"
+    );
+
+    // The reason survives instead of being cut at the pane edge...
+    let all: String = buf
+        .content()
+        .chunks(80)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(all.contains("10.255.255.1"), "the reason must be readable");
+    // ...and so does the consequence of the destructive key next to it.
+    assert!(
+        all.contains("build cache"),
+        "the [p] consequence must not be cut"
+    );
+}

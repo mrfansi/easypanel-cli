@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.1] — 2026-07-19
+
+### Fixed
+
+- **A Maintenance row that failed to load looked exactly like one that
+  succeeded.** Each row is fetched separately so that one broken endpoint cannot
+  empty the tab — but a failure was turned into the string `error: …` and drawn
+  in the terminal's ordinary text colour, indistinguishable from the real Docker
+  version sitting directly above it. This is the screen that offers three
+  irreversible host-wide cleanups, so a value that was never fetched must not
+  read like one that was.
+
+  Failures now carry through as a typed result and are drawn bold in the error
+  colour, wrapped with a hanging indent so the whole reason stays readable
+  instead of being cut at the pane edge. The consequence lines under the
+  destructive keys (`[p] prune system — …`) no longer truncate on a narrow
+  terminal either.
+
 ## [0.49.0] — 2026-07-19
 
 ### Changed
