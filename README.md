@@ -178,10 +178,11 @@ Inside a menu: `↑↓` select · `→` enter a submenu · `←` back · `Enter`
 | `n` · `N` | new service · new project |
 
 **Each collection is one screen.** Open the env, the ports, the mounts, the redirects or
-the source, and act on it from there: `a` adds, `[0-9]` deletes that row, `e` edits (and
-`b` sets the build on the source screen). The screen lists its own keys along the bottom.
-There is no separate "Add port" or "Replace env" entry any more — viewing a thing and
-changing it are the same place.
+the source, and act on it from there: `↑↓` selects a row, `n` adds, `x` deletes the
+selected one, `e` edits (and `b` sets the build on the source screen). The screen lists
+its own keys along the bottom. There is no separate "Add port" or "Replace env" entry any
+more — viewing a thing and changing it are the same place, and `n`/`e`/`x` mean the same
+here as they do on Domains and in the server list.
 
 The pre-menu keys still work if you have the muscle memory: `E` `.` (edit env, toggle
 `.env` file), `P` `M` `F` (add port, mount, redirect), `f` (view redirects), `U` `B` `A`

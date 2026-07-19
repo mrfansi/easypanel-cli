@@ -238,6 +238,10 @@ pub(super) struct App {
     /// to be simply unreachable — and this is the screen logs open in.
     pub(super) viewer_hscroll: u16,
     pub(super) viewer_ctx: Option<(View, String, String, String)>,
+    /// The highlighted row, for the views that ARE rows (ports, mounts,
+    /// redirects). Deleting used to be "press the digit printed on the line",
+    /// which capped the list at ten and collided with the tab keys.
+    pub(super) viewer_row: TableState,
     /// The newest log timestamp already shown; the resume marker for the tail.
     /// Some = the tail is active (only for View::Logs).
     pub(super) log_cursor: Option<String>,
@@ -327,6 +331,7 @@ impl App {
             viewer_title: "Viewer".into(),
             viewer_lines: Vec::new(),
             viewer_scroll: 0,
+            viewer_row: TableState::default(),
             viewer_hscroll: 0,
             viewer_ctx: None,
             log_cursor: None,

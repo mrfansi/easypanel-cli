@@ -82,21 +82,17 @@ impl App {
             // cancel, it does nothing. Closing the TUI on a single reflexive Esc
             // is losing context without warning. Quit: 'q' or Ctrl-C.
             KeyCode::Char('q') => self.should_quit = true,
-            // The viewer owns its digits: they delete the row with that index,
-            // which is the ONLY delete a collection has now that each one is a
-            // single screen. Taken globally, 1-7 threw the user onto another tab
-            // instead — the border said "[0-9] delete" and seven of ten digits
-            // silently navigated away. Same collision, and same fix, as ←/→
-            // below. Esc then the digit still switches tab.
-            KeyCode::Char('1') if self.screen != Screen::Viewer => self.screen = Screen::Dashboard,
-            KeyCode::Char('2') if self.screen != Screen::Viewer => self.goto(Screen::Hosts, req),
-            KeyCode::Char('3') if self.screen != Screen::Viewer => {
-                self.goto(Screen::Maintenance, req)
-            }
-            KeyCode::Char('4') if self.screen != Screen::Viewer => self.goto(Screen::Actions, req),
-            KeyCode::Char('5') if self.screen != Screen::Viewer => self.goto(Screen::Monitor, req),
-            KeyCode::Char('6') if self.screen != Screen::Viewer => self.goto(Screen::Domains, req),
-            KeyCode::Char('7') if self.screen != Screen::Viewer => self.goto(Screen::Projects, req),
+            // Global on every screen. They were guarded away from the viewer
+            // while a digit meant "delete the row with this index"; the viewer
+            // now has a selected row and `x`, so nothing there wants a digit and
+            // the exception is dead weight.
+            KeyCode::Char('1') => self.screen = Screen::Dashboard,
+            KeyCode::Char('2') => self.goto(Screen::Hosts, req),
+            KeyCode::Char('3') => self.goto(Screen::Maintenance, req),
+            KeyCode::Char('4') => self.goto(Screen::Actions, req),
+            KeyCode::Char('5') => self.goto(Screen::Monitor, req),
+            KeyCode::Char('6') => self.goto(Screen::Domains, req),
+            KeyCode::Char('7') => self.goto(Screen::Projects, req),
             KeyCode::Tab => self.goto(self.screen.next(), req),
             // ←/→ move between tabs (e.g. Services ↔ Domains). Menus & forms grab
             // the arrows first (above), so this only applies in ordinary table
@@ -1037,6 +1033,25 @@ impl App {
             // Scrolling up releases the follow: otherwise a newly arriving log line
             // would drag the view back to the bottom right as the user is reading
             // something above.
+            // In a collection ↑↓ move the SELECTED row; in prose they scroll.
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End
+                if self
+                    .viewer_ctx
+                    .as_ref()
+                    .is_some_and(|(v, ..)| v.is_collection()) =>
+            {
+                // Every movement key moves the SELECTION here, through the same
+                // helper the other tables use — so PageDown and End behave as
+                // they do everywhere else rather than scrolling a list whose
+                // highlight then sits off screen.
+                let len = self.viewer_lines.len();
+                move_table(&mut self.viewer_row, code, len);
+            }
             KeyCode::Up | KeyCode::Char('k') | KeyCode::PageUp | KeyCode::Home => {
                 self.viewer_follow = false;
                 let step = if code == KeyCode::PageUp { 10 } else { 1 };
@@ -1063,13 +1078,53 @@ impl App {
             //
             // Routed through services_key so these are the SAME handlers the menu
             // uses; there is no second path that could drift from it.
-            KeyCode::Char('a') | KeyCode::Char('e') | KeyCode::Char('b') => {
+            // `x` deletes the highlighted row — the same verb Domains and the
+            // server picker use, and with no ten-row ceiling. It replaced "press
+            // the digit printed on the line", which capped the list at [9] and
+            // lost 1-7 to the tab keys.
+            KeyCode::Char('x') => {
+                let Some((view, project, service, _)) = self.viewer_ctx.clone() else {
+                    return;
+                };
+                let Some((action, noun)) = (match view {
+                    View::Ports => Some(("port-delete", "port")),
+                    View::Mounts => Some(("mount-delete", "mount")),
+                    View::Redirects => Some(("redirect-delete", "redirect")),
+                    _ => None,
+                }) else {
+                    self.status = "Nothing here can be deleted".into();
+                    return;
+                };
+                // The index comes from the marker PRINTED on the row, not from
+                // its position: the list can hold lines that are not rows, and
+                // the server deletes by the index it gave us.
+                let picked = self
+                    .viewer_row
+                    .selected()
+                    .and_then(|i| self.viewer_lines.get(i))
+                    .and_then(|l| l.split_once(']').map(|(h, _)| h))
+                    .and_then(|h| h.strip_prefix('[').and_then(|n| n.parse::<usize>().ok()));
+                match picked {
+                    Some(idx) => {
+                        let label = format!("Delete {noun} [{idx}] from {service}?");
+                        self.confirm = Some(Confirm {
+                            action: action.into(),
+                            project,
+                            service,
+                            stype: idx.to_string(),
+                            label,
+                        });
+                    }
+                    _ => self.status = format!("Select a {noun} first"),
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('e') | KeyCode::Char('b') => {
                 let view = self.viewer_ctx.as_ref().map(|(v, ..)| *v);
                 let leaf = match (view, code) {
                     (Some(View::Env), KeyCode::Char('e')) => Some('E'),
-                    (Some(View::Ports), KeyCode::Char('a')) => Some('P'),
-                    (Some(View::Mounts), KeyCode::Char('a')) => Some('M'),
-                    (Some(View::Redirects), KeyCode::Char('a')) => Some('F'),
+                    (Some(View::Ports), KeyCode::Char('n')) => Some('P'),
+                    (Some(View::Mounts), KeyCode::Char('n')) => Some('M'),
+                    (Some(View::Redirects), KeyCode::Char('n')) => Some('F'),
                     (Some(View::Source), KeyCode::Char('e')) => Some('U'),
                     (Some(View::Source), KeyCode::Char('b')) => Some('B'),
                     _ => None,
@@ -1086,47 +1141,6 @@ impl App {
                         } else {
                             format!("Not here —{keys}")
                         };
-                    }
-                }
-            }
-            // In the Ports/Mounts viewer, a digit selects row [idx] to delete
-            // (deletePort/deleteMount by index). 0-9 is enough: there's rarely >10.
-            // Only if row [idx] actually exists, so a random digit does nothing.
-            KeyCode::Char(c) if c.is_ascii_digit() => {
-                let kind = match self.viewer_ctx.as_ref().map(|(v, ..)| *v) {
-                    Some(View::Ports) => Some(("port-delete", "port")),
-                    Some(View::Mounts) => Some(("mount-delete", "mount")),
-                    Some(View::Redirects) => Some(("redirect-delete", "redirect")),
-                    _ => None,
-                };
-                if let (Some((action, noun)), Some((_, project, service, _))) =
-                    (kind, self.viewer_ctx.clone())
-                {
-                    let idx = (c as u8 - b'0') as usize;
-                    let exists = self
-                        .viewer_lines
-                        .iter()
-                        .any(|l| l.starts_with(&format!("[{idx}]")));
-                    if !exists {
-                        // A digit with no row behind it used to do nothing at
-                        // all, which reads as a broken key rather than a miss.
-                        // The [10]+ ceiling is real and is named here, because a
-                        // silent wall is the worst way to meet it.
-                        self.status = match self.viewer_lines.len() {
-                            n if n > 10 => {
-                                format!("No {noun} [{idx}] — only [0]-[9] can be deleted by digit")
-                            }
-                            _ => format!("No {noun} [{idx}] here"),
-                        };
-                    } else {
-                        let label = format!("Delete {noun} [{idx}] from {service}?");
-                        self.confirm = Some(Confirm {
-                            action: action.into(),
-                            project,
-                            service,
-                            stype: idx.to_string(),
-                            label,
-                        });
                     }
                 }
             }

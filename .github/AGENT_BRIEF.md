@@ -415,17 +415,18 @@ Fixed in v0.49.2:
 
 Still open, with evidence, in the order I would take them:
 
-1. **Digit-delete has a hard ceiling at [9] by construction** (`keys.rs`, `idx` from one
-   char). A service with a dozen mounts cannot remove the last few. The miss is no longer
-   silent — it now says "only [0]-[9] can be deleted by digit" — but the wall is real. The
-   proper fix is a SELECTED row in the viewer (↑↓) deleted with `x`, which removes the
-   ceiling and finding 2 below at the same time. That needs the viewer to become a list
-   with a selection rather than a Paragraph, so it is its own run.
-2. **Add/delete verbs disagree across the three screens that have them**: Domains and the
-   server picker use `n`/`e`/`x`; the viewer uses `a`/`e`/`[0-9]`. `x` also means "Danger
-   menu" on Services. The viewer is the freshest surface, so it is the one users will
-   generalise from — and it generalises wrongly in both directions. Standardising the
-   viewer on `n`/`e`/`x` subsumes item 1.
+1. ~~**Digit-delete has a hard ceiling at [9]**~~ and ~~**the three screens disagree on
+   their verbs**~~ — both done in v0.50.0. A collection view is now a one-column table with
+   a selected row (moved by the same `move_table` every other table uses), and `x` deletes
+   it — the verb Domains and the server picker already had. `a` became `n` to match too.
+   Verified live by deleting the twelfth of twelve mounts, which the digit scheme could
+   never address.
+
+   Two things that only showed up by running it: the index must come from the `[n]`
+   PRINTED on the row, not the row's position (the view appended a blank line and a hint,
+   so `End` selected a non-row and offered to delete `[13]` of 12); and those "Press a
+   digit [0-9] to delete" hint lines were both wrong and redundant once the border carried
+   the keys.
 3. **The server picker truncates the URLs that exist to disambiguate servers**, at 80
    columns, with no ellipsis — `https://panel.exa` reads as a complete host. Its own
    comment says the name alone is not enough to be sure which host is about to be edited

@@ -105,14 +105,17 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
         ],
         Screen::Viewer => &[
             Key(
-                "a / e / b",
-                "act on what is shown — add a port/mount/redirect, edit env, set source or build",
+                "n / e / b / x",
+                "act on what is shown — the keys for THIS view are listed on its bottom border",
             ),
-            Key("↑↓ / PgUp/PgDn", "scroll (releases follow-last-line)"),
+            Key(
+                "↑↓",
+                "select a row (ports/mounts/redirects) · scroll (logs, env, source)",
+            ),
+            Key("PgUp/PgDn", "scroll (releases follow-last-line)"),
             Key("←→", "scroll sideways — long lines are not wrapped"),
             Key("Home", "back to the first line and the left edge"),
             Key("End", "follow the last line again (logs)"),
-            Key("[0-9]", "delete that line (Ports/Mounts/Redirects)"),
             Key("Esc", "back to Services"),
         ],
         Screen::Terminal => &[
@@ -1317,30 +1320,60 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
         // line into a blank bordered box that looks like an empty log.
         app.viewer_scroll.min(max_scroll)
     };
+    let block = |app: &App| {
+        Block::bordered()
+            .title(format!(
+                " {}{} ",
+                app.viewer_title,
+                // Say so if it's really live. Without this, a quiet log can't be
+                // told apart from a dead tail.
+                match (app.log_cursor.is_some(), app.viewer_follow) {
+                    (true, true) => " · live",
+                    (true, false) => " · live (paused — End to follow again)",
+                    _ => "",
+                }
+            ))
+            .title_bottom(viewer_actions(app))
+            .title_bottom(if app.viewer_hscroll > 0 {
+                // Say where you are once scrolled: otherwise a view missing its
+                // left edge looks like the content simply starts there.
+                format!(" ← col {} · Home to return ", app.viewer_hscroll + 1)
+            } else {
+                String::new()
+            })
+    };
+
+    // A collection is a LIST with a highlighted row; everything else is prose.
+    // Selecting a line in a log would mean nothing, but selecting a port is the
+    // whole point — it is what `x` deletes, without the ten-row ceiling the old
+    // "press the digit on the line" had.
+    if app
+        .viewer_ctx
+        .as_ref()
+        .is_some_and(|(v, ..)| v.is_collection())
+    {
+        // A one-column Table rather than a List, so the selection moves with the
+        // SAME helper every other table here uses — ↑↓, PageUp/PageDown, Home/End
+        // all behave as they do elsewhere instead of being a second scheme.
+        let rows: Vec<Row> = app
+            .viewer_lines
+            .iter()
+            .map(|l| Row::new(vec![l.clone()]))
+            .collect();
+        if app.viewer_row.selected().is_none() && !rows.is_empty() {
+            app.viewer_row.select(Some(0));
+        }
+        let table = Table::new(rows, [Constraint::Min(10)])
+            .block(block(app))
+            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .highlight_symbol("› ");
+        f.render_stateful_widget(table, area, &mut app.viewer_row);
+        return;
+    }
+
     f.render_widget(
         Paragraph::new(app.viewer_lines.join("\n"))
-            .block(
-                Block::bordered()
-                    .title(format!(
-                        " {}{} ",
-                        app.viewer_title,
-                        // Say so if it's really live. Without this, a quiet log can't be
-                        // told apart from a dead tail.
-                        match (app.log_cursor.is_some(), app.viewer_follow) {
-                            (true, true) => " · live",
-                            (true, false) => " · live (paused — End to follow again)",
-                            _ => "",
-                        }
-                    ))
-                    .title_bottom(viewer_actions(app))
-                    .title_bottom(if app.viewer_hscroll > 0 {
-                        // Say where you are once scrolled: otherwise a view missing its
-                        // left edge looks like the content simply starts there.
-                        format!(" ← col {} · Home to return ", app.viewer_hscroll + 1)
-                    } else {
-                        String::new()
-                    }),
-            )
+            .block(block(app))
             .scroll((app.viewer_scroll, app.viewer_hscroll)),
         area,
     );
@@ -1356,7 +1389,7 @@ pub(super) fn viewer_actions(app: &App) -> String {
     match app.viewer_ctx.as_ref().map(|(v, ..)| *v) {
         Some(View::Env) => " e edit ".into(),
         Some(View::Ports) | Some(View::Mounts) | Some(View::Redirects) => {
-            " a add · [0-9] delete ".into()
+            " ↑↓ select · n add · x delete ".into()
         }
         Some(View::Source) => " e set source · b set build ".into(),
         _ => String::new(),

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.0] — 2026-07-19
+
+### Changed
+
+- **A collection is now a list you select in, not a list you index into.** Ports,
+  mounts and redirects show a highlighted row: `↑↓` moves it, `x` deletes it,
+  `n` adds one. Deleting used to mean pressing the digit printed on the line —
+  which capped a collection at ten rows, so a service with a dozen mounts simply
+  could not remove the last few.
+
+  It also settles a disagreement between screens. Domains and the server picker
+  already used `n` add / `e` edit / `x` delete; the viewer used `a` and digits.
+  All three now read the same way, and the selection moves with the same keys as
+  every other table here — `PageUp`/`PageDown`, `Home`/`End` included.
+
+  Digits go back to being tab switches on every screen, since nothing in the
+  viewer wants them any more.
+
+- The "Press a digit [0-9] to delete that mount" lines are gone from the ports,
+  mounts and redirects views. The keys live on the screen's bottom border, which
+  is where every other screen puts them.
+
 ## [0.49.2] — 2026-07-19
 
 ### Fixed

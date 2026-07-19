@@ -25,6 +25,14 @@ pub(super) enum View {
 }
 
 impl View {
+    /// Does this view show ROWS you act on one at a time, rather than free text?
+    ///
+    /// A collection gets a selected row and `x` to delete it. Logs, env and an
+    /// action's output are prose: selecting a line there means nothing.
+    pub(super) fn is_collection(self) -> bool {
+        matches!(self, View::Ports | View::Mounts | View::Redirects)
+    }
+
     pub(super) fn title(self) -> &'static str {
         match self {
             View::Logs => "Logs",
@@ -1224,7 +1232,7 @@ pub(super) fn fetch_view(
         }
         View::Ports => {
             let v = client.call("ports", "listPorts", ps)?;
-            let mut lines = list_or_empty(&v, "No ports", |i, p| {
+            let lines = list_or_empty(&v, "No ports", |i, p| {
                 format!(
                     "[{i}] {} {}->{}",
                     field(p, "/protocol"),
@@ -1234,15 +1242,11 @@ pub(super) fn fetch_view(
             });
             // Show the delete hint only when there's a real port (first line starts
             // with "[0]").
-            if lines.first().is_some_and(|l| l.starts_with("[0]")) {
-                lines.push(String::new());
-                lines.push("Press a digit [0-9] to delete that port.".into());
-            }
             lines
         }
         View::Mounts => {
             let v = client.call("mounts", "listMounts", ps)?;
-            let mut lines = list_or_empty(&v, "No mounts", |i, m| {
+            let lines = list_or_empty(&v, "No mounts", |i, m| {
                 let detail = match field(m, "/type").as_str() {
                     "bind" => format!("{} -> {}", field(m, "/hostPath"), field(m, "/mountPath")),
                     "volume" => format!("{} -> {}", field(m, "/name"), field(m, "/mountPath")),
@@ -1250,10 +1254,6 @@ pub(super) fn fetch_view(
                 };
                 format!("[{i}] {}  {detail}", field(m, "/type"))
             });
-            if lines.first().is_some_and(|l| l.starts_with("[0]")) {
-                lines.push(String::new());
-                lines.push("Press a digit [0-9] to delete that mount.".into());
-            }
             lines
         }
         View::Redirects => {
@@ -1267,7 +1267,7 @@ pub(super) fn fetch_view(
             if arr.is_empty() {
                 return Ok(vec!["No redirects".into()]);
             }
-            let mut lines: Vec<String> = arr
+            let lines: Vec<String> = arr
                 .iter()
                 .enumerate()
                 .map(|(i, r)| {
@@ -1288,8 +1288,6 @@ pub(super) fn fetch_view(
                     )
                 })
                 .collect();
-            lines.push(String::new());
-            lines.push("Press a digit [0-9] to delete that redirect.".into());
             lines
         }
         View::Source => {
