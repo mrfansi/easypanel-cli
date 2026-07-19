@@ -381,12 +381,17 @@ Fixed since:
 
 Still open, in the order I would take them:
 
-1. **`render_actions` is 80 columns + 2 for the symbol against 78 usable** — same class as
-   the Hosts bug, one column clipped. Now that Hosts has the pattern, this is a small
-   repeat of it.
-4. **Monitor tiles below ~100 columns** — five `Ratio(1,5)` tiles give 14 usable inner
-   columns against sub-lines like "12.3 GB / 16.0 GB" (17 chars). Same half-number failure
-   as Hosts. Not yet verified on screen.
+1. **`render_actions` at 80 columns** — verified on screen 2026-07-19: the Target column
+   truncates to 20 chars ("harisenin-net-db/php" for phpmyadmin), so the service being
+   acted on is not always identifiable. Lower severity than Hosts/Monitor were: a name
+   that is visibly cut, not a number that reads as complete while being wrong. The Hosts
+   pattern (drop whole columns least-useful-first) applies directly.
+4. ~~**Monitor tiles below ~100 columns**~~ — fixed in v0.48.2. Confirmed on screen at 80
+   columns first: Disk read "199.9 GB / 784" (a total with no unit) and CPU read
+   "16 cores — loa". Each sub-line now offers a ladder of forms and the renderer takes the
+   widest that FITS — "199.9/784.8 GB" keeps both halves in 14 columns, and CPU falls back
+   to the load average, then the core count, then nothing. Same principle as the Hosts
+   table: a shorter true form beats a longer cut one.
 5. **Form instructions live in the fading status line** — "0 = unlimited", "delete a mount:
    'm' then a digit" vanish after six seconds while the user is still in the form. The
    status line is serving as both a transient toast and a persistent instruction panel.

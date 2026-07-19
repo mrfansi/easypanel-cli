@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.2] — 2026-07-19
+
+### Fixed
+
+- **The Monitor tiles showed figures that were wrong, not merely short.** Five
+  tiles across an 80-column terminal leave 14 usable columns each, and the
+  sub-line was simply cut to fit: Disk read `199.9 GB / 784` — a total with no
+  unit, wrong by three orders of magnitude — Memory lost its unit the same way,
+  and CPU read `16 cores — loa` with the load average gone.
+
+  Each sub-line now offers a ladder of forms and the renderer takes the widest
+  that actually fits. Memory and Disk shorten to `31.4/59.0 GB` and
+  `200.0/784.9 GB`, keeping **both** halves — a lone `31.4 GB` would read as a
+  complete figure while hiding that it is half of one. CPU falls back to the load
+  average, then the core count. If nothing fits, nothing is drawn: a blank is
+  honest, a cut number is not.
+
+  Wider terminals are unchanged — the full `200.0 GB / 784.9 GB` returns as soon
+  as there is room for it.
+
 ## [0.48.1] — 2026-07-19
 
 ### Fixed

@@ -2524,3 +2524,77 @@ fn the_viewer_cannot_scroll_past_its_last_line() {
         "the last line must stay on screen however hard you scroll:\n{shown}"
     );
 }
+
+#[test]
+fn a_narrow_tile_shortens_its_figures_rather_than_cutting_them() {
+    use super::render::{compact_pair, fit_sub};
+
+    // Five tiles across 80 columns leave 14 usable each. Cut to that,
+    // "199.9 GB / 784.9 GB" reads "199.9 GB / 784" — a total with no unit, wrong
+    // by three orders of magnitude.
+    let full = "199.9 GB / 784.9 GB".to_string();
+    let compact = compact_pair("199.9 GB", "784.9 GB");
+    assert_eq!(compact, "199.9/784.9 GB");
+    assert!(compact.chars().count() <= 14, "the compact form must fit");
+
+    let forms = vec![full.clone(), compact.clone()];
+    assert_eq!(fit_sub(&forms, 40), full, "room for the full form");
+    assert_eq!(fit_sub(&forms, 14), compact, "narrow: shorten, don't cut");
+    // Narrower than BOTH: nothing beats a wrong number.
+    assert_eq!(fit_sub(&forms, 8), "");
+    // Whatever comes back is never wider than the tile.
+    for w in 0..40 {
+        assert!(fit_sub(&forms, w).chars().count() <= w);
+    }
+
+    // Both numbers survive the shortening — a lone "199.9 GB" would read as a
+    // complete figure while hiding that it is a half.
+    assert!(compact.contains("199.9") && compact.contains("784.9"));
+
+    // Mismatched units can't share a suffix, so both are kept.
+    assert_eq!(compact_pair("900.0 MB", "2.0 GB"), "900.0 MB/2.0 GB");
+}
+
+#[test]
+fn monitor_tiles_never_show_a_half_number_at_80_columns() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Monitor;
+    app.stats = Some(json!({
+        "cpu": [[0, 8.6]],
+        "memory": [[0, 52.7]],
+        "disk": [[0, 25.5]],
+        "cpuCores": 16,
+        "loadAvg": ["1.20", "1.30", "1.40"],
+        "memoryUsedBytes": 33_300_000_000i64,
+        "memoryTotalBytes": 63_400_000_000i64,
+        "diskUsedBytes": 214_600_000_000i64,
+        "diskTotalBytes": 842_700_000_000i64,
+    }));
+    let mut t = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let buf = t.backend().buffer().clone();
+    let shown: String = buf
+        .content()
+        .chunks(80)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // The exact string the bug produced: a total cut away from its unit.
+    assert!(
+        !shown.contains("/ 784") && !shown.contains("/ 78 "),
+        "a total must never appear without its unit:\n{shown}"
+    );
+    // Both figures are present, in the shortened form.
+    assert!(
+        shown.contains("31.0/59.0 GB"),
+        "memory must keep both halves:\n{shown}"
+    );
+    assert!(
+        shown.contains("199.9/784.8 GB"),
+        "disk must keep both halves:\n{shown}"
+    );
+}

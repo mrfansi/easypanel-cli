@@ -976,26 +976,54 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
+/// The widest form of a tile's sub-line that actually FITS.
+///
+/// Truncating it is not cosmetic: five tiles across an 80-column terminal leave
+/// 14 usable columns each, and "199.9 GB / 784.9 GB" cut to that reads
+/// "199.9 GB / 784" — a total with no unit, off by three orders of magnitude. A
+/// shorter TRUE form beats a longer cut one, and nothing beats a wrong number.
+pub(super) fn fit_sub(forms: &[String], width: usize) -> String {
+    forms
+        .iter()
+        .find(|s| s.chars().count() <= width)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// "31.0 GB / 59.0 GB" shortened to "31.0/59.0 GB" when both sides share a unit.
+///
+/// Keeps BOTH numbers, which is the point — a lone "31.0 GB" reads as a complete
+/// figure and hides that it is a half.
+pub(super) fn compact_pair(used: &str, total: &str) -> String {
+    match (used.rsplit_once(' '), total.rsplit_once(' ')) {
+        (Some((un, uu)), Some((tn, tu))) if uu == tu => format!("{un}/{tn} {uu}"),
+        _ => format!("{used}/{total}"),
+    }
+}
+
 /// Five metric tiles with history (CPU, Memory, Disk, Net In, Net Out).
 pub(super) fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
     let s = app.stats.clone().unwrap_or(Value::Null);
+    // Each pair tile offers a full form and a compact one; the renderer picks
+    // whichever fits the tile it ends up with.
     let pair = |used: &str, total: &str| {
-        format!(
-            "{} / {}",
-            format_bytes(num(&s, used)),
-            format_bytes(num(&s, total))
-        )
+        let (u, t) = (format_bytes(num(&s, used)), format_bytes(num(&s, total)));
+        vec![format!("{u} / {t}"), compact_pair(&u, &t)]
     };
 
     let tiles = [
         (
             "CPU",
             format!("{:.1}%", series_last(&s, "cpu")),
-            format!(
-                "{} cores — load {}",
-                field(&s, "/cpuCores"),
-                commands::load_avg(&s)
-            ),
+            vec![
+                format!(
+                    "{} cores — load {}",
+                    field(&s, "/cpuCores"),
+                    commands::load_avg(&s)
+                ),
+                format!("load {}", commands::load_avg(&s)),
+                format!("{} cores", field(&s, "/cpuCores")),
+            ],
             series_spark(&s, "cpu", 60),
             Color::Yellow,
         ),
@@ -1016,14 +1044,14 @@ pub(super) fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
         (
             "Network In",
             format_rate(series_last(&s, "networkIn")),
-            String::new(),
+            Vec::new(),
             series_spark(&s, "networkIn", 60),
             Color::Cyan,
         ),
         (
             "Network Out",
             format_rate(series_last(&s, "networkOut")),
-            String::new(),
+            Vec::new(),
             series_spark(&s, "networkOut", 60),
             Color::Magenta,
         ),
@@ -1043,7 +1071,8 @@ pub(super) fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
             inner[0],
         );
         f.render_widget(
-            Paragraph::new(sub).style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new(fit_sub(&sub, inner[1].width as usize))
+                .style(Style::default().fg(Color::DarkGray)),
             inner[1],
         );
         f.render_widget(
