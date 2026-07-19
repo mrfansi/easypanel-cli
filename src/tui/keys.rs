@@ -550,6 +550,9 @@ impl App {
                     self.viewer_from = Screen::Actions;
                     // Not a log-tail view: make sure the log poll doesn't latch onto it.
                     self.viewer_ctx = None;
+                    // Remembered so `r` can fetch it again — a running deploy's
+                    // log is a snapshot, and this screen exists to watch it.
+                    self.action_detail = Some(id.clone());
                     self.status = "Loading action detail...".into();
                     let _ = req.send(Req::ActionDetail(id));
                 }

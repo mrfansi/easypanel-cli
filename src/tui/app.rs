@@ -242,6 +242,13 @@ pub(super) struct App {
     /// redirects). Deleting used to be "press the digit printed on the line",
     /// which capped the list at ten and collided with the tab keys.
     pub(super) viewer_row: TableState,
+    /// The action whose detail the viewer is showing, if any.
+    ///
+    /// An action detail has no `viewer_ctx` (it is not a service view), so
+    /// `refresh` had nothing to re-send: `r` reported "Refreshing..." and left a
+    /// RUNNING deploy's log frozen at the moment it was first fetched — on the
+    /// screen you open precisely to watch one.
+    pub(super) action_detail: Option<String>,
     /// The newest log timestamp already shown; the resume marker for the tail.
     /// Some = the tail is active (only for View::Logs).
     pub(super) log_cursor: Option<String>,
@@ -332,6 +339,7 @@ impl App {
             viewer_lines: Vec::new(),
             viewer_scroll: 0,
             viewer_row: TableState::default(),
+            action_detail: None,
             viewer_hscroll: 0,
             viewer_ctx: None,
             log_cursor: None,
@@ -1920,6 +1928,8 @@ impl App {
             self.status = "Select a service first".into();
             return;
         };
+        // Leaving an action detail for a service view: stop `r` re-fetching it.
+        self.action_detail = None;
         {
             self.viewer_from = Screen::Projects;
             self.viewer_ctx = Some((view, p.clone(), s.clone(), t.clone()));
@@ -1996,6 +2006,10 @@ impl App {
                         service: s,
                         stype: t,
                     });
+                } else if let Some(id) = self.action_detail.clone() {
+                    // An action detail is a one-shot snapshot; this is the key
+                    // that makes it current again.
+                    let _ = req.send(Req::ActionDetail(id));
                 }
             }
             Screen::Actions => {

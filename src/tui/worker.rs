@@ -1327,19 +1327,32 @@ pub(super) fn fetch_view(
         }
         View::Backups => {
             let v = client.call("databaseBackups", "listDatabaseBackups", ps)?;
-            list_or_empty(&v, "No database backups", |_, b| {
+            // The id led every row and nothing here could use it: this view has no
+            // run and no delete, and it is not a collection, so there is no
+            // selection either. Twenty-five characters of cuid pushed the only
+            // thing that tells two rows apart — the database name — off to the
+            // right. The CLI prints the same data under labelled columns; this now
+            // says what each field is, too.
+            let rows = list_or_empty(&v, "No database backups", |_, b| {
                 let state = if b.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
                     "on"
                 } else {
                     "off"
                 };
                 format!(
-                    "{}  {}  {}  {state}",
-                    field(b, "/id"),
+                    "{:<18}{:<16}{state}",
                     field(b, "/databaseName"),
                     field(b, "/schedule")
                 )
-            })
+            });
+            // The header only earns its line when there is something under it.
+            if v.as_array().is_some_and(|a| !a.is_empty()) {
+                let mut out = vec!["Database          Schedule        Enabled".to_string()];
+                out.extend(rows);
+                out
+            } else {
+                rows
+            }
         }
     };
     Ok(if lines.is_empty() {

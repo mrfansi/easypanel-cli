@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.4] — 2026-07-19
+
+### Fixed
+
+- **A database service could inherit environment variables you typed for an app.**
+  In the create wizard, fill Environment while the kind is `app`, step back and
+  change the kind to `postgres`: the form collapses to a single page — the
+  Environment field is gone from the screen — but its value still went into the
+  request. Checked against a live server: the API **accepts and stores** it, so
+  the result was a database quietly holding env you never meant for it, not an
+  error you could see. Environment and Domains now honour the service kind, like
+  the Source and Build steps already did.
+
+- **`r` on an action's detail said "Refreshing…" and re-fetched nothing.** An
+  action detail is a one-shot snapshot, and refresh had no way to ask for it
+  again — so for a *running* deploy, the screen you open to watch the log left it
+  frozen at the moment it was first fetched, while the status bar confirmed an
+  update that never happened.
+
+### Changed
+
+- **Database backup rows lead with the database name.** They used to lead with a
+  25-character id that nothing in this view can act on — there is no run, no
+  delete, and no selection here — pushing the only thing that tells two rows
+  apart off to the right. The columns are labelled now, as the CLI's already
+  were.
+
 ## [0.50.3] — 2026-07-19
 
 ### Fixed

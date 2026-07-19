@@ -251,6 +251,15 @@ pub(super) fn create_build(form: &Form) -> Option<Value> {
 /// The `env` contents for createService, or None if empty. A multi-line KEY=value
 /// string, edited in $EDITOR — same as an existing service's env.
 pub(super) fn create_env(form: &Form) -> Option<String> {
+    // Only for an app, like its two siblings above. `by_label` is
+    // visibility-blind — it returns a hidden field's value exactly as if it were
+    // on screen — so a user who filled Environment while Kind was "app", stepped
+    // back and switched to postgres, silently shipped that env to the database.
+    // Verified against a live server: createService on services/postgres ACCEPTS
+    // and STORES the env. Not a confusing error; a wrong service, quietly.
+    if form.by_label("Kind") != "app" {
+        return None;
+    }
     let env = form.by_label("Environment");
     (!env.is_empty()).then_some(env)
 }
@@ -261,6 +270,13 @@ pub(super) fn create_env(form: &Form) -> Option<String> {
 /// The API only requires `host`. `port` is a number, so it's parsed; if invalid,
 /// it's dropped rather than sending a 0 that points at the wrong port.
 pub(super) fn create_domains(form: &Form) -> Option<Value> {
+    // Same guard, same reason. The server ignores `domains` on a database rather
+    // than storing it (checked live — no domain was created), so this one was
+    // harmless; it is guarded anyway because "harmless today" is not a rule, and
+    // the four sibling builders now all read the same way.
+    if form.by_label("Kind") != "app" {
+        return None;
+    }
     let host = form.by_label("Domain host");
     if host.is_empty() {
         return None;

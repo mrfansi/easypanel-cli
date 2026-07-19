@@ -3503,3 +3503,86 @@ fn a_menu_does_not_offer_what_the_service_type_cannot_have() {
     }
     assert!(build.contains(&"Source & build".to_string()));
 }
+
+#[test]
+fn a_database_service_does_not_inherit_env_typed_for_an_app() {
+    // `by_label` is visibility-blind: it returns a hidden field's value exactly
+    // as if it were on screen. Fill Environment while Kind is "app", step back,
+    // switch to postgres — and the env went with it. Verified against a live
+    // server: createService on services/postgres ACCEPTS and STORES that env, so
+    // this was a silently misconfigured database, not a rejected request.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["p".into()];
+    app.new_service_form(&tx);
+
+    let set = |app: &mut App, label: &str, v: &str| {
+        app.form
+            .as_mut()
+            .unwrap()
+            .fields
+            .iter_mut()
+            .find(|f| f.label == label)
+            .unwrap()
+            .value = v.into();
+    };
+    set(&mut app, "Name", "db");
+    set(&mut app, "Environment", "LEAKED=yes");
+    set(&mut app, "Domain host", "leaked.example.com");
+
+    // As an app, both belong.
+    let form = app.form.as_ref().unwrap();
+    assert_eq!(create_env(form), Some("LEAKED=yes".to_string()));
+    assert!(create_domains(form).is_some());
+
+    // Switched to a database, neither does — and the wizard collapses to one
+    // page, so the user never sees those fields again to clear them.
+    set(&mut app, "Kind", "postgres");
+    let form = app.form.as_ref().unwrap();
+    assert_eq!(form.steps_present(), vec![0], "a database is one page");
+    assert_eq!(create_env(form), None, "env must not follow the switch");
+    assert_eq!(create_domains(form), None, "nor the domain");
+}
+
+#[test]
+fn r_refetches_an_action_detail_instead_of_only_claiming_to() {
+    // An action detail has no viewer_ctx, so refresh had nothing to re-send: `r`
+    // reported "Refreshing..." and left a RUNNING deploy's log frozen where it
+    // was first fetched — on the screen you open to watch one.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Actions;
+    app.actions = vec![json!({
+        "id": "act-1", "type": "deployment", "status": "running",
+        "projectName": "p", "serviceName": "web", "description": "Deploy service",
+        "createdAt": "2026-07-19 10:00:00", "updatedAt": "2026-07-19 10:00:00",
+    })];
+    app.actions_state.select(Some(0));
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::ActionDetail(ref id)) if id == "act-1"),
+        "Enter opens the detail"
+    );
+
+    app.screen = Screen::Viewer;
+    app.viewer_ctx = None; // as actions_key leaves it
+    app.refresh(&tx);
+    let sent: Vec<Req> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(
+        sent.iter()
+            .any(|r| matches!(r, Req::ActionDetail(id) if id == "act-1")),
+        "`r` must actually re-fetch the detail it is showing"
+    );
+
+    // Opening a service view clears it, so `r` there does not resurrect the action.
+    app.handle(
+        Resp::AllServices {
+            projects: vec!["p".into()],
+            services: vec![json!({"projectName": "p", "name": "web", "type": "app"})],
+        },
+        &tx,
+    );
+    app.services_table.select(Some(1));
+    app.open_view(View::Env, &tx);
+    assert!(app.action_detail.is_none());
+}

@@ -400,6 +400,43 @@ Still open, in the order I would take them:
    stronger fix: there is nothing left there to go stale. The status line is back to being
    only a transient toast.
 
+### UI/UX critique, round 5 (2026-07-19) — the uncovered areas
+
+Round 4 named three areas it had NOT audited; round 5 was pointed at exactly those and
+returned the best report of the five: three confirmed findings plus a long, specific
+"checked and CLEAN" list. Fixed in v0.50.4.
+
+- ~~**Environment and Domains leaked into a database's create request**~~ — `create_env`
+  and `create_domains` read the form unconditionally while their two siblings
+  (`create_source`, `create_build`) guard on `Kind != "app"`. `by_label` is
+  visibility-blind, so filling Environment as an app, stepping back and switching to
+  postgres carried it along — and the wizard collapses to ONE page for a database, so the
+  field is never on screen again to clear.
+
+  **The critic could not say whether the server rejects or accepts it. I checked: it
+  ACCEPTS and STORES the env** (`services/postgres/createService` with `env` returned the
+  service with `env: "BOCOR=ya"`). So this was a silently misconfigured database, not a
+  confusing error — the worse of the two possibilities. `domains` on a database is
+  accepted but ignored (no domain was created); guarded anyway.
+- ~~**`r` on an action detail claimed "Refreshing..." and re-fetched nothing**~~ — an
+  action detail has no `viewer_ctx`, and `refresh`'s Viewer arm had no `else`. A RUNNING
+  deploy's log stayed frozen at first fetch, on the screen you open to watch it. `App`
+  now remembers the action id.
+- ~~**Backups rows led with an unusable cuid and had no header**~~ — nothing in the TUI
+  can act on that id (no run, no delete, not a collection so no selection), and the CLI
+  prints the same data under labelled columns. NOT verified on screen: no backup schedule
+  exists anywhere on the live host, so this one rests on the format string and the CLI
+  comparison.
+
+**Explicitly checked and CLEAN by round 5** — skip these next time: build-step field
+visibility vs `build_body`'s key table for all six build types; wizard values surviving
+step navigation (`goto_step` never clears `value`); the Domains step for a database (all
+`Domain *` fields are `.when("Kind","app")`, so a database form is genuinely one page);
+`.env file path` on submit; label collisions (`Domain path` vs source `Path`);
+`Domain port` dropping an unparseable value; action-detail rendering for
+running/failed/killed and its long-log navigation; action-detail Esc target; Actions
+column dropping.
+
 ### UI/UX critique, round 4 (2026-07-19)
 
 All three findings confirmed on screen and fixed in v0.50.3. This round asked for at most
