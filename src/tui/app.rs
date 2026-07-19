@@ -1754,6 +1754,12 @@ impl App {
         let Some((_, where_to)) = self.backup_provider.clone() else {
             return;
         };
+        // Nothing to choose from is an answer, not an empty box: it means the
+        // engine could not be asked and the panel recorded no database either.
+        if names.is_empty() {
+            self.status = format!("No database found in {project}/{service} — nothing to back up");
+            return;
+        }
         let mut lines = vec![
             format!("Back up from {project}/{service} to {where_to}"),
             String::new(),

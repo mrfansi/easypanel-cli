@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.55.1] — 2026-07-20
+
+### Fixed
+
+- **Redis is no longer offered a backup it cannot have.** Opening the database
+  picker on a redis service listed a database called `-` — the placeholder for a
+  value that isn't there, since redis carries no `databaseName` at all. Choosing
+  it could only fail. Verified against a live panel: `createDatabaseBackup` on a
+  real redis service answers `Service is not supported`, so Backup, Restore and
+  Backup schedules are simply not offered for it. mysql, mariadb, postgres and
+  mongo are all accepted and unchanged.
+
+- A service whose database cannot be determined now says so, instead of offering
+  "All 0 databases".
+
+Found by looking at the screen after an unrelated refactor — the picker was
+working perfectly, on a service that can never be backed up.
+
 ## [0.55.0] — 2026-07-20
 
 ### Added

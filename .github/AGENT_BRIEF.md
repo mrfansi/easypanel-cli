@@ -747,6 +747,10 @@ found by a **human looking at the screen**, never by a test:
   `local` provider stores on that host's disk, so cross-host restore needs a shared
   REMOTE provider configured in the dashboard on both hosts.
 - A backup of a database that is not running fails with `Invariant failed`.
+- **Redis cannot be backed up**: `createDatabaseBackup` answers `Service is not supported`,
+  and redis has no `databaseName` field. mysql/mariadb/postgres/mongo are accepted.
+  Careful reading the probe: a NONEXISTENT service answers with that same message, so
+  only trust it against a service you know exists.
 - **`databaseName` may be ANY database inside the service**, not just the one the panel
   created — verified by backing up a schema the panel never knew about and getting a real
   dump of it. Nothing in the API lists them, so ask the engine through `containerShell`

@@ -696,19 +696,29 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             // No listing for this engine, or the shell could not answer: fall
             // back to the ONE name the panel knows. Better a working backup of
             // the obvious database than a dead end.
+            // The fallback is only a fallback when there is something to fall
+            // back TO: `field()` yields "-" for a service with no databaseName,
+            // and offering that produced a row the endpoint always rejects.
+            let fallback = |c: &String| {
+                if crate::backup::is_named(c) {
+                    vec![c.clone()]
+                } else {
+                    Vec::new()
+                }
+            };
             let names = match cmd {
                 Some(c) => match super::terminal::run_once(client, &project, &service, &c) {
                     Ok(out) => {
                         let n = crate::backup::parse_databases(&out);
                         if n.is_empty() {
-                            vec![configured.clone()]
+                            fallback(&configured)
                         } else {
                             n
                         }
                     }
-                    Err(_) => vec![configured.clone()],
+                    Err(_) => fallback(&configured),
                 },
-                None => vec![configured.clone()],
+                None => fallback(&configured),
             };
             Resp::DatabasesIn {
                 project,

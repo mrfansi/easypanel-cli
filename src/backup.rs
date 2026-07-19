@@ -150,6 +150,25 @@ pub fn restore_body(
     })
 }
 
+/// Can this service type be backed up at all?
+///
+/// Redis cannot: `createDatabaseBackup` on a real redis service answers
+/// `Service is not supported` (verified live), and redis has no `databaseName`
+/// field either — so the picker was offering a database called "-", the
+/// placeholder for a missing value, which could only ever fail. mysql, mariadb,
+/// postgres and mongo are all accepted.
+pub fn can_back_up(stype: &str) -> bool {
+    matches!(stype, "mysql" | "mariadb" | "postgres" | "mongo")
+}
+
+/// Is this a real database name, rather than a missing one?
+///
+/// `field()` yields "-" for an absent value, and an empty or "-" name is
+/// rejected by the endpoint — so neither belongs in a list of things to back up.
+pub fn is_named(database: &str) -> bool {
+    !database.is_empty() && database != "-"
+}
+
 /// MySQL/MariaDB and PostgreSQL keep their own bookkeeping schemas; nobody wants
 /// to back those up, and restoring one would be actively harmful.
 const INTERNAL: &[&str] = &[
@@ -284,6 +303,19 @@ mod tests {
         assert_eq!(all.len(), 2, "both services, no failed run");
         assert_eq!(all[0].0, "shopco/db");
         assert_eq!(all[1].0, "shopco/other");
+    }
+
+    #[test]
+    fn redis_is_not_offered_a_backup_it_cannot_have() {
+        // Verified live: redis answers "Service is not supported", and carries no
+        // databaseName — so the picker had been offering "-", the placeholder for
+        // a value that isn't there.
+        assert!(!can_back_up("redis"));
+        for t in ["mysql", "mariadb", "postgres", "mongo"] {
+            assert!(can_back_up(t), "{t}");
+        }
+        assert!(!is_named("") && !is_named("-"));
+        assert!(is_named("shop"));
     }
 
     #[test]

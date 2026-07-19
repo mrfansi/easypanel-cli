@@ -346,7 +346,7 @@ impl App {
         // Backups belong to databases. listDatabaseBackups answers [] for an app
         // rather than an error, so the entry used to open an empty box on every
         // service in the panel and explain nothing.
-        if crate::lifecycle::is_database(&stype) {
+        if crate::backup::can_back_up(&stype) {
             v.push(MenuItem::new("Backup now", |a, r| a.backup_now(r)));
             v.push(MenuItem::new("Restore from a backup", |a, r| {
                 a.open_restore(r)
