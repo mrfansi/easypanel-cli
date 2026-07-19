@@ -400,6 +400,32 @@ Still open, in the order I would take them:
    stronger fix: there is nothing left there to go stale. The status line is back to being
    only a transient toast.
 
+### Audit: one door per thing (owner, 2026-07-19)
+
+The owner asked why "View env", "Edit env (partial)" and "Replace entire env" were three
+menu entries for what is one screen — and then asked for the same AUDIT across the rest.
+Done in v0.49.0. The pattern was systemic:
+
+| Collection | Doors before | After |
+|---|---|---|
+| Env | View · Edit (partial) · Replace entire | **Env** |
+| Ports | View · Add | **Ports** |
+| Redirects | View · Add | **Redirects** |
+| Mounts | View · Add | **Mounts** |
+| Source & build | View · Set source · Set build | **Source & build** |
+
+17 service menu entries became 11. The viewer already deleted rows by digit, so it was
+already the place you act on a collection — "Add X" was a second door into the same room.
+It now also adds (`a`) and edits (`e`, plus `b` for build), routed through the SAME
+`services_key` handlers the menu used, so there is no second path to drift.
+
+Two labels were also lies: saving sends the whole `env` string, so "Edit env (partial)"
+was a full replace, and "Replace entire env" differed only in opening `$EDITOR` blank —
+something you do inside your editor. The blank-editor mode and its `w` key are gone.
+
+**When adding a feature, check this first:** does it need a new door, or does it belong on
+the screen that already shows the thing?
+
 ### UI/UX critique, round 2 (2026-07-19) — unverified findings
 
 From a fresh critique pass over the screens the earlier sweep skipped. **I have not

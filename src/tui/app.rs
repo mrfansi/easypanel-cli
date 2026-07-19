@@ -175,7 +175,7 @@ pub(super) struct App {
     /// (project, service, stype, replace) — awaiting an env edit in $EDITOR.
     /// `replace` = true opens an EMPTY editor (quick-replace: paste new env without
     /// waiting for a fetch or deleting the old one); false loads the current env.
-    pub(super) edit_env: Option<(String, String, String, bool)>,
+    pub(super) edit_env: Option<(String, String, String)>,
     /// (project, service, stype) — awaiting a Config File (Advanced db) edit in
     /// $EDITOR; its contents come from inspectService and are saved via updateAdvanced.
     pub(super) edit_config: Option<(String, String, String)>,
@@ -579,11 +579,14 @@ impl App {
     }
 
     pub(super) fn env_menu(&self) -> Vec<MenuItem> {
-        let mut v = vec![
-            MenuItem::new("View env", |a, r| a.open_view(View::Env, r)),
-            MenuItem::new("Edit env (partial)", |a, r| a.on_key(KeyCode::Char('E'), r)),
-            MenuItem::new("Replace entire env", |a, r| a.on_key(KeyCode::Char('w'), r)),
-        ];
+        // ONE door. This used to be three — "View env", "Edit env (partial)" and
+        // "Replace entire env" — for what is one screen and one operation.
+        //
+        // The labels were also wrong: saving sends the whole `env` string, so
+        // BOTH "edit" and "replace" replaced everything. The only difference was
+        // whether $EDITOR opened pre-filled or blank, which is a thing you do
+        // inside your editor, not a separate feature.
+        let mut v = vec![MenuItem::new("Env", |a, r| a.open_view(View::Env, r))];
         // The .env file is only for app services (see the `.` handler).
         if self.is_selected_type(&["app"]) {
             v.push(MenuItem::new("Toggle .env file", |a, r| {
@@ -596,19 +599,16 @@ impl App {
     pub(super) fn net_menu(&self) -> Vec<MenuItem> {
         vec![
             MenuItem::new("Domain", |a, r| a.open_service_domains(r)),
-            MenuItem::new("View ports", |a, r| a.on_key(KeyCode::Char('p'), r)),
-            MenuItem::new("Add port", |a, r| a.on_key(KeyCode::Char('P'), r)),
-            MenuItem::new("View redirects", |a, r| a.on_key(KeyCode::Char('f'), r)),
-            MenuItem::new("Add redirect", |a, r| a.on_key(KeyCode::Char('F'), r)),
+            // The viewer adds and deletes, so "Add X" is not a separate door.
+            MenuItem::new("Ports", |a, r| a.on_key(KeyCode::Char('p'), r)),
+            MenuItem::new("Redirects", |a, r| a.on_key(KeyCode::Char('f'), r)),
             MenuItem::new("Basic auth", |a, r| a.on_key(KeyCode::Char('H'), r)),
         ]
     }
 
     pub(super) fn build_menu(&self) -> Vec<MenuItem> {
         let mut v = vec![
-            MenuItem::new("View source & build", |a, r| a.open_view(View::Source, r)),
-            MenuItem::new("Set source", |a, r| a.on_key(KeyCode::Char('U'), r)),
-            MenuItem::new("Set build", |a, r| a.on_key(KeyCode::Char('B'), r)),
+            MenuItem::new("Source & build", |a, r| a.open_view(View::Source, r)),
             MenuItem::new("Auto deploy on/off", |a, r| a.on_key(KeyCode::Char('A'), r)),
             MenuItem::new("Resource limit", |a, r| a.on_key(KeyCode::Char('L'), r)),
         ];
@@ -624,8 +624,7 @@ impl App {
 
     pub(super) fn store_menu(&self) -> Vec<MenuItem> {
         vec![
-            MenuItem::new("View mounts", |a, r| a.open_view(View::Mounts, r)),
-            MenuItem::new("Add mount", |a, r| a.on_key(KeyCode::Char('M'), r)),
+            MenuItem::new("Mounts", |a, r| a.open_view(View::Mounts, r)),
             MenuItem::new("Backups", |a, r| a.open_view(View::Backups, r)),
         ]
     }
@@ -1392,14 +1391,7 @@ impl App {
 
     pub(super) fn start_env_edit(&mut self) {
         if let Some((p, s, t)) = self.selected_row() {
-            self.edit_env = Some((p, s, t, false));
-        }
-    }
-
-    /// Quick-replace env: open an EMPTY $EDITOR to paste a new env wholesale.
-    pub(super) fn start_env_replace(&mut self) {
-        if let Some((p, s, t)) = self.selected_row() {
-            self.edit_env = Some((p, s, t, true));
+            self.edit_env = Some((p, s, t));
         }
     }
 

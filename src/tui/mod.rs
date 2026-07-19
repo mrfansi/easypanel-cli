@@ -361,15 +361,13 @@ fn event_loop(
         }
 
         // Edit env: release the terminal, open $EDITOR, then take it back.
-        if let Some((project, service, stype, replace)) = app.edit_env.take() {
-            // Quick-replace (replace): an empty editor, no fetch. Save only if the
-            // user typed something — empty means cancel, NOT clear the env.
-            let edited = if replace {
-                edit_text_in_editor(terminal, &format!("easypanel-{project}-{service}.env"), "")
-            } else {
-                edit_env_in_editor(&w.user, &w.resp, terminal, &project, &service, &stype)
-            };
-            match edited {
+        //
+        // There used to be a second mode that opened a BLANK editor ("replace
+        // entire env"). Saving sends the whole string either way, so it was the
+        // same operation starting from an empty buffer — something you do inside
+        // your editor, not a separate feature with its own menu entry and key.
+        if let Some((project, service, stype)) = app.edit_env.take() {
+            match edit_env_in_editor(&w.user, &w.resp, terminal, &project, &service, &stype) {
                 Ok(Some(env)) => {
                     let _ = w.user.send(Req::EnvSave {
                         project,
@@ -379,7 +377,6 @@ fn event_loop(
                     });
                     app.status = "Saving env...".into();
                 }
-                Ok(None) if replace => app.status = "Empty — env left unchanged".into(),
                 Ok(None) => app.status = "Env unchanged".into(),
                 Err(e) => app.status = format!("Error: {e}"),
             }

@@ -138,7 +138,7 @@ impl App {
             }
             _ => match self.screen {
                 Screen::Projects => self.services_key(code, req),
-                Screen::Viewer => self.viewer_key(code),
+                Screen::Viewer => self.viewer_key(code, req),
                 Screen::Actions => self.actions_key(code, req),
                 Screen::Domains => self.domains_key(code, req),
                 Screen::Monitor => self.monitor_key(code, req),
@@ -939,7 +939,6 @@ impl App {
             KeyCode::Char('H') => self.open_basic_auth_form(req),
             KeyCode::Char('c') => self.open_clone_form(),
             KeyCode::Char('E') => self.start_env_edit(),
-            KeyCode::Char('w') => self.start_env_replace(),
             // Turn the .env file (dotEnvPath) on/off. App services only — that's
             // the only place EasyPanel writes env as a file. Read state & flip it
             // in the worker.
@@ -1021,7 +1020,7 @@ impl App {
         }
     }
 
-    pub(super) fn viewer_key(&mut self, code: KeyCode) {
+    pub(super) fn viewer_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
             // Esc returns to the viewer's origin screen (Services for
             // logs/env/etc., Actions for an action detail).
@@ -1048,6 +1047,28 @@ impl App {
                 self.viewer_scroll = self.viewer_scroll.saturating_add(1)
             }
             KeyCode::PageDown => self.viewer_scroll = self.viewer_scroll.saturating_add(10),
+            // A collection lives in ONE screen: this is where you see it, add to
+            // it and delete from it. "View X" and "Add X" used to be separate
+            // menu entries — two doors into the same room, which made looking at
+            // a thing and changing it feel like unrelated features.
+            //
+            // Routed through services_key so these are the SAME handlers the menu
+            // uses; there is no second path that could drift from it.
+            KeyCode::Char('a') | KeyCode::Char('e') | KeyCode::Char('b') => {
+                let view = self.viewer_ctx.as_ref().map(|(v, ..)| *v);
+                let leaf = match (view, code) {
+                    (Some(View::Env), KeyCode::Char('e')) => Some('E'),
+                    (Some(View::Ports), KeyCode::Char('a')) => Some('P'),
+                    (Some(View::Mounts), KeyCode::Char('a')) => Some('M'),
+                    (Some(View::Redirects), KeyCode::Char('a')) => Some('F'),
+                    (Some(View::Source), KeyCode::Char('e')) => Some('U'),
+                    (Some(View::Source), KeyCode::Char('b')) => Some('B'),
+                    _ => None,
+                };
+                if let Some(k) = leaf {
+                    self.services_key(KeyCode::Char(k), req);
+                }
+            }
             // In the Ports/Mounts viewer, a digit selects row [idx] to delete
             // (deletePort/deleteMount by index). 0-9 is enough: there's rarely >10.
             // Only if row [idx] actually exists, so a random digit does nothing.

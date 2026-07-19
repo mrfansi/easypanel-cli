@@ -104,6 +104,10 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             ),
         ],
         Screen::Viewer => &[
+            Key(
+                "a / e / b",
+                "act on what is shown — add a port/mount/redirect, edit env, set source or build",
+            ),
             Key("↑↓ / PgUp/PgDn", "scroll (releases follow-last-line)"),
             Key("←→", "scroll sideways — long lines are not wrapped"),
             Key("Home", "back to the first line and the left edge"),
@@ -1293,6 +1297,7 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
                             _ => "",
                         }
                     ))
+                    .title_bottom(viewer_actions(app))
                     .title_bottom(if app.viewer_hscroll > 0 {
                         // Say where you are once scrolled: otherwise a view missing its
                         // left edge looks like the content simply starts there.
@@ -1304,6 +1309,23 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
             .scroll((app.viewer_scroll, app.viewer_hscroll)),
         area,
     );
+}
+
+/// What you can DO to what this viewer is showing.
+///
+/// Each collection is one screen — see it, add to it, delete from it — so the
+/// screen says which keys do that. These were separate menu entries: findable,
+/// but disconnected from the thing they act on.
+fn viewer_actions(app: &App) -> String {
+    use super::worker::View;
+    match app.viewer_ctx.as_ref().map(|(v, ..)| *v) {
+        Some(View::Env) => " e edit ".into(),
+        Some(View::Ports) | Some(View::Mounts) | Some(View::Redirects) => {
+            " a add · [0-9] delete ".into()
+        }
+        Some(View::Source) => " e set source · b set build ".into(),
+        _ => String::new(),
+    }
 }
 
 pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {

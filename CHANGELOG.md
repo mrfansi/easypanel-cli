@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0] — 2026-07-19
+
+### Changed
+
+- **Each collection is now one screen instead of two or three menu entries.**
+  Env had three doors — "View env", "Edit env (partial)" and "Replace entire
+  env" — for one screen and one operation. Ports, mounts and redirects each had
+  a "View X" and a separate "Add X", even though the viewer already deleted rows
+  by digit. Source had "View source & build", "Set source" and "Set build".
+
+  Open the thing, act on it there: **`a`** adds, **`[0-9]`** deletes that row,
+  **`e`** edits (env, or the source), **`b`** sets the build. Each screen lists
+  its own keys along the bottom border.
+
+  | Menu | Entries before | After |
+  |---|---|---|
+  | Env | 3 | 1 |
+  | Networking | 6 | 4 |
+  | Build & source | 5 | 4 |
+  | Storage | 3 | 2 |
+
+  The keys are routed through the same handlers the menu used, so there is no
+  second code path that can drift from it.
+
+### Fixed
+
+- **Two menu labels were wrong.** Saving env sends the whole string, so "Edit env
+  (partial)" was never partial — it replaced everything, exactly like "Replace
+  entire env". The only difference was whether `$EDITOR` opened pre-filled or
+  blank, which is something you do inside your editor rather than a separate
+  feature. The blank-editor mode and its `w` key are gone.
+
+### Removed
+
+- The `w` key (open an empty editor to paste a new env). Use `e` and clear the
+  buffer in your editor.
+
 ## [0.48.11] — 2026-07-19
 
 ### Fixed

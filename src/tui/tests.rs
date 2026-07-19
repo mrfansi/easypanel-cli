@@ -515,7 +515,7 @@ fn menu_arrows_open_drill_and_go_back() {
     app.menu.as_mut().unwrap().state.select(Some(1));
     app.on_key(KeyCode::Right, &tx);
     // now in the Env submenu; the first item is "View env".
-    assert_eq!(app.menu.as_ref().unwrap().items[0].label, "View env");
+    assert_eq!(app.menu.as_ref().unwrap().items[0].label, "Env");
     // ← returns to the service menu (parent), doesn't close.
     app.on_key(KeyCode::Left, &tx);
     assert_eq!(app.menu.as_ref().unwrap().items[1].label, "Env ▸");
@@ -574,13 +574,7 @@ fn palette_filters_then_jumps_to_service() {
     // The FULL action list (not just lifecycle): lifecycle + env + networking + etc.
     // Each row is JUST the action — the service was repeated on all thirty of them,
     // which is what made the palette a wall of the same text.
-    for action in [
-        "Deploy",
-        "View env",
-        "Domain",
-        "Basic auth",
-        "Delete service",
-    ] {
+    for action in ["Deploy", "Env", "Domain", "Basic auth", "Delete service"] {
         assert!(l.iter().any(|x| x == action), "missing {action} in {l:?}");
     }
     // It appears ONCE — as the row that jumps to it. Not on all thirty actions.
@@ -3065,4 +3059,73 @@ fn a_dropdown_that_matches_nothing_does_not_close_as_if_it_had_picked() {
     }
     app.on_key(KeyCode::Enter, &tx);
     assert!(app.chooser.is_none(), "a real match closes it");
+}
+
+#[test]
+fn each_collection_has_one_door_not_two() {
+    // "View X" and "Add X" were separate menu entries for the same screen, and
+    // env had THREE — view, "edit (partial)" and "replace entire" — for what is
+    // one operation. Saving sends the whole env string either way, so the only
+    // difference between the last two was whether $EDITOR opened pre-filled.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Projects;
+    app.handle(
+        Resp::AllServices {
+            projects: vec!["proj".into()],
+            services: vec![json!({"projectName": "proj", "name": "web", "type": "app"})],
+        },
+        &tx,
+    );
+    app.services_table.select(Some(1));
+
+    let labels = |v: Vec<MenuItem>| -> Vec<String> { v.iter().map(|i| i.label.clone()).collect() };
+    let env = labels(app.env_menu());
+    assert!(env.contains(&"Env".to_string()), "one entry: {env:?}");
+    assert!(
+        !env.iter()
+            .any(|l| l.contains("Replace") || l.contains("partial")),
+        "the duplicate doors are gone: {env:?}"
+    );
+    for (menu, thing) in [
+        (labels(app.net_menu()), "Ports"),
+        (labels(app.net_menu()), "Redirects"),
+        (labels(app.store_menu()), "Mounts"),
+    ] {
+        assert!(menu.contains(&thing.to_string()), "{thing} in {menu:?}");
+        assert!(
+            !menu
+                .iter()
+                .any(|l| l.starts_with(&format!("Add {}", &thing[..thing.len() - 1]))),
+            "no separate Add door for {thing}: {menu:?}"
+        );
+    }
+
+    // The doors that closed still open — from inside the screen that owns them.
+    app.open_view(View::Ports, &tx);
+    app.viewer_ctx = Some((View::Ports, "proj".into(), "web".into(), "app".into()));
+    app.screen = Screen::Viewer;
+    app.on_key(KeyCode::Char('a'), &tx);
+    assert!(
+        app.form.is_some(),
+        "`a` in the Ports viewer must add a port"
+    );
+
+    // And `e` in the Env viewer starts the editor hand-off.
+    let mut app2 = App::new("s".into(), vec![]);
+    app2.handle(
+        Resp::AllServices {
+            projects: vec!["proj".into()],
+            services: vec![json!({"projectName": "proj", "name": "web", "type": "app"})],
+        },
+        &tx,
+    );
+    app2.services_table.select(Some(1));
+    app2.screen = Screen::Viewer;
+    app2.viewer_ctx = Some((View::Env, "proj".into(), "web".into(), "app".into()));
+    app2.on_key(KeyCode::Char('e'), &tx);
+    assert!(
+        app2.edit_env.is_some(),
+        "`e` in the Env viewer must edit it"
+    );
 }

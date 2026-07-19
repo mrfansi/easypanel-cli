@@ -155,7 +155,7 @@ while dragging** to select/copy.)
 | Key | Opens |
 |---|---|
 | `Space` / right-click | the full action menu for the selected row |
-| `e` | **Env** — view · edit in `$EDITOR` · replace all · toggle the `.env` file |
+| `e` | **Env** — opens the env; `e` there edits it in `$EDITOR` |
 | `o` | **Networking** — domains · ports · redirects · basic auth |
 | `u` | **Build & source** — source · build · auto deploy · resource limits · a database's **config file** |
 | `m` | **Storage** — mounts · backups |
@@ -177,10 +177,16 @@ Inside a menu: `↑↓` select · `→` enter a submenu · `←` back · `Enter`
 | `p` · `b` | view ports · backups |
 | `n` · `N` | new service · new project |
 
-The pre-menu keys still work if you have the muscle memory: `E` `w` `.` (edit env,
-replace env, toggle `.env` file), `P` `M` `F` (add port, mount, redirect), `f` (view
-redirects), `U` `B` `A` `L` `H` (source, build, auto deploy, resource limits, basic
-auth), `R` `S` `T` (restart, stop, start), `X` (delete project).
+**Each collection is one screen.** Open the env, the ports, the mounts, the redirects or
+the source, and act on it from there: `a` adds, `[0-9]` deletes that row, `e` edits (and
+`b` sets the build on the source screen). The screen lists its own keys along the bottom.
+There is no separate "Add port" or "Replace env" entry any more — viewing a thing and
+changing it are the same place.
+
+The pre-menu keys still work if you have the muscle memory: `E` `.` (edit env, toggle
+`.env` file), `P` `M` `F` (add port, mount, redirect), `f` (view redirects), `U` `B` `A`
+`L` `H` (source, build, auto deploy, resource limits, basic auth), `R` `S` `T` (restart,
+stop, start), `X` (delete project).
 
 **Viewer** — `↑↓`/`PgUp`/`PgDn` scroll · `←→` scroll sideways (lines are not wrapped) ·
 `Home` first line and left edge · `End` re-follow the log tail · `[0]`–`[9]` deletes that
