@@ -3320,3 +3320,54 @@ fn the_server_picker_never_cuts_the_url_that_tells_hosts_apart() {
     // The destructive key is not the one that falls off the end.
     assert!(shown.contains("x delete"), "keys must fit:\n{shown}");
 }
+
+#[test]
+fn an_empty_screen_says_what_to_do_instead_of_showing_a_blank_box() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let draw = |app: &mut App, w: u16| -> String {
+        let mut t = Terminal::new(TestBackend::new(w, 12)).unwrap();
+        t.draw(|f| ui(f, app)).unwrap();
+        let buf = t.backend().buffer().clone();
+        buf.content()
+            .chunks(w as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // An empty collection: the placeholder is a MESSAGE, not a row you can
+    // select — highlighting it made "No ports yet" look like something picked
+    // and deletable.
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer_from = Screen::Projects;
+    app.viewer_title = "Ports · proj/web".into();
+    app.viewer_ctx = Some((View::Ports, "proj".into(), "web".into(), "app".into()));
+    app.viewer_lines = vec!["No ports yet — press n to add one".into()];
+    let shown = draw(&mut app, 70);
+    assert!(
+        shown.contains("press n to add one"),
+        "must say what to do:\n{shown}"
+    );
+    assert!(
+        !shown.contains("› No ports"),
+        "the message must not be highlighted like a row:\n{shown}"
+    );
+
+    // Domains with nothing to show says WHY — an excluded filter and an empty
+    // list need different actions.
+    let mut d = App::new("s".into(), vec![]);
+    d.screen = Screen::Domains;
+    let empty = draw(&mut d, 70);
+    assert!(empty.contains("No domains yet"), "got:\n{empty}");
+
+    d.domains = vec![json!({ "host": "a.test", "id": "d1" })];
+    d.filter = "zzzz".into();
+    let filtered = draw(&mut d, 70);
+    assert!(
+        filtered.contains("Nothing matches") && filtered.contains("Esc"),
+        "a filter that excludes everything must say so:\n{filtered}"
+    );
+}

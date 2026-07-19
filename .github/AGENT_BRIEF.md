@@ -435,9 +435,23 @@ Still open, with evidence, in the order I would take them:
 
    Note `centered_abs` takes a PERCENTAGE despite its name — that is how this happened.
    `centered_abs_w` is the real absolute-width helper.
-4. **Unverified, worth checking**: empty states for Domains/Backups/the viewers (do they
-   say "nothing here yet, press n"?), and whether a log search with zero matches is
-   distinguishable from one still running.
+4. ~~**Empty states / log-search feedback**~~ — checked on screen and settled in v0.50.2.
+
+   The log-search half was WRONG: `log_search` already answers "No match for '<q>' in any
+   service." with a title reading "0 lines in 0 services". That is the third speculative
+   critique finding this session that did not survive being looked at — verify before
+   fixing, always.
+
+   The empty-state half was real, and one part of it was a regression from the previous
+   run: converting a collection view to a table made the "No ports" PLACEHOLDER a
+   highlighted, selectable row. It now reads as a message and says "press n to add one".
+   Domains with nothing to show distinguishes "no domains yet" from "your filter excluded
+   everything — Esc clears it", which need different actions.
+
+**The round-3 critique list is now empty.** Screens have changed again since it was
+written (collections became selectable tables, the picker was resized), so a fresh pass is
+the reasonable next step — but note the hit rate: of five round-3 findings, three were
+confirmed and worth fixing, one was disproven, and one was a duplicate of a fixed item.
 
 ### Audit: one door per thing (owner, 2026-07-19)
 

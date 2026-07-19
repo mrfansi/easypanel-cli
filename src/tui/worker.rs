@@ -1232,7 +1232,7 @@ pub(super) fn fetch_view(
         }
         View::Ports => {
             let v = client.call("ports", "listPorts", ps)?;
-            let lines = list_or_empty(&v, "No ports", |i, p| {
+            let lines = list_or_empty(&v, "No ports yet — press n to add one", |i, p| {
                 format!(
                     "[{i}] {} {}->{}",
                     field(p, "/protocol"),
@@ -1246,7 +1246,7 @@ pub(super) fn fetch_view(
         }
         View::Mounts => {
             let v = client.call("mounts", "listMounts", ps)?;
-            let lines = list_or_empty(&v, "No mounts", |i, m| {
+            let lines = list_or_empty(&v, "No mounts yet — press n to add one", |i, m| {
                 let detail = match field(m, "/type").as_str() {
                     "bind" => format!("{} -> {}", field(m, "/hostPath"), field(m, "/mountPath")),
                     "volume" => format!("{} -> {}", field(m, "/name"), field(m, "/mountPath")),

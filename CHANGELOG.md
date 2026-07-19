@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.2] — 2026-07-19
+
+### Fixed
+
+- **An empty collection highlighted its own "nothing here" message as if it were
+  a row.** Turning ports, mounts and redirects into selectable tables last
+  release made the placeholder look like a selected item — `› No ports`, sitting
+  under a border offering `x delete`. It is a message again, and it now says what
+  to do: `No ports yet — press n to add one`.
+
+- **The Domains screen showed a blank box when it had nothing to show.** A filter
+  that excludes everything and a genuinely empty list need different responses,
+  and neither was distinguishable from the other or from a screen that had failed
+  to load. It now says either `No domains yet — press n to add one` or
+  `Nothing matches '<query>' — Esc clears the filter`.
+
 ## [0.50.1] — 2026-07-19
 
 ### Fixed

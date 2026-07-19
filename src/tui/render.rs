@@ -1063,6 +1063,22 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
 
     let title = count_title("Domains", rows.len(), app.domains.len(), app);
     app.table_area = area;
+    if rows.is_empty() {
+        // A bare bordered box cannot say whether the filter excluded everything
+        // or there is genuinely nothing here — and those need different actions.
+        let msg = if app.filter.is_empty() {
+            "  No domains yet — press n to add one".to_string()
+        } else {
+            format!("  Nothing matches '{}' — Esc clears the filter", app.filter)
+        };
+        f.render_widget(
+            Paragraph::new(msg)
+                .style(Style::default().fg(Color::DarkGray))
+                .block(Block::bordered().title(title)),
+            area,
+        );
+        return;
+    }
     render_table(
         f,
         area,
@@ -1347,10 +1363,17 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
     // Selecting a line in a log would mean nothing, but selecting a port is the
     // whole point — it is what `x` deletes, without the ten-row ceiling the old
     // "press the digit on the line" had.
-    if app
-        .viewer_ctx
-        .as_ref()
-        .is_some_and(|(v, ..)| v.is_collection())
+    // An empty collection has a PLACEHOLDER line, not a row. Highlighting it made
+    // "No ports yet" look like something you had selected and could delete.
+    let has_rows = app
+        .viewer_lines
+        .iter()
+        .any(|l| l.trim_start().starts_with('['));
+    if has_rows
+        && app
+            .viewer_ctx
+            .as_ref()
+            .is_some_and(|(v, ..)| v.is_collection())
     {
         // A one-column Table rather than a List, so the selection moves with the
         // SAME helper every other table here uses — ↑↓, PageUp/PageDown, Home/End
