@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.4] — 2026-07-19
+
+### Fixed
+
+- **A form's own instructions no longer disappear while you are still using it.**
+  Guidance like `0 = unlimited`, `copies the config, NOT the data` and
+  `to delete one instead: 'm', then its digit` was written to the status line —
+  which reverts to "Ready" after six seconds. Open the resource form, think for a
+  moment about what to type, and the sentence explaining what `0` means is gone.
+
+  Each form now carries its own note, drawn on its bottom border, so it lasts
+  exactly as long as the form does. Opening a form no longer writes to the status
+  line at all: there is nothing left there to go stale, and the status line goes
+  back to being what it is good at — a transient toast.
+
+  The migrate form keeps its service count and its data warning on screen for the
+  whole edit, which matters most there: it is the last screen before services are
+  created on another host.
+
 ## [0.48.3] — 2026-07-19
 
 ### Fixed

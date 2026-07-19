@@ -1046,16 +1046,18 @@ impl App {
                 data,
             } => {
                 let title = format!("Resource · {project}/{service}");
-                self.form = Some(Form::new(
-                    FormKind::ResourceEdit {
-                        project,
-                        service,
-                        stype,
-                    },
-                    title,
-                    resource_fields(data.get("resources")),
-                ));
-                self.status = "Enter save · Esc cancel · 0 = unlimited".into();
+                self.form = Some(
+                    Form::new(
+                        FormKind::ResourceEdit {
+                            project,
+                            service,
+                            stype,
+                        },
+                        title,
+                        resource_fields(data.get("resources")),
+                    )
+                    .with_note("0 = unlimited"),
+                );
             }
             Resp::BasicAuthForm {
                 project,
@@ -1064,16 +1066,18 @@ impl App {
                 data,
             } => {
                 let title = format!("Basic auth · {project}/{service}");
-                self.form = Some(Form::new(
-                    FormKind::BasicAuthEdit {
-                        project,
-                        service,
-                        stype,
-                    },
-                    title,
-                    basic_auth_fields(Some(&data)),
-                ));
-                self.status = "Enter save · Esc cancel · clear both = turn off".into();
+                self.form = Some(
+                    Form::new(
+                        FormKind::BasicAuthEdit {
+                            project,
+                            service,
+                            stype,
+                        },
+                        title,
+                        basic_auth_fields(Some(&data)),
+                    )
+                    .with_note("clear both fields = turn protection off"),
+                );
             }
             Resp::ConfigForm {
                 project,
@@ -1101,7 +1105,6 @@ impl App {
                     )
                 };
                 self.form = Some(form);
-                self.status = "Enter save · Esc cancel".into();
                 self.load_form_branches(req);
             }
             Resp::HostStat { name, data } => {
@@ -1571,12 +1574,14 @@ impl App {
             self.status = "Select a service first".into();
             return;
         };
-        self.form = Some(Form::new(
-            FormKind::MountCreate { project, service },
-            " New mount ",
-            mount_fields(),
-        ));
-        self.status = "Enter add · Esc cancel · delete a mount: 'm' then a digit".into();
+        self.form = Some(
+            Form::new(
+                FormKind::MountCreate { project, service },
+                " New mount ",
+                mount_fields(),
+            )
+            .with_note("to delete one instead: 'm', then its digit"),
+        );
     }
 
     /// Manage a service's domains: open the Domains tab filtered to that service.
@@ -1612,16 +1617,18 @@ impl App {
             Field::choice_owned("Project", projects, &project),
             Field::text("New name", &suggested),
         ];
-        self.form = Some(Form::new(
-            FormKind::CloneService {
-                project,
-                service,
-                stype,
-            },
-            " Clone service ",
-            fields,
-        ));
-        self.status = "Config copied (not data) · Enter clone · Esc cancel".into();
+        self.form = Some(
+            Form::new(
+                FormKind::CloneService {
+                    project,
+                    service,
+                    stype,
+                },
+                " Clone service ",
+                fields,
+            )
+            .with_note("copies the config, NOT the data"),
+        );
     }
 
     /// Show everything known about the selected host — above all, the WHOLE reason
@@ -1739,21 +1746,25 @@ impl App {
             // if it doesn't exist.
             Field::text("Target project", &project),
         ];
-        self.form = Some(Form::new(
-            FormKind::Migrate {
-                project,
-                service,
-                stype,
-            },
-            &title,
-            fields,
-        ));
         let what = if count == 1 {
             "1 service".to_string()
         } else {
             format!("{count} services")
         };
-        self.status = format!("{what} · config only, NO data · Enter migrate · Esc cancel");
+        self.form = Some(
+            Form::new(
+                FormKind::Migrate {
+                    project,
+                    service,
+                    stype,
+                },
+                &title,
+                fields,
+            )
+            // The count and the data warning must survive the whole edit: this is
+            // the last screen before services are created on another host.
+            .with_note(format!("{what} · config only, NO data")),
+        );
     }
 
     /// Every service belonging to `project`, as (project, service, type).
@@ -1781,16 +1792,18 @@ impl App {
             self.status = format!("Redirect is only for web services (this is {stype})");
             return;
         }
-        self.form = Some(Form::new(
-            FormKind::RedirectCreate {
-                project,
-                service,
-                stype,
-            },
-            " New redirect ",
-            redirect_fields(),
-        ));
-        self.status = "Enter add · Esc cancel · delete: 'f' then a digit".into();
+        self.form = Some(
+            Form::new(
+                FormKind::RedirectCreate {
+                    project,
+                    service,
+                    stype,
+                },
+                " New redirect ",
+                redirect_fields(),
+            )
+            .with_note("to delete one instead: 'f', then its digit"),
+        );
     }
 
     /// Open the basic auth form for the highlighted service. Only web services

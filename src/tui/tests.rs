@@ -2182,7 +2182,6 @@ fn gui_editors_are_made_to_wait_so_the_edit_is_not_lost() {
 
 #[test]
 fn a_failure_is_never_faded_away() {
-    use super::{status_should_fade, STATUS_IDLE};
     let long = STATUS_IDLE + std::time::Duration::from_secs(5);
     let short = std::time::Duration::from_secs(1);
 
@@ -2214,7 +2213,6 @@ fn render_and_the_fade_agree_on_what_counts_as_a_failure() {
     // These two used to carry separate copies of the rule, so a message could be
     // painted red as an error and then quietly erased as a routine notice.
     use super::app::status_is_error;
-    use super::{status_should_fade, STATUS_IDLE};
     let long = STATUS_IDLE + std::time::Duration::from_secs(5);
     for s in [
         "Error: boom",
@@ -2295,7 +2293,6 @@ fn force_rebuild_is_offered_and_actually_turns_the_cache_off() {
 
 #[test]
 fn nothing_reports_ready_while_a_request_is_still_running() {
-    use super::{status_should_fade, STATUS_IDLE};
     let long = STATUS_IDLE + std::time::Duration::from_secs(60);
 
     // The case that made this worth fixing: `systemPrune` is a host-wide,
@@ -2654,4 +2651,58 @@ fn a_narrow_actions_table_keeps_when_and_drops_how_long() {
         assert!(wide.contains(col), "{col} missing at 100 cols:\n{wide}");
     }
     assert!(wide.contains("harisenin-net-db/phpmyadmin"));
+}
+
+#[test]
+fn a_forms_own_guidance_outlives_the_fading_status_line() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Projects;
+    app.handle(
+        Resp::AllServices {
+            projects: vec!["proj".into()],
+            services: vec![json!({"projectName": "proj", "name": "web", "type": "app"})],
+        },
+        &tx,
+    );
+    app.services_table.select(Some(1));
+    app.open_clone_form();
+
+    // The warning belongs to the form, not to a status line that erases itself
+    // after six seconds while the user is still typing in that very form.
+    let note = app
+        .form
+        .as_ref()
+        .and_then(|f| f.note.clone())
+        .expect("the clone form must carry its own note");
+    assert!(note.contains("NOT the data"), "got: {note}");
+    assert!(
+        !app.status.contains("not data"),
+        "the guidance must not sit in the fading status line: {}",
+        app.status
+    );
+    // Stronger than "it fades": opening a form no longer commandeers the status
+    // line at all, so nothing there can go stale under the user.
+    assert_eq!(
+        app.status, "Ready",
+        "the form must not hijack the status line"
+    );
+
+    // And it is actually drawn.
+    let mut t = Terminal::new(TestBackend::new(90, 16)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let buf = t.backend().buffer().clone();
+    let shown: String = buf
+        .content()
+        .chunks(90)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        shown.contains("NOT the data"),
+        "the note must be on the form itself:\n{shown}"
+    );
 }

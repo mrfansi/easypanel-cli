@@ -394,9 +394,11 @@ Still open, in the order I would take them:
    widest that FITS — "199.9/784.8 GB" keeps both halves in 14 columns, and CPU falls back
    to the load average, then the core count, then nothing. Same principle as the Hosts
    table: a shorter true form beats a longer cut one.
-5. **Form instructions live in the fading status line** — "0 = unlimited", "delete a mount:
-   'm' then a digit" vanish after six seconds while the user is still in the form. The
-   status line is serving as both a transient toast and a persistent instruction panel.
+5. ~~**Form instructions live in the fading status line**~~ — fixed in v0.48.4. A form now
+   carries its own `note`, drawn on its bottom border, so it lasts exactly as long as the
+   form does. Opening a form no longer writes to the status line at all, which is the
+   stronger fix: there is nothing left there to go stale. The status line is back to being
+   only a transient toast.
 
 ### Scalability — the tool must not fold at real scale
 

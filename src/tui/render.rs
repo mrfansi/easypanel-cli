@@ -1284,12 +1284,13 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
     } else {
         form.title.clone()
     };
-    f.render_widget(
-        Block::bordered()
-            .title(title)
-            .border_style(Style::default().fg(Color::Cyan)),
-        area,
-    );
+    let mut block = Block::bordered()
+        .title(title)
+        .border_style(Style::default().fg(Color::Cyan));
+    if let Some(note) = &form.note {
+        block = block.title_bottom(format!(" {note} "));
+    }
+    f.render_widget(block, area);
 
     let inner = area.inner(Margin::new(2, 1));
     form.rect = inner;

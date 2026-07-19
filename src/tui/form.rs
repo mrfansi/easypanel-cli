@@ -923,6 +923,12 @@ pub(super) struct Form {
     pub(super) step: usize,
     /// The area of the field rows (filled in at render), to map a click to a field.
     pub(super) rect: Rect,
+    /// Guidance that belongs to THIS form — "0 = unlimited", "config only, no
+    /// data". It used to be written to the status line, which fades after six
+    /// seconds while the form is still open, so the explanation vanished from
+    /// under the user mid-edit. Drawn on the form's own border instead, where it
+    /// lasts exactly as long as the form does.
+    pub(super) note: Option<String>,
 }
 
 impl Form {
@@ -935,7 +941,13 @@ impl Form {
             original: None,
             step: 0,
             rect: Rect::default(),
+            note: None,
         }
+    }
+    /// Guidance shown on the form's border for as long as the form is open.
+    pub(super) fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
     }
     pub(super) fn with_original(mut self, original: Value) -> Self {
         self.original = Some(original);
