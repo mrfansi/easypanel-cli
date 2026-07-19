@@ -12,7 +12,8 @@ use serde_json::json;
 
 use crate::output::field;
 
-use super::app::{App, Confirm, Menu, MonitorView, Screen, ServerAction, TAB_SCREENS};
+use super::actions::Menu;
+use super::app::{App, Confirm, MonitorView, Screen, ServerAction, TAB_SCREENS};
 use super::form::*;
 use super::table::*;
 use super::worker::{Req, View};

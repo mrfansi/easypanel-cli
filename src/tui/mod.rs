@@ -7,6 +7,7 @@
 //! handoff to $EDITOR, and server-list changes — the only place that holds the
 //! ServerConfig.
 
+mod actions;
 mod app;
 mod form;
 mod keys;

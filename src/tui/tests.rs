@@ -464,7 +464,7 @@ fn service_menu_groups_actions_and_respects_type() {
     ];
     app.screen = Screen::Projects;
     // visible_rows is sorted by name: [header "p", "db"(mysql), "web"(app)].
-    let has = |v: &[super::app::MenuItem], s: &str| v.iter().any(|i| i.label == s);
+    let has = |v: &[super::actions::MenuItem], s: &str| v.iter().any(|i| i.label == s);
 
     app.services_table.select(Some(2)); // web (app)
     let top = app.service_menu();
@@ -3079,7 +3079,9 @@ fn each_collection_has_one_door_not_two() {
     );
     app.services_table.select(Some(1));
 
-    let labels = |v: Vec<MenuItem>| -> Vec<String> { v.iter().map(|i| i.label.clone()).collect() };
+    let labels = |v: Vec<super::actions::MenuItem>| -> Vec<String> {
+        v.iter().map(|i| i.label.clone()).collect()
+    };
     let env = labels(app.env_menu());
     assert!(env.contains(&"Env".to_string()), "one entry: {env:?}");
     assert!(
