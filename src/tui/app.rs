@@ -806,15 +806,7 @@ impl App {
                     .map(|(db, _, path)| (db, local.clone(), path))
                     .collect();
                 self.restore_target = Some((project, service));
-                self.viewer_title = format!("Restore from {src_name}");
-                self.viewer_lines = lines;
-                self.viewer_scroll = 0;
-                self.viewer_hscroll = 0;
-                let first = self.viewer_lines.iter().position(|l| is_row(l));
-                self.viewer_row = TableState::default().with_selected(first);
-                self.viewer_ctx = None;
-                self.viewer_from = self.screen;
-                self.screen = Screen::Viewer;
+                self.show_picker(format!("Restore from {src_name}"), lines);
                 self.status = if self.restore_files.is_empty() {
                     "Nothing there that this host can read".into()
                 } else {
@@ -827,8 +819,8 @@ impl App {
                 rows,
                 files,
             } => {
-                self.viewer_title = format!("Restore into {project}/{service}");
-                self.viewer_lines = if rows.is_empty() {
+                let title = format!("Restore into {project}/{service}");
+                let lines = if rows.is_empty() {
                     vec![
                         "No backups found for this service.".into(),
                         String::new(),
@@ -847,14 +839,7 @@ impl App {
                 };
                 self.restore_files = files;
                 self.restore_target = Some((project, service));
-                self.viewer_scroll = 0;
-                self.viewer_hscroll = 0;
-                // Start on the first BACKUP, not on the header above it.
-                let first = self.viewer_lines.iter().position(|l| is_row(l));
-                self.viewer_row = TableState::default().with_selected(first);
-                self.viewer_ctx = None;
-                self.viewer_from = self.screen;
-                self.screen = Screen::Viewer;
+                self.show_picker(title, lines);
                 self.status = if self.restore_files.is_empty() {
                     "No backups yet".into()
                 } else {
@@ -880,14 +865,9 @@ impl App {
                     lines.push(String::new());
                     lines.extend(super::render::wrap_words(n, WRAP));
                 }
-                self.viewer_title = "Done — please read".into();
-                self.viewer_lines = lines;
-                self.viewer_scroll = 0;
-                self.viewer_hscroll = 0;
-                self.viewer_row = TableState::default();
-                self.viewer_ctx = None;
                 self.viewer_from = self.screen;
-                self.screen = Screen::Viewer;
+                self.show_viewer("Done — please read".into(), lines);
+                self.viewer_ctx = None;
                 self.status = format!("⚠ {msg}");
                 self.apply_refresh(refresh, req);
             }
@@ -916,26 +896,12 @@ impl App {
                     lines.push(String::new());
                     lines.extend(ok.iter().map(|name| format!("✓ {name}")));
                 }
-                self.viewer_title = format!("Bulk {action} — {} failed", failed.len());
-                self.viewer_lines = lines;
-                self.viewer_scroll = 0;
-                self.viewer_hscroll = 0;
-                self.viewer_row = TableState::default();
+                self.show_viewer(format!("Bulk {action} — {} failed", failed.len()), lines);
                 self.viewer_ctx = None;
-                self.screen = Screen::Viewer;
                 self.status = format!("{} of {} failed", failed.len(), failed.len() + ok.len());
             }
             Resp::Viewer(title, lines) => {
-                self.viewer_title = title;
-                self.viewer_lines = lines;
-                self.viewer_scroll = 0;
-                self.viewer_hscroll = 0;
-                // The SELECTED row resets too. It used to survive, so opening a
-                // collection inherited whatever index the last one was left on —
-                // a different service, a different resource, a row the user never
-                // chose, sitting armed under `x delete`.
-                self.viewer_row = TableState::default();
-                self.screen = Screen::Viewer;
+                self.show_viewer(title, lines);
                 self.status = "Ready".into();
             }
             Resp::TermOutput(bytes) => {
@@ -958,6 +924,38 @@ impl App {
             }
             Resp::Err(e) => self.status = format!("Error: {e}"),
         }
+    }
+
+    /// Put `lines` on screen in the viewer.
+    ///
+    /// Seven places used to assemble the same five fields by hand, and they had
+    /// already drifted: two forgot `viewer_ctx`, one forgot `viewer_from` — so
+    /// Esc left it going back to whichever screen the last viewer happened to
+    /// record. One definition, and what each caller does DIFFERENTLY is now a
+    /// visible line next to it instead of buried in a nine-line block.
+    fn show_viewer(&mut self, title: String, lines: Vec<String>) {
+        self.viewer_title = title;
+        self.viewer_lines = lines;
+        self.viewer_scroll = 0;
+        self.viewer_hscroll = 0;
+        // The SELECTED row resets too. It used to survive, so opening a
+        // collection inherited whatever index the last one was left on — a
+        // different service, a different resource, a row the user never chose,
+        // sitting armed under `x delete`.
+        self.viewer_row = TableState::default();
+        self.screen = Screen::Viewer;
+    }
+
+    /// A viewer whose rows are CHOSEN from: the selection starts on the first
+    /// `[n]` row rather than on the heading above it, and Esc returns to the
+    /// screen the picker was opened from.
+    fn show_picker(&mut self, title: String, lines: Vec<String>) {
+        // Captured before `show_viewer` makes the current screen the Viewer.
+        self.viewer_from = self.screen;
+        self.show_viewer(title, lines);
+        let first = self.viewer_lines.iter().position(|l| is_row(l));
+        self.viewer_row = TableState::default().with_selected(first);
+        self.viewer_ctx = None;
     }
 
     /// Reload whatever an operation invalidated. One definition, because two
@@ -1769,15 +1767,7 @@ impl App {
         );
         self.backup_names = names;
         self.backup_target = Some((project, service));
-        self.viewer_title = "Which database?".into();
-        self.viewer_lines = lines;
-        self.viewer_scroll = 0;
-        self.viewer_hscroll = 0;
-        let first = self.viewer_lines.iter().position(|l| is_row(l));
-        self.viewer_row = TableState::default().with_selected(first);
-        self.viewer_ctx = None;
-        self.viewer_from = self.screen;
-        self.screen = Screen::Viewer;
+        self.show_picker("Which database?".into(), lines);
         self.status = "[Enter] back up the selected one · [Esc] cancel".into();
     }
 
