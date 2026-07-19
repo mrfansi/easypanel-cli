@@ -236,3 +236,28 @@ pub(super) fn short_reason(err: &str) -> &str {
         "failed"
     }
 }
+
+/// How many columns fit, given the total area width each one needs.
+///
+/// Squeezed below what its columns need, ratatui shrinks EVERY column
+/// proportionally, and the result is not merely short — it is wrong.
+/// "199.9 GB / 784.9 GB" came out as "199.9 GB / 784": a total with no unit, off
+/// by three orders of magnitude. "29.8 GB / 59.0 GB" came out as "29.8 GB",
+/// which reads as a complete memory figure while being half of one.
+///
+/// So whole columns are dropped instead, and every value still on screen is
+/// true. `min_widths` is per column, in the order they are given up: a column is
+/// shown only once the area is at least that wide. Each threshold must count the
+/// things that are easy to forget — one space BETWEEN each pair of columns, the
+/// two-column highlight symbol, and the two borders.
+/// Returns the INDICES that fit, so the column given up can be one in the
+/// MIDDLE — Actions would rather lose "Duration" than "Age", and a history
+/// screen without "when" has lost the point of itself.
+pub(super) fn columns_that_fit(min_widths: &[u16], area_width: u16) -> Vec<usize> {
+    min_widths
+        .iter()
+        .enumerate()
+        .filter(|(_, min)| area_width >= **min)
+        .map(|(i, _)| i)
+        .collect()
+}

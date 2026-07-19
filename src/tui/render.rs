@@ -595,11 +595,8 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     // became "Statu", "● active" became "● act". Drop them instead: who and what
     // state stays here, the numbers already live on the Monitor tab. Only trailing
     // columns go, so the per-cell colour indices below are unaffected.
-    let cols = if area.width < 120 {
-        SERVICE_HEADERS.len() - 4
-    } else {
-        SERVICE_HEADERS.len()
-    };
+    const SERVICE_MINS: [u16; SERVICE_HEADERS.len()] = [0, 0, 0, 0, 0, 0, 120, 120, 120, 120];
+    let cols = columns_that_fit(&SERVICE_MINS, area.width).len();
     let widths = &widths[..cols];
     let header = Row::new(SERVICE_HEADERS[..cols].to_vec()).style(
         Style::default()
@@ -787,10 +784,11 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
         (102, Constraint::Length(18)), // Load
         (133, Constraint::Length(30)), // URL
     ];
-    let cols = HOST_COLS
-        .iter()
-        .filter(|(min, _)| area.width >= *min)
-        .count();
+    let cols = columns_that_fit(
+        &HOST_COLS.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
+        area.width,
+    )
+    .len();
 
     let rows: Vec<Row> = app
         .hosts
