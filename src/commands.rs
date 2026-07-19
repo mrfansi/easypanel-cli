@@ -955,15 +955,17 @@ pub fn action_kill(client: &EasypanelClient, id: &str) -> Result<()> {
 ///
 /// Source: `metrics/getAllServicesStats` — `networkIn`/`networkOut` are already
 /// byte/sec rates, and `serviceName` is correct for compose sub-services.
-pub fn monitor_rows(services: Vec<Value>) -> Vec<Vec<String>> {
-    let mem = |c: &Value| num(c, "/memory");
-    let mut groups: std::collections::HashMap<String, Vec<Value>> =
+/// Borrows rather than consumes: this runs on EVERY frame of the Monitor screen,
+/// and taking ownership forced the caller to clone the whole dataset each time.
+pub fn monitor_rows(services: &[Value]) -> Vec<Vec<String>> {
+    let mem = |c: &&Value| num(c, "/memory");
+    let mut groups: std::collections::HashMap<String, Vec<&Value>> =
         std::collections::HashMap::new();
     for c in services {
-        groups.entry(field(&c, "/projectName")).or_default().push(c);
+        groups.entry(field(c, "/projectName")).or_default().push(c);
     }
-    let mut groups: Vec<(String, Vec<Value>)> = groups.into_iter().collect();
-    let total = |v: &[Value]| -> f64 { v.iter().map(mem).sum() };
+    let mut groups: Vec<(String, Vec<&Value>)> = groups.into_iter().collect();
+    let total = |v: &[&Value]| -> f64 { v.iter().map(mem).sum() };
     groups.sort_by(|a, b| total(&b.1).total_cmp(&total(&a.1)));
 
     let mut rows = Vec::new();
@@ -979,11 +981,11 @@ pub fn monitor_rows(services: Vec<Value>) -> Vec<Vec<String>> {
         ]);
         for c in svcs {
             rows.push(vec![
-                format!("  {}", field(&c, "/serviceName")),
-                format!("{:.1} %", num(&c, "/cpu")),
-                format_bytes(num(&c, "/memory")),
-                format_rate(num(&c, "/networkIn")),
-                format_rate(num(&c, "/networkOut")),
+                format!("  {}", field(c, "/serviceName")),
+                format!("{:.1} %", num(c, "/cpu")),
+                format_bytes(num(c, "/memory")),
+                format_rate(num(c, "/networkIn")),
+                format_rate(num(c, "/networkOut")),
             ]);
         }
     }
@@ -1004,12 +1006,13 @@ pub fn monitor_services(client: &EasypanelClient) -> Result<()> {
         println!("No running services.");
         return Ok(());
     }
-    table(&MONITOR_HEADERS, monitor_rows(arr));
+    table(&MONITOR_HEADERS, monitor_rows(&arr));
     Ok(())
 }
 
 /// Storage table rows, sorted largest first.
-pub fn storage_rows(mut arr: Vec<Value>) -> Vec<Vec<String>> {
+pub fn storage_rows(items: &[Value]) -> Vec<Vec<String>> {
+    let mut arr: Vec<&Value> = items.iter().collect();
     arr.sort_by(|a, b| num(b, "/size").total_cmp(&num(a, "/size")));
     arr.iter()
         .map(|s| {
@@ -1036,7 +1039,7 @@ pub fn monitor_storage(client: &EasypanelClient) -> Result<()> {
         println!("No storage data.");
         return Ok(());
     }
-    table(&STORAGE_HEADERS, storage_rows(arr));
+    table(&STORAGE_HEADERS, storage_rows(&arr));
     Ok(())
 }
 
@@ -1292,7 +1295,7 @@ mod tests {
 
     #[test]
     fn monitor_groups_by_project_and_sorts_by_memory() {
-        let rows = monitor_rows(vec![
+        let rows = monitor_rows(&[
             svc("small", "a", 10.0, 0.1),
             svc("big", "tiny", 1.0, 0.2),
             svc("big", "huge", 1_073_741_824.0, 0.5),
@@ -1312,7 +1315,7 @@ mod tests {
 
     #[test]
     fn monitor_formats_memory_and_rates() {
-        let rows = monitor_rows(vec![svc("p", "s", 1_073_741_824.0, 12.34)]);
+        let rows = monitor_rows(&[svc("p", "s", 1_073_741_824.0, 12.34)]);
         assert_eq!(rows[1][0], "  s");
         assert_eq!(rows[1][1], "12.3 %");
         assert_eq!(rows[1][2], "1.0 GB");
@@ -1427,7 +1430,7 @@ mod tests {
 
     #[test]
     fn storage_rows_sorted_by_size_desc() {
-        let rows = storage_rows(vec![
+        let rows = storage_rows(&[
             json!({ "projectName": "p", "serviceName": "tiny", "size": 1024, "path": "/a" }),
             json!({ "projectName": "p", "serviceName": "huge", "size": 1048576, "path": "/b" }),
         ]);

@@ -400,13 +400,63 @@ Still open, in the order I would take them:
    stronger fix: there is nothing left there to go stale. The status line is back to being
    only a transient toast.
 
+### UI/UX critique, round 2 (2026-07-19) — unverified findings
+
+From a fresh critique pass over the screens the earlier sweep skipped. **I have not
+verified these on screen yet** — the critic could not run the binary, and its predictions
+have been wrong before (it said the Hosts columns would render at zero width; they
+actually shrank proportionally, which was worse). Confirm each one on screen before
+fixing it.
+
+1. **Create-service wizard defers all validation to the last step** (`keys.rs` Enter arm
+   advances unconditionally). Leave "Repo" blank on step 2, walk to the end, and the
+   rejection names a field that is not on screen while you sit on the Domains step, with
+   no jump back. Suggested: validate on step transition; on failure, jump to the offending
+   step and focus the field.
+2. **Monitor's filter is half-wired.** Navigation is clamped to `self.monitor.len()`
+   (unfiltered) while the table renders `visible_monitor_rows()` — with a filter active,
+   `End` selects a row that does not exist and the highlight vanishes. The Storage view
+   ignores the filter entirely (no `keep()`, no count in the title), contradicting the
+   "an invisible filter is worse than no filter" rule this codebase states elsewhere.
+3. **The Chooser dropdown closes silently when nothing matches** — the same defect already
+   fixed in the palette, in its sibling caller. `apply_chooser` clears the chooser
+   unconditionally, then assigns only if something was selected. Empty list also renders as
+   a blank box with no "no matches" and no key hints.
+4. **The Domains table still uses `Percentage` constraints** — the pattern `render_hosts`
+   documents and rejects. On the delete-adjacent screen, a truncated hostname reads as a
+   complete, different hostname. The ID column is an opaque cuid nobody reads and takes 18%.
+   Suggested: `columns_that_fit`, drop ID first, Source never dropped.
+5. **Maintenance renders per-row fetch failures as ordinary body text** — `"error: …"` in
+   the same colour as a real value, on the screen with three irreversible host-wide
+   actions. Suggested: carry `Result` per row and colour the error variant.
+
 ### Scalability — the tool must not fold at real scale
 
 The owner runs hosts with hundreds of services and 700+ domains. Things to watch and
 improve, each verifiable:
 
-- **Render cost** on huge tables (the flat services list, 713-domain hosts) — measure,
-  don't guess; ratatui redraws every frame.
+- ~~**Render cost** on huge tables~~ — MEASURED and fixed in v0.48.5. A `#[ignore]`d
+  benchmark lives in `tui/tests.rs` (`bench_render_cost`); run it with
+  `cargo test bench_render_cost -- --ignored --nocapture`. Keep using it rather than
+  guessing — it corrected me twice in one run.
+
+  | services | Services before | after | Monitor before | after |
+  |---|---|---|---|---|
+  | 50 | 3.19 ms | 2.25 | 2.44 | 1.97 |
+  | 200 | 17.7 ms | 4.06 | 6.72 | 4.27 |
+  | 500 | 89.7 ms | **7.94** | 14.98 | 9.17 |
+
+  The cost was `metric_for` — a linear scan over the metrics list, called two or three
+  times per row, i.e. O(services²) on a path that runs every frame. `App::metric_index`
+  and `App::deploying_index` build the lookups once per frame instead.
+
+  Two hypotheses were measured and DISPROVEN first, both plausible from reading the code:
+  (a) the per-frame `app.monitor.clone()` in the Monitor render — real, but only worth
+  ~6 ms at 500; (b) `visible_rows()` rescanning all services per project (O(P×N)) —
+  fixing it moved 89.7 → 87.2 ms, i.e. nothing. Do not skip the measurement step here.
+
+  Note the live host has 48 services and 46 domains, NOT the "hundreds / 700+" this
+  section assumed — that scale can only be reached synthetically, via the benchmark.
 - **API round-trips** — the poll lane refetches everything every 2 s. Consider what can
   be incremental (logs already are) without going stale.
 - **Many-host workflows** — the Hosts screen fans out per host; make sure a slow/dead

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.5] — 2026-07-19
+
+### Fixed
+
+- **The Services table redrew in quadratic time.** Every frame, each row looked up
+  its metrics by scanning the whole metrics list — two or three times per row —
+  and its deploy state by scanning every recent action. At 500 services that
+  measured **89.7 ms per frame**: about eleven redraws a second, with keypresses
+  queued behind each one, on the screen the tool opens on.
+
+  The lookups are now built once per frame instead of per row.
+
+  | services | before | after |
+  |---|---|---|
+  | 50 | 3.19 ms | 2.25 ms |
+  | 200 | 17.7 ms | 4.06 ms |
+  | 500 | 89.7 ms | **7.94 ms** |
+
+  The curve is near-linear rather than quadratic: ten times the services now costs
+  about three and a half times the time, not twenty-eight.
+
+- **The Monitor screen built its table twice per frame** — once for the rows and
+  again, cloning the whole dataset, purely to count them for the title. 14.98 ms →
+  9.17 ms at 500 services.
+
+### Internal
+
+- A benchmark (`bench_render_cost`, `#[ignore]`d) is kept in the test suite so this
+  stays measured rather than assumed. Run it with
+  `cargo test bench_render_cost -- --ignored --nocapture`. It disproved two
+  plausible hypotheses about where the time went before pointing at the real one.
+
 ## [0.48.4] — 2026-07-19
 
 ### Fixed

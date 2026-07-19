@@ -518,6 +518,10 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     // (cells, is_down): down rows are painted red so "what's broken" is
     // immediately visible. Indexed(9), not the named Color::Red: a terminal theme
     // once made named colors unreadable in this project (see AGENT_BRIEF).
+    // Built once for this frame. Looked up per row, these were linear scans:
+    // metrics two or three times per service, actions once per service.
+    let metrics = app.metric_index();
+    let deploying_set = app.deploying_index();
     let rows: Vec<(Vec<String>, bool)> = app
         .visible_rows()
         .iter()
@@ -527,22 +531,27 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
             Line2::Project { name, services } => {
                 let mets: Vec<&Value> = services
                     .iter()
-                    .filter_map(|s| app.metric_for(&field(s, "/projectName"), &field(s, "/name")))
+                    .filter_map(|s| {
+                        let p = s.get("projectName").and_then(Value::as_str)?;
+                        let n = s.get("name").and_then(Value::as_str)?;
+                        metrics.get(&(p, n)).copied()
+                    })
                     .collect();
                 (project_row(name, services.len(), &mets), false)
             }
             Line2::Service(s) => {
                 let (project, service) = (field(s, "/projectName"), field(s, "/name"));
+                let metric = metrics.get(&(project.as_str(), service.as_str())).copied();
                 // Up/down from metrics: metrics present = up. But don't accuse it of
                 // being "stopped" before the first metrics load (monitor empty) — at
                 // that point fall back to enabled alone (None).
                 let running = if app.monitor.is_empty() {
                     None
                 } else {
-                    Some(app.metric_for(&project, &service).is_some())
+                    Some(metric.is_some())
                 };
                 let replicas = app.replicas(&project, &service);
-                let deploying = app.is_deploying(&project, &service);
+                let deploying = deploying_set.contains(&(project.as_str(), service.as_str()));
                 // A running deploy wins over "down": the old container is still
                 // there, this is the expected state, not an incident — don't pulse
                 // red. The Status col (index 3 in the full row) is overwritten with
@@ -558,7 +567,7 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
                 row.remove(0);
                 let mut out = vec![name];
                 out.extend(row);
-                out.extend(metric_cols(app.metric_for(&project, &service)));
+                out.extend(metric_cols(metric));
                 (out, is_down)
             }
         })
@@ -953,8 +962,12 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
 
     match app.monitor_view {
         MonitorView::Services => {
-            let data = app.visible_monitor_rows();
-            let total = commands::monitor_rows(app.monitor.clone()).len();
+            // Built once, not twice: the unfiltered count used to rerun the whole
+            // group-and-format pipeline (and clone the data again) purely to call
+            // .len() on the result.
+            let all = commands::monitor_rows(&app.monitor);
+            let total = all.len();
+            let data: Vec<Vec<String>> = all.into_iter().filter(|r| keep(r, &app.filter)).collect();
             let title = format!(
                 "{}· [v] Storage ",
                 count_title("Services", data.len(), total, app)
@@ -976,7 +989,7 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
             );
         }
         MonitorView::Storage => {
-            let data = commands::storage_rows(app.storage.clone());
+            let data = commands::storage_rows(&app.storage);
             render_table(
                 f,
                 rows[1],

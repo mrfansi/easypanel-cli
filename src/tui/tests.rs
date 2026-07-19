@@ -846,14 +846,17 @@ fn metrics_join_by_project_and_service() {
         json!({ "projectName": "proj-a", "serviceName": "mysql",
                     "cpu": 1.0, "memory": 2048.0, "networkIn": 0.0, "networkOut": 0.0 }),
     ];
-    let m = app.metric_for("proj-a", "mysql").unwrap();
+    // Through the index the renderer actually uses — a per-row scan would be
+    // O(services²) on a path that runs every frame.
+    let idx = app.metric_index();
+    let m = *idx.get(&("proj-a", "mysql")).unwrap();
     // Must pick proj-a, not proj-b with the same name.
     assert_eq!(metric_cols(Some(m))[0], "1.0 %");
     assert_eq!(metric_cols(Some(m))[1], "2.0 KB");
 
     // A service with no metrics: its columns are "-", not a fake 0.
-    assert!(app.metric_for("proj-c", "ghost").is_none());
-    assert_eq!(metric_cols(app.metric_for("proj-c", "ghost"))[0], "-");
+    assert!(!idx.contains_key(&("proj-c", "ghost")));
+    assert_eq!(metric_cols(idx.get(&("proj-c", "ghost")).copied())[0], "-");
 }
 
 #[test]
@@ -2705,4 +2708,54 @@ fn a_forms_own_guidance_outlives_the_fading_status_line() {
         shown.contains("NOT the data"),
         "the note must be on the form itself:\n{shown}"
     );
+}
+
+#[test]
+#[ignore]
+fn bench_render_cost() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::time::Instant;
+
+    let mk_services = |n: usize| -> Vec<Value> {
+        (0..n)
+            .map(|i| {
+                json!({
+                    "projectName": format!("proj-{}", i / 10),
+                    "name": format!("svc-{i}"),
+                    "type": "app",
+                    "memory": 1_000_000 + i,
+                    "cpu": 0.5,
+                    "networkIn": 100, "networkOut": 200,
+                })
+            })
+            .collect()
+    };
+
+    for n in [50usize, 200, 500] {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new("s".into(), vec![]);
+        app.handle(
+            Resp::AllServices {
+                projects: (0..n / 10).map(|i| format!("proj-{i}")).collect(),
+                services: mk_services(n),
+            },
+            &tx,
+        );
+        app.monitor = mk_services(n);
+        let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+
+        for (name, screen) in [("Services", Screen::Projects), ("Monitor", Screen::Monitor)] {
+            app.screen = screen;
+            // warm
+            t.draw(|f| ui(f, &mut app)).unwrap();
+            let start = Instant::now();
+            const FRAMES: u32 = 100;
+            for _ in 0..FRAMES {
+                t.draw(|f| ui(f, &mut app)).unwrap();
+            }
+            let per = start.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64;
+            println!("n={n:4} {name:9} {per:7.3} ms/frame");
+        }
+    }
 }
