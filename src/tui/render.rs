@@ -1023,11 +1023,15 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
             );
         }
         MonitorView::Storage => {
-            let data = commands::storage_rows(&app.storage);
+            let data = app.visible_storage_rows();
+            let total = commands::storage_rows(&app.storage).len();
             render_table(
                 f,
                 rows[1],
-                format!(" Storage ({}) · [v] Services ", app.storage.len()),
+                format!(
+                    "{}· [v] Services ",
+                    count_title("Storage", data.len(), total, app)
+                ),
                 &commands::STORAGE_HEADERS,
                 &[
                     Constraint::Length(20),

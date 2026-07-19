@@ -2901,3 +2901,54 @@ fn a_terminal_keeps_history_you_can_scroll_back_to() {
     app.term_parser = None;
     app.term_scroll(5);
 }
+
+#[test]
+fn monitor_navigation_and_filter_agree_with_what_is_drawn() {
+    // Three call sites worked the row count out independently and disagreed.
+    // Navigation counted raw metric entries, which excludes the project header
+    // rows the table inserts: with 60 metrics across 11 projects the table drew
+    // 71 rows and the cursor stopped at 60 — the last eleven unreachable, with no
+    // filter involved at all.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Monitor;
+    app.monitor = (0..6)
+        .map(|i| {
+            json!({
+                "projectName": format!("proj-{}", i / 3),
+                "serviceName": format!("svc-{i}"),
+                "cpu": 1.0, "memory": 1000.0, "networkIn": 0.0, "networkOut": 0.0
+            })
+        })
+        .collect();
+
+    // 6 services in 2 projects = 6 rows + 2 headers.
+    assert_eq!(app.visible_monitor_rows().len(), 8);
+    assert_eq!(
+        app.monitor_rows_shown(),
+        8,
+        "navigation must be bounded by the DRAWN rows, headers included"
+    );
+
+    // End reaches the true last row, not the raw-metric count.
+    app.monitor_key(KeyCode::End, &tx);
+    assert_eq!(app.monitor_state.selected(), Some(7));
+
+    // The filter applies to the Services view...
+    app.filter = "svc-4".into();
+    assert!(app.monitor_rows_shown() < 8);
+
+    // ...and to Storage, where `/` used to do nothing whatsoever.
+    app.monitor_view = MonitorView::Storage;
+    app.storage = vec![
+        json!({ "projectName": "p", "serviceName": "keep", "size": 10, "path": "/a" }),
+        json!({ "projectName": "p", "serviceName": "other", "size": 20, "path": "/b" }),
+    ];
+    app.filter = "keep".into();
+    assert_eq!(app.visible_storage_rows().len(), 1, "storage must filter");
+    assert_eq!(app.monitor_rows_shown(), 1, "and navigation must follow it");
+
+    // A filter matching nothing leaves nothing to move onto.
+    app.filter = "zzzz-nothing".into();
+    assert_eq!(app.monitor_rows_shown(), 0);
+}

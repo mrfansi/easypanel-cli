@@ -414,11 +414,13 @@ fixing it.
    _") blamed the character set of a name that was simply missing. Each step is now
    validated on the way OUT, so a refusal can never surface two steps from its field, and
    it is drawn on the form's own border rather than the fading status line.
-2. **Monitor's filter is half-wired.** Navigation is clamped to `self.monitor.len()`
-   (unfiltered) while the table renders `visible_monitor_rows()` — with a filter active,
-   `End` selects a row that does not exist and the highlight vanishes. The Storage view
-   ignores the filter entirely (no `keep()`, no count in the title), contradicting the
-   "an invisible filter is worse than no filter" rule this codebase states elsewhere.
+2. ~~**Monitor's filter is half-wired**~~ — CONFIRMED and fixed in v0.48.9, and worse
+   than reported: navigation counted raw METRIC entries, which excludes the project header
+   rows the table inserts, so with 60 metrics across 11 projects the table drew 71 rows and
+   the cursor stopped at 60 — the last eleven unreachable with NO filter involved. Three
+   call sites computed this count independently and all three disagreed; there is now one
+   `App::monitor_rows_shown()`. Storage also gained `visible_storage_rows()` and a
+   `count_title`, so `/` there both works and shows itself.
 3. **The Chooser dropdown closes silently when nothing matches** — the same defect already
    fixed in the palette, in its sibling caller. `apply_chooser` clears the chooser
    unconditionally, then assigns only if something was selected. Empty list also renders as

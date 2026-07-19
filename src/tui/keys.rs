@@ -586,11 +586,11 @@ impl App {
                     let _ = req.send(Req::Storage);
                 }
             }
+            // Bounded by what is actually DRAWN. Counting raw metric entries
+            // ignored the project header rows the table inserts, so the last rows
+            // were unreachable — and it ignored the filter entirely.
             _ => {
-                let len = match self.monitor_view {
-                    MonitorView::Services => self.monitor.len(),
-                    MonitorView::Storage => self.storage.len(),
-                };
+                let len = self.monitor_rows_shown();
                 move_table(&mut self.monitor_state, code, len);
             }
         }

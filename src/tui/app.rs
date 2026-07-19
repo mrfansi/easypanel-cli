@@ -476,10 +476,7 @@ impl App {
             Screen::Actions => self.visible_actions().len(),
             Screen::Domains => self.visible_domains().len(),
             Screen::Hosts => self.hosts.len(),
-            Screen::Monitor => match self.monitor_view {
-                MonitorView::Services => self.visible_monitor_rows().len(),
-                MonitorView::Storage => self.storage.len(),
-            },
+            Screen::Monitor => self.monitor_rows_shown(),
             _ => 0,
         }
     }
@@ -1228,7 +1225,7 @@ impl App {
         let len = match self.screen {
             Screen::Domains => self.visible_domains().len(),
             Screen::Actions => self.visible_actions().len(),
-            Screen::Monitor => self.visible_monitor_rows().len(),
+            Screen::Monitor => self.monitor_rows_shown(),
             Screen::Projects => self.visible_rows().len(),
             _ => return,
         };
@@ -1262,6 +1259,32 @@ impl App {
 
     /// monitor_rows() groups the whole list at once, so its filter is applied to
     /// the resulting rows, not the raw items.
+    /// The storage rows currently drawn — filtered, like every other table.
+    ///
+    /// `/` on this view used to do nothing at all: the rows were built straight
+    /// from the unfiltered list and the title never showed a count, so the filter
+    /// was both inert and invisible.
+    pub(super) fn visible_storage_rows(&self) -> Vec<Vec<String>> {
+        commands::storage_rows(&self.storage)
+            .into_iter()
+            .filter(|r| keep(r, &self.filter))
+            .collect()
+    }
+
+    /// How many rows the Monitor screen is DRAWING, whichever view is showing.
+    ///
+    /// Three call sites used to work this out independently and disagree.
+    /// Navigation counted raw metric entries — which excludes the project header
+    /// rows the table inserts — so with 60 metrics in 11 projects the table drew
+    /// 71 rows and the cursor stopped at 60: the last eleven could not be reached
+    /// at all, filter or no filter.
+    pub(super) fn monitor_rows_shown(&self) -> usize {
+        match self.monitor_view {
+            MonitorView::Services => self.visible_monitor_rows().len(),
+            MonitorView::Storage => self.visible_storage_rows().len(),
+        }
+    }
+
     pub(super) fn visible_monitor_rows(&self) -> Vec<Vec<String>> {
         commands::monitor_rows(&self.monitor)
             .into_iter()

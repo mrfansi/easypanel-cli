@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.9] — 2026-07-19
+
+### Fixed
+
+- **The last rows of the Monitor table could not be reached.** Navigation was
+  bounded by the number of raw metric entries, but the table also inserts a
+  header row per project — so with 60 metrics across 11 projects it drew 71 rows
+  and the cursor stopped at 60. `End` landed in the middle of the list and the
+  eleven rows below it were unreachable, with no filter involved at all.
+
+- **`/` on the Monitor's Storage view did nothing.** The rows were built from the
+  unfiltered list and the title never showed a count, so the filter was both
+  inert and invisible — you could type one and get no hint that it had been
+  ignored. It now filters and reads `Storage (6/48) /redis`, like every other
+  table here.
+
+### Internal
+
+- Three call sites worked out the Monitor's row count independently and all three
+  disagreed with each other. There is now one `App::monitor_rows_shown()`, and
+  navigation, mouse hit-testing and filter clamping share it.
+
 ## [0.48.8] — 2026-07-19
 
 ### Fixed
