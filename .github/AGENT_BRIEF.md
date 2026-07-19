@@ -729,6 +729,15 @@ found by a **human looking at the screen**, never by a test:
 | A test named `empty_project_shows_no_metrics_not_negative_zero` passed | `-0.0 %` had been on screen for two releases |
 | `destroy` returned OK | The deleted row stayed in the table until a manual refresh |
 
+**A faithful copy can still be a broken one** (v0.51.1). Cloning a MySQL replica
+copied its config file exactly — and `super_read_only = ON` stops a FRESH database
+from initialising, because the entrypoint has to write the root password, the user
+and the schema. The clone came up with none of them while the panel displayed the
+credentials it thought it had set, and since a database initialises only once, the
+failed boot cannot be repaired by fixing the config afterwards. When copying
+configuration onto something EMPTY, ask what that configuration assumes already
+exists.
+
 **Walk one workflow END TO END, don't spot-check.** Five rounds of screen-by-screen
 critique had gone dry. Driving a single create-service run start to finish — pick a
 project, name it, choose each source type, submit, inspect the result — found two

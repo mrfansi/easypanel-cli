@@ -141,7 +141,11 @@ pub(super) struct MigrateReq {
 /// rule, so a message could be painted as an error and then quietly erased as if
 /// it were a routine notice.
 pub(super) fn status_is_error(status: &str) -> bool {
-    status.starts_with("Error") || status.contains("failed")
+    // ⚠ counts too. A clone can SUCCEED and still leave the user something they
+    // must act on — a config file held back so the database can initialise. That
+    // is not an error, but a message which fades after a few seconds is no way to
+    // deliver it.
+    status.starts_with("Error") || status.contains("failed") || status.contains('⚠')
 }
 
 /// A server-list change: executed in event_loop, which holds the ServerConfig.
@@ -711,6 +715,36 @@ impl App {
                     }
                 }
             }
+            // Succeeded, with something the user must act on. The viewer, because
+            // the status line is one line and these sentences are longer than any
+            // terminal: the clone note explaining WHY a config file was held back
+            // was being cut off exactly where the reason began.
+            Resp::Notes {
+                msg,
+                notes,
+                refresh,
+            } => {
+                // Wrapped HERE, because the viewer scrolls long lines sideways
+                // rather than folding them: unwrapped, the note ran off the right
+                // edge and the reason was once again unreadable. 76 keeps it whole
+                // on an 80-column terminal, the narrowest this TUI targets.
+                const WRAP: usize = 76;
+                let mut lines = super::render::wrap_words(&msg, WRAP);
+                for n in &notes {
+                    lines.push(String::new());
+                    lines.extend(super::render::wrap_words(n, WRAP));
+                }
+                self.viewer_title = "Done — please read".into();
+                self.viewer_lines = lines;
+                self.viewer_scroll = 0;
+                self.viewer_hscroll = 0;
+                self.viewer_row = TableState::default();
+                self.viewer_ctx = None;
+                self.viewer_from = self.screen;
+                self.screen = Screen::Viewer;
+                self.status = format!("⚠ {msg}");
+                self.apply_refresh(refresh, req);
+            }
             // A bulk run that fully succeeded is a status line. One with ANY
             // failure opens the list instead: a message that fades cannot carry
             // three service names, and "9 of 12" without the missing three is the
@@ -774,18 +808,21 @@ impl App {
             }
             Resp::Done(msg, what) => {
                 self.status = msg;
-                match what {
-                    Refresh::Projects => {
-                        let _ = req.send(Req::AllServices);
-                    }
-                    Refresh::Domains => {
-                        let _ = req.send(Req::Domains);
-                    }
-                    Refresh::None => {}
-                }
+                self.apply_refresh(what, req);
             }
             Resp::Err(e) => self.status = format!("Error: {e}"),
         }
+    }
+
+    /// Reload whatever an operation invalidated. One definition, because two
+    /// results now carry a Refresh (`Done` and `Notes`) and a second inline copy
+    /// is how a screen quietly stops updating after one of them.
+    fn apply_refresh(&mut self, what: Refresh, req: &Sender<Req>) {
+        let _ = match what {
+            Refresh::Projects => req.send(Req::AllServices),
+            Refresh::Domains => req.send(Req::Domains),
+            Refresh::None => return,
+        };
     }
 
     pub(super) fn filterable(&self) -> bool {

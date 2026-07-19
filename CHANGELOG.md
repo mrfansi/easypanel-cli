@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.1] — 2026-07-20
+
+### Fixed
+
+- **Cloning or migrating a database replica produced a database that could never
+  work.** Reported from real use: a cloned `mysql-r1` looked successful but no
+  client could log into it, while a cloned primary was fine. The clone faithfully
+  copied the replica's config file — including `super_read_only = ON` — onto a
+  brand-new, empty data directory. A fresh MySQL must WRITE before it can serve
+  anything: the entrypoint creates the root user, sets its password and creates
+  the database, and those directives refuse exactly those writes. Verified on a
+  live panel, the entrypoint died with `ERROR 1290 … --super-read-only option so
+  it cannot execute this statement`, leaving a database with no root password, no
+  user and no schema — while the panel still displayed the credentials it believed
+  it had set.
+
+  Worse, a database initialises only ONCE, while its directory is empty. The
+  failed boot leaves it non-empty, so correcting the config afterwards does not
+  repair the service; it has to be destroyed and remade. The config is therefore
+  now held back at clone/migrate time rather than applied, and the reason is
+  spelled out: deploy the new database first so it initialises, then copy the
+  config across — which is also the only order in which a replica's read-only
+  flags mean anything, since a clone carries no data to protect. Only configs that
+  would actually block the first boot are held back; every other config file is
+  copied exactly as before.
+
+- **A clone threw away the very notes the user had to act on.** The migrate path
+  reported them; the clone path discarded them (`Ok(_)`), so a skipped config file
+  or an auto-deploy that could not be re-enabled was reported as a plain success.
+
+- **Notes no longer get cut in half by the terminal width.** They were appended to
+  the one-line status bar, which truncated the sentence exactly where the reason
+  began. Anything that needs acting on now opens in the viewer, wrapped and
+  readable, and the status line keeps its ⚠ instead of fading away.
+
 ## [0.51.0] — 2026-07-20
 
 ### Added

@@ -25,6 +25,57 @@ use crate::client::EasypanelClient;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+/// Config directives that stop a database from INITIALISING itself on first boot.
+///
+/// A MySQL/MariaDB container with an empty data directory must WRITE before it can
+/// serve anything: the entrypoint creates the root user, sets its password, and
+/// creates the database. `super_read_only` (and `read_only`) refuse exactly those
+/// writes. Verified against a live panel by cloning a replica: the entrypoint died
+/// with
+///
+/// ```text
+/// ERROR 1290 (HY000) at line 1: The MySQL server is running with the
+/// --super-read-only option so it cannot execute this statement
+/// ```
+///
+/// and the clone was left with no root password, no user and no database — while
+/// the panel still displayed the credentials it believed it had set.
+///
+/// The damage does not stop there: a database only initialises ONCE, when the
+/// directory is empty. The failed boot leaves it non-empty, so fixing the config
+/// afterwards does NOT repair the service — it has to be destroyed and remade.
+/// That is why this is caught BEFORE the config is ever applied.
+///
+/// A replica's read-only flags are meaningless until the data is seeded anyway, so
+/// the honest order is: create → deploy (initialise) → apply the config → deploy.
+///
+/// Commented-out lines don't count; `ON`/`1`/`TRUE` all do.
+pub fn first_boot_blockers(config: &str) -> Vec<&'static str> {
+    let mut found = Vec::new();
+    for line in config.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let on = matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "on" | "1" | "true"
+        );
+        if !on {
+            continue;
+        }
+        match key.trim().to_ascii_lowercase().as_str() {
+            "super_read_only" => found.push("super_read_only"),
+            "read_only" => found.push("read_only"),
+            _ => {}
+        }
+    }
+    found
+}
+
 /// Fields that identify a service to its ORIGIN and must never be carried over:
 /// the target mints its own. `source` and `configFile` are excluded because they
 /// are applied in their own later steps, not inline.
@@ -193,11 +244,26 @@ pub fn migrate_service(
     // 3) configFile (databases): carries the advanced config, e.g. MySQL
     //    replication. updateAdvanced rejects null image/command, hence the
     //    defaults rather than passing them straight through.
-    if inspect
+    //    A config that would stop the new database from initialising is HELD
+    //    BACK rather than copied: applying it here guarantees a service that can
+    //    never boot, and the failure is unrepairable afterwards (see
+    //    first_boot_blockers). The user is told, and applies it once the database
+    //    has come up — which is also when a replica's read-only flags start to
+    //    mean anything.
+    let config = inspect
         .get("configFile")
         .and_then(Value::as_str)
-        .is_some_and(|s| !s.is_empty())
-    {
+        .unwrap_or("");
+    let blockers = first_boot_blockers(config);
+    if !config.is_empty() && !blockers.is_empty() {
+        notes.push(format!(
+            "⚠ config file NOT applied — {} would stop the new database initialising \
+             (no root password, no user, no database, and unrepairable afterwards). \
+             Deploy it first so the database initialises, then copy the config from \
+             '{src_service}' — it takes effect the next time the service restarts",
+            blockers.join(" + ")
+        ));
+    } else if !config.is_empty() {
         let adv = json!({
             "projectName": dst.project,
             "serviceName": dst.service,
@@ -289,6 +355,45 @@ mod tests {
         // DNS is theirs to move.
         assert_eq!(out["serviceDestination"]["port"], json!(80));
         assert_eq!(out["host"], json!("app.example.com"));
+    }
+
+    #[test]
+    fn a_replica_config_is_recognised_as_blocking_first_boot() {
+        // The real config from a live MySQL replica. Cloning it produced
+        // "ERROR 1290 … --super-read-only option so it cannot execute this
+        // statement" and left a database with no root password, no user and no
+        // schema — while the panel still showed the credentials it thought it set.
+        let replica = "[mysqld]\n\
+             server-id                  = 2\n\
+             relay_log                  = relay-bin\n\
+             read_only                  = ON\n\
+             super_read_only            = ON\n";
+        assert_eq!(
+            first_boot_blockers(replica),
+            vec!["read_only", "super_read_only"]
+        );
+    }
+
+    #[test]
+    fn an_ordinary_config_is_left_alone() {
+        // A primary's config, and the same directives turned OFF or commented
+        // out: none of these stop a database initialising, so none may be
+        // treated as a reason to hold the config back.
+        let primary = "[mysqld]\n\
+             server-id       = 1\n\
+             log_bin         = mysql-bin\n\
+             max_connections = 500\n\
+             # super_read_only = ON\n\
+             ; read_only = ON\n\
+             read_only       = OFF\n";
+        assert!(first_boot_blockers(primary).is_empty());
+        assert!(first_boot_blockers("").is_empty());
+        // ON/1/true are the same thing, whatever the case.
+        assert_eq!(first_boot_blockers("read_only=1"), vec!["read_only"]);
+        assert_eq!(
+            first_boot_blockers("SUPER_READ_ONLY = True"),
+            vec!["super_read_only"]
+        );
     }
 
     #[test]

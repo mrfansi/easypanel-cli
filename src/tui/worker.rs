@@ -304,6 +304,17 @@ pub(super) enum Resp {
         projects: Vec<String>,
         services: Vec<Value>,
     },
+    /// An operation that SUCCEEDED but left the user something to act on.
+    ///
+    /// The notes used to be appended to the status line — which is one line, so
+    /// the sentence that mattered ("config file NOT applied because …") was cut
+    /// off mid-word by the terminal width. Anything the user must act on gets the
+    /// viewer, where it can be read in full.
+    Notes {
+        msg: String,
+        notes: Vec<String>,
+        refresh: Refresh,
+    },
     /// The outcome of a bulk action, per service.
     ///
     /// Failures are carried individually rather than counted: "9 of 12 done" tells
@@ -872,11 +883,16 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             if !failed.is_empty() {
                 msg.push_str(&format!(" · failed: {}", failed.join("; ")));
             }
-            if !notes.is_empty() {
-                msg.push_str(&format!(" · notes: {}", notes.join("; ")));
-            }
             if ok == 0 && total > 0 {
                 Resp::Err(msg)
+            } else if !notes.is_empty() {
+                // Same reason as the clone path: a note the terminal width cuts in
+                // half is a note that was never delivered.
+                Resp::Notes {
+                    msg,
+                    notes,
+                    refresh: Refresh::Projects,
+                }
             } else {
                 // The services landed on ANOTHER host, so this host's view is
                 // unchanged — refresh only so a same-host migration shows up.
@@ -1563,12 +1579,24 @@ fn clone_service(
         service: new_name,
     };
     match crate::migrate::migrate_service(client, project, service, stype, &dst, false) {
-        Ok(_) => Resp::Done(
-            format!(
+        // The notes used to be dropped here (`Ok(_)`) while the migrate path
+        // reported them: a clone that skipped the config file or failed to
+        // re-enable auto-deploy said only "cloned", and the one thing the user
+        // had to act on was the one thing thrown away.
+        Ok(notes) => {
+            let msg = format!(
                 "'{service}' cloned into '{target}/{new_name}' — press d to deploy (data NOT included)"
-            ),
-            Refresh::Projects,
-        ),
+            );
+            if notes.is_empty() {
+                Resp::Done(msg, Refresh::Projects)
+            } else {
+                Resp::Notes {
+                    msg,
+                    notes,
+                    refresh: Refresh::Projects,
+                }
+            }
+        }
         Err(e) => Resp::Err(format!("clone: {e:#}")),
     }
 }
