@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.7] — 2026-07-19
+
+### Fixed
+
+- **The create-service wizard let you walk past every step it would later
+  reject.** Press Enter through Basics, Source, Build, Environment and Domains
+  with an empty **Name** and an empty **Repo** and nothing objected — until the
+  final step, which refused with *"Service names may only contain a-z, 0-9, - and
+  _"*: a complaint about a field four steps back and off screen, blaming the
+  character set of a name that was simply missing. The form stayed on Domains,
+  with no indication of where to go.
+
+  Each step is now checked on the way **out**. An empty name stops you on Basics
+  with "Give the service a name first"; an empty repo stops you on Source with
+  "Repo must be selected". A refusal can no longer appear two steps away from the
+  field that caused it, and it is drawn on the form's own border — beside the
+  field it names — instead of in a status line that clears itself after six
+  seconds.
+
+  The Source step validates through the same builder that shapes the request, so
+  the wizard cannot accept what the API would reject.
+
 ## [0.48.6] — 2026-07-19
 
 ### Fixed

@@ -1319,6 +1319,15 @@ fn app_creation_is_a_five_step_wizard_ending_in_one_request() {
         .find(|f| f.label == "Name")
         .unwrap()
         .value = "web".into();
+    // The Source step now refuses to be left without a repo — as it must, since
+    // the request it builds would be rejected anyway.
+    for (label, value) in [("Repo", "owner/repo"), ("Branch", "main")] {
+        form.fields
+            .iter_mut()
+            .find(|f| f.label == label)
+            .unwrap()
+            .value = value.into();
+    }
     // Fill one domain so it can be confirmed to reach the request.
     form.fields
         .iter_mut()
@@ -2788,4 +2797,70 @@ fn a_gauge_label_stays_readable_where_the_bar_covers_it() {
             assert_ne!(c.fg, c.bg, "at {pct}% the label is invisible");
         }
     }
+}
+
+#[test]
+fn the_wizard_refuses_to_leave_a_step_it_cannot_satisfy() {
+    // It used to walk you through all five steps with an empty Name and an empty
+    // Repo without a word, then refuse on the Domains step with a complaint about
+    // a field two steps back and off screen — blaming the character set of a name
+    // that was simply missing.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["p".into()];
+    app.new_service_form(&tx);
+
+    // Step 1 with no name: refused, and we stay where the field is.
+    app.form_key(KeyCode::Enter, &tx);
+    let form = app.form.as_ref().unwrap();
+    assert_eq!(form.step, 0, "must not advance past an unnamed service");
+    let err = form.error.clone().expect("the refusal must be shown");
+    assert!(err.to_lowercase().contains("name"), "got: {err}");
+    // On the form itself, not in a status line that fades while you look for it.
+    assert_eq!(app.status, "Ready");
+
+    // A name with illegal characters is refused too, and says so precisely.
+    let set = |app: &mut App, label: &str, v: &str| {
+        app.form
+            .as_mut()
+            .unwrap()
+            .fields
+            .iter_mut()
+            .find(|f| f.label == label)
+            .unwrap()
+            .value = v.into();
+    };
+    set(&mut app, "Name", "Web Server!");
+    app.form_key(KeyCode::Enter, &tx);
+    assert_eq!(app.form.as_ref().unwrap().step, 0);
+    assert!(app
+        .form
+        .as_ref()
+        .unwrap()
+        .error
+        .as_ref()
+        .unwrap()
+        .contains("a-z"));
+
+    // Valid name: through to Source, and the refusal is cleared.
+    set(&mut app, "Name", "web");
+    app.form_key(KeyCode::Enter, &tx);
+    assert_eq!(app.form.as_ref().unwrap().step, 1);
+    assert!(app.form.as_ref().unwrap().error.is_none());
+
+    // Source is validated on the way out too — an empty repo cannot be walked past.
+    app.form_key(KeyCode::Enter, &tx);
+    assert_eq!(
+        app.form.as_ref().unwrap().step,
+        1,
+        "empty repo must not advance"
+    );
+    assert!(app.form.as_ref().unwrap().error.is_some());
+
+    // Filled in, it advances — and the failure can never surface two steps later.
+    set(&mut app, "Repo", "owner/repo");
+    set(&mut app, "Branch", "main");
+    app.form_key(KeyCode::Enter, &tx);
+    assert_eq!(app.form.as_ref().unwrap().step, 2);
+    assert!(app.form.as_ref().unwrap().error.is_none());
 }

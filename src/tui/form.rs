@@ -351,6 +351,35 @@ pub(super) fn service_extra(form: &Form) -> Value {
 /// preserve like there are on a domain.
 /// `auto_deploy` is only relevant for a github source (the other endpoints have no
 /// such concept).
+/// What must hold before leaving `step` of the create wizard.
+///
+/// Checked on the way OUT of each step rather than at the end. The wizard used to
+/// walk you through all five steps with an empty Name and an empty Repo without a
+/// word, then refuse on the Domains step with a message about a field two steps
+/// back and off screen — and the message blamed the character set of a name that
+/// was simply missing.
+pub(super) fn validate_step(form: &Form) -> Result<(), String> {
+    match form.step {
+        0 => {
+            if form.by_label("Project").is_empty() {
+                return Err("Choose a project first".into());
+            }
+            let name = form.by_label("Name");
+            if name.is_empty() {
+                return Err("Give the service a name first".into());
+            }
+            if !crate::commands::valid_name(&name) {
+                return Err("A service name may only contain a-z, 0-9, - and _".into());
+            }
+            Ok(())
+        }
+        // The source step validates through the same builder that shapes the
+        // request, so the wizard cannot accept what the request would reject.
+        1 => source_body(form).map(|_| ()),
+        _ => Ok(()),
+    }
+}
+
 pub(super) fn source_body(
     form: &Form,
 ) -> std::result::Result<(&'static str, Value, Option<bool>), String> {
@@ -929,6 +958,10 @@ pub(super) struct Form {
     /// under the user mid-edit. Drawn on the form's own border instead, where it
     /// lasts exactly as long as the form does.
     pub(super) note: Option<String>,
+    /// Why the last attempt to leave this step was refused. Shown on the form's
+    /// own border, in place of the note, so it cannot fade out from under the
+    /// user while they are looking for the field it names.
+    pub(super) error: Option<String>,
 }
 
 impl Form {
@@ -942,6 +975,7 @@ impl Form {
             step: 0,
             rect: Rect::default(),
             note: None,
+            error: None,
         }
     }
     /// Guidance shown on the form's border for as long as the form is open.

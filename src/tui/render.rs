@@ -1328,7 +1328,16 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
     let mut block = Block::bordered()
         .title(title)
         .border_style(Style::default().fg(Color::Cyan));
-    if let Some(note) = &form.note {
+    // A refusal replaces the guidance while it stands: it is the more urgent of
+    // the two, and it names the field the user must fix to move on.
+    if let Some(err) = &form.error {
+        block = block.title_bottom(Line::from(Span::styled(
+            format!(" {err} "),
+            Style::default()
+                .fg(Color::Indexed(210))
+                .add_modifier(Modifier::BOLD),
+        )));
+    } else if let Some(note) = &form.note {
         block = block.title_bottom(format!(" {note} "));
     }
     f.render_widget(block, area);

@@ -730,7 +730,15 @@ impl App {
             // single-page form has no next step, so Enter saves right away as
             // before.
             KeyCode::Enter => match form.next_present_step() {
-                Some(step) => form.goto_step(step),
+                Some(step) => match validate_step(form) {
+                    Ok(()) => {
+                        form.error = None;
+                        form.goto_step(step);
+                    }
+                    // Stay put. The field at fault is on THIS step, where the
+                    // user can see it.
+                    Err(e) => form.error = Some(e),
+                },
                 None => self.submit_form(req),
             },
             _ => {}

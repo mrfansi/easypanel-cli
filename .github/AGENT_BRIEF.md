@@ -408,11 +408,12 @@ have been wrong before (it said the Hosts columns would render at zero width; th
 actually shrank proportionally, which was worse). Confirm each one on screen before
 fixing it.
 
-1. **Create-service wizard defers all validation to the last step** (`keys.rs` Enter arm
-   advances unconditionally). Leave "Repo" blank on step 2, walk to the end, and the
-   rejection names a field that is not on screen while you sit on the Domains step, with
-   no jump back. Suggested: validate on step transition; on failure, jump to the offending
-   step and focus the field.
+1. ~~**Create-service wizard defers all validation to the last step**~~ — CONFIRMED on
+   screen and fixed in v0.48.7. Worse than reported: it also walked past step 1 with an
+   EMPTY Name, and the eventual message ("Service names may only contain a-z, 0-9, - and
+   _") blamed the character set of a name that was simply missing. Each step is now
+   validated on the way OUT, so a refusal can never surface two steps from its field, and
+   it is drawn on the form's own border rather than the fading status line.
 2. **Monitor's filter is half-wired.** Navigation is clamped to `self.monitor.len()`
    (unfiltered) while the table renders `visible_monitor_rows()` — with a filter active,
    `End` selects a row that does not exist and the highlight vanishes. The Storage view
