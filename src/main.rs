@@ -1,3 +1,4 @@
+mod backup;
 mod client;
 mod commands;
 mod config;

@@ -88,6 +88,37 @@ pub(super) enum Req {
         action: String,
         force: bool,
     },
+    /// Where backups are written. Listed once at start-up: EasyPanel offers no
+    /// way to create one over the API, so this only ever reads what the
+    /// dashboard already has.
+    StorageProviders,
+    /// Back this database up ONCE, right now.
+    ///
+    /// There is no such endpoint: `runDatabaseBackup` only runs a SCHEDULE. So a
+    /// disabled schedule is created, run, and deleted again — verified live, a
+    /// disabled schedule runs fine — which leaves no clutter behind in the
+    /// panel's backup list.
+    BackupNow {
+        project: String,
+        service: String,
+        database: String,
+        provider: String,
+        path: String,
+    },
+    /// The backups that exist for this service, read out of the action history
+    /// (nothing else lists the files).
+    BackupHistory {
+        project: String,
+        service: String,
+    },
+    /// Restore one backup file INTO this service.
+    RestoreBackup {
+        project: String,
+        service: String,
+        database: String,
+        provider: String,
+        path: String,
+    },
     /// All services across projects in a single call.
     AllServices,
     /// Load a project's services for a form dropdown (not the Projects panel).
@@ -314,6 +345,18 @@ pub(super) enum Resp {
         msg: String,
         notes: Vec<String>,
         refresh: Refresh,
+    },
+    /// The storage provider ids/names configured on this panel.
+    StorageProviders(Vec<String>),
+    /// The restorable backups for a service: display rows plus, in the same
+    /// order, what each one needs to actually be restored. Kept side by side so
+    /// the restore reads its arguments from the LIST rather than parsing them
+    /// back out of the text on screen.
+    BackupHistory {
+        project: String,
+        service: String,
+        rows: Vec<String>,
+        files: Vec<(String, String, String)>,
     },
     /// The outcome of a bulk action, per service.
     ///
@@ -575,6 +618,61 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             action,
             force,
         } => bulk_action(client, resp_tx, targets, &action, force),
+        Req::StorageProviders => {
+            match client.call("storageProviders/common", "list", Value::Null) {
+                Ok(v) => Resp::StorageProviders(
+                    v.as_array()
+                        .map(|a| a.iter().map(|p| field(p, "/id")).collect())
+                        .unwrap_or_default(),
+                ),
+                // Not fatal: without a provider the backup action explains itself
+                // rather than the whole TUI failing to start.
+                Err(_) => Resp::StorageProviders(Vec::new()),
+            }
+        }
+        Req::BackupNow {
+            project,
+            service,
+            database,
+            provider,
+            path,
+        } => backup_now(client, &project, &service, &database, &provider, &path),
+        Req::BackupHistory { project, service } => {
+            match client.call("actions", "listActions", json!({ "limit": 200 })) {
+                Ok(v) => {
+                    let acts = v.as_array().cloned().unwrap_or_default();
+                    let files = crate::backup::history(&acts, &project, &service);
+                    Resp::BackupHistory {
+                        project,
+                        service,
+                        rows: files.iter().map(|f| f.row()).collect(),
+                        files: files
+                            .into_iter()
+                            .map(|f| (f.database, f.storage_provider_id, f.path))
+                            .collect(),
+                    }
+                }
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::RestoreBackup {
+            project,
+            service,
+            database,
+            provider,
+            path,
+        } => {
+            let body = crate::backup::restore_body(&project, &service, &database, &provider, &path);
+            match client.call("databaseBackups", "restoreDatabaseBackup", body) {
+                // The restore recycles the container, so the service comes back a
+                // few seconds later — refreshing keeps the table honest about it.
+                Ok(_) => Resp::Done(
+                    format!("Restored {database} into {project}/{service} from {path}"),
+                    Refresh::Projects,
+                ),
+                Err(e) => Resp::Err(format!("Restore failed: {e}")),
+            }
+        }
         Req::LogSearch { query } => log_search(client, &query),
         Req::Repos => Resp::Repos(github_repos(client)),
         Req::ConfigForm {
@@ -1190,6 +1288,69 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
+    }
+}
+
+/// Back a database up once, through a schedule that exists only for this run.
+///
+/// `runDatabaseBackup` needs a schedule id and there is no one-off endpoint, so:
+/// create disabled → run → delete. The delete runs even when the backup itself
+/// failed, otherwise a failed "backup now" would leave a stray disabled schedule
+/// in the panel for the user to find and wonder about.
+fn backup_now(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    database: &str,
+    provider: &str,
+    path: &str,
+) -> Resp {
+    let body = crate::backup::schedule_body(
+        project,
+        service,
+        database,
+        "0 3 * * *",
+        false,
+        provider,
+        path,
+    );
+    if let Err(e) = client.call("databaseBackups", "createDatabaseBackup", body) {
+        return Resp::Err(format!("Backup could not be prepared: {e}"));
+    }
+    let ps = json!({ "projectName": project, "serviceName": service });
+    let id = match client.call("databaseBackups", "listDatabaseBackups", ps) {
+        Ok(v) => v
+            .as_array()
+            .and_then(|a| {
+                a.iter()
+                    .rev()
+                    .find(|b| field(b, "/databaseName") == database)
+            })
+            .map(|b| field(b, "/id")),
+        Err(e) => return Resp::Err(format!("Backup could not be prepared: {e}")),
+    };
+    let Some(id) = id.filter(|i| !i.is_empty()) else {
+        return Resp::Err("Backup was prepared but could not be found again".into());
+    };
+
+    let ran = client.call("databaseBackups", "runDatabaseBackup", json!({ "id": id }));
+    let _ = client.call(
+        "databaseBackups",
+        "deleteDatabaseBackup",
+        json!({ "id": id }),
+    );
+    match ran {
+        // The panel writes the file asynchronously, so the outcome lands in the
+        // Actions tab rather than here — saying "done" would be a guess.
+        Ok(_) => Resp::Done(
+            format!("Backup of {database} started — the result appears in Actions"),
+            Refresh::None,
+        ),
+        // A database that isn't running answers "Invariant failed", which says
+        // nothing; the likely cause is worth naming.
+        Err(e) => Resp::Err(format!(
+            "Backup of {database} refused: {e} (is the database running?)"
+        )),
     }
 }
 

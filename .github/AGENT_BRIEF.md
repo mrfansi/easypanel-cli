@@ -729,6 +729,25 @@ found by a **human looking at the screen**, never by a test:
 | A test named `empty_project_shows_no_metrics_not_negative_zero` passed | `-0.0 %` had been on screen for two releases |
 | `destroy` returned OK | The deleted row stayed in the table until a manual refresh |
 
+### Database backups — verified shapes (2026-07-20)
+
+- `createDatabaseBackup` takes a SCHEDULE: projectName, serviceName, databaseName,
+  schedule, enabled, storageProviderId, storageProviderPath.
+- `runDatabaseBackup` takes only `{id}` — a schedule id. **There is no one-off backup
+  endpoint**, hence create-disabled → run → delete (a disabled schedule runs fine; an
+  earlier failure that looked like the `enabled` flag was the database not being up).
+- `deleteDatabaseBackup` — note the name. Every other destructive op here is `destroy*`;
+  `destroyDatabaseBackup` does not exist.
+- `restoreDatabaseBackup` takes projectName, serviceName, databaseName,
+  storageProviderId, `path` — so it restores INTO any database service, not only the one
+  the backup came from. It recycles the container, so the service is briefly down.
+- **Nothing lists backup FILES.** `listActions` does: a backup run records
+  `meta: {databaseName, path, storageProviderId}`. The history is the file list.
+- `storageProviders/common/list` is the ONLY storage endpoint — no create/update. A
+  `local` provider stores on that host's disk, so cross-host restore needs a shared
+  REMOTE provider configured in the dashboard on both hosts.
+- A backup of a database that is not running fails with `Invariant failed`.
+
 ### Verified capability matrix per service type (probed live, 2026-07-20)
 
 `-` = the route does NOT exist (bare `{"error":"Not found"}`); `yes` = it does (a bad

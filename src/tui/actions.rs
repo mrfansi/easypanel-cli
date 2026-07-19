@@ -341,10 +341,21 @@ impl App {
     }
 
     pub(super) fn store_menu(&self) -> Vec<MenuItem> {
-        vec![
-            MenuItem::new("Mounts", |a, r| a.open_view(View::Mounts, r)),
-            MenuItem::new("Backups", |a, r| a.open_view(View::Backups, r)),
-        ]
+        let stype = self.selected_row().map(|(_, _, t)| t).unwrap_or_default();
+        let mut v = vec![MenuItem::new("Mounts", |a, r| a.open_view(View::Mounts, r))];
+        // Backups belong to databases. listDatabaseBackups answers [] for an app
+        // rather than an error, so the entry used to open an empty box on every
+        // service in the panel and explain nothing.
+        if crate::lifecycle::is_database(&stype) {
+            v.push(MenuItem::new("Backup now", |a, r| a.backup_now(r)));
+            v.push(MenuItem::new("Restore from a backup", |a, r| {
+                a.open_restore(r)
+            }));
+            v.push(MenuItem::new("Backup schedules", |a, r| {
+                a.open_view(View::Backups, r)
+            }));
+        }
+        v
     }
 
     /// Only the actions this service type actually HAS.

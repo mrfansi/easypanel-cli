@@ -260,6 +260,24 @@ pub(super) struct App {
     /// this a new line arrives off-screen and the tail looks dead.
     pub(super) viewer_follow: bool,
 
+    /// The backups on screen in the restore picker, in the SAME order as the
+    /// viewer's rows: (database, storageProviderId, path).
+    ///
+    /// Kept as data rather than re-read from the text, so a restore cannot be
+    /// aimed by parsing a row back — the mistake that once sent a delete to the
+    /// wrong index.
+    pub(super) restore_files: Vec<(String, String, String)>,
+    /// Which service the picker would restore INTO.
+    pub(super) restore_target: Option<(String, String)>,
+    /// The backup a confirmation is currently asking about: (database, provider,
+    /// path). Its own field rather than smuggled through `Confirm`, which has no
+    /// room for three values and would have to encode them into one.
+    pub(super) pending_restore: Option<(String, String, String)>,
+    /// The storage provider backups are written to. EasyPanel exposes a list but
+    /// no way to create one, so this is whatever the dashboard already has; None
+    /// until it loads, or if none is configured at all.
+    pub(super) storage_provider: Option<String>,
+
     /// Services marked for a bulk action, as (project, service).
     ///
     /// The service TYPE is deliberately not stored: it is looked up at dispatch
@@ -356,6 +374,10 @@ impl App {
             viewer_ctx: None,
             log_cursor: None,
             viewer_follow: false,
+            restore_files: Vec::new(),
+            restore_target: None,
+            pending_restore: None,
+            storage_provider: None,
             marked: HashSet::new(),
             filter: String::new(),
             filter_input: false,
@@ -714,6 +736,50 @@ impl App {
                         );
                     }
                 }
+            }
+            // The restore picker. An empty history is a real answer, not an
+            // error: this database has never been backed up, and saying so beats
+            // an empty box.
+            Resp::StorageProviders(ids) => self.storage_provider = ids.into_iter().next(),
+            Resp::BackupHistory {
+                project,
+                service,
+                rows,
+                files,
+            } => {
+                self.viewer_title = format!("Restore into {project}/{service}");
+                self.viewer_lines = if rows.is_empty() {
+                    vec![
+                        "No backups found for this service.".into(),
+                        String::new(),
+                        "Take one first: Storage ▸ Backup now.".into(),
+                    ]
+                } else {
+                    // Four spaces stand in for the "[n] " each row carries, so
+                    // the labels sit over their own columns.
+                    let mut v = vec![format!("    {:<21}{:<18}{}", "When", "Database", "File")];
+                    v.extend(
+                        rows.iter()
+                            .enumerate()
+                            .map(|(i, r)| format!("{} {r}", row_marker(i))),
+                    );
+                    v
+                };
+                self.restore_files = files;
+                self.restore_target = Some((project, service));
+                self.viewer_scroll = 0;
+                self.viewer_hscroll = 0;
+                // Start on the first BACKUP, not on the header above it.
+                let first = self.viewer_lines.iter().position(|l| is_row(l));
+                self.viewer_row = TableState::default().with_selected(first);
+                self.viewer_ctx = None;
+                self.viewer_from = self.screen;
+                self.screen = Screen::Viewer;
+                self.status = if self.restore_files.is_empty() {
+                    "No backups yet".into()
+                } else {
+                    "[Enter] restore the selected backup · [Esc] back".into()
+                };
             }
             // Succeeded, with something the user must act on. The viewer, because
             // the status line is one line and these sentences are longer than any
@@ -1551,6 +1617,102 @@ impl App {
             // stash an index in it.
             stype: if force { "force".into() } else { String::new() },
             label: format!("{verb} {} services? {}", targets.len(), names.join(", ")),
+        });
+    }
+
+    /// Does the viewer show selectable ROWS rather than prose?
+    ///
+    /// ONE definition: `keys` uses it twice (wheel, movement keys) and `render`
+    /// once to pick a Table over a Paragraph. They each carried their own copy
+    /// derived from `viewer_ctx`, so the restore picker — which has no
+    /// viewer_ctx — would have rendered as a selectable list in one place and
+    /// scrolled like prose in another.
+    pub(super) fn viewer_is_collection(&self) -> bool {
+        self.restore_target.is_some()
+            || self
+                .viewer_ctx
+                .as_ref()
+                .is_some_and(|(v, ..)| v.is_collection())
+    }
+
+    /// Back the selected database up once, into the panel's storage provider.
+    pub(super) fn backup_now(&mut self, req: &Sender<Req>) {
+        let Some((project, service, stype)) = self.selected_row() else {
+            self.status = "Select a database first".into();
+            return;
+        };
+        let Some(database) = self.selected_database_name() else {
+            self.status = format!("A {stype} service has no database to back up");
+            return;
+        };
+        let Some(provider) = self.storage_provider.clone() else {
+            self.status =
+                "No storage provider configured — add one in the EasyPanel dashboard first".into();
+            return;
+        };
+        let path = crate::backup::default_path(&project);
+        let _ = req.send(Req::BackupNow {
+            project,
+            service,
+            database,
+            provider,
+            path,
+        });
+        self.status = "Backing up...".into();
+    }
+
+    /// Open the list of backups that can be restored INTO the selected service.
+    pub(super) fn open_restore(&mut self, req: &Sender<Req>) {
+        let Some((project, service, _)) = self.selected_row() else {
+            self.status = "Select a database first".into();
+            return;
+        };
+        let _ = req.send(Req::BackupHistory { project, service });
+        self.status = "Reading backup history...".into();
+    }
+
+    /// The database a service holds, for backup/restore. Databases carry it as
+    /// `databaseName`; anything else has none.
+    fn selected_database_name(&self) -> Option<String> {
+        let name = field(self.selected_service()?, "/databaseName");
+        (!name.is_empty()).then_some(name)
+    }
+
+    /// Ask before restoring the backup under the cursor.
+    ///
+    /// A restore OVERWRITES the target database, so the confirmation names the
+    /// file, the database and the service it is going into — all three, because
+    /// restoring the right file into the wrong service is the mistake worth
+    /// preventing.
+    pub(super) fn ask_restore(&mut self) {
+        let Some((project, service)) = self.restore_target.clone() else {
+            return;
+        };
+        // The index comes from the printed `[n]`, NOT from the selected row's
+        // position: the picker has a header line, so position 0 is a label, not
+        // a backup. Reading the marker is the same contract the other
+        // collections use, and the reason a delete once offered `[13]` of 12.
+        let Some(i) = self
+            .viewer_row
+            .selected()
+            .and_then(|r| self.viewer_lines.get(r))
+            .and_then(|l| row_index(l))
+        else {
+            self.status = "Select a backup row first".into();
+            return;
+        };
+        let Some((database, provider, path)) = self.restore_files.get(i).cloned() else {
+            return;
+        };
+        self.pending_restore = Some((database.clone(), provider, path.clone()));
+        self.confirm = Some(Confirm {
+            action: "restore".into(),
+            project,
+            service,
+            stype: String::new(),
+            label: format!(
+                "Restore '{database}' from {path}? This REPLACES the data currently in it."
+            ),
         });
     }
 

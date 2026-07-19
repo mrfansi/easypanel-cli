@@ -1391,12 +1391,7 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
     // An empty collection has a PLACEHOLDER line, not a row. Highlighting it made
     // "No ports yet" look like something you had selected and could delete.
     let has_rows = app.viewer_lines.iter().any(|l| is_row(l));
-    if has_rows
-        && app
-            .viewer_ctx
-            .as_ref()
-            .is_some_and(|(v, ..)| v.is_collection())
-    {
+    if has_rows && app.viewer_is_collection() {
         // A one-column Table rather than a List, so the selection moves with the
         // SAME helper every other table here uses — ↑↓, PageUp/PageDown, Home/End
         // all behave as they do elsewhere instead of being a second scheme.

@@ -225,12 +225,7 @@ impl App {
         // A collection is a table: the wheel moves the SELECTION, as it does on
         // every other table here. It used to change viewer_scroll, which this
         // view does not read — so the wheel did nothing at all, silently.
-        if self.screen == Screen::Viewer
-            && self
-                .viewer_ctx
-                .as_ref()
-                .is_some_and(|(v, ..)| v.is_collection())
-        {
+        if self.screen == Screen::Viewer && self.viewer_is_collection() {
             let len = self.viewer_lines.len();
             let key = if delta < 0 {
                 KeyCode::Up
@@ -842,6 +837,18 @@ impl App {
                 self.status = "Removing server...".into();
                 return;
             }
+            // The file was chosen in the picker, not typed, so its three parts
+            // travel in `pending_restore` rather than being squeezed into Confirm.
+            "restore" => match self.pending_restore.take() {
+                Some((database, provider, path)) => req.send(Req::RestoreBackup {
+                    project: c.project,
+                    service: c.service,
+                    database,
+                    provider,
+                    path,
+                }),
+                None => return,
+            },
             "maint:systemPrune" => req.send(Req::MaintAction("systemPrune")),
             "maint:cleanupDockerImages" => req.send(Req::MaintAction("cleanupDockerImages")),
             "maint:cleanupDockerBuilder" => req.send(Req::MaintAction("cleanupDockerBuilder")),
@@ -1082,8 +1089,16 @@ impl App {
     pub(super) fn viewer_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
             // Esc returns to the viewer's origin screen (Services for
-            // logs/env/etc., Actions for an action detail).
-            KeyCode::Esc => self.screen = self.viewer_from,
+            // logs/env/etc., Actions for an action detail). Leaving the restore
+            // picker also drops what it was aimed at, so a later Enter elsewhere
+            // cannot fire a restore the user has walked away from.
+            KeyCode::Esc => {
+                self.restore_target = None;
+                self.restore_files.clear();
+                self.screen = self.viewer_from;
+            }
+            // In the restore picker, Enter acts on the selected backup.
+            KeyCode::Enter if self.restore_target.is_some() => self.ask_restore(),
             // Scrolling up releases the follow: otherwise a newly arriving log line
             // would drag the view back to the bottom right as the user is reading
             // something above.
@@ -1096,10 +1111,7 @@ impl App {
             | KeyCode::PageDown
             | KeyCode::Home
             | KeyCode::End
-                if self
-                    .viewer_ctx
-                    .as_ref()
-                    .is_some_and(|(v, ..)| v.is_collection()) =>
+                if self.viewer_is_collection() =>
             {
                 // Every movement key moves the SELECTION here, through the same
                 // helper the other tables use — so PageDown and End behave as

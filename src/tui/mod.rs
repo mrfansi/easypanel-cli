@@ -684,4 +684,7 @@ fn send_initial(req_tx: &Sender<Req>) {
     let _ = req_tx.send(Req::Stats);
     let _ = req_tx.send(Req::Nodes);
     let _ = req_tx.send(Req::Projects);
+    // Once, at start-up: it never changes while the TUI runs (EasyPanel has no
+    // API to create one), and "Backup now" needs it the moment it is pressed.
+    let _ = req_tx.send(Req::StorageProviders);
 }

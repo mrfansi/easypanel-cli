@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.0] — 2026-07-20
+
+### Added
+
+- **Back a database up, and restore it — from the Storage menu of any database
+  service.** EasyPanel can schedule backups; what it does not give you is a way
+  to take one right now and put one back without hunting for a filename.
+
+  **Backup now** takes an immediate dump. There is no endpoint for that —
+  `runDatabaseBackup` only runs a *schedule* — so one is created disabled, run,
+  and deleted again, leaving nothing behind in the panel's backup list. Verified
+  live: a disabled schedule runs fine, and the panel is left with zero schedules
+  afterwards. If the database is not running the panel answers "Invariant
+  failed", so the error says what that most likely means.
+
+  **Restore from a backup** lists the backups that actually exist and restores
+  the one you pick. Nothing in the API lists backup *files*, but every run
+  records an action whose `meta` carries the database, the storage provider and
+  the exact path — so the action history IS the file list. Only successful runs
+  are offered: a failed backup left a path behind too, and restoring from it
+  would mean restoring a file that never finished. The confirmation names the
+  file, the database and the service it is going into, because restoring the
+  right file into the wrong service is the mistake worth preventing.
+
+  Verified end to end against a live panel: a table with two rows, backed up
+  through the menu, dropped, then restored through the picker — both rows back.
+
+- **Storage menu now reflects what a service is.** Backups are a database thing;
+  `listDatabaseBackups` answers `[]` for an app rather than an error, so the
+  entry used to open an empty box on every service in the panel and explain
+  nothing.
+
+### Note
+
+Restoring onto a *different* EasyPanel host is not in this release. It needs both
+hosts to share one remote storage provider — a backup on a `local` provider
+physically lives on that host's disk — and the panel used here has only Local
+Disk configured. Backup schedules are still read-only (viewable, not editable),
+and marking several databases to back them up in one go is not wired to the bulk
+engine yet.
+
 ## [0.52.1] — 2026-07-20
 
 ### Fixed
