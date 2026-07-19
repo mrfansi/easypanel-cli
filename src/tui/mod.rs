@@ -34,6 +34,14 @@ use crate::config::ServerConfig;
 const REFRESH: Duration = Duration::from_secs(2);
 /// The cap on lines the viewer holds while a log tail is running.
 const LOG_BUFFER: usize = 5_000;
+/// Lines of terminal history kept for scrolling back.
+///
+/// It used to be ZERO — the parser was told to keep no scrollback at all, so
+/// output that left the screen was discarded rather than merely out of reach.
+/// No key could have brought it back.
+pub(super) const TERM_SCROLLBACK: usize = 5_000;
+/// How far Shift+PageUp/PageDown move through that history.
+const TERM_PAGE: isize = 10;
 
 use app::{App, HostRow, HostState, Screen, ServerAction};
 use render::ui;
@@ -161,6 +169,13 @@ fn event_loop(
         };
         if event::poll(Duration::from_millis(poll))? {
             match event::read()? {
+                // The wheel scrolls the terminal's own history; everywhere else
+                // it belongs to the tables.
+                Event::Mouse(m) if app.screen == Screen::Terminal => match m.kind {
+                    event::MouseEventKind::ScrollUp => app.term_scroll(3),
+                    event::MouseEventKind::ScrollDown => app.term_scroll(-3),
+                    _ => {}
+                },
                 Event::Mouse(m) => app.on_mouse(m, &w.user),
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if app.screen == Screen::Terminal {
@@ -168,14 +183,27 @@ fn event_loop(
                         // Ctrl-C) is forwarded to the shell.
                         let ctrl_q = key.code == KeyCode::Char('q')
                             && key.modifiers.contains(KeyModifiers::CONTROL);
+                        // Shift+PageUp/PageDown walk the scrollback, the binding
+                        // every terminal emulator uses for exactly this. Held by
+                        // the UI rather than forwarded: a shell has no idea what
+                        // scrolled off ITS output, so nothing downstream can serve
+                        // this.
+                        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                         if ctrl_q {
                             app.close_terminal();
+                        } else if shift && key.code == KeyCode::PageUp {
+                            app.term_scroll(TERM_PAGE);
+                        } else if shift && key.code == KeyCode::PageDown {
+                            app.term_scroll(-TERM_PAGE);
                         } else if let (Some(bytes), Some(tx)) =
                             (terminal::encode_key(key), app.term_input.as_ref())
                         {
                             let _ = tx.send(terminal::TermMsg::Input(
                                 String::from_utf8_lossy(&bytes).into_owned(),
                             ));
+                            // Typing returns to the live view: otherwise the keys
+                            // go to a shell you cannot see answering them.
+                            app.term_scroll(isize::MIN / 2);
                         }
                     } else {
                         if key.code == KeyCode::Char('c')
@@ -315,7 +343,8 @@ fn event_loop(
                             // tabs+status; render sets the exact size.
                             let (tcols, trows) = (cols, rows.saturating_sub(5).max(1));
                             let (tx, rx) = std::sync::mpsc::channel();
-                            app.term_parser = Some(vt100::Parser::new(trows, tcols, 0));
+                            app.term_parser =
+                                Some(vt100::Parser::new(trows, tcols, TERM_SCROLLBACK));
                             app.term_input = Some(tx);
                             let label =
                                 db.as_deref().map(|s| format!(" ({s})")).unwrap_or_default();

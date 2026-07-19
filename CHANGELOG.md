@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.8] — 2026-07-19
+
+### Fixed
+
+- **The container terminal and DB shell kept no history at all.** Output that
+  scrolled off the top was gone — not out of reach, *discarded*: the emulator was
+  created with a scrollback length of zero, so no key could have brought it back.
+  Run `SHOW REPLICA STATUS\G` and everything above the last screenful was lost.
+
+  The session now keeps 5,000 lines. **Shift+PageUp / Shift+PageDown** walk
+  through them, and the mouse wheel does too; typing snaps back to the live
+  prompt, so the keys never go to a shell you cannot see answering them. Both are
+  listed in the `?` help for the Terminal screen.
+
+  The bindings are held by the UI rather than forwarded to the shell, because
+  nothing downstream could serve them — a shell has no idea what scrolled off its
+  own output.
+
 ## [0.48.7] — 2026-07-19
 
 ### Fixed

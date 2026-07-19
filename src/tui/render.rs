@@ -111,7 +111,13 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("[0-9]", "delete that line (Ports/Mounts/Redirects)"),
             Key("Esc", "back to Services"),
         ],
-        Screen::Terminal => &[Key("Ctrl-Q", "exit terminal (or type `exit`)")],
+        Screen::Terminal => &[
+            Key("Ctrl-Q", "exit terminal (or type `exit`)"),
+            Key(
+                "Shift+PgUp/PgDn · wheel",
+                "scroll back through this session's output",
+            ),
+        ],
     }
 }
 

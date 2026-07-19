@@ -1525,6 +1525,21 @@ impl App {
     /// Flip the selected service's auto deploy.
     /// Close the terminal session (Ctrl-Q). Dropping the input channel → the WS
     /// thread closes the socket; back to Services immediately.
+    /// Move through the terminal's scrollback. Positive = back into history.
+    ///
+    /// Clamped to what actually exists, so holding the key stops at the oldest
+    /// line rather than scrolling into blank space.
+    pub(super) fn term_scroll(&mut self, delta: isize) {
+        let Some(p) = self.term_parser.as_mut() else {
+            return;
+        };
+        // vt100 clamps the far end to the history it actually holds, so only the
+        // near end needs guarding — holding the key stops at the newest line
+        // instead of wrapping past it.
+        let at = p.screen().scrollback() as isize;
+        p.set_scrollback((at + delta).max(0) as usize);
+    }
+
     pub(super) fn close_terminal(&mut self) {
         self.term_input = None;
         self.term_parser = None;

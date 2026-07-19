@@ -2864,3 +2864,40 @@ fn the_wizard_refuses_to_leave_a_step_it_cannot_satisfy() {
     assert_eq!(app.form.as_ref().unwrap().step, 2);
     assert!(app.form.as_ref().unwrap().error.is_none());
 }
+
+#[test]
+fn a_terminal_keeps_history_you_can_scroll_back_to() {
+    // The parser was created with a scrollback length of ZERO, so output that
+    // left the screen was DISCARDED, not merely out of reach — no key could have
+    // brought it back. Reported after a `SHOW REPLICA STATUS` scrolled away.
+    let mut app = App::new("s".into(), vec![]);
+    let mut parser = vt100::Parser::new(4, 40, super::TERM_SCROLLBACK);
+    for i in 1..=40 {
+        parser.process(format!("line-{i}\r\n").as_bytes());
+    }
+    app.term_parser = Some(parser);
+
+    // There IS history behind the four visible rows.
+    app.term_scroll(10);
+    assert_eq!(
+        app.term_parser.as_ref().unwrap().screen().scrollback(),
+        10,
+        "must be able to move back into the session's output"
+    );
+
+    // Scrolling further back stops at the oldest line rather than running off.
+    app.term_scroll(10_000);
+    let deepest = app.term_parser.as_ref().unwrap().screen().scrollback();
+    assert!(
+        deepest > 0 && deepest < 10_000,
+        "clamped to real history: {deepest}"
+    );
+
+    // And the near end is guarded too: back to live, never past it.
+    app.term_scroll(isize::MIN / 2);
+    assert_eq!(app.term_parser.as_ref().unwrap().screen().scrollback(), 0);
+
+    // With no session open it is simply a no-op, not a panic.
+    app.term_parser = None;
+    app.term_scroll(5);
+}
