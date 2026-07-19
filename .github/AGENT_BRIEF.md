@@ -756,9 +756,13 @@ found by a **human looking at the screen**, never by a test:
   list and SAY how many were excluded.
 - `restoreDatabaseBackup` on host B, with B's provider id and the path recorded by A,
   restores A's data. Proven: rows written on aurel were read back on angelia.
-- After a restore the target container can stop answering for a while — the DB client
-  AND `containerShell` both went silent on angelia, while the container still reported
-  `running`. Don't read that as a failed restore, and don't trust an immediate re-query.
+- A restore does NOT normally disturb the container. Measured directly: restoring on a
+  live host and probing the restored container against an unrelated control at 10/30/60/
+  120/180 s, both answered every time, the container never restarted, and the data was
+  correct. An earlier run saw the shell AND the DB client go silent on angelia after
+  several restores in a row — real, but a one-host observation, NOT what restoring does.
+  The lesson is the method: when something looks broken after an action, probe an
+  unrelated target at the same moment before blaming the action.
 
 ### Verified capability matrix per service type (probed live, 2026-07-20)
 

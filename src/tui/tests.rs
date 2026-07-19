@@ -2059,6 +2059,36 @@ fn a_confirmation_never_hides_the_question_or_the_keys() {
 }
 
 #[test]
+fn the_arrows_still_move_the_list_while_a_filter_is_being_typed() {
+    // Reported from real use: type a filter, watch the table narrow, reach for ↓
+    // — and nothing happens, with no hint that Enter is needed first. Every
+    // navigation key was swallowed while the filter had focus.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["p".into()];
+    app.all_services = vec![svc("p", "api", "app"), svc("p", "web", "app")];
+    app.screen = Screen::Projects;
+
+    app.on_key(KeyCode::Char('/'), &tx);
+    assert!(app.filter_input, "typing a filter");
+    for c in "ap".chars() {
+        app.on_key(KeyCode::Char(c), &tx);
+    }
+    assert_eq!(app.filter, "ap", "letters are still text, not commands");
+
+    let before = app.services_table.selected();
+    app.on_key(KeyCode::Down, &tx);
+    assert_ne!(
+        app.services_table.selected(),
+        before,
+        "↓ must move the selection while the filter is still open"
+    );
+    // …and the filter is untouched by it.
+    assert_eq!(app.filter, "ap");
+    assert!(app.filter_input, "moving does not close the filter");
+}
+
+#[test]
 fn a_bulk_confirmation_does_not_claim_to_affect_the_whole_host() {
     // The blast-radius line was INFERRED from an empty project, which until bulk
     // existed only ever meant a maintenance action. A bulk run has no single

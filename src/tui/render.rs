@@ -1449,7 +1449,10 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Paragraph::new(Line::from(vec![
                 Span::styled(" filter: ", bar.fg(Color::Indexed(252))),
                 Span::styled(format!("{}▏", app.filter), bar.add_modifier(Modifier::BOLD)),
-                Span::styled("  Enter apply · Esc cancel", bar.fg(Color::Indexed(244))),
+                Span::styled(
+                    "  ↑↓ select · Enter apply · Esc cancel",
+                    bar.fg(Color::Indexed(244)),
+                ),
             ]))
             .style(bar),
             area,

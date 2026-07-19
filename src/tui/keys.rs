@@ -559,10 +559,38 @@ impl App {
                     let _ = req.send(Req::ActionDetail(id));
                 }
             }
-            _ => {
-                let n = self.visible_actions().len();
-                move_table(&mut self.actions_state, code, n);
+            _ => self.move_selection(code),
+        }
+    }
+
+    /// Move the selection on whichever screen is showing a table.
+    ///
+    /// ONE definition, because the filter needs it too now. Every screen used to
+    /// carry its own "which table, how many rows" in a fallback arm, and a
+    /// seventh copy for the filter is precisely how they drift apart.
+    pub(super) fn move_selection(&mut self, code: KeyCode) {
+        match self.screen {
+            Screen::Projects => {
+                let n = self.visible_rows().len();
+                move_table(&mut self.services_table, code, n)
             }
+            Screen::Actions => {
+                let n = self.visible_actions().len();
+                move_table(&mut self.actions_state, code, n)
+            }
+            Screen::Domains => {
+                let n = self.visible_domains().len();
+                move_table(&mut self.domains_state, code, n)
+            }
+            Screen::Monitor => {
+                let n = self.monitor_rows_shown();
+                move_table(&mut self.monitor_state, code, n)
+            }
+            Screen::Hosts => {
+                let n = self.hosts.len();
+                move_table(&mut self.hosts_state, code, n)
+            }
+            _ => {}
         }
     }
 
@@ -576,6 +604,18 @@ impl App {
                 self.filter.pop();
                 self.clamp_filtered();
             }
+            // The arrows still move the list WHILE you type. Typing narrows the
+            // table in front of you, so reaching for ↓ to pick a row is the
+            // obvious next move — and it used to do nothing at all, with no hint
+            // that Enter was required first.
+            //
+            // Deliberately NOT j/k: those are letters, and a filter is text.
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End => self.move_selection(code),
             KeyCode::Char(c) => {
                 self.filter.push(c);
                 self.clamp_filtered();
@@ -626,10 +666,7 @@ impl App {
             // Bounded by what is actually DRAWN. Counting raw metric entries
             // ignored the project header rows the table inserts, so the last rows
             // were unreachable — and it ignored the filter entirely.
-            _ => {
-                let len = self.monitor_rows_shown();
-                move_table(&mut self.monitor_state, code, len);
-            }
+            _ => self.move_selection(code),
         }
     }
 
@@ -687,10 +724,7 @@ impl App {
                     let _ = req.send(Req::DomainSetPrimary(field(&d, "/id")));
                 }
             }
-            _ => {
-                let n = self.visible_domains().len();
-                move_table(&mut self.domains_state, code, n)
-            }
+            _ => self.move_selection(code),
         }
     }
 
@@ -1092,10 +1126,7 @@ impl App {
             KeyCode::Char('R') => self.ask_action("restart"),
             KeyCode::Char('S') => self.ask_action("stop"),
             KeyCode::Char('T') => self.ask_action("start"),
-            _ => {
-                let n = self.visible_rows().len();
-                move_table(&mut self.services_table, code, n)
-            }
+            _ => self.move_selection(code),
         }
     }
 

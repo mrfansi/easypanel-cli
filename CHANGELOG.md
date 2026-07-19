@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.54.1] — 2026-07-20
+
+### Fixed
+
+- **The arrows work again while a filter is being typed.** Reported from real
+  use: type `/mysql`, watch the table narrow to what you wanted, reach for ↓ —
+  and nothing happened. The filter had focus and swallowed every navigation key,
+  with no hint that Enter was required first. ↑↓, PageUp/PageDown and Home/End
+  now move the selection while you keep typing, and the filter bar says so.
+  `j`/`k` deliberately still type: a filter is text.
+
+  Each screen used to carry its own copy of "which table, how many rows" in a
+  fallback arm; the filter would have been a sixth. They are now one definition,
+  so the filter cannot navigate a different list than the screen it sits on.
+
+### Corrected
+
+- The v0.54.0 note claiming a database container **stops answering after a
+  restore** was overstated. A controlled run since — restore on a live host,
+  probing the restored container and an unrelated one side by side at 10, 30, 60,
+  120 and 180 seconds — found the container responsive throughout, never
+  restarted, and the data correctly restored. The unresponsiveness was seen on
+  one host after several restores in a row and is not a general consequence of
+  restoring. It stays recorded in the brief as an observation, not a rule.
+
 ## [0.54.0] — 2026-07-20
 
 ### Added
