@@ -215,6 +215,26 @@ impl App {
     /// under the cursor). That's what stops scroll from fighting hover — the next
     /// mouse move selects the same row.
     fn on_scroll(&mut self, delta: isize) {
+        // A collection is a table: the wheel moves the SELECTION, as it does on
+        // every other table here. It used to change viewer_scroll, which this
+        // view does not read — so the wheel did nothing at all, silently.
+        if self.screen == Screen::Viewer
+            && self
+                .viewer_ctx
+                .as_ref()
+                .is_some_and(|(v, ..)| v.is_collection())
+        {
+            let len = self.viewer_lines.len();
+            let key = if delta < 0 {
+                KeyCode::Up
+            } else {
+                KeyCode::Down
+            };
+            for _ in 0..delta.unsigned_abs() {
+                move_table(&mut self.viewer_row, key, len);
+            }
+            return;
+        }
         if self.screen == Screen::Viewer {
             let step = delta.unsigned_abs() as u16;
             if delta < 0 {
@@ -1036,6 +1056,8 @@ impl App {
             // In a collection ↑↓ move the SELECTED row; in prose they scroll.
             KeyCode::Up
             | KeyCode::Down
+            | KeyCode::Char('k')
+            | KeyCode::Char('j')
             | KeyCode::PageUp
             | KeyCode::PageDown
             | KeyCode::Home

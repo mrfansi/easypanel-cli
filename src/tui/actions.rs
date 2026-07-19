@@ -239,21 +239,45 @@ impl App {
     }
 
     pub(super) fn net_menu(&self) -> Vec<MenuItem> {
-        vec![
+        // Redirects and basic auth are web-only. Offering them on a redis service
+        // and refusing one keystroke later — in a status line that then fades —
+        // is a door painted on a wall. Worse for redirects: it OPENED, showed
+        // "No redirects" and a footer saying `n add`, on a service type that can
+        // never have one. Same type list the handlers check.
+        const WEB: &[&str] = &["app", "box", "compose", "wordpress"];
+        let mut v = vec![
             MenuItem::new("Domain", |a, r| a.open_service_domains(r)),
             // The viewer adds and deletes, so "Add X" is not a separate door.
             MenuItem::new("Ports", |a, r| a.on_key(KeyCode::Char('p'), r)),
-            MenuItem::new("Redirects", |a, r| a.on_key(KeyCode::Char('f'), r)),
-            MenuItem::new("Basic auth", |a, r| a.on_key(KeyCode::Char('H'), r)),
-        ]
+        ];
+        if self.is_selected_type(WEB) {
+            v.push(MenuItem::new("Redirects", |a, r| {
+                a.on_key(KeyCode::Char('f'), r)
+            }));
+            v.push(MenuItem::new("Basic auth", |a, r| {
+                a.on_key(KeyCode::Char('H'), r)
+            }));
+        }
+        v
     }
 
     pub(super) fn build_menu(&self) -> Vec<MenuItem> {
-        let mut v = vec![
-            MenuItem::new("Source & build", |a, r| a.open_view(View::Source, r)),
-            MenuItem::new("Auto deploy on/off", |a, r| a.on_key(KeyCode::Char('A'), r)),
-            MenuItem::new("Resource limit", |a, r| a.on_key(KeyCode::Char('L'), r)),
-        ];
+        // Source & build (and therefore auto deploy) belong to app services: a
+        // database runs an image EasyPanel picks, and the handler refuses with
+        // "only for app services". Offering it anyway makes the menu a list of
+        // things that might work.
+        let mut v = Vec::new();
+        if self.is_selected_type(&["app"]) {
+            v.push(MenuItem::new("Source & build", |a, r| {
+                a.open_view(View::Source, r)
+            }));
+            v.push(MenuItem::new("Auto deploy on/off", |a, r| {
+                a.on_key(KeyCode::Char('A'), r)
+            }));
+        }
+        v.push(MenuItem::new("Resource limit", |a, r| {
+            a.on_key(KeyCode::Char('L'), r)
+        }));
         // Config File (Advanced) only exists on database services — that's where
         // EasyPanel uses `configFile` (e.g. MySQL replication config).
         if self.is_selected_type(&["mysql", "mariadb", "postgres", "mongo", "redis"]) {

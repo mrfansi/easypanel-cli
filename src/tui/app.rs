@@ -699,6 +699,11 @@ impl App {
                 self.viewer_lines = lines;
                 self.viewer_scroll = 0;
                 self.viewer_hscroll = 0;
+                // The SELECTED row resets too. It used to survive, so opening a
+                // collection inherited whatever index the last one was left on —
+                // a different service, a different resource, a row the user never
+                // chose, sitting armed under `x delete`.
+                self.viewer_row = TableState::default();
                 self.screen = Screen::Viewer;
                 self.status = "Ready".into();
             }
@@ -1907,7 +1912,15 @@ impl App {
     }
 
     pub(super) fn open_view(&mut self, view: View, req: &Sender<Req>) {
-        if let Some((p, s, t)) = self.selected_row() {
+        // On a project header there is no service to look at. Saying so beats the
+        // key doing nothing: the menu path already says it, so `p`/`b`/`f` going
+        // silent was the same action answering differently depending on how you
+        // reached it.
+        let Some((p, s, t)) = self.selected_row() else {
+            self.status = "Select a service first".into();
+            return;
+        };
+        {
             self.viewer_from = Screen::Projects;
             self.viewer_ctx = Some((view, p.clone(), s.clone(), t.clone()));
             self.status = format!("Loading {}...", view.title());

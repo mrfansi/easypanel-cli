@@ -3371,3 +3371,135 @@ fn an_empty_screen_says_what_to_do_instead_of_showing_a_blank_box() {
         "a filter that excludes everything must say so:\n{filtered}"
     );
 }
+
+#[test]
+fn a_freshly_opened_collection_does_not_arm_the_previous_selection() {
+    // viewer_row survived across viewer loads, and render only seeded it when it
+    // was None — true exactly once per process. So opening a collection inherited
+    // whatever index the last one was left on: a different service, a different
+    // resource, a row nobody chose, sitting armed under `x delete`.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer_ctx = Some((View::Ports, "p".into(), "first".into(), "app".into()));
+    app.handle(
+        Resp::Viewer(
+            "Ports · p/first".into(),
+            (0..6).map(|i| format!("[{i}] 800{i}:80/tcp")).collect(),
+        ),
+        &tx,
+    );
+    for _ in 0..4 {
+        app.on_key(KeyCode::Down, &tx);
+    }
+    assert_eq!(app.viewer_row.selected(), Some(4));
+
+    // A different service's mounts arrive: the selection must start over.
+    app.viewer_ctx = Some((View::Mounts, "p".into(), "other".into(), "app".into()));
+    app.handle(
+        Resp::Viewer(
+            "Mounts · p/other".into(),
+            (0..3)
+                .map(|i| format!("[{i}] volume v{i} -> /d{i}"))
+                .collect(),
+        ),
+        &tx,
+    );
+    assert_eq!(
+        app.viewer_row.selected(),
+        None,
+        "a fresh list must not arrive with a row already chosen"
+    );
+}
+
+#[test]
+fn the_wheel_and_vim_keys_move_a_collections_selection() {
+    // The wheel and j/k wrote to viewer_scroll, which a collection view does not
+    // read — so both did nothing at all, on the one screen where every other
+    // table answers them.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer_ctx = Some((View::Ports, "p".into(), "web".into(), "app".into()));
+    app.viewer_lines = (0..30).map(|i| format!("[{i}] 8{i:03}:80/tcp")).collect();
+    app.viewer_row.select(Some(0));
+
+    app.on_key(KeyCode::Char('j'), &tx);
+    app.on_key(KeyCode::Char('j'), &tx);
+    assert_eq!(
+        app.viewer_row.selected(),
+        Some(2),
+        "j must move the selection"
+    );
+    app.on_key(KeyCode::Char('k'), &tx);
+    assert_eq!(
+        app.viewer_row.selected(),
+        Some(1),
+        "and k must move it back"
+    );
+
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    app.on_mouse(
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        },
+        &tx,
+    );
+    assert!(
+        app.viewer_row.selected().is_some_and(|i| i > 1),
+        "the wheel must move the selection, not a scroll offset nothing reads"
+    );
+}
+
+#[test]
+fn a_menu_does_not_offer_what_the_service_type_cannot_have() {
+    // Redirects and basic auth are web-only; source & build is app-only. The
+    // handlers already refused ("only for web services"), but one keystroke too
+    // late and in a status line that fades. Worse, Redirects OPENED on a redis
+    // service and offered `n add` for something structurally impossible.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Projects;
+    app.handle(
+        Resp::AllServices {
+            projects: vec!["p".into()],
+            services: vec![
+                json!({"projectName": "p", "name": "cache", "type": "redis"}),
+                json!({"projectName": "p", "name": "web", "type": "app"}),
+            ],
+        },
+        &tx,
+    );
+    let labels = |v: Vec<super::actions::MenuItem>| -> Vec<String> {
+        v.iter().map(|i| i.label.clone()).collect()
+    };
+
+    // Rows: [0] project header, [1] cache (redis), [2] web (app).
+    app.services_table.select(Some(1));
+    let net = labels(app.net_menu());
+    let build = labels(app.build_menu());
+    assert!(net.contains(&"Ports".to_string()), "redis does have ports");
+    for gone in ["Redirects", "Basic auth"] {
+        assert!(!net.contains(&gone.to_string()), "{gone} on redis: {net:?}");
+    }
+    assert!(
+        !build.contains(&"Source & build".to_string()),
+        "redis has no source: {build:?}"
+    );
+    assert!(
+        build.contains(&"Config file (Advanced)".to_string()),
+        "but it does have the advanced config: {build:?}"
+    );
+
+    // The app service keeps all of them.
+    app.services_table.select(Some(2));
+    let net = labels(app.net_menu());
+    let build = labels(app.build_menu());
+    for kept in ["Redirects", "Basic auth"] {
+        assert!(net.contains(&kept.to_string()), "{kept} on app: {net:?}");
+    }
+    assert!(build.contains(&"Source & build".to_string()));
+}

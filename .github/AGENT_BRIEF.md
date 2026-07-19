@@ -400,6 +400,35 @@ Still open, in the order I would take them:
    stronger fix: there is nothing left there to go stale. The status line is back to being
    only a transient toast.
 
+### UI/UX critique, round 4 (2026-07-19)
+
+All three findings confirmed on screen and fixed in v0.50.3. This round asked for at most
+3 findings, CONFIRMED only, with an empty list stated as an acceptable answer — and the
+report was much better for it: it named what it checked and found clean (Terminal at a
+degenerate pane size, destructive-confirmation wording) instead of padding.
+
+- ~~**A fresh collection inherited the previous selection**~~ — `Resp::Viewer` reset every
+  viewer field except `viewer_row`, and render only seeded it when `None`, which is true
+  once per process. Opening Mounts after leaving Ports on row 5 armed row 5 of the new list
+  under `x delete`. Reset lives next to the other resets now.
+- ~~**Wheel and `j`/`k` were dead in a collection**~~ — they wrote `viewer_scroll`, which
+  the table view does not read. They move the selection now, like every other table.
+- ~~**Menus offered what a service type cannot have**~~ — `net_menu` was ungated, so a redis
+  service was offered Redirects and Basic auth, and Redirects even OPENED, showing an empty
+  list under a footer saying `n add` for something structurally impossible. Gated by the
+  same type lists the handlers already check.
+- Also: `open_view` returned silently on a project header while the menu path said "Select
+  a service first" — the same action answering differently depending on how you reached it.
+
+**Answered the round-4 open question with the live API**: `listDatabaseBackups` on an app
+service returns `[]`, not an error. The Backups entry on a non-database is harmless, so it
+stays ungated.
+
+**Method note worth keeping**: verifying finding 1 on screen appeared to FAIL twice before
+it passed. Both times the cause was tmux — Escape had not actually left the viewer, so the
+follow-up keys went somewhere unintended. The unit test was right the whole time. When a
+screen check contradicts a passing test, check the navigation before you doubt the fix.
+
 ### UI/UX critique, round 3 (2026-07-19)
 
 Fixed in v0.49.2:

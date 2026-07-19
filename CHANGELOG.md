@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.3] — 2026-07-19
+
+### Fixed
+
+- **A freshly opened list arrived with a row already selected — and `x` deletes
+  the selected row.** Every other viewer field reset when a new list loaded, but
+  the selection did not, so leaving Ports on row 5 and opening Mounts on another
+  service armed row 5 of that list. The confirmation names the resource and index,
+  so it was catchable — but it should never have needed catching.
+
+- **The mouse wheel and `j`/`k` did nothing in ports, mounts and redirects.** They
+  moved a scroll offset that the list view does not read, so the keys that work on
+  every other table here were silently inert on this one. They move the selection
+  now.
+
+- **Menus offered actions the service could not have.** A redis service was shown
+  "Redirects" and "Basic auth", and "Source & build" — all three refused a
+  keystroke later, in a status line that then faded. Redirects was worse: it
+  *opened*, showing an empty list under a footer inviting you to add one, for
+  something a redis service cannot have. Those entries now appear only on the
+  types that support them, using the same lists the handlers already check.
+
+- Pressing `p`/`b`/`f` on a project header did nothing at all, while the same
+  actions reached from the menu said "Select a service first".
+
 ## [0.50.2] — 2026-07-19
 
 ### Fixed
