@@ -2952,3 +2952,46 @@ fn monitor_navigation_and_filter_agree_with_what_is_drawn() {
     app.filter = "zzzz-nothing".into();
     assert_eq!(app.monitor_rows_shown(), 0);
 }
+
+#[test]
+fn filtering_the_monitor_keeps_each_row_attached_to_its_project() {
+    // Filtering the flat row list dropped the project headers — they rarely
+    // contain what you typed — leaving orphaned service rows. Two services named
+    // "webapp" in different projects became two identical, indistinguishable
+    // lines on a screen where you act on the row you picked.
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Monitor;
+    app.monitor = vec![
+        json!({"projectName": "alpha", "serviceName": "webapp",
+               "cpu": 1.0, "memory": 900.0, "networkIn": 0.0, "networkOut": 0.0}),
+        json!({"projectName": "alpha", "serviceName": "db",
+               "cpu": 1.0, "memory": 800.0, "networkIn": 0.0, "networkOut": 0.0}),
+        json!({"projectName": "beta", "serviceName": "webapp",
+               "cpu": 1.0, "memory": 700.0, "networkIn": 0.0, "networkOut": 0.0}),
+    ];
+
+    app.filter = "webapp".into();
+    let rows = app.visible_monitor_rows();
+    let col0: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
+
+    // Both matches are present AND each is under its own project.
+    assert_eq!(
+        col0,
+        vec!["alpha (2)", "  webapp", "beta (1)", "  webapp"],
+        "each match must stay under the project that owns it"
+    );
+    // The project that matched nothing is gone entirely, header included.
+    assert!(!col0.iter().any(|c| c.starts_with("gamma")));
+    // A service that did NOT match is not dragged along by its sibling.
+    assert!(!col0.iter().any(|c| c.trim() == "db"));
+
+    // Matching a PROJECT keeps everything inside it, as the Services table does.
+    app.filter = "alpha".into();
+    let rows = app.visible_monitor_rows();
+    let col0: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
+    assert_eq!(col0, vec!["alpha (2)", "  webapp", "  db"]);
+
+    // No filter: untouched.
+    app.filter.clear();
+    assert_eq!(app.visible_monitor_rows().len(), 5);
+}

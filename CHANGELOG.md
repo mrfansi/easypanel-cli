@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.10] — 2026-07-19
+
+### Fixed
+
+- **Filtering the Monitor detached each service from its project.** The rows were
+  filtered as a flat list, and a project header rarely contains what you typed —
+  so the headers were dropped and the matches left orphaned. Filtering for `w`
+  produced two rows both reading `webapp`, in different projects, with nothing to
+  tell them apart on a screen where you act on the row you pick. It now filters
+  per project, exactly as the Services table already did: a matching service keeps
+  its project's header, and a matching project keeps all its services.
+
+- **The Domains table cut hostnames into other, plausible hostnames.** Its three
+  columns shrank together, so at 80 characters a source rendered as
+  `https://harisenin-net-db-mysql-m` — no ellipsis, nothing to say it had been
+  cut. This is the screen with `x delete` on it. Whole columns are now dropped
+  instead (the ID first: an opaque cuid nobody types, which at 18% was too narrow
+  to show in full anyway), Source is never dropped, and anything that still does
+  not fit ends in `…`.
+
+### Internal
+
+- The Monitor's rows and its unfiltered count now come from one pass in
+  `App::monitor_table()`. A performance change had given the renderer its own
+  inline copy of the filtering, and the two drifted: the copy that decided what
+  you saw kept filtering flat, so fixing the other one changed nothing on screen.
+
 ## [0.48.9] — 2026-07-19
 
 ### Fixed

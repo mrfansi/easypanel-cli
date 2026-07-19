@@ -425,10 +425,11 @@ fixing it.
    fixed in the palette, in its sibling caller. `apply_chooser` clears the chooser
    unconditionally, then assigns only if something was selected. Empty list also renders as
    a blank box with no "no matches" and no key hints.
-4. **The Domains table still uses `Percentage` constraints** — the pattern `render_hosts`
-   documents and rejects. On the delete-adjacent screen, a truncated hostname reads as a
-   complete, different hostname. The ID column is an opaque cuid nobody reads and takes 18%.
-   Suggested: `columns_that_fit`, drop ID first, Source never dropped.
+4. ~~**The Domains table still uses `Percentage` constraints**~~ — CONFIRMED and fixed in
+   v0.48.10. At 80 columns a source rendered as "https://harisenin-net-db-mysql-m" with no
+   ellipsis, next to `x delete`. Now uses `columns_that_fit` (ID dropped first, Source never
+   dropped) AND pre-truncates each cell with `first_line`, so what does not fit ends in "…"
+   rather than reading as a complete, different host.
 5. **Maintenance renders per-row fetch failures as ordinary body text** — `"error: …"` in
    the same colour as a real value, on the screen with three irreversible host-wide
    actions. Suggested: carry `Result` per row and colour the error variant.

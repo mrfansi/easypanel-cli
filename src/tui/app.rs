@@ -1286,10 +1286,49 @@ impl App {
     }
 
     pub(super) fn visible_monitor_rows(&self) -> Vec<Vec<String>> {
-        commands::monitor_rows(&self.monitor)
-            .into_iter()
-            .filter(|r| keep(r, &self.filter))
-            .collect()
+        self.monitor_table().0
+    }
+
+    /// The Monitor's Services rows AS DRAWN, plus how many exist unfiltered.
+    ///
+    /// One function because there must be one rule: a perf change once gave the
+    /// renderer its own inline copy of the filtering (to avoid building the rows
+    /// twice), and the two promptly disagreed — the copy that decided what you
+    /// SEE kept filtering flat, so fixing the other one changed nothing on screen.
+    /// Built once here, so both the rows and the count come from the same pass.
+    pub(super) fn monitor_table(&self) -> (Vec<Vec<String>>, usize) {
+        let all = commands::monitor_rows(&self.monitor);
+        let total = all.len();
+        if self.filter.is_empty() {
+            return (all, total);
+        }
+        // Filtered PER PROJECT, not over a flat list. Filtering the rows
+        // independently dropped the project headers — they rarely contain what
+        // you typed — leaving orphaned service rows with no way to tell which
+        // project each belonged to. Two services called "webapp" in different
+        // projects became two identical lines.
+        //
+        // Same rule the Services table already follows: a matching project keeps
+        // all its services, and a matching service keeps its project's header.
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < all.len() {
+            let project_matches = keep(&all[i], &self.filter);
+            let mut kept = Vec::new();
+            let mut j = i + 1;
+            while j < all.len() && all[j].first().is_some_and(|c| c.starts_with("  ")) {
+                if project_matches || keep(&all[j], &self.filter) {
+                    kept.push(all[j].clone());
+                }
+                j += 1;
+            }
+            if project_matches || !kept.is_empty() {
+                out.push(all[i].clone());
+                out.append(&mut kept);
+            }
+            i = j;
+        }
+        (out, total)
     }
 
     /// Switch screens and load its data if it isn't there yet.

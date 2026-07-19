@@ -967,23 +967,66 @@ pub(super) fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
+    // Source, Destination, ID. Percentages used to shrink all three together, so
+    // a hostname was cut mid-word with nothing to show for it —
+    // "https://dashboard.internal.example.com/v1" rendered as
+    // "https://dashboard.internal.exampl", which reads as a complete and
+    // DIFFERENT host. On the screen that also carries `x delete`, that is the
+    // worst possible place to guess.
+    //
+    // ID goes first when space runs short: it is an opaque cuid nobody types, and
+    // at 18% it was too narrow to even show in full. Source is never dropped —
+    // it is the whole point of the row.
+    const ID_W: u16 = 26;
+    const DEST_W: u16 = 34;
+    const SRC_MIN: u16 = 30;
+    const DOMAIN_COLS: &[(u16, Constraint)] = &[
+        (0, Constraint::Min(SRC_MIN)),
+        (69, Constraint::Length(DEST_W)),
+        (96, Constraint::Length(ID_W)),
+    ];
+    let mins: Vec<u16> = DOMAIN_COLS.iter().map(|(m, _)| *m).collect();
+    let idx = columns_that_fit(&mins, area.width);
+
+    // The width each column will actually get, so a value too long for its column
+    // is cut HERE — with an ellipsis — instead of silently at the edge.
+    let fixed: u16 = idx
+        .iter()
+        .skip(1)
+        .map(|i| if *i == 1 { DEST_W } else { ID_W })
+        .sum();
+    let gaps = idx.len().saturating_sub(1) as u16;
+    let src_w = area.width.saturating_sub(4 + fixed + gaps).max(SRC_MIN) as usize;
+    let widths_px = [src_w, DEST_W as usize, ID_W as usize];
+
     let rows: Vec<Vec<String>> = app
         .visible_domains()
         .iter()
-        .map(|d| commands::domain_row(d))
+        .map(|d| {
+            let cells = commands::domain_row(d);
+            idx.iter()
+                .filter_map(|i| {
+                    cells
+                        .get(*i)
+                        .map(|c| crate::output::first_line(c, widths_px[*i]))
+                })
+                .collect()
+        })
         .collect();
+    let headers: Vec<&str> = idx
+        .iter()
+        .filter_map(|i| commands::DOMAIN_HEADERS.get(*i).copied())
+        .collect();
+    let widths: Vec<Constraint> = idx.iter().map(|i| DOMAIN_COLS[*i].1).collect();
+
     let title = count_title("Domains", rows.len(), app.domains.len(), app);
     app.table_area = area;
     render_table(
         f,
         area,
         title,
-        &commands::DOMAIN_HEADERS,
-        &[
-            Constraint::Percentage(45),
-            Constraint::Percentage(37),
-            Constraint::Percentage(18),
-        ],
+        &headers,
+        &widths,
         rows,
         &mut app.domains_state,
     );
@@ -996,12 +1039,10 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
 
     match app.monitor_view {
         MonitorView::Services => {
-            // Built once, not twice: the unfiltered count used to rerun the whole
-            // group-and-format pipeline (and clone the data again) purely to call
-            // .len() on the result.
-            let all = commands::monitor_rows(&app.monitor);
-            let total = all.len();
-            let data: Vec<Vec<String>> = all.into_iter().filter(|r| keep(r, &app.filter)).collect();
+            // Built once, and by the SAME rule the rest of the app uses: the rows
+            // and the count come out of one pass, so what is drawn here cannot
+            // drift from what navigation and the title believe.
+            let (data, total) = app.monitor_table();
             let title = format!(
                 "{}· [v] Storage ",
                 count_title("Services", data.len(), total, app)
