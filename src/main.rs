@@ -1,6 +1,7 @@
 mod client;
 mod commands;
 mod config;
+mod lifecycle;
 mod logs;
 mod migrate;
 mod output;

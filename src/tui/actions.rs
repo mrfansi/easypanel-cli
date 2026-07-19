@@ -341,19 +341,36 @@ impl App {
         ]
     }
 
+    /// Only the actions this service type actually HAS.
+    ///
+    /// A database has no deploy — it is pulled, not built — and offering one used
+    /// to send a request that could only come back 404. The panel's own verbs
+    /// differ per type; the menu now follows them rather than assuming every
+    /// service works like an app.
     pub(super) fn life_menu(&self) -> Vec<MenuItem> {
-        vec![
-            MenuItem::new("Deploy", |a, _| a.ask_action("deploy")),
+        let stype = self.selected_row().map(|(_, _, t)| t).unwrap_or_default();
+        let has = |action: &str| crate::lifecycle::ops(&stype, action).is_some();
+        let mut v = Vec::new();
+        if has("deploy") {
+            v.push(MenuItem::new("Deploy", |a, _| a.ask_action("deploy")));
             // Its own entry rather than a change to Deploy: skipping the cache can
             // turn a seconds-long deploy into minutes, so it should be a choice the
             // user made, not a surprise.
-            MenuItem::new("Force rebuild (no cache)", |a, _| {
+            v.push(MenuItem::new("Force rebuild (no cache)", |a, _| {
                 a.ask_action("deploy-force")
-            }),
-            MenuItem::new("Restart", |a, _| a.ask_action("restart")),
-            MenuItem::new("Stop", |a, _| a.ask_action("stop")),
-            MenuItem::new("Start", |a, _| a.ask_action("start")),
-        ]
+            }));
+        }
+        // A database's restart is a stop and a start, so the label says so: the
+        // service is briefly OFF, which "Restart" alone rather understates.
+        let restart = if crate::lifecycle::is_database(&stype) {
+            "Restart (stop, then start)"
+        } else {
+            "Restart"
+        };
+        v.push(MenuItem::new(restart, |a, _| a.ask_action("restart")));
+        v.push(MenuItem::new("Stop", |a, _| a.ask_action("stop")));
+        v.push(MenuItem::new("Start", |a, _| a.ask_action("start")));
+        v
     }
 
     pub(super) fn shell_menu(&self) -> Vec<MenuItem> {

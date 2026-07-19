@@ -1114,6 +1114,12 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             action,
             force,
         } => {
+            // Refused BEFORE the deploy branch below: a type with no build has no
+            // deployService route, so dispatching one only produced a "started"
+            // message followed seconds later by a 404.
+            if crate::lifecycle::ops(&stype, &action).is_none() {
+                return Resp::Err(crate::lifecycle::unavailable(&stype, &action));
+            }
             // Deploy is DISPATCHED, not awaited. Its build takes an unpredictable
             // time — possibly minutes, depending on the repo — and exceeds any
             // proxy limit (measured: 125 seconds then a 524 from Cloudflare).
@@ -1155,12 +1161,22 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                     Refresh::None,
                 );
             }
-            let input = json!({ "projectName": project, "serviceName": service });
-            match client.call(
-                &format!("services/{stype}"),
-                &format!("{action}Service"),
-                input,
-            ) {
+            // Which endpoints this action actually IS for this service type. A
+            // database has no restartService route — it cycles `enabled` — and
+            // sending the old guess simply 404'd, which is why the Lifecycle menu
+            // never worked on a single database in the panel.
+            let Some(ops) = crate::lifecycle::ops(&stype, &action) else {
+                return Resp::Err(crate::lifecycle::unavailable(&stype, &action));
+            };
+            let mut last = Ok(Value::Null);
+            for op in ops {
+                let input = json!({ "projectName": project, "serviceName": service });
+                last = client.call(&format!("services/{stype}"), op, input);
+                if last.is_err() {
+                    break;
+                }
+            }
+            match last {
                 // Refresh, not just a message: destroy/start/stop are already done on
                 // the server when this call returns (destroyService measured
                 // 0.2-5 seconds), but the table was never reloaded — a deleted
@@ -1243,15 +1259,26 @@ fn bulk_action(
             .iter()
             .map(|(project, service, stype)| {
                 let c = client.clone();
-                let (grp, op) = (format!("services/{stype}"), format!("{action}Service"));
+                let grp = format!("services/{stype}");
+                // The SAME rule as a single action: a database restarts by
+                // cycling `enabled`, and has no deploy at all. Spelling the
+                // endpoint out here again is how a bulk run would keep 404ing
+                // on databases after the single path was fixed.
+                let ops = crate::lifecycle::ops(stype, action);
+                let why = crate::lifecycle::unavailable(stype, action);
                 let (p, s) = (project.clone(), service.clone());
                 thread::spawn(move || {
-                    let input = json!({ "projectName": p, "serviceName": s });
                     let name = format!("{p}/{s}");
-                    match c.call(&grp, &op, input) {
-                        Ok(_) => Ok(name),
-                        Err(e) => Err((name, e.to_string())),
+                    let Some(ops) = ops else {
+                        return Err((name, why));
+                    };
+                    for op in ops {
+                        let input = json!({ "projectName": p, "serviceName": s });
+                        if let Err(e) = c.call(&grp, op, input) {
+                            return Err((name, e.to_string()));
+                        }
                     }
+                    Ok(name)
                 })
             })
             .collect();

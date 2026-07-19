@@ -729,6 +729,16 @@ found by a **human looking at the screen**, never by a test:
 | A test named `empty_project_shows_no_metrics_not_negative_zero` passed | `-0.0 %` had been on screen for two releases |
 | `destroy` returned OK | The deleted row stayed in the table until a manual refresh |
 
+**Not every service type has the same verbs** (v0.52.0). `services/{type}/{action}Service`
+was assumed to exist for all of them. It does not: databases (mysql, mariadb, postgres,
+mongo, redis) have NO deploy/restart/stop/start route — they cycle through
+`enableService`/`disableService` — and `box`/`wordpress` have no deploy. The tell is the
+error SHAPE: a bare `{"error":"Not found"}` is a missing route, while a real operation
+given a bad argument answers with a tRPC 400. Probe with that distinction before
+assuming an endpoint exists for a type you have not tried. This one had been broken for
+every database in the panel, and it silently disabled the Config File editor with it,
+since a config change needs a process restart to take effect.
+
 **A faithful copy can still be a broken one** (v0.51.1). Cloning a MySQL replica
 copied its config file exactly — and `super_read_only = ON` stops a FRESH database
 from initialising, because the entrypoint has to write the root password, the user

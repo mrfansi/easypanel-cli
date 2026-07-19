@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.0] — 2026-07-20
+
+### Fixed
+
+- **Restart, Stop and Start never worked on a single database — and now they do.**
+  The tool built every lifecycle call as `services/{type}/{action}Service`, but
+  EasyPanel gives databases none of those routes. Probed against a live panel,
+  `services/mysql/restartService` (and stop, start, deploy) answers with the bare
+  `{"error":"Not found"}` of an unknown route, not the tRPC-shaped 400 a real
+  operation gives for a bad argument. The same holds for mariadb, postgres, mongo
+  and redis. A database stops and starts through `enabled` instead, so Restart is
+  now `disableService` followed by `enableService`, and its menu entry says
+  "Restart (stop, then start)" because that is what it does.
+
+  This is what made **editing a database's Config File look like it did nothing.**
+  A config change is only picked up when the process restarts, and nothing in the
+  tool could restart a database. Measured on a live MySQL: after saving
+  `max_connections = 999`, the file was in the container within seconds while the
+  running server still reported 151 — and still did nearly two hours later.
+  Cycling `enabled` brought it up with the new value. Verified end to end through
+  the TUI: a config saved, Restart pressed, and the new value in effect on a
+  process 27 seconds old.
+
+- **Actions that cannot exist are no longer offered.** Deploy and Force rebuild
+  are gone from the Lifecycle menu for databases — a database is pulled, never
+  built — and for `box` and `wordpress` services, which have no deploy route
+  either. Anything that still slips through (a saved shortcut, the palette) is
+  refused with the reason rather than sent as a request that could only come back
+  404. Bulk actions follow the same rule, so marking a set of databases and
+  restarting them works too.
+
 ## [0.51.1] — 2026-07-20
 
 ### Fixed
