@@ -381,11 +381,13 @@ Fixed since:
 
 Still open, in the order I would take them:
 
-1. **`render_actions` at 80 columns** — verified on screen 2026-07-19: the Target column
-   truncates to 20 chars ("harisenin-net-db/php" for phpmyadmin), so the service being
-   acted on is not always identifiable. Lower severity than Hosts/Monitor were: a name
-   that is visibly cut, not a number that reads as complete while being wrong. The Hosts
-   pattern (drop whole columns least-useful-first) applies directly.
+1. ~~**`render_actions` at 80 columns**~~ — fixed in v0.48.3. Target truncated to 20 chars
+   ("harisenin-net-db/php" for phpmyadmin). Now drops Duration first and Age only when
+   four columns no longer fit — a history screen that cannot say WHEN has lost its point,
+   and how long it took is one keypress away in the detail. This was the third copy of the
+   drop-columns rule, so it was extracted to `table::columns_that_fit` in its own
+   behaviour-preserving commit first; that helper returns INDICES rather than a prefix
+   count precisely so a middle column (Duration) can be the one to go.
 4. ~~**Monitor tiles below ~100 columns**~~ — fixed in v0.48.2. Confirmed on screen at 80
    columns first: Disk read "199.9 GB / 784" (a total with no unit) and CPU read
    "16 cores — loa". Each sub-line now offers a ladder of forms and the renderer takes the

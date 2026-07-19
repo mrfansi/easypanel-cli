@@ -2598,3 +2598,60 @@ fn monitor_tiles_never_show_a_half_number_at_80_columns() {
         "disk must keep both halves:\n{shown}"
     );
 }
+
+#[test]
+fn a_narrow_actions_table_keeps_when_and_drops_how_long() {
+    // The full set needs 88 columns. Below that "Target" was squeezed from 28 to
+    // 20 and the service an action happened to stopped being identifiable —
+    // "harisenin-net-db/php" for phpmyadmin.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let render_at = |w: u16| {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new("s".into(), vec![]);
+        app.screen = Screen::Actions;
+        app.handle(
+            Resp::Actions(vec![json!({
+                "status": "done",
+                "projectName": "harisenin-net-db",
+                "serviceName": "phpmyadmin",
+                "description": "Deploy service",
+                "createdAt": "2026-07-19 03:00:00",
+                "updatedAt": "2026-07-19 03:00:18",
+            })]),
+            &tx,
+        );
+        let mut t = Terminal::new(TestBackend::new(w, 8)).unwrap();
+        t.draw(|f| ui(f, &mut app)).unwrap();
+        let buf = t.backend().buffer().clone();
+        buf.content()
+            .chunks(w as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let narrow = render_at(80);
+    // The whole target, not a name cut mid-word.
+    assert!(
+        narrow.contains("harisenin-net-db/phpmyadmin"),
+        "the service acted on must stay identifiable:\n{narrow}"
+    );
+    // "When" survives; "how long" is what makes room for it.
+    assert!(
+        narrow.contains("Age"),
+        "a history must keep when:\n{narrow}"
+    );
+    assert!(
+        !narrow.contains("Duration"),
+        "Duration is the one to give up:\n{narrow}"
+    );
+
+    // Wide enough for the lot: everything is back.
+    let wide = render_at(100);
+    for col in ["Status", "Target", "Description", "Duration", "Age"] {
+        assert!(wide.contains(col), "{col} missing at 100 cols:\n{wide}");
+    }
+    assert!(wide.contains("harisenin-net-db/phpmyadmin"));
+}

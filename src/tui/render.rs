@@ -878,25 +878,46 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 pub(super) fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
+    // Status, Target, Description, Duration, Age. The full set needs 88 columns
+    // once the spacing between them, the highlight symbol and the borders are
+    // counted; below that "Target" was squeezed from 28 to 20 and the service an
+    // action happened to became unidentifiable ("harisenin-net-db/php").
+    //
+    // Duration is the first to go — not Age, which is dropped only when four
+    // columns no longer fit. A history screen that cannot say WHEN has lost the
+    // point of itself, and how long it took is one keypress away in the detail.
+    const ACTION_COLS: &[(u16, Constraint)] = &[
+        (0, Constraint::Length(8)),   // Status
+        (0, Constraint::Length(28)),  // Target
+        (0, Constraint::Min(20)),     // Description
+        (88, Constraint::Length(10)), // Duration
+        (77, Constraint::Length(14)), // Age
+    ];
+    let mins: Vec<u16> = ACTION_COLS.iter().map(|(m, _)| *m).collect();
+    let idx = columns_that_fit(&mins, area.width);
+
     let rows: Vec<Vec<String>> = app
         .visible_actions()
         .iter()
-        .map(|a| commands::action_row(a, commands::ACTION_DESC_TUI))
+        .map(|a| {
+            let cells = commands::action_row(a, commands::ACTION_DESC_TUI);
+            idx.iter().filter_map(|i| cells.get(*i).cloned()).collect()
+        })
         .collect();
+    let headers: Vec<&str> = idx
+        .iter()
+        .filter_map(|i| commands::ACTION_HEADERS.get(*i).copied())
+        .collect();
+    let widths: Vec<Constraint> = idx.iter().map(|i| ACTION_COLS[*i].1).collect();
+
     let title = count_title("Actions", rows.len(), app.actions.len(), app);
     app.table_area = area;
     render_table(
         f,
         area,
         title,
-        &commands::ACTION_HEADERS,
-        &[
-            Constraint::Length(8),
-            Constraint::Length(28),
-            Constraint::Min(20),
-            Constraint::Length(10),
-            Constraint::Length(14),
-        ],
+        &headers,
+        &widths,
         rows,
         &mut app.actions_state,
     );

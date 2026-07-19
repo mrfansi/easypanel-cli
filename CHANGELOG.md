@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.3] — 2026-07-19
+
+### Fixed
+
+- **The Actions list hid which service an action happened to.** The columns need
+  88 characters once the spacing, highlight symbol and borders are counted, so on
+  an 80-column terminal "Target" was squeezed from 28 to 20 and
+  `harisenin-net-db/phpmyadmin` rendered as `harisenin-net-db/php` — a history of
+  what happened, to something you cannot name.
+
+  Whole columns are dropped instead, and **Duration goes first, not Age**: a
+  history screen that cannot say *when* has lost the point of itself, while how
+  long something took is one keypress away in the action detail. Age is given up
+  only when even four columns will not fit. Wider terminals are unchanged.
+
+### Internal
+
+- The "drop whole columns rather than shrink them all" rule had three copies
+  coming (Services, Hosts, Actions) and now has one, in `table.rs`, along with
+  the reasoning: squeezed, ratatui shrinks every column proportionally, which is
+  how `199.9 GB / 784.9 GB` became `199.9 GB / 784`. Landed as its own
+  behaviour-preserving commit — identical test names before and after.
+
 ## [0.48.2] — 2026-07-19
 
 ### Fixed
