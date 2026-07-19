@@ -1148,12 +1148,15 @@ impl App {
                 self.restore_files.clear();
                 self.backup_target = None;
                 self.backup_names.clear();
+                self.backup_marked.clear();
                 self.screen = self.viewer_from;
             }
             // In the restore picker, Enter acts on the selected backup.
             KeyCode::Enter if self.restore_target.is_some() => self.ask_restore(),
             // …and in the database picker, on the selected database.
             KeyCode::Enter if self.backup_target.is_some() => self.ask_backup(),
+            // `v` ticks, exactly as it marks a service in the table.
+            KeyCode::Char('v') if self.backup_target.is_some() => self.toggle_backup_mark(),
             // Scrolling up releases the follow: otherwise a newly arriving log line
             // would drag the view back to the bottom right as the user is reading
             // something above.

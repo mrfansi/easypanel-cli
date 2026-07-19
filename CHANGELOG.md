@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-07-20
+
+### Added
+
+- **Tick several databases and back up exactly those.** The picker offered "all
+  or exactly one", so backing up three of five meant running the whole flow three
+  times. `v` now ticks the database under the cursor — the same key that marks a
+  service in the table, because it is the same idea — and Enter backs up
+  everything ticked. Nothing ticked still means "the row you are on", and
+  "All N databases" is still the first row.
+
+  Ticks win over the cursor when both could apply: they were made deliberately,
+  while the row the cursor happens to rest on is not a choice anyone made. The
+  confirmation names every database it is about to touch, and each gets its own
+  request, so one failing cannot quietly take the others with it.
+
+  Verified live on a service holding three: two ticked, and exactly those two
+  were backed up — with no schedule left behind.
+
 ## [0.55.1] — 2026-07-20
 
 ### Fixed

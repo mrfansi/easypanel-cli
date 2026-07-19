@@ -2059,6 +2059,52 @@ fn a_confirmation_never_hides_the_question_or_the_keys() {
 }
 
 #[test]
+fn ticked_databases_are_what_gets_backed_up() {
+    // Reported from real use: the picker offered "all or exactly one", so
+    // backing up three of five meant running the whole flow three times.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.storage_providers = vec![("p1".into(), "R2".into(), "s3".into())];
+    app.backup_provider = Some(("p1".into(), "R2".into()));
+    app.handle(
+        Resp::DatabasesIn {
+            project: "proj".into(),
+            service: "db".into(),
+            names: vec!["one".into(), "two".into(), "three".into()],
+        },
+        &tx,
+    );
+
+    // Cursor starts on "[0] All"; move onto a database and tick two of them.
+    app.on_key(KeyCode::Down, &tx);
+    app.on_key(KeyCode::Char('v'), &tx);
+    app.on_key(KeyCode::Down, &tx);
+    app.on_key(KeyCode::Down, &tx);
+    app.on_key(KeyCode::Char('v'), &tx);
+    assert_eq!(app.backup_marked.len(), 2, "two ticked");
+    assert!(app.viewer_lines.iter().any(|l| l.contains("✓ one")));
+    assert!(app.viewer_lines.iter().any(|l| l.contains("✓ three")));
+
+    // Enter acts on the TICKS, not on whatever row the cursor rests on.
+    app.on_key(KeyCode::Enter, &tx);
+    let c = app.confirm.as_ref().expect("must confirm first");
+    assert!(
+        c.label.contains("one") && c.label.contains("three"),
+        "{}",
+        c.label
+    );
+    assert!(
+        !c.label.contains("two"),
+        "an unticked one must not go: {}",
+        c.label
+    );
+    assert_eq!(
+        app.pending_backups,
+        vec!["one".to_string(), "three".to_string()]
+    );
+}
+
+#[test]
 fn the_arrows_still_move_the_list_while_a_filter_is_being_typed() {
     // Reported from real use: type a filter, watch the table narrow, reach for ↓
     // — and nothing happens, with no hint that Enter is needed first. Every

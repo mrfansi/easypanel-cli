@@ -274,7 +274,13 @@ pub(super) struct App {
     pub(super) restore_target: Option<(String, String)>,
     /// The databases the picker is offering, and which service they belong to.
     pub(super) backup_names: Vec<String>,
+    /// The ones ticked in that picker. Marking uses `v`, the same key that marks
+    /// a service in the table — one word for one idea.
+    pub(super) backup_marked: HashSet<String>,
     pub(super) backup_target: Option<(String, String)>,
+    /// The picker's first line, kept so the rows can be rebuilt when a tick
+    /// changes without reassembling the sentence.
+    pub(super) backup_header: String,
     /// The provider a backup will go to: (id, how it is described to the user).
     pub(super) backup_provider: Option<(String, String)>,
     /// The databases a confirmation is about to back up.
@@ -388,7 +394,9 @@ impl App {
             restore_files: Vec::new(),
             restore_target: None,
             backup_names: Vec::new(),
+            backup_marked: HashSet::new(),
             backup_target: None,
+            backup_header: String::new(),
             backup_provider: None,
             pending_backups: Vec::new(),
             pending_restore: None,
@@ -1760,21 +1768,69 @@ impl App {
             self.status = format!("No database found in {project}/{service} — nothing to back up");
             return;
         }
-        let mut lines = vec![
-            format!("Back up from {project}/{service} to {where_to}"),
-            String::new(),
-        ];
-        lines.push(format!("{} All {} databases", row_marker(0), names.len()));
-        lines.extend(
-            names
-                .iter()
-                .enumerate()
-                .map(|(i, n)| format!("{} {n}", row_marker(i + 1))),
-        );
         self.backup_names = names;
+        self.backup_marked.clear();
+        self.backup_header = format!("Back up from {project}/{service} to {where_to}");
         self.backup_target = Some((project, service));
+        let lines = self.backup_picker_lines();
         self.show_picker("Which database?".into(), lines);
-        self.status = "[Enter] back up the selected one · [Esc] cancel".into();
+        self.status = self.backup_hint();
+    }
+
+    /// The picker's rows, rebuilt whenever a mark changes.
+    ///
+    /// The tick sits INSIDE the row rather than widening it, so ticking one does
+    /// not shift every name sideways.
+    fn backup_picker_lines(&self) -> Vec<String> {
+        let mut lines = vec![self.backup_header.clone(), String::new()];
+        lines.push(format!(
+            "{} All {} databases",
+            row_marker(0),
+            self.backup_names.len()
+        ));
+        lines.extend(self.backup_names.iter().enumerate().map(|(i, n)| {
+            let tick = if self.backup_marked.contains(n) {
+                "✓ "
+            } else {
+                "  "
+            };
+            format!("{} {tick}{n}", row_marker(i + 1))
+        }));
+        lines
+    }
+
+    /// What the status line says while the picker is open.
+    fn backup_hint(&self) -> String {
+        match self.backup_marked.len() {
+            0 => "[v] tick several · [Enter] back up the selected one · [Esc] cancel".into(),
+            n => format!("{n} ticked — [Enter] backs up those · [v] untick · [Esc] cancel"),
+        }
+    }
+
+    /// Tick or untick the database under the cursor.
+    pub(super) fn toggle_backup_mark(&mut self) {
+        // Row 0 is "All", which is not a database to tick.
+        let Some(i) = self
+            .viewer_row
+            .selected()
+            .and_then(|r| self.viewer_lines.get(r))
+            .and_then(|l| row_index(l))
+            .filter(|i| *i > 0)
+        else {
+            self.status = "Move to a database row first".into();
+            return;
+        };
+        let Some(name) = self.backup_names.get(i - 1).cloned() else {
+            return;
+        };
+        if !self.backup_marked.remove(&name) {
+            self.backup_marked.insert(name);
+        }
+        // Rebuild in place: the selection must not jump because a tick appeared.
+        let keep = self.viewer_row.selected();
+        self.viewer_lines = self.backup_picker_lines();
+        self.viewer_row.select(keep);
+        self.status = self.backup_hint();
     }
 
     /// Confirm the backup of whatever the picker has selected.
@@ -1796,8 +1852,16 @@ impl App {
             self.status = "Select a database row first".into();
             return;
         };
-        // Row 0 is "All", so the real names start at 1.
-        let chosen: Vec<String> = if i == 0 {
+        // Ticks win when there are any: they were made deliberately, and the
+        // row the cursor happens to rest on is not a choice the user made.
+        // Otherwise row 0 is "All" and the rest are single databases.
+        let chosen: Vec<String> = if !self.backup_marked.is_empty() {
+            self.backup_names
+                .iter()
+                .filter(|n| self.backup_marked.contains(*n))
+                .cloned()
+                .collect()
+        } else if i == 0 {
             self.backup_names.clone()
         } else {
             match self.backup_names.get(i - 1) {
