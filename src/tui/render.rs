@@ -1475,6 +1475,10 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
 
 pub(super) fn render_chooser(f: &mut Frame, ch: &mut Chooser) {
     let items = ch.matches();
+    // An empty result used to draw a blank box: no explanation, no way to tell
+    // that the search had excluded everything rather than that the list was
+    // simply empty.
+    let empty = items.is_empty();
     let height = (items.len() as u16 + 4).clamp(5, 16);
     let area = centered_abs(48, height, f.area());
     ch.rect = area;
@@ -1485,10 +1489,20 @@ pub(super) fn render_chooser(f: &mut Frame, ch: &mut Chooser) {
     } else {
         format!(" {} — search: {} ", ch.label, ch.filter)
     };
-    let list = List::new(items.into_iter().map(ListItem::new).collect::<Vec<_>>())
+    let rows: Vec<ListItem> = if empty {
+        vec![ListItem::new(Line::from(Span::styled(
+            "  nothing matches — Backspace to widen",
+            Style::default().fg(Color::Indexed(210)),
+        )))]
+    } else {
+        items.into_iter().map(ListItem::new).collect()
+    };
+    let list = List::new(rows)
         .block(
             Block::bordered()
                 .title(title)
+                // The keys were nowhere on this widget before.
+                .title_bottom(" Enter select · Esc cancel ")
                 .border_style(Style::default().fg(Color::Cyan)),
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))

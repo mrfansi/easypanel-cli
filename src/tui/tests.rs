@@ -2995,3 +2995,74 @@ fn filtering_the_monitor_keeps_each_row_attached_to_its_project() {
     app.filter.clear();
     assert_eq!(app.visible_monitor_rows().len(), 5);
 }
+
+#[test]
+fn a_dropdown_that_matches_nothing_does_not_close_as_if_it_had_picked() {
+    // Enter used to close the dropdown, leave the field on its old value, and say
+    // nothing — indistinguishable from a successful pick, so a typo left the user
+    // believing they had changed it. The same silent close was fixed in the
+    // palette; this is its sibling caller.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Projects;
+    app.handle(
+        Resp::AllServices {
+            projects: vec!["alpha".into(), "beta".into()],
+            services: vec![json!({"projectName": "alpha", "name": "web", "type": "app"})],
+        },
+        &tx,
+    );
+    app.services_table.select(Some(1));
+    app.open_clone_form();
+
+    // Open the Project dropdown and narrow it to nothing.
+    app.on_key(KeyCode::Char(' '), &tx);
+    assert!(app.chooser.is_some(), "the dropdown must open");
+    for c in "zzzz".chars() {
+        app.on_key(KeyCode::Char(c), &tx);
+    }
+    assert!(app.chooser.as_ref().unwrap().matches().is_empty());
+
+    let before = app.form.as_ref().unwrap().by_label("Project");
+    app.on_key(KeyCode::Enter, &tx);
+
+    // It stays open rather than pretending to have chosen.
+    assert!(
+        app.chooser.is_some(),
+        "Enter with no match must not close the dropdown"
+    );
+    assert_eq!(
+        app.form.as_ref().unwrap().by_label("Project"),
+        before,
+        "and the field must be untouched"
+    );
+
+    // The box says so, instead of being an unexplained blank.
+    let mut t = Terminal::new(TestBackend::new(90, 20)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let buf = t.backend().buffer().clone();
+    let shown: String = buf
+        .content()
+        .chunks(90)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        shown.contains("nothing matches"),
+        "must explain itself:\n{shown}"
+    );
+    assert!(
+        shown.contains("Esc cancel"),
+        "and offer the way out:\n{shown}"
+    );
+
+    // Widening the search brings it back, and Enter then really picks.
+    for _ in 0..4 {
+        app.on_key(KeyCode::Backspace, &tx);
+    }
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(app.chooser.is_none(), "a real match closes it");
+}

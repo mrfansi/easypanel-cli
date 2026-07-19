@@ -317,10 +317,17 @@ impl App {
         let Some(ch) = self.chooser.as_ref() else {
             return;
         };
-        let picked = ch.selected();
+        // Nothing matched, so there is nothing to apply. Closing anyway looked
+        // EXACTLY like a successful pick: the dropdown vanished, the field kept
+        // its old value, and nothing was said — so a typo left the user believing
+        // they had changed it. The same silent close was already fixed in the
+        // palette; this is its sibling. Stay open, and let the box say why.
+        let Some(value) = ch.selected() else {
+            return;
+        };
         let (idx, label) = (ch.field, ch.label);
         self.chooser = None;
-        if let (Some(value), Some(form)) = (picked, self.form.as_mut()) {
+        if let Some(form) = self.form.as_mut() {
             form.fields[idx].value = value;
             form.clamp_focus();
             match label {

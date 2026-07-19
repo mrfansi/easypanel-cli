@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.11] — 2026-07-19
+
+### Fixed
+
+- **A dropdown whose search matched nothing closed as if you had chosen
+  something.** Enter dismissed it, left the field on its previous value and said
+  nothing at all — from the outside, identical to a successful pick. Mistype a
+  project name in the clone or migrate form and you would walk away believing you
+  had changed it.
+
+  It now stays open. The empty box explains itself — `nothing matches —
+  Backspace to widen` — instead of being an unexplained blank, and `Enter select
+  · Esc cancel` is on its border, where the dropdown previously showed no keys at
+  all.
+
+  This was the sibling of a silent close already fixed in the command palette;
+  the same rule now holds in both.
+
 ## [0.48.10] — 2026-07-19
 
 ### Fixed

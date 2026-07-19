@@ -421,10 +421,10 @@ fixing it.
    call sites computed this count independently and all three disagreed; there is now one
    `App::monitor_rows_shown()`. Storage also gained `visible_storage_rows()` and a
    `count_title`, so `/` there both works and shows itself.
-3. **The Chooser dropdown closes silently when nothing matches** — the same defect already
-   fixed in the palette, in its sibling caller. `apply_chooser` clears the chooser
-   unconditionally, then assigns only if something was selected. Empty list also renders as
-   a blank box with no "no matches" and no key hints.
+3. ~~**The Chooser dropdown closes silently when nothing matches**~~ — CONFIRMED on screen
+   and fixed in v0.48.11. Enter closed the dropdown, left the field on its old value and
+   said nothing, which is indistinguishable from a successful pick. It now stays open, the
+   empty box reads "nothing matches — Backspace to widen", and the keys are on its border.
 4. ~~**The Domains table still uses `Percentage` constraints**~~ — CONFIRMED and fixed in
    v0.48.10. At 80 columns a source rendered as "https://harisenin-net-db-mysql-m" with no
    ellipsis, next to `x delete`. Now uses `columns_that_fit` (ID dropped first, Source never
