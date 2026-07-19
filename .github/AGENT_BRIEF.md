@@ -400,6 +400,35 @@ Still open, in the order I would take them:
    stronger fix: there is nothing left there to go stale. The status line is back to being
    only a transient toast.
 
+### Audit: `by_label` visibility-blindness — the class is CLOSED (2026-07-19)
+
+v0.50.4 fixed a leak where a database service inherited env typed for an app, because
+`by_label` returns a hidden field's value exactly as if it were on screen. Rather than
+stop at the two reported callers, every conditional field was cross-referenced against
+every reader. **No further instance exists.** Do not re-audit this, and do not "fix" the
+sites below — each is safe for a stated reason:
+
+- **Decided by their own switch** — the reader matches on the very field that controls
+  visibility, so a hidden field is unreachable by construction: `source_body` on `Source`
+  (Repo/Branch/Git URL/Ref/Dockerfile/Docker image/Registry user+password/Path),
+  `build_body` on `Build` (all six types), `mount_body` on `Type` (Host path/Content/Name),
+  `domain_body` on `Destination` (Server URL/Weight vs Project/Service/Protocol/Port/
+  Destination path — and it `remove`s the other branch's key).
+- **Explicit visibility check** — `service_extra` tests `form.visible()` before taking
+  Database/User/Password/Root password/Image.
+- **Guarded by nesting** — `.env file path` and `Create .env file` are only read inside
+  `if let Some(env) = create_env(form)`, which now returns `None` off `app`.
+- **Not actually conditional** — `SSL resolver` is unconditional (shown for both
+  destination types), so reading it unconditionally is correct.
+- **A different field of the same name** — the `Project` reads in `app.rs` belong to the
+  clone/migrate forms, where `Project` has no `.when`; the conditional `Project` lives in
+  the domain form, whose reader switches on `Destination`.
+
+**Method warning, learned the hard way in this audit:** a first regex sweep reported
+`SSL resolver` as conditional and nearly produced a "fix" for a non-bug. The pattern had
+matched across field boundaries and attached a later field's `.when` to it. When a scan
+implicates a specific line, open that line before believing it.
+
 ### UI/UX critique, round 5 (2026-07-19) — the uncovered areas
 
 Round 4 named three areas it had NOT audited; round 5 was pointed at exactly those and
