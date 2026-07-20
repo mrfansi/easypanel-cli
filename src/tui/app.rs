@@ -1516,7 +1516,7 @@ impl App {
     pub(super) fn visible_domains(&self) -> Vec<&Value> {
         self.domains
             .iter()
-            .filter(|d| keep(&commands::domain_row(d), &self.filter))
+            .filter(|d| keep(&crate::domains::domain_row(d), &self.filter))
             .collect()
     }
 

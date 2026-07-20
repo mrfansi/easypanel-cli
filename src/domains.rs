@@ -38,6 +38,55 @@ pub struct Change {
     pub body: Value,
 }
 
+// ---------- What a domain reads as ----------
+//
+// These were in `commands.rs`, the CLI layer, and the TUI reached across into it
+// for them — one presentation module borrowing another's idea of what a domain
+// is. They are the domain's own vocabulary: both surfaces now depend on this
+// context instead of on each other.
+
+/// Domain source: "https://host/path".
+pub fn domain_source(d: &Value) -> String {
+    let scheme = if d.get("https").and_then(Value::as_bool).unwrap_or(false) {
+        "https"
+    } else {
+        "http"
+    };
+    format!("{scheme}://{}{}", field(d, "/host"), field(d, "/path"))
+}
+
+/// Domain destination: an internal service, or a list of custom servers with their weights.
+pub fn domain_destination(d: &Value) -> String {
+    match field(d, "/destinationType").as_str() {
+        "service" => format!(
+            "{}://{}_{}:{}{}",
+            field(d, "/serviceDestination/protocol"),
+            field(d, "/serviceDestination/projectName"),
+            field(d, "/serviceDestination/serviceName"),
+            field(d, "/serviceDestination/port"),
+            field(d, "/serviceDestination/path"),
+        ),
+        "custom" => d
+            .pointer("/customDestination/servers")
+            .and_then(Value::as_array)
+            .map(|servers| {
+                servers
+                    .iter()
+                    .map(|s| format!("{} ({})", field(s, "/url"), field(s, "/weight")))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_else(|| "-".to_string()),
+        _ => "-".to_string(),
+    }
+}
+
+pub const DOMAIN_HEADERS: [&str; 3] = ["Source", "Destination", "ID"];
+
+pub fn domain_row(d: &Value) -> Vec<String> {
+    vec![domain_source(d), domain_destination(d), field(d, "/id")]
+}
+
 /// The rewrites `find` → `replace` would make across `domains`.
 ///
 /// Domains the search doesn't appear in are simply absent from the plan — the
@@ -151,6 +200,47 @@ fn change(d: &Value, target: &str, find: &str, replace: &str) -> Result<Option<C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn domain_destination_handles_service_and_custom() {
+        let service = json!({
+            "destinationType": "service",
+            "serviceDestination": {
+                "protocol": "http", "projectName": "proj", "serviceName": "api",
+                "port": 8000, "path": "/"
+            }
+        });
+        assert_eq!(domain_destination(&service), "http://proj_api:8000/");
+
+        let custom = json!({
+            "destinationType": "custom",
+            "customDestination": { "servers": [
+                { "url": "https://a.test", "weight": 1 },
+                { "url": "https://b.test", "weight": 2 }
+            ]}
+        });
+        assert_eq!(
+            domain_destination(&custom),
+            "https://a.test (1), https://b.test (2)"
+        );
+
+        assert_eq!(
+            domain_destination(&json!({ "destinationType": "unknown" })),
+            "-"
+        );
+    }
+
+    #[test]
+    fn domain_source_uses_scheme_from_https_flag() {
+        assert_eq!(
+            domain_source(&json!({ "https": true, "host": "a.test", "path": "/x" })),
+            "https://a.test/x"
+        );
+        assert_eq!(
+            domain_source(&json!({ "https": false, "host": "a.test", "path": "/" })),
+            "http://a.test/"
+        );
+    }
 
     fn service_domain() -> Value {
         json!({

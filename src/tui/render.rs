@@ -1260,7 +1260,7 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
         .visible_domains()
         .iter()
         .map(|d| {
-            let cells = commands::domain_row(d);
+            let cells = crate::domains::domain_row(d);
             idx.iter()
                 .filter_map(|i| {
                     cells
@@ -1272,7 +1272,7 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
     let headers: Vec<&str> = idx
         .iter()
-        .filter_map(|i| commands::DOMAIN_HEADERS.get(*i).copied())
+        .filter_map(|i| crate::domains::DOMAIN_HEADERS.get(*i).copied())
         .collect();
     let widths: Vec<Constraint> = idx.iter().map(|i| domain_cols[*i]).collect();
 
