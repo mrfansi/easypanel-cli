@@ -298,14 +298,6 @@ and pass `--server harisenin-aurel` (or `harisenin-angelia`) explicitly for ever
 verification. Do not switch the default to make this easier — the owner's choice of
 default is theirs, and changing it is itself a mutation of their config.
 
-### Next idea, sized: a status filter for Actions
-
-The Actions tab now colours `done`/`killed`/`error` (v0.68.0), but finding the failures
-still means typing into the free-text filter — which matches commit messages too, so
-searching "error" returns successful deploys whose message contains the word. One key
-that keeps only the non-`done` rows would make the 19-of-200 visible instantly. Very
-small; the colour work already did the hard part of deciding what the states mean.
-
 ### The parked "migrate five tables to flex_width" refactor is NOT a refactor (2026-07-21)
 
 Investigated and dropped, with numbers rather than a feeling:
