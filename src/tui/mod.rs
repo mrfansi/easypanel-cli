@@ -386,7 +386,15 @@ fn event_loop(
         // same operation starting from an empty buffer — something you do inside
         // your editor, not a separate feature with its own menu entry and key.
         if let Some((project, service, stype)) = app.edit_env.take() {
-            match edit_env_in_editor(&w.user, &w.resp, terminal, &project, &service, &stype) {
+            match edit_env_in_editor(
+                &w.user,
+                &w.resp,
+                terminal,
+                View::Env,
+                &project,
+                &service,
+                &stype,
+            ) {
                 Ok(Some(env)) => {
                     let _ = w.user.send(Req::EnvSave {
                         project,
@@ -397,6 +405,26 @@ fn event_loop(
                     app.status = "Saving env...".into();
                 }
                 Ok(None) => app.status = "Env unchanged".into(),
+                Err(e) => app.status = format!("Error: {e}"),
+            }
+        }
+
+        // The same door one level up: a project's shared env.
+        if let Some(project) = app.edit_project_env.take() {
+            match edit_env_in_editor(
+                &w.user,
+                &w.resp,
+                terminal,
+                View::ProjectEnv,
+                &project,
+                "",
+                "",
+            ) {
+                Ok(Some(env)) => {
+                    let _ = w.user.send(Req::ProjectEnvSave { project, env });
+                    app.status = "Saving project env...".into();
+                }
+                Ok(None) => app.status = "Project env unchanged".into(),
                 Err(e) => app.status = format!("Error: {e}"),
             }
         }
@@ -470,13 +498,14 @@ fn edit_env_in_editor(
     req: &Sender<Req>,
     resp: &Receiver<Resp>,
     terminal: &mut ratatui::DefaultTerminal,
+    view: View,
     project: &str,
     service: &str,
     stype: &str,
 ) -> Result<Option<String>> {
     // Fetch the current env first (blocking; the user is waiting on it anyway).
     req.send(Req::Fetch {
-        view: View::Env,
+        view,
         project: project.to_string(),
         service: service.to_string(),
         stype: stype.to_string(),
@@ -495,11 +524,14 @@ fn edit_env_in_editor(
         }
     };
 
-    edit_text_in_editor(
-        terminal,
-        &format!("easypanel-{project}-{service}.env"),
-        &current,
-    )
+    // A project env has no service, so the file it lands in is named after the
+    // project alone rather than "project-.env".
+    let name = if service.is_empty() {
+        format!("easypanel-{project}.env")
+    } else {
+        format!("easypanel-{project}-{service}.env")
+    };
+    edit_text_in_editor(terminal, &name, &current)
 }
 
 /// Fetch a service's Config File (Advanced), open it in `$EDITOR`, return it if

@@ -275,6 +275,17 @@ impl App {
         // whether $EDITOR opened pre-filled or blank, which is a thing you do
         // inside your editor, not a separate feature.
         let mut v = vec![MenuItem::new("Env", |a, r| a.open_view(View::Env, r))];
+        // The project's SHARED env lives behind the same door: it is the same
+        // idea one level up, and it reaches these containers too — verified live,
+        // a project variable shows up inside the container next to the service's
+        // own. A separate key for it would be a second door into env.
+        if let Some(p) = self.selected_project() {
+            let n = self.deployable_in(&p).len();
+            v.push(MenuItem::new(
+                format!("Project env ({p} — shared by {n} service(s))"),
+                |a, _| a.start_project_env_edit(),
+            ));
+        }
         // The .env file is only for app services (see the `.` handler).
         if self.is_selected_type(&["app"]) {
             v.push(MenuItem::new("Toggle .env file", |a, r| {

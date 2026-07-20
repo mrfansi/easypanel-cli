@@ -184,6 +184,8 @@ pub(super) struct App {
     /// `replace` = true opens an EMPTY editor (quick-replace: paste new env without
     /// waiting for a fetch or deleting the old one); false loads the current env.
     pub(super) edit_env: Option<(String, String, String)>,
+    /// The project whose shared env is about to be opened in $EDITOR.
+    pub(super) edit_project_env: Option<String>,
     /// (project, service, stype) — awaiting a Config File (Advanced db) edit in
     /// $EDITOR; its contents come from inspectService and are saved via updateAdvanced.
     pub(super) edit_config: Option<(String, String, String)>,
@@ -335,6 +337,7 @@ impl App {
             restore_from_req: None,
             busy: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             edit_env: None,
+            edit_project_env: None,
             edit_config: None,
             edit_field: None,
             terminal_req: None,
@@ -941,6 +944,28 @@ impl App {
                 self.viewer_ctx = None;
                 self.status = format!("⚠ {} of {} failed", failed.len(), failed.len() + ok);
             }
+            // Saving is only half of it: the running containers keep the OLD
+            // values until they are deployed again — proven live, the container
+            // still reported the previous value after the project env changed,
+            // and the new one only after a deploy. Reporting "saved" and stopping
+            // there would be a change the user believes has taken effect.
+            Resp::ProjectEnvSaved(project) => {
+                let stale = self.deployable_in(&project);
+                if stale.is_empty() {
+                    self.status = format!("Project env saved for {project}");
+                    return;
+                }
+                self.confirm = Some(Confirm {
+                    action: "project-env-deploy".into(),
+                    project,
+                    service: String::new(),
+                    stype: String::new(),
+                    label: format!(
+                        "Env saved. {} service(s) still run the old values until deployed. Deploy them now?",
+                        stale.len()
+                    ),
+                });
+            }
             Resp::Viewer(title, lines) => {
                 self.show_viewer(title, lines);
                 self.status = "Ready".into();
@@ -1191,6 +1216,11 @@ impl App {
             .as_ref()
             .and_then(|s| s.selected())
             .and_then(|i| self.all_servers.get(i).cloned())
+    }
+
+    /// Open the selected row's PROJECT env in $EDITOR.
+    pub(super) fn start_project_env_edit(&mut self) {
+        self.edit_project_env = self.selected_project();
     }
 
     pub(super) fn start_env_edit(&mut self) {
@@ -1444,6 +1474,27 @@ impl App {
             Line2::Project { name, .. } => Some((*name).to_string()),
             Line2::Service(s) => Some(field(s, "/projectName")),
         }
+    }
+
+    /// The services of `project` that a deploy would pick the new env up on.
+    ///
+    /// A database or a box has no build step, so it cannot be deployed at all —
+    /// offering to deploy them would send a request that can only 404. The same
+    /// list is what the confirmation counts, so the number the user approves is
+    /// the number that actually gets deployed.
+    pub(super) fn deployable_in(&self, project: &str) -> Vec<(String, String, String)> {
+        self.all_services
+            .iter()
+            .filter(|s| field(s, "/projectName") == project)
+            .map(|s| {
+                (
+                    field(s, "/projectName"),
+                    field(s, "/name"),
+                    field(s, "/type"),
+                )
+            })
+            .filter(|(_, _, t)| crate::lifecycle::ops(t, "deploy").is_some())
+            .collect()
     }
 
     /// The domains that pass the filter.

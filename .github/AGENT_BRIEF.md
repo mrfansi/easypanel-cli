@@ -320,9 +320,15 @@ Fill out the management surface. Verify live with a `zzz-*` target and clean up.
       removes the right one.
     - **maintenance mode** (`updateMaintenanceMode`) — **wordpress-only** endpoint (checked);
       niche, skip unless a wordpress user needs it.
-    - **project env** (`updateProjectEnv`) — `{projectName, env}`. Note: `inspectProject`
-      does **not** return the current env at top level, so prefill needs another source
-      (maybe `project.env`) — verify before building or it edits blind.
+    - ~~**project env**~~ done in v0.62.0. `e` → "Project env" opens it in $EDITOR →
+      `updateProjectEnv {projectName, env}`. The prefill doubt is RESOLVED: `inspectProject`
+      DOES return it at `/project/env`; it only looked absent because the key does not exist
+      until the env is first set. Two more facts, both verified live through the tool's own
+      container shell: the variables DO reach the containers (a project variable sat next to
+      the service's own inside a running container), and **a change does not take effect
+      until the services are deployed again** — the container still reported the old value
+      after the save, and the new one only after a deploy. So saving ends with an offer to
+      deploy the services that went stale, counting only deployable types.
 
 ### ~~Open UX defect: the status line cannot tell "working" from "finished"~~
 

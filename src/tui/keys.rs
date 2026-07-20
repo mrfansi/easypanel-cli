@@ -856,6 +856,12 @@ impl App {
         // services/{type}/{action}Service).
         let _ = match c.action.as_str() {
             "destroy-project" => req.send(Req::ProjectDestroy(c.project.clone())),
+            // Deploy exactly the services the confirmation counted.
+            "project-env-deploy" => req.send(Req::Bulk {
+                targets: self.deployable_in(&c.project),
+                action: "deploy".into(),
+                force: false,
+            }),
             "domain-delete" => req.send(Req::DomainDelete(c.project.clone())),
             // The port index is stashed in `stype` (same pattern as a domain id
             // stashed in `project`).

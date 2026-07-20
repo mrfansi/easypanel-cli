@@ -4139,3 +4139,34 @@ fn a_bulk_rewrite_that_matches_nothing_says_so_instead_of_going_quiet() {
     );
     assert!(status_is_error(&app.status), "{}", app.status);
 }
+
+#[test]
+fn a_project_env_change_only_offers_to_deploy_what_can_be_deployed() {
+    let mut app = App::new("s".into(), vec![]);
+    app.all_services = vec![
+        svc("alpha", "api", "app"),
+        svc("alpha", "db", "mysql"),
+        svc("alpha", "cms", "wordpress"),
+        svc("beta", "other", "app"),
+    ];
+    // A database is pulled and a wordpress has no build step, so deploying them
+    // is a route that does not exist — offering it would 404 on the user's behalf.
+    // And another project's services are not affected at all.
+    let stale = app.deployable_in("alpha");
+    assert_eq!(stale.len(), 1);
+    assert_eq!(stale[0].1, "api");
+
+    // The count in the offer IS the count that gets deployed: same function.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.handle(Resp::ProjectEnvSaved("alpha".into()), &tx);
+    let c = app.confirm.as_ref().expect("an offer to deploy");
+    assert!(c.label.contains("1 service(s)"), "{}", c.label);
+
+    // A project with nothing deployable must not raise an offer that would send
+    // an empty deploy — it just reports the save.
+    app.confirm = None;
+    app.all_services = vec![svc("gamma", "db", "mysql")];
+    app.handle(Resp::ProjectEnvSaved("gamma".into()), &tx);
+    assert!(app.confirm.is_none());
+    assert!(app.status.contains("saved"), "{}", app.status);
+}

@@ -24,6 +24,9 @@ pub(super) enum View {
     Backups,
     Source,
     ConfigFile,
+    /// The env shared by every service in a PROJECT. Not a service view — it is
+    /// fetched with the service name empty.
+    ProjectEnv,
 }
 
 impl View {
@@ -45,6 +48,7 @@ impl View {
             View::Backups => "Database backups",
             View::Source => "Source & build",
             View::ConfigFile => "Config file",
+            View::ProjectEnv => "Project env",
         }
     }
 }
@@ -302,6 +306,11 @@ pub(super) enum Req {
     DomainBulkEdit {
         changes: Vec<(String, String, Value)>,
     },
+    /// Replace a project's shared env (`updateProjectEnv`).
+    ProjectEnvSave {
+        project: String,
+        env: String,
+    },
     DomainSave {
         id: Option<String>,
         body: Value,
@@ -456,6 +465,10 @@ pub(super) enum Resp {
         ok: Vec<String>,
         failed: Vec<(String, String)>,
     },
+    /// A project's shared env was saved. The services keep running the OLD values
+    /// until they are deployed again, so the app turns this into an offer rather
+    /// than a "saved" that quietly leaves nothing changed.
+    ProjectEnvSaved(String),
     /// A bulk domain rewrite that has run. `failed` holds what each unchanged
     /// domain read, with the reason — a routing change that half-landed is
     /// exactly when the names matter.
@@ -1273,6 +1286,16 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 Resp::Done(msg, Refresh::Projects)
             }
         }
+        Req::ProjectEnvSave { project, env } => {
+            match client.call(
+                "projects",
+                "updateProjectEnv",
+                json!({ "projectName": project, "env": env }),
+            ) {
+                Ok(_) => Resp::ProjectEnvSaved(project),
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
         Req::DomainBulkEdit { changes } => {
             // Sequential, not fanned out: these are edits to a routing table, and
             // a failure has to name the domain it belongs to. One at a time also
@@ -1843,6 +1866,21 @@ pub(super) fn fetch_view(
                 json!({ "projectName": project, "serviceName": service, "limit": 200 }),
             )?;
             crate::logs::format(&v)
+        }
+        // `inspectProject` carries it under `project.env` — verified live, along
+        // with the reason it once looked absent: the key does not exist at all
+        // until the env has been set for the first time.
+        View::ProjectEnv => {
+            let v = client.call(
+                "projects",
+                "inspectProject",
+                json!({ "projectName": project }),
+            )?;
+            let env = v
+                .pointer("/project/env")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            env.lines().map(String::from).collect()
         }
         View::Env => {
             let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;

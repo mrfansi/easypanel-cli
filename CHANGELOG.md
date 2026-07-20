@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.62.0] — 2026-07-20
+
+### Added
+
+- **Edit a project's shared environment (`e` → "Project env").** EasyPanel lets a
+  project hold variables that every service in it receives; nothing in this tool
+  could read or change them. It sits behind the same door as a service's own env
+  rather than getting a key of its own — it is the same idea one level up.
+
+  Three things were unknown before this and are now verified live, which is why
+  the brief had it blocked:
+
+  - `inspectProject` **does** return the env, under `project.env`. It only looks
+    absent because the key does not exist at all until the env is first set — so
+    prefilling the editor is safe and does not edit blind.
+  - The variables really do reach the containers: a project variable showed up
+    inside a running container next to the service's own, through the tool's own
+    container shell.
+  - **A change does not take effect until the services are deployed again.** The
+    running container still reported the previous value after the project env
+    had been saved, and the new one only after a deploy.
+
+  That last point is why saving is not the end of the flow. Instead of reporting
+  "saved" and leaving containers quietly running the old values, the tool says
+  how many services are now stale and offers to deploy them — counting only the
+  ones that CAN be deployed, since a database or a wordpress has no build step
+  and deploying it is a route that does not exist.
+
 ## [0.61.0] — 2026-07-20
 
 ### Added
