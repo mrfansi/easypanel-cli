@@ -4997,3 +4997,68 @@ fn a_domain_whose_service_is_gone_is_marked_and_counted() {
         "a live route was marked: {live_row}"
     );
 }
+
+#[test]
+fn failures_only_hides_the_clean_successes_and_says_so() {
+    use ratatui::crossterm::event::KeyCode;
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Actions;
+    let act = |id: &str, status: &str| {
+        json!({ "id": id, "status": status, "type": "deploy",
+                "projectName": "p", "serviceName": "svc",
+                "description": "Deploy service", "createdAt": "2026-07-21T00:00:00.000Z" })
+    };
+    app.actions = vec![
+        act("a", "done"),
+        act("b", "killed"),
+        act("c", "done"),
+        act("d", "error"),
+        act("e", "running"),
+    ];
+    app.actions_state.select(Some(3));
+
+    // Off by default: everything shows.
+    assert_eq!(app.visible_actions().len(), 5);
+
+    // `f` keeps only what did not finish cleanly — killed, error, running — and
+    // drops both `done` rows. A text search could not do this: "error" typed into
+    // the filter also matches a commit message containing the word.
+    app.on_key(KeyCode::Char('f'), &tx);
+    let shown: Vec<String> = app
+        .visible_actions()
+        .iter()
+        .map(|a| field(a, "/status"))
+        .collect();
+    assert_eq!(shown, vec!["killed", "error", "running"]);
+    assert!(app.actions_failures_only);
+
+    // The title must show the SHOWN count, not the raw total: "(5)" above three
+    // rows would be the missing-data lie the announcement exists to prevent.
+    {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut t = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        t.draw(|f| ui(f, &mut app)).unwrap();
+        let top: String = t
+            .backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .find(|l| l.contains("failures only"))
+            .unwrap_or_default();
+        assert!(
+            top.contains("(3/5)") && top.contains("failures only"),
+            "{top}"
+        );
+    }
+    // The selection was index 3 of the old list; it must not still point past the
+    // shorter one.
+    assert!(app.selected_action_id().is_some());
+
+    // `f` again restores the full list.
+    app.on_key(KeyCode::Char('f'), &tx);
+    assert_eq!(app.visible_actions().len(), 5);
+    assert!(!app.actions_failures_only);
+}

@@ -558,6 +558,22 @@ impl App {
     /// navigation.
     pub(super) fn actions_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
+            // Show only what did not finish cleanly. The text filter cannot do
+            // this — "error" there also matches a commit message that contains
+            // the word — and the status colour (v0.68.0) already decides what
+            // counts, so this is the natural companion to it.
+            KeyCode::Char('f') => {
+                self.actions_failures_only = !self.actions_failures_only;
+                // The selection was an index into the OLD, longer list; reset it
+                // to the top of the new one rather than leave it pointing at a
+                // row that is no longer where it was.
+                self.clamp_filtered();
+                self.status = if self.actions_failures_only {
+                    "Showing only actions that did not finish cleanly — [f] all".into()
+                } else {
+                    "Showing all actions".into()
+                };
+            }
             KeyCode::Enter => {
                 if let Some(id) = self.selected_action_id() {
                     self.viewer_from = Screen::Actions;

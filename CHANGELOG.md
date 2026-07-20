@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.70.0] — 2026-07-21
+
+### Added
+
+- **`f` on the Actions tab shows only what did not finish cleanly.** Colouring the
+  statuses (v0.68.0) made failures visible, but finding them still meant typing into the
+  text filter — which also matches commit messages, so searching `error` returned
+  successful deploys whose message happened to contain the word. `f` keeps only `killed`,
+  `error` and still-running actions, hiding every clean `done`. The title says `failures
+  only` and switches its count to the shown total, so a filtered list never reads as
+  missing data. `f` again brings everything back.
+
 ## [0.69.0] — 2026-07-21
 
 ### Added

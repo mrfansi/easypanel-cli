@@ -262,6 +262,11 @@ pub(super) struct App {
 
     pub(super) actions: Vec<Value>,
     pub(super) actions_state: TableState,
+    /// On the Actions tab: show only the rows that did NOT finish cleanly.
+    /// Finding a failure by typing into the text filter also matched commit
+    /// messages, so searching "error" returned successful deploys whose message
+    /// contained the word — the opposite of the point.
+    pub(super) actions_failures_only: bool,
     pub(super) monitor: Vec<Value>,
     pub(super) monitor_state: TableState,
     /// Swarm replicas per service (actual/desired), keyed by "{project}_{service}".
@@ -412,6 +417,7 @@ impl App {
             nodes: Vec::new(),
             actions: Vec::new(),
             actions_state: TableState::default(),
+            actions_failures_only: false,
             monitor: Vec::new(),
             task_stats: HashMap::new(),
             monitor_state: TableState::default(),
@@ -1186,6 +1192,11 @@ impl App {
                     &self.filter,
                 )
             })
+            // "Failures only" keeps everything that is not a clean, finished
+            // success: `killed`, `error`, and anything still running. A `done`
+            // is the one state that never needs attention, so it is the one this
+            // hides.
+            .filter(|a| !self.actions_failures_only || field(a, "/status") != "done")
             .collect()
     }
 

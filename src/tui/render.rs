@@ -60,6 +60,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
         ],
         Screen::Actions => &[
             Key("/", "search"),
+            Key("f", "failures only"),
             Key("↑↓", "select"),
             Key("PgUp/PgDn", "jump"),
         ],
@@ -1305,7 +1306,18 @@ pub(super) fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
     let widths: Vec<Constraint> = idx.iter().map(|i| ACTION_COLS[*i].1).collect();
 
-    let title = count_title("Actions", rows.len(), app.actions.len(), app);
+    let mut title = count_title("Actions", rows.len(), app.actions.len(), app);
+    if app.actions_failures_only {
+        // A filtered list that does not announce the filter reads as missing
+        // data — the mistake this project keeps having to un-make. And the count
+        // must be the SHOWN count, not the raw total: "(50)" above four rows is
+        // itself the missing-data lie. count_title only switches to shown/total
+        // for a TEXT filter, so this one is spelled out.
+        if app.filter.is_empty() && !app.filter_input {
+            title = format!(" Actions ({}/{}) ", rows.len(), app.actions.len());
+        }
+        title.push_str("· failures only ");
+    }
     app.table_area = area;
     render_table(
         f,
