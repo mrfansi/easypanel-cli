@@ -4385,3 +4385,63 @@ fn a_swarm_node_that_left_the_cluster_is_not_painted_like_a_healthy_one() {
     );
     assert_eq!(colour_of("node-gone"), Color::Indexed(196));
 }
+
+#[test]
+fn filtering_from_the_bottom_of_a_long_list_shows_the_matches_not_one_row() {
+    use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::KeyCode;
+    use ratatui::Terminal;
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    // Long enough that the list scrolls: a real host had 713 domains.
+    app.domains = (0..60)
+        .map(|i| {
+            json!({ "id": format!("d{i}"), "host": format!("host{i}.example.com"),
+                    "path": "/", "https": true, "destinationType": "service",
+                    "serviceDestination": { "projectName": "p", "serviceName": "s",
+                                            "port": 80, "protocol": "http", "path": "/" } })
+        })
+        .collect();
+    app.domains_state.select(Some(0));
+    app.screen = Screen::Domains;
+
+    let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    let rows_shown = |app: &mut App, t: &mut Terminal<TestBackend>| {
+        t.draw(|f| ui(f, app)).unwrap();
+        t.backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .filter(|r| {
+                r.iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>()
+                    .contains("example.com")
+            })
+            .count()
+    };
+
+    let full = rows_shown(&mut app, &mut t);
+    assert!(full > 5, "the table should be full to start with: {full}");
+
+    // Walk to the bottom, then narrow. The old code clamped the SELECTED index to
+    // the shorter list but left the scroll offset where it was, and ratatui only
+    // scrolls up when the selection is above the offset — so the screen rendered
+    // from row ~59 of a 40-row list: ONE row under a title claiming 40 matches.
+    app.on_key(KeyCode::End, &tx);
+    rows_shown(&mut app, &mut t);
+    app.filter_input = true;
+    for c in "host1".chars() {
+        app.filter_key(KeyCode::Char(c));
+    }
+    let after = rows_shown(&mut app, &mut t);
+    assert_eq!(
+        app.visible_domains().len(),
+        11,
+        "host1, host1x — the filter should match 11"
+    );
+    assert!(
+        after > 5,
+        "filtering left the view stuck at the bottom: {after} row(s) on screen for 11 matches"
+    );
+}

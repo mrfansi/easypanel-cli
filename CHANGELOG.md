@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.64.1] — 2026-07-20
+
+### Fixed
+
+- **Filtering a long list could show one row under a title claiming hundreds.**
+  Found by driving a real host with **713 domains**: scroll to the bottom, then filter
+  to `viding.co`, and the heading read `452/713` above a single row and nineteen blank
+  lines. The screen contradicted its own heading, and the obvious reading is "the filter
+  is broken" or "the data is gone".
+
+  Changing the filter only clamped the selected index into the shorter list. The scroll
+  offset is kept separately and ratatui only moves it when the selection sits above it,
+  so a view scrolled near row 700 stayed there while the list underneath became 452 rows
+  long. Keeping that index was not even meaningful — row 451 of a filtered list is a
+  different row from row 451 of the unfiltered one.
+
+  The view now starts at the first match on every keystroke, which is what you want when
+  narrowing a list. The arrows still work while you type.
+
 ## [0.64.0] — 2026-07-20
 
 Five defects found by critiquing the render layer and then driving the binary to

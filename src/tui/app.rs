@@ -1051,7 +1051,15 @@ impl App {
         self.clamp_filtered();
     }
 
-    /// The filter shrinks the list, so the selected row can fall out of bounds.
+    /// The filter changed: start the view at the first match.
+    ///
+    /// Clamping the selected index is not enough, and keeping it is not even
+    /// meaningful — row 451 of the filtered list is a different row from row 451
+    /// of the unfiltered one. Worse, ratatui keeps the scroll offset separately
+    /// and only moves it when the selection sits ABOVE it, so a list scrolled to
+    /// the bottom and then narrowed rendered from an offset past most of the
+    /// matches: a real host with 713 domains, filtered to 452, showed ONE row
+    /// under a title that said 452. The screen contradicted its own heading.
     pub(super) fn clamp_filtered(&mut self) {
         let len = match self.screen {
             Screen::Domains => self.visible_domains().len(),
@@ -1067,12 +1075,13 @@ impl App {
             Screen::Projects => &mut self.services_table,
             _ => return,
         };
+        // The offset is reset explicitly rather than trusting the selection to
+        // drag it: ratatui pulls the offset down to reveal a selection above it,
+        // but nothing guarantees that for a list that changed length underneath.
+        *state.offset_mut() = 0;
         match len {
             0 => state.select(None),
-            n => {
-                let i = state.selected().unwrap_or(0).min(n - 1);
-                state.select(Some(i));
-            }
+            _ => state.select(Some(0)),
         }
     }
 

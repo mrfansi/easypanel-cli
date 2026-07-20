@@ -296,7 +296,10 @@ it was turned off, when in truth it was never available.
 
 Filters match the text you **see**, so `mysql` finds it via service name, project name,
 type, or source. The title shows `(matched/total)`, and filters clear when you switch
-tabs — a hidden filter makes missing rows look like missing data.
+tabs — a hidden filter makes missing rows look like missing data. Every keystroke puts
+the view back on the **first match**, so narrowing a long list always shows you results
+rather than leaving you parked wherever you had scrolled to. The arrows work while you
+are still typing.
 
 Creating a database service asks for what the panel asks for — database name, user,
 password, root password, image — with the fields swapping to match the type you pick.
