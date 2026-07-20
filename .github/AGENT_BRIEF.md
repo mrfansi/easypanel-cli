@@ -298,6 +298,19 @@ and pass `--server harisenin-aurel` (or `harisenin-angelia`) explicitly for ever
 verification. Do not switch the default to make this easier — the owner's choice of
 default is theirs, and changing it is itself a mutation of their config.
 
+### git checkout <file> threw away uncommitted work AGAIN (2026-07-21)
+
+Second time in two runs. While sabotage-testing, a python patch's anchor did not match
+(an apostrophe-escaping slip), so nothing was sabotaged — and then `git checkout
+src/tui/app.rs` reverted the whole file, deleting an uncommitted helper. The brief already
+says use `git stash`; this run proves the note is not enough on its own.
+
+Hard rule for the sabotage step: **never `git checkout <file>` on a file with uncommitted
+work.** To try a change and undo it, use `git stash push -- <file>` then `git stash pop`,
+or edit the one line back by hand. And check the patch actually applied (grep for a marker)
+before running the test — a no-op sabotage that "passes" proves nothing, which is its own
+recorded lesson.
+
 ### The parked "migrate five tables to flex_width" refactor is NOT a refactor (2026-07-21)
 
 Investigated and dropped, with numbers rather than a feeling:
@@ -400,13 +413,12 @@ already call, which is why they are ideas rather than probes.
   among seven hundred is exactly what a person cannot find. **Measure before you build**:
   the number changed the design (a quiet mark and a count, not a whole screen).
 
-- **Diff two services, or the same service on two hosts.** CHEAPEST of the three and the
-  most immediately useful: everything needed is already fetched (`inspectService` powers
-  clone and migrate). "Staging works and prod doesn't — what is actually different?" is a
-  question operators ask constantly and currently answer by eyeballing two screens. Show
-  a field-by-field diff of image/source, build, env, mounts, ports, resources, deploy
-  block. Cross-host makes it sharper still, since the tool already holds several hosts at
-  once. Small-to-medium: one new screen, no new endpoints, no live probing needed.
+- ~~**Diff two services**~~ done in v0.71.0 (mark two → menu → Compare). env compared by
+  key, values never shown. **Still open and now cheap: CROSS-HOST diff** — the same
+  service on staging vs production. The engine (`crate::services::diff`) already takes two
+  arbitrary inspectService values; what is missing is a UI to pick a service on ANOTHER
+  configured host and a worker path that fetches it with that host's client. The migrate
+  code already builds a client for a named server — reuse that. Medium.
 
 - **Export a project's config to a file, and apply it back.** The tool already reads a
   whole project's config (migrate does exactly this, in memory, host-to-host). Writing it
