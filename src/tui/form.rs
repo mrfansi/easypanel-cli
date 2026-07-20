@@ -189,6 +189,66 @@ pub(super) fn domain_fields(existing: Option<&Value>, projects: &[String]) -> Ve
     ]
 }
 
+/// Fields for editing one uptime check.
+///
+/// Headers and body are `$EDITOR` fields rather than single-line inputs: a JSON
+/// payload or three headers do not fit on one line, and typing them into a box
+/// that scrolls sideways is how a stray character goes unnoticed.
+pub(super) fn check_fields(check: &crate::uptime::Check) -> Vec<Field> {
+    vec![
+        Field::choice("Method", crate::uptime::METHODS, &check.method),
+        // Empty means "any 2xx or 3xx", which is right for a page but wrong for
+        // an endpoint that correctly answers 401 — so it is editable, not fixed.
+        Field::text(
+            "Expect status",
+            &check.expect.map(|s| s.to_string()).unwrap_or_default(),
+        ),
+        Field::text("Timeout (s)", &check.timeout_secs.to_string()),
+        Field::editor("Headers", &crate::uptime::headers_to_text(&check.headers)),
+        Field::editor("Body", check.body.as_deref().unwrap_or(""))
+            .when("Method", "POST,PUT,PATCH,DELETE"),
+    ]
+}
+
+/// The edited check, or why it cannot be sent.
+pub(super) fn check_body(
+    url: &str,
+    form: &Form,
+) -> std::result::Result<crate::uptime::Check, String> {
+    let expect = match form.by_label("Expect status").trim() {
+        "" => None,
+        n => Some(
+            n.parse::<u16>()
+                .map_err(|_| "Expect status must be a number like 200".to_string())?,
+        ),
+    };
+    let timeout_secs = match form.by_label("Timeout (s)").trim() {
+        "" => 10,
+        n => n
+            .parse::<u64>()
+            .map_err(|_| "Timeout must be a whole number of seconds".to_string())?,
+    };
+    if timeout_secs == 0 {
+        return Err("A timeout of 0 would fail every check instantly".into());
+    }
+    let body = match form.by_label("Body") {
+        b if b.trim().is_empty() => None,
+        b => Some(b),
+    };
+    let check = crate::uptime::Check {
+        url: url.to_string(),
+        method: form.by_label("Method"),
+        headers: crate::uptime::headers_from_text(&form.by_label("Headers")),
+        body,
+        expect,
+        timeout_secs,
+    };
+    match check.problem() {
+        Some(why) => Err(why),
+        None => Ok(check),
+    }
+}
+
 /// Fields for the bulk domain rewrite: which part, and the plain find/replace.
 ///
 /// No regex. These values are hostnames and service names, where a `.` typed as
@@ -968,6 +1028,11 @@ pub(super) enum FormKind {
     DomainCreate,
     DomainEdit {
         id: String,
+    },
+    /// Edit what an enrolled domain is checked WITH: method, body, headers,
+    /// the status it should answer, and how long to wait.
+    CheckEdit {
+        url: String,
     },
     /// Rewrite one part of MANY domains at once. Which domains is decided by the
     /// filter that is already on screen, not by a second selection UI.

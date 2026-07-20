@@ -30,6 +30,10 @@ pub(super) enum Screen {
     Monitor,
     Domains,
     Projects,
+    /// The domains the operator enrolled for uptime checks, and their last
+    /// answers. Deliberately a tab of its own: it is a short, curated list, not
+    /// a view of the 700-row domain table.
+    Uptime,
     Viewer,
     /// An embedded container terminal; opened from a service.
     Terminal,
@@ -38,7 +42,7 @@ pub(super) enum Screen {
 /// Viewer is deliberately NOT here: it's the result of opening something on a
 /// service, not a destination of its own. As a tab it would just be an empty box
 /// until the user arrives from Projects.
-pub(super) const TABS: [&str; 7] = [
+pub(super) const TABS: [&str; 8] = [
     "Dashboard",
     "Hosts",
     "Maintenance",
@@ -49,10 +53,14 @@ pub(super) const TABS: [&str; 7] = [
     // Screen::Projects in the code (a leftover from the old panel), but the label
     // must be honest.
     "Services",
+    // Appended rather than slotted in next to Domains, where it belongs
+    // logically: every other tab would shift a number, and the digit keys are
+    // muscle memory that a new feature has no right to move.
+    "Uptime",
 ];
 
 /// Tab (by label order) → Screen, the inverse of Screen::index. For clicking a tab.
-pub(super) const TAB_SCREENS: [Screen; 7] = [
+pub(super) const TAB_SCREENS: [Screen; 8] = [
     Screen::Dashboard,
     Screen::Hosts,
     Screen::Maintenance,
@@ -60,6 +68,7 @@ pub(super) const TAB_SCREENS: [Screen; 7] = [
     Screen::Monitor,
     Screen::Domains,
     Screen::Projects,
+    Screen::Uptime,
 ];
 
 impl Screen {
@@ -72,6 +81,7 @@ impl Screen {
             Screen::Monitor => 4,
             Screen::Domains => 5,
             Screen::Projects => 6,
+            Screen::Uptime => 7,
             // Viewer & Terminal are always opened from Projects, so that tab stays
             // highlighted — neither has its own tab.
             Screen::Viewer | Screen::Terminal => 6,
@@ -85,7 +95,8 @@ impl Screen {
             Screen::Actions => Screen::Monitor,
             Screen::Monitor => Screen::Domains,
             Screen::Domains => Screen::Projects,
-            Screen::Projects => Screen::Dashboard,
+            Screen::Projects => Screen::Uptime,
+            Screen::Uptime => Screen::Dashboard,
             Screen::Viewer | Screen::Terminal => Screen::Dashboard,
         }
     }
@@ -150,6 +161,12 @@ pub(super) fn status_is_error(status: &str) -> bool {
 }
 
 /// A server-list change: executed in event_loop, which holds the ServerConfig.
+/// A change to the uptime watchlist, applied by the event loop.
+pub(super) enum WatchAction {
+    Put(crate::uptime::Check),
+    Remove(String),
+}
+
 pub(super) enum ServerAction {
     Save {
         /// The name it is stored under today. `Some` only when the edit form
@@ -235,6 +252,19 @@ pub(super) struct App {
     /// there is nothing armed — so Enter in the viewer cannot fire a rewrite the
     /// user has already walked away from.
     pub(super) domain_edits: Vec<crate::domains::Change>,
+    /// The domains enrolled for uptime checks on THIS server, as loaded from
+    /// checks.json. Only what the operator chose — never the whole domain list.
+    pub(super) watch: Vec<crate::uptime::Check>,
+    /// The last answers, one per URL that has been checked this session.
+    pub(super) probes: Vec<crate::uptime::Probe>,
+    pub(super) uptime_state: TableState,
+    /// A pending change to the watchlist FILE. The event loop owns every path on
+    /// disk (as it does for servers.json), so the App never writes one itself —
+    /// which also keeps its tests from touching the user's real config.
+    pub(super) watch_action: Option<WatchAction>,
+    /// A check run is in flight; the screen says so rather than looking idle
+    /// while twenty requests are out.
+    pub(super) checking: bool,
 
     pub(super) projects: Vec<String>,
     /// All services across projects. A flat list replaces the project -> service
@@ -364,6 +394,11 @@ impl App {
             domains_state: TableState::default(),
             domain_scope: None,
             domain_edits: Vec::new(),
+            watch: Vec::new(),
+            probes: Vec::new(),
+            uptime_state: TableState::default(),
+            watch_action: None,
+            checking: false,
             projects: Vec::new(),
             all_services: Vec::new(),
             services_table: TableState::default(),
@@ -969,6 +1004,36 @@ impl App {
                     ),
                 });
             }
+            Resp::Checked(probes) => {
+                self.checking = false;
+                self.probes = probes;
+                select_first(&mut self.uptime_state, self.watch.len());
+                let rows = crate::uptime::ranked(&self.watch, &self.probes);
+                let bad = rows
+                    .iter()
+                    .filter(|(c, p)| {
+                        p.is_some_and(|p| p.verdict(c) != crate::uptime::Verdict::Working)
+                    })
+                    .count();
+                let median = crate::uptime::median_head(&self.probes);
+                self.status = match (bad, median) {
+                    // The failure count leads: it is the reason anyone opened
+                    // this screen, and a median means nothing next to a domain
+                    // that is not answering at all.
+                    (0, Some(m)) => format!(
+                        "All {} answering — median {}",
+                        self.watch.len(),
+                        crate::uptime::human(m)
+                    ),
+                    (0, None) => "Nothing answered".into(),
+                    (n, Some(m)) => format!(
+                        "⚠ {n} of {} not healthy — median {}",
+                        self.watch.len(),
+                        crate::uptime::human(m)
+                    ),
+                    (n, None) => format!("⚠ {n} of {} not healthy", self.watch.len()),
+                };
+            }
             Resp::Viewer(title, lines) => {
                 self.show_viewer(title, lines);
                 self.status = "Ready".into();
@@ -1507,6 +1572,43 @@ impl App {
             })
             .filter(|(_, _, t)| crate::lifecycle::ops(t, "deploy").is_some())
             .collect()
+    }
+
+    /// The check on display row `i`, in the order the screen ranks them.
+    pub(super) fn watched_row(&self, i: usize) -> Option<&crate::uptime::Check> {
+        crate::uptime::ranked(&self.watch, &self.probes)
+            .get(i)
+            .map(|(c, _)| *c)
+    }
+
+    /// Enrol a domain, or drop it if it is already watched.
+    ///
+    /// The list is applied to memory immediately and to the file by the event
+    /// loop; doing it the other way round would leave the screen lying about
+    /// what it is watching until the next reload.
+    pub(super) fn toggle_watch(&mut self, url: &str) {
+        if self.watch.iter().any(|c| c.url == url) {
+            self.watch.retain(|c| c.url != url);
+            self.probes.retain(|p| p.url != url);
+            self.watch_action = Some(WatchAction::Remove(url.to_string()));
+            self.status = format!("No longer watching {url}");
+            return;
+        }
+        let check = crate::uptime::Check::get(url);
+        self.watch.push(check.clone());
+        self.watch_action = Some(WatchAction::Put(check));
+        self.status = format!("Watching {url} — [8] Uptime to check it");
+    }
+
+    /// Ask every watched domain at once.
+    pub(super) fn run_checks(&mut self, req: &Sender<Req>) {
+        if self.watch.is_empty() {
+            self.status = "Nothing is being watched — press w on a domain to add one".into();
+            return;
+        }
+        self.checking = true;
+        self.status = format!("Checking {} domain(s)...", self.watch.len());
+        let _ = req.send(Req::RunChecks(self.watch.clone()));
     }
 
     /// The domains that pass the filter.
@@ -2624,6 +2726,26 @@ impl App {
                     return;
                 }
             },
+            FormKind::CheckEdit { url } => {
+                match check_body(url, form) {
+                    Ok(check) => {
+                        // Memory first so the screen is honest immediately; the
+                        // event loop writes the file.
+                        if let Some(slot) = self.watch.iter_mut().find(|c| c.url == check.url) {
+                            *slot = check.clone();
+                        }
+                        // The old answer described a different request, so it is
+                        // dropped rather than left on screen next to a check it
+                        // no longer describes.
+                        self.probes.retain(|p| p.url != check.url);
+                        self.watch_action = Some(WatchAction::Put(check));
+                        self.form = None;
+                        self.status = "Check saved — [r] to run it".into();
+                    }
+                    Err(msg) => self.status = format!("⚠ {msg}"),
+                }
+                return;
+            }
             FormKind::DomainBulkEdit => {
                 let (target, find, replace) = (
                     form.by_label("Replace in"),
@@ -2820,6 +2942,9 @@ impl App {
         let _ = req.send(Req::Stats);
         let _ = req.send(Req::Nodes);
         match self.screen {
+            // On this screen `r` means "ask them all again" — the whole point of
+            // the screen is the answer being current.
+            Screen::Uptime => self.run_checks(req),
             Screen::Projects => {
                 let _ = req.send(Req::AllServices);
                 let _ = req.send(Req::MonitorData);

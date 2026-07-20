@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -10,6 +11,90 @@ pub struct Server {
     pub token: String,
     #[serde(default)]
     pub default: bool,
+}
+
+/// The domains enrolled for uptime checks, per server (checks.json).
+///
+/// Separate from servers.json deliberately: that file is credentials the tool
+/// cannot work without, this one is a preference it can lose. A corrupt or
+/// missing watchlist must never stop the tool from talking to a host.
+///
+/// Kept per server name because the same URL can exist on two hosts, and
+/// "is this watched?" is only meaningful about one of them.
+pub struct Watchlist {
+    path: PathBuf,
+}
+
+impl Watchlist {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn default_path() -> PathBuf {
+        ServerConfig::default_path().with_file_name("checks.json")
+    }
+
+    /// Everything watched on `server`, in the order it was enrolled.
+    pub fn all(&self, server: &str) -> Vec<crate::uptime::Check> {
+        self.try_read()
+            .unwrap_or_default()
+            .remove(server)
+            .unwrap_or_default()
+    }
+
+    /// Enrol a domain, or replace the check already stored for that URL.
+    pub fn put(&self, server: &str, check: crate::uptime::Check) -> Result<()> {
+        let mut all = self.try_read()?;
+        let list = all.entry(server.to_string()).or_default();
+        match list.iter_mut().find(|c| c.url == check.url) {
+            Some(existing) => *existing = check,
+            None => list.push(check),
+        }
+        self.save(&all)
+    }
+
+    pub fn remove(&self, server: &str, url: &str) -> Result<()> {
+        let mut all = self.try_read()?;
+        if let Some(list) = all.get_mut(server) {
+            list.retain(|c| c.url != url);
+            if list.is_empty() {
+                all.remove(server);
+            }
+        }
+        self.save(&all)
+    }
+
+    /// The file, erroring if it EXISTS but cannot be read.
+    ///
+    /// Same rule as servers.json and for the same reason: every write reads the
+    /// whole file and puts it back, so treating a corrupt file as empty would
+    /// quietly delete every other server's watchlist on the next enrolment.
+    fn try_read(&self) -> Result<BTreeMap<String, Vec<crate::uptime::Check>>> {
+        let raw = match fs::read_to_string(&self.path) {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(e) => return Err(e.into()),
+        };
+        if raw.trim().is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    fn save(&self, all: &BTreeMap<String, Vec<crate::uptime::Check>>) -> Result<()> {
+        if let Some(dir) = self.path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        fs::write(&self.path, serde_json::to_string_pretty(all)?)?;
+        // A check may carry an Authorization header, so this file is as sensitive
+        // as the token file next to it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+    }
 }
 
 /// Storage for the list of EasyPanel hosts (servers.json), managed via commands.
@@ -229,6 +314,76 @@ mod tests {
         assert!(cfg.rename("staging", "prod").is_err());
         assert_eq!(cfg.get("prod").unwrap().token, "tok-p");
         assert!(cfg.get("staging").is_some());
+    }
+
+    fn temp_watchlist() -> (tempfile::TempDir, Watchlist) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("checks.json");
+        (dir, Watchlist::new(path))
+    }
+
+    #[test]
+    fn only_enrolled_domains_are_watched_and_they_survive_a_reload() {
+        let (dir, w) = temp_watchlist();
+        assert!(w.all("prod").is_empty(), "nothing is watched by default");
+
+        w.put("prod", crate::uptime::Check::get("https://a.test/"))
+            .unwrap();
+        w.put("prod", crate::uptime::Check::get("https://b.test/"))
+            .unwrap();
+        let reloaded = Watchlist::new(dir.path().join("checks.json"));
+        assert_eq!(reloaded.all("prod").len(), 2);
+        let watched = reloaded.all("prod");
+        let urls: Vec<&str> = watched.iter().map(|c| c.url.as_str()).collect();
+        assert_eq!(urls, vec!["https://a.test/", "https://b.test/"]);
+    }
+
+    #[test]
+    fn the_same_url_on_two_hosts_is_two_different_things() {
+        // A staging and a production host can both serve the same hostname; "is
+        // this watched?" is only meaningful about one of them.
+        let (_d, w) = temp_watchlist();
+        w.put("prod", crate::uptime::Check::get("https://a.test/"))
+            .unwrap();
+        assert!(w.all("staging").is_empty());
+    }
+
+    #[test]
+    fn re_enrolling_a_url_replaces_its_check_rather_than_duplicating_it() {
+        let (_d, w) = temp_watchlist();
+        w.put("prod", crate::uptime::Check::get("https://a.test/"))
+            .unwrap();
+        w.put(
+            "prod",
+            crate::uptime::Check {
+                method: "POST".into(),
+                body: Some("{}".into()),
+                ..crate::uptime::Check::get("https://a.test/")
+            },
+        )
+        .unwrap();
+        let all = w.all("prod");
+        assert_eq!(all.len(), 1, "one entry per URL, not two");
+        assert_eq!(all[0].method, "POST");
+
+        w.remove("prod", "https://a.test/").unwrap();
+        assert!(w.all("prod").is_empty());
+    }
+
+    #[test]
+    fn a_corrupt_watchlist_never_wipes_another_server_s_entries() {
+        // Every write reads the whole file and puts it back, so reading a corrupt
+        // file as "empty" would silently delete everything else in it.
+        let (dir, w) = temp_watchlist();
+        fs::write(dir.path().join("checks.json"), "{ not json").unwrap();
+        assert!(w
+            .put("prod", crate::uptime::Check::get("https://a.test/"))
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("checks.json")).unwrap(),
+            "{ not json",
+            "the file must be left alone"
+        );
     }
 
     #[test]

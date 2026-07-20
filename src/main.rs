@@ -9,6 +9,7 @@ mod migrate;
 mod output;
 mod source;
 mod tui;
+mod uptime;
 
 use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};

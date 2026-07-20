@@ -13,7 +13,7 @@ use serde_json::json;
 use crate::output::field;
 
 use super::actions::Menu;
-use super::app::{App, Confirm, MonitorView, Screen, ServerAction, TAB_SCREENS};
+use super::app::{App, Confirm, MonitorView, Screen, ServerAction, WatchAction, TAB_SCREENS};
 use super::form::*;
 use super::table::*;
 use super::worker::{Req, View};
@@ -109,6 +109,7 @@ impl App {
             KeyCode::Char('5') => self.goto(Screen::Monitor, req),
             KeyCode::Char('6') => self.goto(Screen::Domains, req),
             KeyCode::Char('7') => self.goto(Screen::Projects, req),
+            KeyCode::Char('8') => self.goto(Screen::Uptime, req),
             KeyCode::Tab => self.goto(self.screen.next(), req),
             // ←/→ move between tabs (e.g. Services ↔ Domains). Menus & forms grab
             // the arrows first (above), so this only applies in ordinary table
@@ -162,6 +163,7 @@ impl App {
                 Screen::Viewer => self.viewer_key(code, req),
                 Screen::Actions => self.actions_key(code, req),
                 Screen::Domains => self.domains_key(code, req),
+                Screen::Uptime => self.uptime_key(code, req),
                 Screen::Monitor => self.monitor_key(code, req),
                 Screen::Hosts => match code {
                     // Hosts used to be the one screen with no row action at all —
@@ -733,6 +735,15 @@ impl App {
                     let _ = req.send(Req::DomainSetPrimary(field(&d, "/id")));
                 }
             }
+            // Enrol / unenrol the selected domain. Deliberately one at a time:
+            // the watchlist is meant to be a short, curated list, and a key that
+            // swept 713 domains into it would destroy the thing that makes it
+            // useful.
+            KeyCode::Char('w') => {
+                if let Some(d) = selected {
+                    self.toggle_watch(&crate::domains::domain_source(&d));
+                }
+            }
             // Rewrite one part of every domain ON SCREEN — so `/` narrows the set
             // first, using the filter the user already knows, rather than a
             // second way of choosing things that exists only here.
@@ -745,6 +756,39 @@ impl App {
                 ));
             }
             _ => self.move_selection(code),
+        }
+    }
+
+    pub(super) fn uptime_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        let picked = self
+            .uptime_state
+            .selected()
+            .and_then(|i| self.watched_row(i).map(|c| c.url.clone()));
+        match code {
+            KeyCode::Char('x') => {
+                if let Some(url) = picked {
+                    self.watch_action = Some(WatchAction::Remove(url.clone()));
+                    self.watch.retain(|c| c.url != url);
+                    self.probes.retain(|p| p.url != url);
+                    self.status = format!("No longer watching {url}");
+                }
+            }
+            KeyCode::Char('e') => {
+                if let Some(url) = picked {
+                    if let Some(check) = self.watch.iter().find(|c| c.url == url).cloned() {
+                        self.form = Some(
+                            Form::new(
+                                FormKind::CheckEdit { url: url.clone() },
+                                format!(" Check: {url} "),
+                                check_fields(&check),
+                            )
+                            .with_original(json!({ "url": url })),
+                        );
+                    }
+                }
+            }
+            KeyCode::Enter => self.run_checks(req),
+            _ => move_table(&mut self.uptime_state, code, self.watch.len()),
         }
     }
 

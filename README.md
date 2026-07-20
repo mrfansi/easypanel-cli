@@ -52,6 +52,11 @@ searchable table, and every domain on the box — without clicking through a hie
   domains in a single pass: the host, the destination service, or a custom destination's
   URLs. Filter to the set you mean, see the whole before → after list, then apply. Moving
   a fleet to a new hostname in the panel means opening each domain's dialog in turn.
+- **Uptime checks for the domains YOU pick** (`w` on a domain, then the **Uptime**
+  tab) — the panel can only tell you what it *intended* to serve; this asks the domain
+  itself. Any HTTP method with a body and headers, the status you expect, and a latency
+  split into the server thinking (TTFB) and the whole response. Only what you enrol is
+  watched, never all of them.
 - **Global search / command palette** (`:`) — jump to any service or tab by typing, and
   run any action on the selected row from the same box (`deploy karir`, `logs api`).
 - **Mouse and keyboard** — click tabs and rows, right-click for a context menu, scroll,
@@ -147,7 +152,8 @@ while dragging** to select/copy.)
 | **Maintenance** | Docker version, server IP, update availability, plus system prune / image cleanup / builder cleanup — all behind confirmation. |
 | **Actions** | Deploy/destroy/login history with status, target, duration, age. |
 | **Monitor** | Five history tiles (CPU, memory, disk, net in/out) plus per-service metrics and storage (`v` switches). |
-| **Domains** | Every domain on the host: source → destination (internal service or weighted custom servers), SSL resolver, wildcard. |
+| **Domains** | Every domain on the host: source → destination (internal service or weighted custom servers), SSL resolver, wildcard. `w` enrols one for uptime checks. |
+| **Uptime** | The domains you enrolled, and what they last answered — broken ones first, then the slowest. Shows the status code, TTFB, total, and how a domain compares with its peers. `r` checks them all, `e` edits the request, `x` stops watching. |
 | **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. A colored status dot reads at a glance: green `active`, yellow `stopped`, gray `disabled`, cyan `deploying` (a build is running), and a pulsing red **`down`** for a crashed/restart-looping service (its Swarm replicas are missing), counted in the title. From a selected service you can do the lot, grouped into menus — logs, terminal & DB shell, deploy/restart/stop/start, clone, env (view/edit/replace/`.env` file), ports, mounts, redirects, domains, resource limits, basic auth, and a database's config file. Selecting a project header targets the project and opens its own menu (`Space`): migrate the whole project to another host, new service, new project, destroy project. |
 | **Viewer** | Scrollable pane for logs, env, ports, mounts, redirects, backups, source & build. Reached from a service; `Esc` goes back. In the ports/mounts/redirects view, a digit key deletes that row. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. Long lines are not wrapped — `←→` scroll sideways, and the pane shows which column you are on. |
 
@@ -159,7 +165,7 @@ while dragging** to select/copy.)
 |---|---|
 | `?` | every shortcut for the current screen |
 | `:` | **global search** — jump to any service or tab, or run an action on the selected row |
-| `1`–`7`, `Tab`, `←`/`→` | switch tabs (`2` = Hosts) |
+| `1`–`8`, `Tab`, `←`/`→` | switch tabs (`2` = Hosts, `8` = Uptime) |
 | `/` | filter (Services, Domains, Actions, Monitor) · `Esc` clears |
 | `s` | server list: `Enter` switch · `n` add · `e` edit (name, URL, token) · `x` delete |
 | `r` · `q` | refresh · quit (`Esc` **cancels**, it does not quit) |
@@ -233,6 +239,58 @@ values until they are deployed again.** Rather than reporting "saved" and leavin
 discover that later, it names how many services now run stale values and offers to deploy
 them — counting only the types that can be deployed at all, since a database or a
 WordPress has no build step.
+
+
+## Uptime checks
+
+A domain in the panel is a routing rule, not a promise. It can point at a service that
+was renamed, a port nothing listens on, or a container that stopped — and the panel will
+keep showing the rule as if it were fine. The **Uptime** tab (`8`) asks the domains
+themselves.
+
+**You choose what is watched.** Put the cursor on a domain (`6`) and press `w`; press it
+again to stop. On a host with 700 domains most are aliases and parked names, and a list
+that watches everything is a list nobody reads — so the watchlist is deliberately short
+and deliberately yours. It is stored per server in
+`~/.config/easypanel/checks.json`, mode `0600` (a check may carry an `Authorization`
+header).
+
+`r` checks them all at once, eight at a time. Each row shows:
+
+| Column | What it means |
+|---|---|
+| ● | green = answering as expected · orange = answered, but not with the status you want · red = no answer at all · grey = not checked yet |
+| Code | the status it actually returned |
+| TTFB | the wait until the response head arrived — **the server thinking** |
+| Total | including the body coming down the wire |
+| Note | how it compares with its peers, or why it failed |
+
+**Redirects are not followed and count as working.** The question is whether *this*
+domain and path answer; following the hop would report on a different URL and time it
+too. An http→https jump, a canonical host and a login wall all answer with a 3xx, and
+calling those "down" is the false alarm that teaches people to ignore alarms.
+
+`e` edits the request: **any method with a body and headers** (`Name: value`, one per
+line, the shape you already paste from curl), a timeout, and the status you *expect* —
+an API that correctly answers `401` to an unauthenticated probe is working, and a `200`
+from it would be the alarming answer.
+
+### Reading the latency
+
+A single number is close to meaningless: 500 ms is only slow relative to something. Two
+comparisons are built in, and neither needs any stored history.
+
+**The split.** A high TTFB with a fast finish is a slow application. A fast start with a
+slow finish is a big payload or a slow link. One combined figure tells you there is a
+problem; the split tells you where.
+
+**The peers.** Checking the whole watchlist at once gives a median to judge against, so
+the Note column can say "3.2× slower" — the same network, the same machine, the same
+moment. The median, not the mean: one timeout would drag a mean past everything that is
+genuinely slow.
+
+Checks run **from your machine**, so they measure what a visitor experiences — DNS, CDN
+and your own link included.
 
 ### Your editor
 

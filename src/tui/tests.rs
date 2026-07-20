@@ -4445,3 +4445,86 @@ fn filtering_from_the_bottom_of_a_long_list_shows_the_matches_not_one_row() {
         "filtering left the view stuck at the bottom: {after} row(s) on screen for 11 matches"
     );
 }
+
+#[test]
+fn only_what_you_enrol_is_watched_and_w_toggles_it() {
+    use ratatui::crossterm::event::KeyCode;
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Domains;
+    app.domains = vec![
+        json!({ "id": "d1", "host": "one.test", "path": "/", "https": true }),
+        json!({ "id": "d2", "host": "two.test", "path": "/", "https": true }),
+    ];
+    app.domains_state.select(Some(0));
+
+    // Nothing is watched until the operator says so — never the whole list.
+    assert!(app.watch.is_empty());
+    app.on_key(KeyCode::Char('w'), &tx);
+    assert_eq!(app.watch.len(), 1);
+    assert_eq!(app.watch[0].url, "https://one.test/");
+    // The file write is left to the event loop, which owns every path on disk.
+    assert!(matches!(app.watch_action, Some(WatchAction::Put(_))));
+
+    // The same key takes it off again, and the old answer goes with it — a
+    // result for something no longer watched is worse than none.
+    app.probes = vec![crate::uptime::Probe {
+        url: "https://one.test/".into(),
+        outcome: crate::uptime::Outcome::Failed("x".into()),
+    }];
+    app.on_key(KeyCode::Char('w'), &tx);
+    assert!(app.watch.is_empty());
+    assert!(app.probes.is_empty());
+    assert!(matches!(app.watch_action, Some(WatchAction::Remove(_))));
+}
+
+#[test]
+fn editing_a_check_drops_the_answer_that_described_the_old_request() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    let url = "https://a.test/";
+    app.watch = vec![crate::uptime::Check::get(url)];
+    app.probes = vec![crate::uptime::Probe {
+        url: url.into(),
+        outcome: crate::uptime::Outcome::Answered {
+            status: 200,
+            head: std::time::Duration::from_millis(10),
+            total: std::time::Duration::from_millis(10),
+        },
+    }];
+    app.form = Some(Form::new(
+        FormKind::CheckEdit { url: url.into() },
+        "t",
+        check_fields(&crate::uptime::Check::get(url)),
+    ));
+    if let Some(f) = app.form.as_mut() {
+        f.fields[0].value = "POST".into();
+    }
+    app.submit_form(&tx);
+
+    assert_eq!(app.watch[0].method, "POST");
+    // A 200 from a GET says nothing about what the POST will do; leaving it on
+    // screen next to the new check would be a stale claim.
+    assert!(app.probes.is_empty());
+    assert!(app.form.is_none());
+}
+
+#[test]
+fn a_check_that_cannot_be_sent_keeps_the_form_open_to_be_fixed() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    let url = "https://a.test/";
+    app.watch = vec![crate::uptime::Check::get(url)];
+    app.form = Some(Form::new(
+        FormKind::CheckEdit { url: url.into() },
+        "t",
+        check_fields(&crate::uptime::Check::get(url)),
+    ));
+    if let Some(f) = app.form.as_mut() {
+        f.fields[2].value = "0".into();
+    }
+    app.submit_form(&tx);
+    assert!(app.form.is_some(), "the fix is one character in this box");
+    assert!(status_is_error(&app.status), "{}", app.status);
+    assert_eq!(app.watch[0].timeout_secs, 10, "nothing was saved");
+}

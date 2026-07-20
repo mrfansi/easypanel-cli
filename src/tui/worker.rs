@@ -306,6 +306,10 @@ pub(super) enum Req {
     DomainBulkEdit {
         changes: Vec<(String, String, Value)>,
     },
+    /// Ask every watched domain whether it answers, and how fast. Not an
+    /// EasyPanel call at all — it goes to the domains themselves, which is the
+    /// whole point: the panel can only tell you what it INTENDED to serve.
+    RunChecks(Vec<crate::uptime::Check>),
     /// Replace a project's shared env (`updateProjectEnv`).
     ProjectEnvSave {
         project: String,
@@ -465,6 +469,8 @@ pub(super) enum Resp {
         ok: Vec<String>,
         failed: Vec<(String, String)>,
     },
+    /// Every watched domain's answer, in the order they were asked.
+    Checked(Vec<crate::uptime::Probe>),
     /// A project's shared env was saved. The services keep running the OLD values
     /// until they are deployed again, so the app turns this into an offer rather
     /// than a "saved" that quietly leaves nothing changed.
@@ -1286,6 +1292,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 Resp::Done(msg, Refresh::Projects)
             }
         }
+        Req::RunChecks(checks) => Resp::Checked(crate::uptime::send_all(&checks)),
         Req::ProjectEnvSave { project, env } => {
             match client.call(
                 "projects",

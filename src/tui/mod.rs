@@ -45,7 +45,7 @@ pub(super) const TERM_SCROLLBACK: usize = 5_000;
 /// How far Shift+PageUp/PageDown move through that history.
 const TERM_PAGE: isize = 10;
 
-use app::{App, HostRow, HostState, Screen, ServerAction};
+use app::{App, HostRow, HostState, Screen, ServerAction, WatchAction};
 use render::ui;
 use worker::{spawn_workers, Req, Resp, View};
 
@@ -58,6 +58,10 @@ pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> 
 
     let names: Vec<(String, String)> = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
     let mut app = App::new(server_name, names);
+    // Enrolled domains are a per-host preference, loaded once at start-up. A
+    // failure here is not fatal: the watchlist is a convenience, not credentials.
+    app.watch = crate::config::Watchlist::new(crate::config::Watchlist::default_path())
+        .all(&app.server_name);
 
     let mut terminal = ratatui::init();
     enable_mouse();
@@ -242,6 +246,21 @@ fn event_loop(
                         .map_err(|e| e.to_string());
                     let _ = tx.send(Resp::HostStat { name: s.name, data });
                 });
+            }
+        }
+
+        // A watchlist change needs the file, and the App deliberately never
+        // touches one — same rule as the server list. Memory has already been
+        // updated, so a write failure is reported without undoing what the user
+        // sees; the next enrolment will try again.
+        if let Some(action) = app.watch_action.take() {
+            let store = crate::config::Watchlist::new(crate::config::Watchlist::default_path());
+            let wrote = match action {
+                WatchAction::Put(check) => store.put(&app.server_name, check),
+                WatchAction::Remove(url) => store.remove(&app.server_name, &url),
+            };
+            if let Err(e) = wrote {
+                app.status = format!("⚠ Watchlist not saved: {e}");
             }
         }
 
@@ -459,6 +478,12 @@ fn event_loop(
                 let remembered = cfg.set_default(&name);
                 w = spawn_workers(EasypanelClient::new(&server.url, &server.token));
                 app.reset_for_server(name);
+                // The watchlist belongs to the HOST, so switching must not leave
+                // the previous host's domains on screen — they are not even
+                // reachable from here.
+                app.watch = crate::config::Watchlist::new(crate::config::Watchlist::default_path())
+                    .all(&app.server_name);
+                app.probes.clear();
                 send_initial(&w.user);
                 // Load the currently open screen's data (reset cleared it), not just
                 // the global stuff — otherwise we stay on Services with an empty table.

@@ -47,6 +47,12 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
                 "host detail — the full reason a host is unreachable",
             ),
         ],
+        Screen::Uptime => &[
+            Key("r", "check them all now"),
+            Key("e", "edit this check — method, body, headers"),
+            Key("x", "stop watching"),
+            Key("↑↓", "select"),
+        ],
         Screen::Maintenance => &[
             Key("p", "prune Docker system"),
             Key("i", "remove unused images"),
@@ -175,6 +181,7 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
         Screen::Monitor => render_monitor(f, chunks[1], app),
         Screen::Domains => render_domains(f, chunks[1], app),
         Screen::Projects => render_projects(f, chunks[1], app),
+        Screen::Uptime => render_uptime(f, chunks[1], app),
         Screen::Viewer => render_viewer(f, chunks[1], app),
         Screen::Terminal => render_terminal(f, chunks[1], app),
     }
@@ -1386,6 +1393,153 @@ pub(super) fn compact_pair(used: &str, total: &str) -> String {
         (Some((un, uu)), Some((tn, tu))) if uu == tu => format!("{un}/{tn} {uu}"),
         _ => format!("{used}/{total}"),
     }
+}
+
+/// The uptime watchlist: what is enrolled, and what it last answered.
+pub(super) fn render_uptime(f: &mut Frame, area: Rect, app: &mut App) {
+    const NOTE_W: usize = 22;
+    let tint = server_colour(&app.server_name);
+    let rows_data = crate::uptime::ranked(&app.watch, &app.probes);
+
+    if rows_data.is_empty() {
+        // An empty screen that explains itself. The watchlist is deliberately
+        // empty until you fill it, so "nothing here" must say what to do rather
+        // than look like a failure to load.
+        let msg = Paragraph::new(vec![
+            Line::from(""),
+            Line::from("  Nothing is being watched yet."),
+            Line::from(""),
+            Line::from("  Go to Domains [6], put the cursor on a domain and press [w]."),
+            Line::from("  Only what you enrol is checked — never the whole list."),
+        ])
+        .block(pane(" Uptime ", tint));
+        f.render_widget(msg, area);
+        return;
+    }
+
+    let median = crate::uptime::median_head(&app.probes);
+    // "TTFB" rather than "Server": everywhere else in this app a server is an
+    // EasyPanel host, and a column of milliseconds under that word reads as
+    // something about the host rather than about the request.
+    let headers = ["", "URL", "Code", "TTFB", "Total", "Note"];
+    // The URL is the identity column, so it takes the slack; the rest are numbers
+    // of known width.
+    let widths = [
+        Constraint::Length(2),
+        Constraint::Min(24),
+        Constraint::Length(5),
+        Constraint::Length(9),
+        Constraint::Length(9),
+        // Wide enough for a reason. The first draft gave this 10 columns and put
+        // failures in the 9-column TTFB cell, so "could not connect" rendered as
+        // "could no" and "1.8× slower" as "1.8× slowe" — cutting the one cell
+        // that explains the row.
+        Constraint::Length(NOTE_W as u16),
+    ];
+    let url_w = area
+        .width
+        .saturating_sub(2 + 2 + 5 + 9 + 9 + NOTE_W as u16 + 5 + 4)
+        .max(20) as usize;
+
+    let rows: Vec<Row> = rows_data
+        .iter()
+        .map(|(check, probe)| {
+            let (mark, style) = match probe {
+                None => ("·", Style::default().fg(Color::DarkGray)),
+                Some(p) => match p.verdict(check) {
+                    crate::uptime::Verdict::Working => {
+                        ("●", Style::default().fg(Color::Indexed(2)))
+                    }
+                    // Answered, but wrongly: a different problem from silence, so
+                    // a different colour rather than the same red.
+                    crate::uptime::Verdict::Unexpected => {
+                        ("●", Style::default().fg(Color::Indexed(214)))
+                    }
+                    crate::uptime::Verdict::Unreachable => (
+                        "●",
+                        Style::default()
+                            .fg(Color::Indexed(196))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                },
+            };
+            // The method is part of the identity when it is not a GET, so it goes
+            // in FRONT of the url — and the whole thing is cut together. Cutting
+            // the url first and prefixing afterwards made the row longer than its
+            // column, so ratatui clipped it silently: the exact bug this table
+            // was written to avoid.
+            let label = match check.method.as_str() {
+                "GET" => check.url.clone(),
+                m => format!("{m} {}", check.url),
+            };
+            let url = crate::output::first_line(&label, url_w);
+            let cells = match probe {
+                None => vec![
+                    mark.to_string(),
+                    url,
+                    "-".into(),
+                    "-".into(),
+                    "-".into(),
+                    "not checked".into(),
+                ],
+                Some(p) => match &p.outcome {
+                    // No numbers at all, because there are none: showing a time
+                    // next to a domain that never answered would invent one.
+                    crate::uptime::Outcome::Failed(why) => vec![
+                        mark.to_string(),
+                        url,
+                        "-".into(),
+                        "-".into(),
+                        "-".into(),
+                        crate::output::first_line(why, NOTE_W),
+                    ],
+                    crate::uptime::Outcome::Answered {
+                        status,
+                        head,
+                        total,
+                    } => vec![
+                        mark.to_string(),
+                        url,
+                        status.to_string(),
+                        crate::uptime::human(*head),
+                        crate::uptime::human(*total),
+                        match crate::uptime::slowness(p, median) {
+                            // A number nobody can calibrate becomes one anybody
+                            // can: how this domain compares with its peers, right
+                            // now, over the same network.
+                            Some(x) if x >= 1.5 => format!("{x:.1}× slower"),
+                            Some(_) => "—".into(),
+                            None => "-".into(),
+                        },
+                    ],
+                },
+            };
+            Row::new(cells).style(style)
+        })
+        .collect();
+
+    let title = match (app.checking, median) {
+        (true, _) => format!(" Uptime ({}) · checking… ", app.watch.len()),
+        (false, Some(m)) => format!(
+            " Uptime ({}) · median {} · [r] check ",
+            app.watch.len(),
+            crate::uptime::human(m)
+        ),
+        (false, None) => format!(" Uptime ({}) · [r] check ", app.watch.len()),
+    };
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(headers).style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        )
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("› ")
+        .block(pane(title, tint));
+    f.render_stateful_widget(table, area, &mut app.uptime_state);
 }
 
 /// Five metric tiles with history (CPU, Memory, Disk, Net In, Net Out).

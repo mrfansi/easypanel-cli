@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.0] — 2026-07-20
+
+### Added
+
+- **Uptime checks for the domains you choose (new `Uptime` tab, `8`).** Requested by the
+  owner. A domain in the panel is a routing rule, not a promise: it can point at a service
+  that was renamed, a port nothing listens on, or a container that stopped, and the panel
+  will keep showing the rule as if it were fine. This asks the domains themselves.
+
+  **Only what you enrol is watched.** `w` on a domain adds it, `w` again removes it. On a
+  host with 700 domains most are aliases and parked names, and a list that watches
+  everything is a list nobody reads — so the watchlist is short, curated, and yours. It
+  is stored per server in `~/.config/easypanel/checks.json` at mode `0600`, because a
+  check may carry an `Authorization` header.
+
+  `e` edits the request: any method with a body and headers, a timeout, and the status
+  you *expect*. That last one matters — an API answering `401` to an unauthenticated
+  probe is behaving correctly, and treating it as an outage is the false alarm that
+  teaches people to ignore alarms. Redirects are counted as working and deliberately not
+  followed: the question is whether THIS domain and path answer, and following the hop
+  would report on a different URL and time it too.
+
+  Latency is split into the wait for the response head — the server thinking — and the
+  total including the body. A high first number with a fast finish is a slow application;
+  a fast start with a slow finish is a big payload or a slow link. And because the whole
+  watchlist is checked at once, each domain is compared against the median of its peers,
+  so the answer is "3.2× slower" rather than a millisecond count nobody can calibrate.
+  The median, not the mean: a single timeout would drag a mean past everything genuinely
+  slow. None of this needs any stored history.
+
+  Broken domains sort first, then the slowest. Found two real problems on the owner's own
+  host on its first run.
+
 ## [0.64.1] — 2026-07-20
 
 ### Fixed
