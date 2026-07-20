@@ -298,6 +298,14 @@ and pass `--server harisenin-aurel` (or `harisenin-angelia`) explicitly for ever
 verification. Do not switch the default to make this easier — the owner's choice of
 default is theirs, and changing it is itself a mutation of their config.
 
+### Next idea, sized: a status filter for Actions
+
+The Actions tab now colours `done`/`killed`/`error` (v0.68.0), but finding the failures
+still means typing into the free-text filter — which matches commit messages too, so
+searching "error" returns successful deploys whose message contains the word. One key
+that keeps only the non-`done` rows would make the 19-of-200 visible instantly. Very
+small; the colour work already did the hard part of deciding what the states mean.
+
 ### The parked "migrate five tables to flex_width" refactor is NOT a refactor (2026-07-21)
 
 Investigated and dropped, with numbers rather than a feeling:
@@ -394,6 +402,11 @@ screen and then changes length underneath the view.
 
 Ranked by impact per unit of work. None of these needs an endpoint the tool does not
 already call, which is why they are ideas rather than probes.
+
+- ~~**Orphan domains**~~ done in v0.69.0. Measured first: 1 of 713 on the live host, not
+  the flood the idea assumed — and it was still worth building, because one dead route
+  among seven hundred is exactly what a person cannot find. **Measure before you build**:
+  the number changed the design (a quiet mark and a count, not a whole screen).
 
 - **Diff two services, or the same service on two hosts.** CHEAPEST of the three and the
   most immediately useful: everything needed is already fetched (`inspectService` powers
