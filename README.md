@@ -48,6 +48,10 @@ searchable table, and every domain on the box — without clicking through a hie
 - **Deploy visibility** — a service that is building shows `deploying` (and a count in
   the title), so you can see a deploy is still running instead of re-triggering it
   blindly. Immediate rejections surface instead of being swallowed.
+- **Bulk-edit every domain at once** (`E` on Domains) — find-and-replace one part of many
+  domains in a single pass: the host, the destination service, or a custom destination's
+  URLs. Filter to the set you mean, see the whole before → after list, then apply. Moving
+  a fleet to a new hostname in the panel means opening each domain's dialog in turn.
 - **Global search / command palette** (`:`) — jump to any service or tab by typing, and
   run any action on the selected row from the same box (`deploy karir`, `logs api`).
 - **Mouse and keyboard** — click tabs and rows, right-click for a context menu, scroll,
@@ -100,9 +104,19 @@ easypanel server remove prod
 Get a token from EasyPanel → Settings → API Tokens. The first server becomes the
 default; every command accepts `--server <name>`.
 
-There is no `server edit` — **editing means `add` with the same name**, which overwrites
-the entry and keeps its default flag (handy for token rotation). From the TUI, press
-`s`: `n` add, `e` edit (URL pre-filled; **blank token = unchanged**), `x` delete.
+On the CLI there is no `server edit` — **editing means `add` with the same name**, which
+overwrites the entry and keeps its default flag (handy for token rotation).
+
+From the TUI, press `s`: `n` add, `e` edit, `x` delete. The edit form pre-fills the
+**name** and URL; a **blank token means unchanged**. Changing the name **renames** the
+server in place, keeping its token, its default flag and its position in the list —
+renaming onto a name that already exists is refused rather than merging two hosts into
+one entry. That matters because a token cannot be read back from anywhere: before, the
+only way to fix a typo in a name was to delete the server and lose its token with it.
+
+**Switching host in the TUI is remembered.** `Enter` on a server in that list makes it
+the default, so the next launch comes up on the host you were last working on rather
+than silently going back to the old one.
 
 ## TUI
 
@@ -147,7 +161,7 @@ while dragging** to select/copy.)
 | `:` | **global search** — jump to any service or tab, or run an action on the selected row |
 | `1`–`7`, `Tab`, `←`/`→` | switch tabs (`2` = Hosts) |
 | `/` | filter (Services, Domains, Actions, Monitor) · `Esc` clears |
-| `s` | server list: `Enter` switch · `n` add · `e` edit · `x` delete |
+| `s` | server list: `Enter` switch · `n` add · `e` edit (name, URL, token) · `x` delete |
 | `r` · `q` | refresh · quit (`Esc` **cancels**, it does not quit) |
 
 **Services — one key opens a menu of related actions**
@@ -155,7 +169,7 @@ while dragging** to select/copy.)
 | Key | Opens |
 |---|---|
 | `Space` / right-click | the full action menu for the selected row |
-| `e` | **Env** — opens the env; `e` there edits it in `$EDITOR` |
+| `e` | **Env** — the service's env (`e` there edits it in `$EDITOR`) and the **project env** shared by every service in the project |
 | `o` | **Networking** — domains · ports · redirects · basic auth |
 | `u` | **Build & source** — source · build · auto deploy · resource limits · a database's **config file** |
 | `m` | **Storage** — mounts · backups |
@@ -206,6 +220,19 @@ same hand-off `E` uses for env), and the form takes back the terminal when you q
 A Dockerfile is not a single-line value, and `updateSourceDockerfile` takes its contents
 inline rather than a path — so pretending otherwise would send one long line that never
 builds.
+
+### Project environment
+
+A project can hold variables that **every service in it receives**, and `e` → "Project
+env" opens them in your editor. The entry says which project it belongs to and how many
+services that is, because it is one level up from the service env sitting above it in the
+same menu.
+
+Saving is not the whole story, and the tool says so: **running containers keep the old
+values until they are deployed again.** Rather than reporting "saved" and leaving you to
+discover that later, it names how many services now run stale values and offers to deploy
+them — counting only the types that can be deployed at all, since a database or a
+WordPress has no build step.
 
 ### Your editor
 
