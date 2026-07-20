@@ -10,8 +10,6 @@ use serde_json::{json, Value};
 use crate::client::EasypanelClient;
 use crate::output::field;
 
-use super::table::row_marker;
-
 // ---------- Worker (networking on a separate thread so the UI doesn't freeze) ----------
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1864,8 +1862,13 @@ pub(super) fn fetch_view(
     service: &str,
     stype: &str,
 ) -> Result<Vec<String>> {
+    use super::viewer_lines as lines;
     let ps = json!({ "projectName": project, "serviceName": service });
-    let lines = match view {
+    // Fetch here, format there. Every arm is now one call and one formatter, so
+    // what a view SAYS can be exercised without an HTTP server.
+    let svc =
+        |c: &EasypanelClient| c.call(&format!("services/{stype}"), "inspectService", ps.clone());
+    let out = match view {
         View::Logs => {
             let v = client.call(
                 "logs",
@@ -1883,152 +1886,24 @@ pub(super) fn fetch_view(
                 "inspectProject",
                 json!({ "projectName": project }),
             )?;
-            let env = v
-                .pointer("/project/env")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            env.lines().map(String::from).collect()
+            lines::text_lines(&v, "/project/env")
         }
-        View::Env => {
-            let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
-            let env = v.get("env").and_then(Value::as_str).unwrap_or("");
-            env.lines().map(String::from).collect()
-        }
-        View::Ports => {
-            let v = client.call("ports", "listPorts", ps)?;
-            let lines = list_or_empty(&v, "No ports yet — press n to add one", |i, p| {
-                format!(
-                    "{} {} {}->{}",
-                    row_marker(i),
-                    field(p, "/protocol"),
-                    field(p, "/published"),
-                    field(p, "/target")
-                )
-            });
-            // Show the delete hint only when there's a real port (first line starts
-            // with "[0]").
-            lines
-        }
-        View::Mounts => {
-            let v = client.call("mounts", "listMounts", ps)?;
-            let lines = list_or_empty(&v, "No mounts yet — press n to add one", |i, m| {
-                let detail = match field(m, "/type").as_str() {
-                    "bind" => format!("{} -> {}", field(m, "/hostPath"), field(m, "/mountPath")),
-                    "volume" => format!("{} -> {}", field(m, "/name"), field(m, "/mountPath")),
-                    _ => field(m, "/mountPath"),
-                };
-                format!("{} {}  {detail}", row_marker(i), field(m, "/type"))
-            });
-            lines
-        }
-        View::Redirects => {
-            // Redirects live in inspectService (not a separate list endpoint).
-            let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
-            let arr = v
-                .get("redirects")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if arr.is_empty() {
-                return Ok(vec!["No redirects".into()]);
-            }
-            let lines: Vec<String> = arr
-                .iter()
-                .enumerate()
-                .map(|(i, r)| {
-                    let kind = if r.get("permanent").and_then(Value::as_bool).unwrap_or(false) {
-                        "301"
-                    } else {
-                        "302"
-                    };
-                    let on = if r.get("enabled").and_then(Value::as_bool).unwrap_or(true) {
-                        "on"
-                    } else {
-                        "off"
-                    };
-                    format!(
-                        "{} {} -> {}  ({kind}, {on})",
-                        row_marker(i),
-                        field(r, "/regex"),
-                        field(r, "/replacement")
-                    )
-                })
-                .collect();
-            lines
-        }
-        View::Source => {
-            let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
-            let mut out = Vec::new();
-            // Deliberately not showing `token` (deploy token) and `env`: both are
-            // credentials, and env already has its own view.
-            for (title, key) in [
-                ("Source", "source"),
-                ("Build", "build"),
-                ("Deploy", "deploy"),
-                ("Resources", "resources"),
-            ] {
-                out.push(format!("── {title}"));
-                match v.get(key) {
-                    // pointer "" = the value itself, so a string shows without quotes.
-                    Some(Value::Object(o)) if !o.is_empty() => {
-                        out.extend(o.iter().map(|(k, val)| match val {
-                            // A flag reads as a word, not as JSON. `autoDeploy` is
-                            // the SAME field the Services table shows as ✓/✗ and
-                            // the Backups view shows as on/off — three renderings
-                            // of one boolean in one app, and this was the raw one.
-                            Value::Bool(b) => {
-                                format!("  {k}: {}", if *b { "yes" } else { "no" })
-                            }
-                            _ => format!("  {k}: {}", field(val, "")),
-                        }))
-                    }
-                    _ => out.push("  (not set)".into()),
-                }
-                out.push(String::new());
-            }
-            out
-        }
-        View::ConfigFile => {
-            // configFile (Advanced) lives in inspectService. Returned as-is for
-            // editing in $EDITOR (see edit_config_in_editor).
-            let v = client.call(&format!("services/{stype}"), "inspectService", ps)?;
-            let cf = v.get("configFile").and_then(Value::as_str).unwrap_or("");
-            cf.lines().map(String::from).collect()
-        }
+        View::Env => lines::text_lines(&svc(client)?, "/env"),
+        // configFile (Advanced) is returned as-is for editing in $EDITOR (see
+        // edit_config_in_editor).
+        View::ConfigFile => lines::text_lines(&svc(client)?, "/configFile"),
+        View::Ports => lines::ports_lines(&client.call("ports", "listPorts", ps)?),
+        View::Mounts => lines::mounts_lines(&client.call("mounts", "listMounts", ps)?),
+        View::Redirects => lines::redirects_lines(&svc(client)?),
+        View::Source => lines::source_lines(&svc(client)?),
         View::Backups => {
-            let v = client.call("databaseBackups", "listDatabaseBackups", ps)?;
-            // The id led every row and nothing here could use it: this view has no
-            // run and no delete, and it is not a collection, so there is no
-            // selection either. Twenty-five characters of cuid pushed the only
-            // thing that tells two rows apart — the database name — off to the
-            // right. The CLI prints the same data under labelled columns; this now
-            // says what each field is, too.
-            let rows = list_or_empty(&v, "No database backups", |_, b| {
-                let state = if b.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
-                    "on"
-                } else {
-                    "off"
-                };
-                format!(
-                    "{:<18}{:<16}{state}",
-                    field(b, "/databaseName"),
-                    field(b, "/schedule")
-                )
-            });
-            // The header only earns its line when there is something under it.
-            if v.as_array().is_some_and(|a| !a.is_empty()) {
-                let mut out = vec!["Database          Schedule        Enabled".to_string()];
-                out.extend(rows);
-                out
-            } else {
-                rows
-            }
+            lines::backups_lines(&client.call("databaseBackups", "listDatabaseBackups", ps)?)
         }
     };
-    Ok(if lines.is_empty() {
+    Ok(if out.is_empty() {
         vec!["(empty)".to_string()]
     } else {
-        lines
+        out
     })
 }
 
@@ -2172,18 +2047,6 @@ pub(super) fn parse_services(v: &Value) -> Vec<(String, String)> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-pub(super) fn list_or_empty(
-    v: &Value,
-    empty: &str,
-    f: impl Fn(usize, &Value) -> String,
-) -> Vec<String> {
-    let arr = v.as_array().cloned().unwrap_or_default();
-    if arr.is_empty() {
-        return vec![empty.to_string()];
-    }
-    arr.iter().enumerate().map(|(i, x)| f(i, x)).collect()
 }
 
 /// Condense an API error into an actionable cause.

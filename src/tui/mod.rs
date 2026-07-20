@@ -15,6 +15,7 @@ mod keys;
 mod render;
 mod table;
 mod terminal;
+mod viewer_lines;
 mod worker;
 
 #[cfg(test)]
