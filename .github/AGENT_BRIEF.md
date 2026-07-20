@@ -298,6 +298,19 @@ and pass `--server harisenin-aurel` (or `harisenin-angelia`) explicitly for ever
 verification. Do not switch the default to make this easier — the owner's choice of
 default is theirs, and changing it is itself a mutation of their config.
 
+### Secrets: an exclusion LIST is not a policy (2026-07-20)
+
+The Source & build view skipped the service's `token` and `env` keys because they are
+credentials — the right instinct, encoded as a list of two names. A private registry's
+`source.password` was not on that list, so a real GitHub token was printed in full on
+screen (v0.66.0). Meanwhile the EDIT form for the same field had always masked it: one
+fact rendered two ways.
+
+The rule: **judge a field by its NAME, not by membership of a list you maintain.** A list
+only covers the secrets someone already thought of; a name test covers the ones EasyPanel
+adds next. When adding any screen that dumps an object from the API, assume it contains a
+credential you have not heard of.
+
 ### Two helpers one character apart (2026-07-20) — a class worth hunting
 
 `centered_abs(pct_x, …)` takes a PERCENTAGE; `centered_abs_w(width, …)` takes COLUMNS.
