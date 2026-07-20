@@ -298,6 +298,25 @@ and pass `--server harisenin-aurel` (or `harisenin-angelia`) explicitly for ever
 verification. Do not switch the default to make this easier — the owner's choice of
 default is theirs, and changing it is itself a mutation of their config.
 
+### The parked "migrate five tables to flex_width" refactor is NOT a refactor (2026-07-21)
+
+Investigated and dropped, with numbers rather than a feeling:
+
+- Two of the five (Domains, Services) have **two** flexible columns. `flex_width` returns
+  `None` for that on purpose — ratatui shares the slack and no single answer exists. They
+  cannot migrate at all.
+- The other three each compute a number that DIFFERS from the helper. Measured for the
+  Uptime table at 100 columns: hand-rolled **42**, helper **44** — the hand-rolled ones
+  count the highlight symbol and borders slightly differently and come out conservative.
+
+So unifying them changes what is on screen, which makes it a behaviour change wearing a
+refactor's clothes — and the benefit is two more characters of a URL. Not worth a release
+and not eligible as a "pure refactor". The real win (one helper, applied automatically
+inside `render_table` so a NEW table cannot forget it) already shipped in v0.67.0.
+
+Do not re-park this. If a table is ever rewritten for another reason, let it adopt
+`flex_width` then.
+
 ### A vacuous test is worse than no test (2026-07-21)
 
 Writing the regression test for the storage-path truncation took THREE attempts, and the
