@@ -9,6 +9,7 @@
 
 mod actions;
 mod app;
+mod backup_ui;
 mod form;
 mod keys;
 mod render;

@@ -876,7 +876,7 @@ impl App {
             // One request per database: the endpoint takes a single name, and a
             // failure on one must not silently take the others with it.
             "backup" => {
-                let names = std::mem::take(&mut self.pending_backups);
+                let names = std::mem::take(&mut self.backups.pending);
                 if names.is_empty() {
                     return;
                 }
@@ -893,7 +893,7 @@ impl App {
                 self.status = "Backing up...".into();
                 return;
             }
-            "restore" => match self.pending_restore.take() {
+            "restore" => match self.backups.pending_restore.take() {
                 Some((database, provider, path)) => req.send(Req::RestoreBackup {
                     project: c.project,
                     service: c.service,
@@ -1144,19 +1144,15 @@ impl App {
             // picker also drops what it was aimed at, so a later Enter elsewhere
             // cannot fire a restore the user has walked away from.
             KeyCode::Esc => {
-                self.restore_target = None;
-                self.restore_files.clear();
-                self.backup_target = None;
-                self.backup_names.clear();
-                self.backup_marked.clear();
+                self.backups.close_pickers();
                 self.screen = self.viewer_from;
             }
             // In the restore picker, Enter acts on the selected backup.
-            KeyCode::Enter if self.restore_target.is_some() => self.ask_restore(),
+            KeyCode::Enter if self.backups.restore_into.is_some() => self.ask_restore(),
             // …and in the database picker, on the selected database.
-            KeyCode::Enter if self.backup_target.is_some() => self.ask_backup(),
+            KeyCode::Enter if self.backups.backup_from.is_some() => self.ask_backup(),
             // `v` ticks, exactly as it marks a service in the table.
-            KeyCode::Char('v') if self.backup_target.is_some() => self.toggle_backup_mark(),
+            KeyCode::Char('v') if self.backups.backup_from.is_some() => self.toggle_backup_mark(),
             // Scrolling up releases the follow: otherwise a newly arriving log line
             // would drag the view back to the bottom right as the user is reading
             // something above.

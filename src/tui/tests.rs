@@ -2064,8 +2064,8 @@ fn ticked_databases_are_what_gets_backed_up() {
     // backing up three of five meant running the whole flow three times.
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
-    app.storage_providers = vec![("p1".into(), "R2".into(), "s3".into())];
-    app.backup_provider = Some(("p1".into(), "R2".into()));
+    app.backups.providers = vec![("p1".into(), "R2".into(), "s3".into())];
+    app.backups.provider = Some(("p1".into(), "R2".into()));
     app.handle(
         Resp::DatabasesIn {
             project: "proj".into(),
@@ -2081,7 +2081,7 @@ fn ticked_databases_are_what_gets_backed_up() {
     app.on_key(KeyCode::Down, &tx);
     app.on_key(KeyCode::Down, &tx);
     app.on_key(KeyCode::Char('v'), &tx);
-    assert_eq!(app.backup_marked.len(), 2, "two ticked");
+    assert_eq!(app.backups.marked.len(), 2, "two ticked");
     assert!(app.viewer_lines.iter().any(|l| l.contains("✓ one")));
     assert!(app.viewer_lines.iter().any(|l| l.contains("✓ three")));
 
@@ -2099,7 +2099,7 @@ fn ticked_databases_are_what_gets_backed_up() {
         c.label
     );
     assert_eq!(
-        app.pending_backups,
+        app.backups.pending,
         vec!["one".to_string(), "three".to_string()]
     );
 }

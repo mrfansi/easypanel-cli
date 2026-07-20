@@ -10,6 +10,7 @@ use crate::commands;
 use crate::output::field;
 
 use super::actions::{Menu, Palette};
+use super::backup_ui::BackupUi;
 use super::form::*;
 use super::render::cap;
 use super::table::*;
@@ -263,36 +264,10 @@ pub(super) struct App {
     /// this a new line arrives off-screen and the tail looks dead.
     pub(super) viewer_follow: bool,
 
-    /// The backups on screen in the restore picker, in the SAME order as the
-    /// viewer's rows: (database, storageProviderId, path).
-    ///
-    /// Kept as data rather than re-read from the text, so a restore cannot be
-    /// aimed by parsing a row back — the mistake that once sent a delete to the
-    /// wrong index.
-    pub(super) restore_files: Vec<(String, String, String)>,
-    /// Which service the picker would restore INTO.
-    pub(super) restore_target: Option<(String, String)>,
-    /// The databases the picker is offering, and which service they belong to.
-    pub(super) backup_names: Vec<String>,
-    /// The ones ticked in that picker. Marking uses `v`, the same key that marks
-    /// a service in the table — one word for one idea.
-    pub(super) backup_marked: HashSet<String>,
-    pub(super) backup_target: Option<(String, String)>,
-    /// The picker's first line, kept so the rows can be rebuilt when a tick
-    /// changes without reassembling the sentence.
-    pub(super) backup_header: String,
-    /// The provider a backup will go to: (id, how it is described to the user).
-    pub(super) backup_provider: Option<(String, String)>,
-    /// The databases a confirmation is about to back up.
-    pub(super) pending_backups: Vec<String>,
-    /// The backup a confirmation is currently asking about: (database, provider,
-    /// path). Its own field rather than smuggled through `Confirm`, which has no
-    /// room for three values and would have to encode them into one.
-    pub(super) pending_restore: Option<(String, String, String)>,
-    /// The storage providers this panel has: (id, name, type). EasyPanel exposes
-    /// a list but no way to create one, so this is whatever the dashboard already
-    /// has; empty until it loads, or if none is configured at all.
-    pub(super) storage_providers: Vec<(String, String, String)>,
+    /// Everything the backup and restore screens hold — the pickers, the ticks,
+    /// and the panel's storage providers. Ten fields for one feature had spread
+    /// through this struct among the tabs, the filter and the terminal.
+    pub(super) backups: BackupUi,
 
     /// Services marked for a bulk action, as (project, service).
     ///
@@ -391,16 +366,7 @@ impl App {
             viewer_ctx: None,
             log_cursor: None,
             viewer_follow: false,
-            restore_files: Vec::new(),
-            restore_target: None,
-            backup_names: Vec::new(),
-            backup_marked: HashSet::new(),
-            backup_target: None,
-            backup_header: String::new(),
-            backup_provider: None,
-            pending_backups: Vec::new(),
-            pending_restore: None,
-            storage_providers: Vec::new(),
+            backups: BackupUi::default(),
             marked: HashSet::new(),
             filter: String::new(),
             filter_input: false,
@@ -763,7 +729,7 @@ impl App {
             // The restore picker. An empty history is a real answer, not an
             // error: this database has never been backed up, and saying so beats
             // an empty box.
-            Resp::StorageProviders(list) => self.storage_providers = list,
+            Resp::StorageProviders(list) => self.backups.providers = list,
             Resp::DatabasesIn {
                 project,
                 service,
@@ -782,7 +748,8 @@ impl App {
                 // on each host). Every file is re-pointed at THIS host's remote
                 // provider, which is what actually reads the bucket.
                 let local = self
-                    .storage_providers
+                    .backups
+                    .providers
                     .iter()
                     .find(|(_, _, t)| crate::backup::is_remote(t))
                     .map(|(id, ..)| id.clone());
@@ -809,13 +776,13 @@ impl App {
                             .map(|(i, r)| format!("{} {r}", row_marker(i))),
                     );
                 }
-                self.restore_files = files
+                self.backups.files = files
                     .into_iter()
                     .map(|(db, _, path)| (db, local.clone(), path))
                     .collect();
-                self.restore_target = Some((project, service));
+                self.backups.restore_into = Some((project, service));
                 self.show_picker(format!("Restore from {src_name}"), lines);
-                self.status = if self.restore_files.is_empty() {
+                self.status = if self.backups.files.is_empty() {
                     "Nothing there that this host can read".into()
                 } else {
                     "[Enter] restore the selected backup · [Esc] back".into()
@@ -845,10 +812,10 @@ impl App {
                     );
                     v
                 };
-                self.restore_files = files;
-                self.restore_target = Some((project, service));
+                self.backups.files = files;
+                self.backups.restore_into = Some((project, service));
                 self.show_picker(title, lines);
-                self.status = if self.restore_files.is_empty() {
+                self.status = if self.backups.files.is_empty() {
                     "No backups yet".into()
                 } else {
                     "[Enter] restore the selected backup · [Esc] back".into()
@@ -1714,8 +1681,8 @@ impl App {
     /// viewer_ctx — would have rendered as a selectable list in one place and
     /// scrolled like prose in another.
     pub(super) fn viewer_is_collection(&self) -> bool {
-        self.restore_target.is_some()
-            || self.backup_target.is_some()
+        self.backups.restore_into.is_some()
+            || self.backups.backup_from.is_some()
             || self
                 .viewer_ctx
                 .as_ref()
@@ -1728,7 +1695,7 @@ impl App {
             self.status = "Select a database first".into();
             return;
         };
-        let Some((id, name, ptype)) = crate::backup::preferred_provider(&self.storage_providers)
+        let Some((id, name, ptype)) = crate::backup::preferred_provider(&self.backups.providers)
         else {
             self.status =
                 "No storage provider configured — add one in the EasyPanel dashboard first".into();
@@ -1736,7 +1703,7 @@ impl App {
         };
         // Which provider a backup lands on decides whether it can EVER be
         // restored onto another host, so it is named before anything runs.
-        self.backup_provider = Some((
+        self.backups.provider = Some((
             id.clone(),
             if crate::backup::is_remote(ptype) {
                 format!("{name} — restorable on any host sharing it")
@@ -1759,7 +1726,7 @@ impl App {
     /// "All databases" leads, because backing up everything is the common intent
     /// and doing it by hand meant repeating the whole flow per schema.
     fn open_backup_picker(&mut self, project: String, service: String, names: Vec<String>) {
-        let Some((_, where_to)) = self.backup_provider.clone() else {
+        let Some((_, where_to)) = self.backups.provider.clone() else {
             return;
         };
         // Nothing to choose from is an answer, not an empty box: it means the
@@ -1768,113 +1735,64 @@ impl App {
             self.status = format!("No database found in {project}/{service} — nothing to back up");
             return;
         }
-        self.backup_names = names;
-        self.backup_marked.clear();
-        self.backup_header = format!("Back up from {project}/{service} to {where_to}");
-        self.backup_target = Some((project, service));
-        let lines = self.backup_picker_lines();
+        self.backups.names = names;
+        self.backups.marked.clear();
+        self.backups.header = format!("Back up from {project}/{service} to {where_to}");
+        self.backups.backup_from = Some((project, service));
+        let lines = self.backups.picker_lines();
         self.show_picker("Which database?".into(), lines);
-        self.status = self.backup_hint();
-    }
-
-    /// The picker's rows, rebuilt whenever a mark changes.
-    ///
-    /// The tick sits INSIDE the row rather than widening it, so ticking one does
-    /// not shift every name sideways.
-    fn backup_picker_lines(&self) -> Vec<String> {
-        let mut lines = vec![self.backup_header.clone(), String::new()];
-        lines.push(format!(
-            "{} All {} databases",
-            row_marker(0),
-            self.backup_names.len()
-        ));
-        lines.extend(self.backup_names.iter().enumerate().map(|(i, n)| {
-            let tick = if self.backup_marked.contains(n) {
-                "✓ "
-            } else {
-                "  "
-            };
-            format!("{} {tick}{n}", row_marker(i + 1))
-        }));
-        lines
-    }
-
-    /// What the status line says while the picker is open.
-    fn backup_hint(&self) -> String {
-        match self.backup_marked.len() {
-            0 => "[v] tick several · [Enter] back up the selected one · [Esc] cancel".into(),
-            n => format!("{n} ticked — [Enter] backs up those · [v] untick · [Esc] cancel"),
-        }
+        self.status = self.backups.hint();
     }
 
     /// Tick or untick the database under the cursor.
-    pub(super) fn toggle_backup_mark(&mut self) {
-        // Row 0 is "All", which is not a database to tick.
-        let Some(i) = self
-            .viewer_row
+    /// The `[n]` of the picker row under the cursor.
+    ///
+    /// Read from the PRINTED marker, never from the cursor's position: both
+    /// pickers carry heading lines above their rows, so position 0 is a label.
+    /// The same contract the collections use, and the reason a delete once
+    /// offered `[13]` of 12.
+    fn picker_row(&self) -> Option<usize> {
+        self.viewer_row
             .selected()
             .and_then(|r| self.viewer_lines.get(r))
             .and_then(|l| row_index(l))
-            .filter(|i| *i > 0)
-        else {
+    }
+
+    pub(super) fn toggle_backup_mark(&mut self) {
+        // Row 0 is "All", which is not a database to tick — `toggle` says so.
+        if !self.picker_row().is_some_and(|i| self.backups.toggle(i)) {
             self.status = "Move to a database row first".into();
             return;
-        };
-        let Some(name) = self.backup_names.get(i - 1).cloned() else {
-            return;
-        };
-        if !self.backup_marked.remove(&name) {
-            self.backup_marked.insert(name);
         }
         // Rebuild in place: the selection must not jump because a tick appeared.
         let keep = self.viewer_row.selected();
-        self.viewer_lines = self.backup_picker_lines();
+        self.viewer_lines = self.backups.picker_lines();
         self.viewer_row.select(keep);
-        self.status = self.backup_hint();
+        self.status = self.backups.hint();
     }
 
     /// Confirm the backup of whatever the picker has selected.
     pub(super) fn ask_backup(&mut self) {
-        let Some((project, service)) = self.backup_target.clone() else {
+        let Some((project, service)) = self.backups.backup_from.clone() else {
             return;
         };
-        let Some((provider, where_to)) = self.backup_provider.clone() else {
+        let Some((provider, where_to)) = self.backups.provider.clone() else {
             return;
         };
-        // Index from the printed `[n]`, not the cursor position: row 0 is a
-        // heading here too.
-        let Some(i) = self
-            .viewer_row
-            .selected()
-            .and_then(|r| self.viewer_lines.get(r))
-            .and_then(|l| row_index(l))
-        else {
+        let Some(i) = self.picker_row() else {
             self.status = "Select a database row first".into();
             return;
         };
-        // Ticks win when there are any: they were made deliberately, and the
-        // row the cursor happens to rest on is not a choice the user made.
-        // Otherwise row 0 is "All" and the rest are single databases.
-        let chosen: Vec<String> = if !self.backup_marked.is_empty() {
-            self.backup_names
-                .iter()
-                .filter(|n| self.backup_marked.contains(*n))
-                .cloned()
-                .collect()
-        } else if i == 0 {
-            self.backup_names.clone()
-        } else {
-            match self.backup_names.get(i - 1) {
-                Some(n) => vec![n.clone()],
-                None => return,
-            }
-        };
+        let chosen = self.backups.chosen(i);
+        if chosen.is_empty() {
+            return;
+        }
         let what = if chosen.len() == 1 {
             format!("'{}'", chosen[0])
         } else {
             format!("{} databases ({})", chosen.len(), chosen.join(", "))
         };
-        self.pending_backups = chosen;
+        self.backups.pending = chosen;
         self.confirm = Some(Confirm {
             action: "backup".into(),
             project,
@@ -1905,7 +1823,8 @@ impl App {
             return;
         }
         if !self
-            .storage_providers
+            .backups
+            .providers
             .iter()
             .any(|(_, _, t)| crate::backup::is_remote(t))
         {
@@ -1944,26 +1863,17 @@ impl App {
     /// restoring the right file into the wrong service is the mistake worth
     /// preventing.
     pub(super) fn ask_restore(&mut self) {
-        let Some((project, service)) = self.restore_target.clone() else {
+        let Some((project, service)) = self.backups.restore_into.clone() else {
             return;
         };
-        // The index comes from the printed `[n]`, NOT from the selected row's
-        // position: the picker has a header line, so position 0 is a label, not
-        // a backup. Reading the marker is the same contract the other
-        // collections use, and the reason a delete once offered `[13]` of 12.
-        let Some(i) = self
-            .viewer_row
-            .selected()
-            .and_then(|r| self.viewer_lines.get(r))
-            .and_then(|l| row_index(l))
-        else {
+        let Some(i) = self.picker_row() else {
             self.status = "Select a backup row first".into();
             return;
         };
-        let Some((database, provider, path)) = self.restore_files.get(i).cloned() else {
+        let Some((database, provider, path)) = self.backups.files.get(i).cloned() else {
             return;
         };
-        self.pending_restore = Some((database.clone(), provider, path.clone()));
+        self.backups.pending_restore = Some((database.clone(), provider, path.clone()));
         self.confirm = Some(Confirm {
             action: "restore".into(),
             project,
