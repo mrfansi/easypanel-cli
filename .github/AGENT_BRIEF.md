@@ -266,6 +266,28 @@ Each is grounded in an endpoint confirmed to exist in `backend.js` 2.32.2.
    (list/create/delete + send test) is doable but thin. Don't build channel management and
    call it alerting.
 
+### PRODUCTION HOST — read-only (owner, 2026-07-20)
+
+**`viding-idc` (idc.viding.org) is production.** It is also the biggest host the owner
+runs — ~713 domains, ~100 services — which makes it the best place to FIND bugs and the
+worst place to make them.
+
+**Browse it. Never mutate it.** No `zzz-*` targets, no create, no deploy, no destroy, no
+domain or env write, no backup run. Reading — tabs, filters, arrows, viewers, the Hosts
+table — is fine and is exactly how the v0.64.1 filter bug was found.
+
+The trap: as of 2026-07-20 it is ALSO the **default** server, so anything that verifies
+against the live API without naming a host lands on production. Before any run that will
+mutate, check which host is default:
+
+```
+jq -r '.[]|select(.default)|.name' ~/.config/easypanel/servers.json
+```
+
+and pass `--server harisenin-aurel` (or `harisenin-angelia`) explicitly for every `zzz-*`
+verification. Do not switch the default to make this easier — the owner's choice of
+default is theirs, and changing it is itself a mutation of their config.
+
 ### Scale lesson: a real host has 713 domains (2026-07-20)
 
 The owner's third host holds **713 domains and 100 services** — an order of magnitude
