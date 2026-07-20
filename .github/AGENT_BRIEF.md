@@ -276,9 +276,19 @@ worst place to make them.
 domain or env write, no backup run. Reading — tabs, filters, arrows, viewers, the Hosts
 table — is fine and is exactly how the v0.64.1 filter bug was found.
 
-The trap: as of 2026-07-20 it is ALSO the **default** server, so anything that verifies
-against the live API without naming a host lands on production. Before any run that will
-mutate, check which host is default:
+The trap: it is often ALSO the **default** server, so anything that verifies against the
+live API without naming a host lands on production.
+
+**Checking once per run is NOT a guard.** On 2026-07-20 a run checked the default at the
+start (`harisenin-angelia`, safe), and by the time it was driving the TUI the file had
+changed and the session was on `viding-idc` — the owner switches hosts while the agent
+works. Two rules follow:
+
+- The authoritative answer to "which machine am I on" is the **running TUI's title bar**,
+  not a config read from earlier. Capture it.
+- Re-check **immediately before** each mutation, never once at the top of the run.
+
+Before any mutation, check which host is default:
 
 ```
 jq -r '.[]|select(.default)|.name' ~/.config/easypanel/servers.json
