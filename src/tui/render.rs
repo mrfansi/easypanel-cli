@@ -882,6 +882,30 @@ fn pulse_red(ms: u128) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// What an action's status MEANS, in the colour this app already uses for state.
+///
+/// The Actions screen is the history of what happened, and it drew every row in
+/// the same grey: a killed deploy and a failed one looked exactly like a
+/// successful one. On the owner's own panel 19 of the last 200 actions were
+/// `killed` or `error` — a tenth of the screen was findings nobody could see.
+///
+/// The three states are ground truth from a live panel (`done`, `killed`,
+/// `error`); anything else EasyPanel adds later is left unpainted rather than
+/// guessed at.
+pub(super) fn action_status_colour(status: &str) -> Option<Color> {
+    match status {
+        "done" => Some(Color::Indexed(2)),
+        // Deliberately halted — the same yellow "stopped" gets on Services,
+        // because it is the same idea: someone chose this.
+        "killed" => Some(Color::Indexed(3)),
+        // It failed on its own. Red and bold, like an unreachable host.
+        "error" => Some(Color::Indexed(196)),
+        // In flight — the cyan "deploying" already uses.
+        "running" => Some(Color::Indexed(6)),
+        _ => None,
+    }
+}
+
 /// The width the single flexible column of a table actually gets.
 ///
 /// `None` when the table has no `Min` column, or more than one — then the split
@@ -936,6 +960,9 @@ pub(super) fn render_table(
     rows: Vec<Vec<String>>,
     state: &mut TableState,
     tint: Color,
+    // Colour for one cell, by column index and text. Lets a table paint state
+    // without every table having to rebuild what this function does.
+    cell_style: fn(usize, &str) -> Option<Style>,
 ) {
     let header = Row::new(headers.to_vec()).style(
         Style::default()
@@ -961,11 +988,25 @@ pub(super) fn render_table(
             .collect(),
         _ => rows,
     };
-    let table = Table::new(rows.into_iter().map(Row::new), widths.to_vec())
-        .header(header)
-        .block(pane(title, tint))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("› ");
+    let table = Table::new(
+        rows.into_iter().map(|cells| {
+            Row::new(
+                cells
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, c)| match cell_style(i, &c) {
+                        Some(st) => Cell::from(c).style(st),
+                        None => Cell::from(c),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }),
+        widths.to_vec(),
+    )
+    .header(header)
+    .block(pane(title, tint))
+    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+    .highlight_symbol("› ");
     f.render_stateful_widget(table, area, state);
 }
 
@@ -1275,6 +1316,21 @@ pub(super) fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
         rows,
         &mut app.actions_state,
         server_colour(&app.server_name),
+        |col, text| {
+            // Only the Status column, and only when the status is one this app
+            // knows: an unfamiliar state stays unpainted rather than miscoloured.
+            (col == 0)
+                .then(|| action_status_colour(text))
+                .flatten()
+                .map(|c| {
+                    let st = Style::default().fg(c);
+                    if text == "error" {
+                        st.add_modifier(Modifier::BOLD)
+                    } else {
+                        st
+                    }
+                })
+        },
     );
 }
 
@@ -1372,6 +1428,7 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
         rows,
         &mut app.domains_state,
         server_colour(&app.server_name),
+        |_, _| None,
     );
 }
 
@@ -1405,6 +1462,7 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
                 data,
                 &mut app.monitor_state,
                 server_colour(&app.server_name),
+                |_, _| None,
             );
         }
         MonitorView::Storage => {
@@ -1427,6 +1485,7 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
                 data,
                 &mut app.monitor_state,
                 server_colour(&app.server_name),
+                |_, _| None,
             );
         }
     }

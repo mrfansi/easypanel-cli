@@ -4833,6 +4833,7 @@ fn a_table_cuts_its_flexible_column_with_an_ellipsis() {
             rows,
             &mut state,
             ratatui::style::Color::Blue,
+            |_, _| None,
         )
     })
     .unwrap();
@@ -4871,4 +4872,66 @@ fn a_table_cuts_its_flexible_column_with_an_ellipsis() {
         flex_width(&one, 80, false).unwrap() - flex_width(&one, 80, true).unwrap(),
         2
     );
+}
+
+#[test]
+fn a_failed_action_does_not_look_like_a_successful_one() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+    // Ground truth from a live panel: of the last 200 actions, 181 were `done`,
+    // 16 `killed` and 3 `error` — a tenth of the screen was findings, drawn in
+    // exactly the same grey as the successes. Colour carries state on every other
+    // screen in this app; the history screen was the one that said nothing.
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Actions;
+    app.actions = ["done", "killed", "error"]
+        .iter()
+        .map(|st| {
+            json!({ "id": format!("a-{st}"), "status": st, "type": "deploy",
+                    "projectName": "p", "serviceName": "svc",
+                    "description": "Deploy service", "createdAt": "2026-07-21T00:00:00.000Z" })
+        })
+        .collect();
+    app.actions_state.select(Some(0));
+
+    let mut t = Terminal::new(TestBackend::new(120, 10)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let buf = t.backend().buffer().clone();
+
+    // The colour of the first letter of each status, read off the screen.
+    let colour_of = |word: &str| {
+        let w = 120usize;
+        let (row_i, _) = buf
+            .content()
+            .chunks(w)
+            .enumerate()
+            .find(|(_, r)| {
+                r.iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>()
+                    .contains(word)
+            })
+            .unwrap_or_else(|| panic!("no row for {word}"));
+        let row: Vec<_> = buf.content().chunks(w).nth(row_i).unwrap().to_vec();
+        let col = row
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+            .find(word)
+            .unwrap();
+        row[col].fg
+    };
+
+    let (done, killed, error) = (colour_of("done"), colour_of("killed"), colour_of("error"));
+    assert_ne!(
+        done, killed,
+        "a killed action must not look like a done one"
+    );
+    assert_ne!(done, error, "a failed action must not look like a done one");
+    // The same palette the rest of the app uses: green succeeded, yellow was
+    // stopped on purpose, red failed on its own.
+    assert_eq!(done, Color::Indexed(2));
+    assert_eq!(killed, Color::Indexed(3));
+    assert_eq!(error, Color::Indexed(196));
 }

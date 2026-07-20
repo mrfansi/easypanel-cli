@@ -166,12 +166,24 @@ pub fn parse_ts(s: &str) -> Option<chrono::NaiveDateTime> {
 }
 
 /// Seconds as a concise human-readable duration.
+///
+/// Counts of one are singular. It always pluralised, so a deploy that took a
+/// minute read "1 minutes" and an action from an hour ago read "1 hours ago" —
+/// small, but it appears on two columns of a screen full of them, and it is the
+/// kind of wrongness that makes a tool feel unattended.
 pub fn human_duration(secs: i64) -> String {
+    let unit = |n: i64, word: &str| {
+        if n == 1 {
+            format!("1 {word}")
+        } else {
+            format!("{n} {word}s")
+        }
+    };
     match secs {
-        s if s < 60 => format!("{s} seconds"),
-        s if s < 3600 => format!("{} minutes", s / 60),
-        s if s < 86400 => format!("{} hours", s / 3600),
-        s => format!("{} days", s / 86400),
+        s if s < 60 => unit(s, "second"),
+        s if s < 3600 => unit(s / 60, "minute"),
+        s if s < 86400 => unit(s / 3600, "hour"),
+        s => unit(s / 86400, "day"),
     }
 }
 
@@ -219,6 +231,21 @@ pub fn yes_no(value: &Value, pointer: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn one_of_anything_is_singular() {
+        // Both the Duration and the Age column read this, so "1 minutes" and
+        // "1 hours ago" were on screen together.
+        assert_eq!(human_duration(1), "1 second");
+        assert_eq!(human_duration(60), "1 minute");
+        assert_eq!(human_duration(3600), "1 hour");
+        assert_eq!(human_duration(86_400), "1 day");
+        // Everything else stays plural, including zero.
+        assert_eq!(human_duration(0), "0 seconds");
+        assert_eq!(human_duration(59), "59 seconds");
+        assert_eq!(human_duration(120), "2 minutes");
+        assert_eq!(human_duration(7200), "2 hours");
+    }
     use super::*;
     use serde_json::json;
 

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.68.0] — 2026-07-21
+
+### Fixed
+
+- **A failed deploy looked exactly like a successful one.** The Actions tab — the screen
+  whose whole purpose is "what happened" — drew every row in the same grey. Colour
+  carries state everywhere else in this tool: an unreachable host is red, a crashed
+  service pulses, a swarm node that left the cluster is red, an uptime check is green or
+  orange or red. History was the one screen that said nothing.
+
+  It matters more than it sounds. On the owner's own panel, **19 of the last 200 actions
+  were `killed` or `error`** — a tenth of the screen was findings nobody could see
+  without reading each row.
+
+  The status now uses the palette the rest of the app already uses: green for `done`,
+  yellow for `killed` (deliberately halted — the same yellow `stopped` gets on Services),
+  red and bold for `error` (it failed on its own), cyan for `running`. A status EasyPanel
+  adds later is left unpainted rather than guessed at.
+
+- **"1 minutes".** Durations always pluralised, so a deploy that took a minute read
+  `1 minutes` and an action from an hour ago read `1 hours ago` — on two columns of a
+  screen full of them, in the TUI and the CLI alike.
+
 ## [0.67.0] — 2026-07-21
 
 ### Security
