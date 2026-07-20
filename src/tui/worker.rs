@@ -296,6 +296,12 @@ pub(super) enum Req {
         /// service; a whole project is the same operation over its service list.
         services: Vec<(String, String, String)>,
     },
+    /// Apply an already-planned rewrite to many domains: (id, what it read
+    /// before, the new body). The plan is made and shown before this is sent, so
+    /// the worker only has to deliver it.
+    DomainBulkEdit {
+        changes: Vec<(String, String, Value)>,
+    },
     DomainSave {
         id: Option<String>,
         body: Value,
@@ -448,6 +454,13 @@ pub(super) enum Resp {
     BulkDone {
         action: String,
         ok: Vec<String>,
+        failed: Vec<(String, String)>,
+    },
+    /// A bulk domain rewrite that has run. `failed` holds what each unchanged
+    /// domain read, with the reason — a routing change that half-landed is
+    /// exactly when the names matter.
+    DomainsEdited {
+        ok: usize,
         failed: Vec<(String, String)>,
     },
     ServicesFor(String, Vec<String>),
@@ -1259,6 +1272,21 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 // unchanged — refresh only so a same-host migration shows up.
                 Resp::Done(msg, Refresh::Projects)
             }
+        }
+        Req::DomainBulkEdit { changes } => {
+            // Sequential, not fanned out: these are edits to a routing table, and
+            // a failure has to name the domain it belongs to. One at a time also
+            // keeps a fleet-wide rename from arriving as a burst the panel has to
+            // reconcile all at once.
+            let (mut ok, mut failed) = (0usize, Vec::new());
+            for (id, before, mut input) in changes {
+                input["id"] = json!(id);
+                match client.call("domains", "updateDomain", input) {
+                    Ok(_) => ok += 1,
+                    Err(e) => failed.push((before, e.to_string())),
+                }
+            }
+            Resp::DomainsEdited { ok, failed }
         }
         Req::DomainSave { id, body } => {
             // createDomain requires `id` but the server ignores it and makes its own

@@ -2,6 +2,7 @@ mod backup;
 mod client;
 mod commands;
 mod config;
+mod domains;
 mod lifecycle;
 mod logs;
 mod migrate;

@@ -226,6 +226,10 @@ pub(super) struct App {
     /// service — used to prefill the "New domain" form to that service. None = the
     /// Domains tab was opened normally.
     pub(super) domain_scope: Option<(String, String)>,
+    /// A previewed bulk rewrite, waiting for the user to accept it. Empty means
+    /// there is nothing armed — so Enter in the viewer cannot fire a rewrite the
+    /// user has already walked away from.
+    pub(super) domain_edits: Vec<crate::domains::Change>,
 
     pub(super) projects: Vec<String>,
     /// All services across projects. A flat list replaces the project -> service
@@ -353,6 +357,7 @@ impl App {
             domains: Vec::new(),
             domains_state: TableState::default(),
             domain_scope: None,
+            domain_edits: Vec::new(),
             projects: Vec::new(),
             all_services: Vec::new(),
             services_table: TableState::default(),
@@ -915,6 +920,27 @@ impl App {
                 self.viewer_ctx = None;
                 self.status = format!("{} of {} failed", failed.len(), failed.len() + ok.len());
             }
+            // Same rule as a bulk lifecycle run: all-clear is a status line, any
+            // failure opens the list, because "9 of 12" without the missing three
+            // leaves the user to hunt for them by eye.
+            Resp::DomainsEdited { ok, failed } => {
+                self.apply_refresh(Refresh::Domains, req);
+                if failed.is_empty() {
+                    self.status = format!("{ok} domain(s) rewritten");
+                    return;
+                }
+                let mut lines = vec![
+                    format!("{ok} rewritten, {} FAILED", failed.len()),
+                    String::new(),
+                ];
+                lines.extend(failed.iter().map(|(name, why)| format!("✗ {name} — {why}")));
+                self.show_viewer(
+                    format!(" Bulk domain edit — {} failed ", failed.len()),
+                    lines,
+                );
+                self.viewer_ctx = None;
+                self.status = format!("⚠ {} of {} failed", failed.len(), failed.len() + ok);
+            }
             Resp::Viewer(title, lines) => {
                 self.show_viewer(title, lines);
                 self.status = "Ready".into();
@@ -1429,6 +1455,61 @@ impl App {
             .iter()
             .filter(|d| keep(&commands::domain_row(d), &self.filter))
             .collect()
+    }
+
+    /// Show what a bulk rewrite WOULD do, before anything is sent.
+    ///
+    /// The rewrite hits the domains currently on screen, which is what the filter
+    /// is for: `/api` then a rewrite acts on those and nothing else. So the
+    /// preview names them one per line — a count alone ("rewrite 12 domains?")
+    /// asks the user to approve a list they cannot see.
+    pub(super) fn preview_domain_edits(&mut self, target: &str, find: &str, replace: &str) {
+        let plan = match crate::domains::plan(&self.visible_domains(), target, find, replace) {
+            // The form STAYS open on a rejected rewrite: the fix is one character
+            // in a box the user has already filled in, not a form to retype.
+            Err(msg) => {
+                self.status = format!("⚠ {msg}");
+                return;
+            }
+            Ok(plan) => plan,
+        };
+        self.form = None;
+        if plan.is_empty() {
+            self.status = format!("No domain on screen has '{find}' in its {target}");
+            return;
+        }
+        let mut lines = vec![
+            format!("Rewriting the {target} of {} domain(s):", plan.len()),
+            String::new(),
+        ];
+        // Rewriting a destination gives every domain the SAME before → after, so
+        // the host is what tells the lines apart. When the host IS the rewrite it
+        // is already on the line, and repeating it would only be noise.
+        lines.extend(plan.iter().map(|c| match target {
+            "host" => format!("{}  →  {}", c.before, c.after),
+            _ => format!("{}:  {}  →  {}", c.host, c.before, c.after),
+        }));
+        self.domain_edits = plan;
+        self.viewer_from = Screen::Domains;
+        self.show_viewer(" Bulk domain edit — preview ".into(), lines);
+        self.viewer_ctx = None;
+        self.status = format!(
+            "Nothing sent yet — [Enter] rewrites these {} domain(s) · [Esc] cancels",
+            self.domain_edits.len()
+        );
+    }
+
+    /// Send the previewed rewrite.
+    pub(super) fn apply_domain_edits(&mut self, req: &Sender<Req>) {
+        let changes = std::mem::take(&mut self.domain_edits)
+            .into_iter()
+            // The host is what names a domain in a failure report — `before` is
+            // the same string for every domain when a destination is rewritten.
+            .map(|c| (c.id, c.host, c.body))
+            .collect();
+        let _ = req.send(Req::DomainBulkEdit { changes });
+        self.screen = Screen::Domains;
+        self.status = "Sending...".into();
     }
 
     /// Load the list of services for the project currently selected in the form, so
@@ -2476,6 +2557,15 @@ impl App {
                     return;
                 }
             },
+            FormKind::DomainBulkEdit => {
+                let (target, find, replace) = (
+                    form.by_label("Replace in"),
+                    form.by_label("Find"),
+                    form.by_label("Replace with"),
+                );
+                self.preview_domain_edits(&target, &find, &replace);
+                return;
+            }
             FormKind::DomainCreate | FormKind::DomainEdit { .. } => match domain_body(form) {
                 Ok(body) => {
                     let id = match &form.kind {

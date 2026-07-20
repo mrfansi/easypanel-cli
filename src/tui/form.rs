@@ -189,6 +189,19 @@ pub(super) fn domain_fields(existing: Option<&Value>, projects: &[String]) -> Ve
     ]
 }
 
+/// Fields for the bulk domain rewrite: which part, and the plain find/replace.
+///
+/// No regex. These values are hostnames and service names, where a `.` typed as
+/// itself would quietly match any character and rewrite a domain the user never
+/// meant to touch.
+pub(super) fn domain_bulk_fields() -> Vec<Field> {
+    vec![
+        Field::choice("Replace in", crate::domains::TARGETS, "host"),
+        Field::text("Find", ""),
+        Field::text("Replace with", ""),
+    ]
+}
+
 /// Type-specific fields for createService, only the ones the user actually fills.
 ///
 /// All are optional in the API, and empty means the server creates them: a random
@@ -956,6 +969,9 @@ pub(super) enum FormKind {
     DomainEdit {
         id: String,
     },
+    /// Rewrite one part of MANY domains at once. Which domains is decided by the
+    /// filter that is already on screen, not by a second selection UI.
+    DomainBulkEdit,
     /// Replicas, start command and zero-downtime — the `deploy` block.
     DeployEdit {
         project: String,

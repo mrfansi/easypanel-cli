@@ -4049,3 +4049,93 @@ fn r_refetches_an_action_detail_instead_of_only_claiming_to() {
     app.open_view(View::Env, &tx);
     assert!(app.action_detail.is_none());
 }
+
+/// The Domains tab holding one domain per host, with a filter already applied.
+fn domain_app() -> App {
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Domains;
+    app.domains = vec![
+        json!({ "id": "d1", "host": "one.old.com", "path": "/",
+                "destinationType": "service",
+                "serviceDestination": { "projectName": "p", "serviceName": "api",
+                                        "port": 80, "protocol": "http", "path": "/" } }),
+        json!({ "id": "d2", "host": "two.old.com", "path": "/",
+                "destinationType": "service",
+                "serviceDestination": { "projectName": "p", "serviceName": "api",
+                                        "port": 80, "protocol": "http", "path": "/" } }),
+        json!({ "id": "d3", "host": "keep.other.com", "path": "/",
+                "destinationType": "service",
+                "serviceDestination": { "projectName": "p", "serviceName": "api",
+                                        "port": 80, "protocol": "http", "path": "/" } }),
+    ];
+    app.domains_state.select(Some(0));
+    app
+}
+
+#[test]
+fn a_bulk_domain_rewrite_only_touches_what_the_filter_shows() {
+    use ratatui::crossterm::event::KeyCode;
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = domain_app();
+    // The filter IS the selection: with it on, "keep.other.com" is off screen and
+    // must stay untouched even though a rewrite of "old.com" would never match it
+    // anyway — what matters is that the plan is built from the visible set.
+    app.filter = "one.old".into();
+    app.on_key(KeyCode::Char('E'), &tx);
+    assert!(app.form.is_some(), "E opens the bulk edit form");
+    app.preview_domain_edits("host", "old.com", "new.com");
+
+    // Nothing is sent yet: the preview is the confirmation, and it names each
+    // domain rather than only counting them.
+    assert_eq!(app.domain_edits.len(), 1);
+    assert_eq!(app.domain_edits[0].id, "d1");
+    assert!(app.screen == Screen::Viewer);
+    assert!(
+        app.viewer_lines
+            .iter()
+            .any(|l| l.contains("one.old.com") && l.contains("one.new.com")),
+        "{:?}",
+        app.viewer_lines
+    );
+
+    // Walking away disarms it, so a later Enter cannot fire the rewrite.
+    app.on_key(KeyCode::Esc, &tx);
+    assert!(app.domain_edits.is_empty());
+}
+
+#[test]
+fn a_destination_rewrite_names_the_domain_each_line_belongs_to() {
+    // Every line of a destination rewrite reads "p/api → p/api2", identically.
+    // Without the host, a preview of five domains is five copies of one sentence
+    // and the user cannot tell which five they are approving.
+    let mut app = domain_app();
+    app.preview_domain_edits("destination service", "p/api", "p/api2");
+    assert_eq!(app.domain_edits.len(), 3);
+    assert!(
+        app.viewer_lines
+            .iter()
+            .any(|l| l.starts_with("one.old.com:")),
+        "{:?}",
+        app.viewer_lines
+    );
+}
+
+#[test]
+fn a_bulk_rewrite_that_matches_nothing_says_so_instead_of_going_quiet() {
+    let mut app = domain_app();
+    app.preview_domain_edits("host", "absent.example", "x");
+    assert!(app.domain_edits.is_empty());
+    assert!(app.status.contains("No domain on screen"), "{}", app.status);
+    // A rewrite that would break a domain keeps the form open to be corrected.
+    app.form = Some(Form::new(
+        FormKind::DomainBulkEdit,
+        "t",
+        domain_bulk_fields(),
+    ));
+    app.preview_domain_edits("host", "one.old.com", "");
+    assert!(
+        app.form.is_some(),
+        "the form stays open on a rejected rewrite"
+    );
+    assert!(status_is_error(&app.status), "{}", app.status);
+}

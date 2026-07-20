@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.61.0] — 2026-07-20
+
+### Added
+
+- **Bulk domain edit (`E` on the Domains tab).** Moving a fleet to a new
+  hostname, or repointing every domain that feeds a service being replaced, was
+  the edit form opened once per domain — twenty chances to fat-finger one and
+  not notice which. `E` rewrites one part across many domains at once: the host,
+  the destination service (as `project/service`, so a domain can move project as
+  well as service), or the URLs of a custom destination.
+
+  Which domains it touches is the filter that is already on screen — `/` narrows
+  first, and the form's title says how many are in range — rather than a second
+  way of selecting things that exists only here.
+
+  It is a plain find-and-replace, deliberately not a regex: these values are
+  hostnames and service names, where a `.` typed as itself would quietly match
+  any character and rewrite a domain nobody meant to touch.
+
+  Nothing is sent until the whole before → after list has been shown and
+  accepted, and a rewrite that would produce a broken domain — an empty host, a
+  destination that is no longer a `project/service` pair — is refused for the
+  whole batch rather than half-applied across a fleet. Everything the form does
+  not model (middlewares, the certificate resolver, the weights and any further
+  servers of a custom destination) is carried through untouched, and a custom
+  destination's servers all move together so traffic cannot end up split across
+  two hostnames. Verified live: the rewrite updated the domains in place, left
+  the filtered-out domain alone, and left port, protocol and HTTPS as they were.
+
 ## [0.60.1] — 2026-07-20
 
 ### Fixed

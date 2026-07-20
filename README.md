@@ -192,7 +192,12 @@ stop, start), `X` (delete project).
 **Viewer** — `↑↓`/`PgUp`/`PgDn` scroll · `←→` scroll sideways (lines are not wrapped) ·
 `Home` first line and left edge · `End` re-follow the log tail · `[0]`–`[9]` deletes that
 row (ports/mounts/redirects) · `Esc` back.
-**Domains** — `n` new · `e` edit · `x` delete · `P` set primary.
+**Domains** — `n` new · `e` edit · `E` bulk edit · `x` delete · `P` set primary.
+
+`E` rewrites one part — the host, the destination service, or a custom
+destination URL — across every domain currently on screen, so `/` narrows the
+set first. It is a plain find-and-replace, not a regex, and it shows the full
+before → after list for approval before anything is sent.
 **Terminal** — `Ctrl-Q` to leave (or type `exit`).
 
 **Dockerfile sources open in `$EDITOR`.** Pick `dockerfile` as the source and the field

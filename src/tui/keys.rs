@@ -75,6 +75,15 @@ impl App {
         match code {
             // Arrived at Domains via `o` from a service: Esc goes back to Services
             // (not just clearing its scope filter).
+            // An armed bulk rewrite is the most immediate thing on screen, so Esc
+            // cancels THAT first. It used to fall through to "clear the filter",
+            // which left the rewrite armed behind a screen the user believed they
+            // had backed out of.
+            KeyCode::Esc if !self.domain_edits.is_empty() => {
+                self.domain_edits.clear();
+                self.screen = Screen::Domains;
+                self.status = "Bulk edit cancelled — nothing was changed".into();
+            }
             KeyCode::Esc if self.domain_scope.is_some() => self.goto(Screen::Projects, req),
             KeyCode::Esc if !self.filter.is_empty() => self.clear_filter(),
             // Marks outlive the filter that helped make them, so Esc clears them
@@ -724,6 +733,17 @@ impl App {
                     let _ = req.send(Req::DomainSetPrimary(field(&d, "/id")));
                 }
             }
+            // Rewrite one part of every domain ON SCREEN — so `/` narrows the set
+            // first, using the filter the user already knows, rather than a
+            // second way of choosing things that exists only here.
+            KeyCode::Char('E') => {
+                let n = self.visible_domains().len();
+                self.form = Some(Form::new(
+                    FormKind::DomainBulkEdit,
+                    format!(" Bulk edit: {n} domain(s) on screen "),
+                    domain_bulk_fields(),
+                ));
+            }
             _ => self.move_selection(code),
         }
     }
@@ -1153,6 +1173,9 @@ impl App {
                 self.backups.close_pickers();
                 self.screen = self.viewer_from;
             }
+            // The bulk-rewrite preview IS the confirmation — the list of
+            // before → after lines is on screen while this key is pressed.
+            KeyCode::Enter if !self.domain_edits.is_empty() => self.apply_domain_edits(req),
             // In the restore picker, Enter acts on the selected backup.
             KeyCode::Enter if self.backups.restore_into.is_some() => self.ask_restore(),
             // …and in the database picker, on the selected database.

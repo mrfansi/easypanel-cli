@@ -66,6 +66,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("/", "search"),
             Key("n", "new domain"),
             Key("e", "edit domain"),
+            Key("E", "bulk edit shown"),
             Key("x", "delete domain"),
             Key("P", "set primary"),
             Key("↑↓", "select"),
