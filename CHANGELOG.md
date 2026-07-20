@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.2] — 2026-07-20
+
+### Fixed
+
+- **The server's colour now covers every frame, not just the tab strip.** v0.59.0
+  tinted the one small box at the top and left the large one filling the screen
+  grey — a signal you had to look for rather than one you could not miss. The
+  tables, the dashboard gauges and sparkline, the monitor tiles, the log viewer
+  and the embedded terminal all carry it now. The terminal matters most of those:
+  a shell on the wrong host is the worst thing on this list.
+
+  Popups deliberately keep their own colours — a confirmation is yellow and a
+  form is cyan because those mean something else — and the confirmation names the
+  server in words anyway.
+
 ## [0.59.1] — 2026-07-20
 
 ### Fixed

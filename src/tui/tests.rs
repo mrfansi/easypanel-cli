@@ -3107,8 +3107,10 @@ fn a_gauge_label_stays_readable_where_the_bar_covers_it() {
 
     for pct in [10.6_f64, 54.4, 95.0] {
         let mut t = Terminal::new(TestBackend::new(40, 3)).unwrap();
-        t.draw(|f| super::render::render_gauge(f, f.area(), "Memory", pct))
-            .unwrap();
+        t.draw(|f| {
+            super::render::render_gauge(f, f.area(), "Memory", pct, ratatui::style::Color::Reset)
+        })
+        .unwrap();
         let buf = t.backend().buffer().clone();
         let row: Vec<_> = buf.content().chunks(40).nth(1).unwrap().to_vec();
         for c in row

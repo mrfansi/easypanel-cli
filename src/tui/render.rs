@@ -452,6 +452,23 @@ pub(super) fn server_colour(name: &str) -> Color {
     Color::Indexed(PALETTE[(h as usize) % PALETTE.len()])
 }
 
+/// A content pane's frame, in the current server's colour.
+///
+/// Every box that holds the SERVER's data wears it — the tables, the dashboard,
+/// the log viewer, the embedded terminal. Only the tab strip did at first, which
+/// left the one small box at the top coloured and the large one filling the
+/// screen still grey; the signal has to be the thing you cannot miss, not the
+/// thing you have to look for.
+///
+/// Popups keep their own colours: a confirmation is yellow and a form is cyan
+/// because those say something different, and the confirmation names the server
+/// in words anyway.
+pub(super) fn pane(title: impl Into<Line<'static>>, tint: Color) -> Block<'static> {
+    Block::bordered()
+        .title(title)
+        .border_style(Style::default().fg(tint))
+}
+
 pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) {
     // Drawn by hand (not the Tabs widget) so each tab has a definite column hitbox
     // for mouse clicks, and the active tab can briefly "flash" when it changes.
@@ -518,9 +535,27 @@ pub(super) fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(2),
     ])
     .split(top[0]);
-    render_gauge(f, left[0], "CPU", series_last(&stats, "cpu"));
-    render_gauge(f, left[1], "Memory", series_last(&stats, "memory"));
-    render_gauge(f, left[2], "Disk", series_last(&stats, "disk"));
+    render_gauge(
+        f,
+        left[0],
+        "CPU",
+        series_last(&stats, "cpu"),
+        server_colour(&app.server_name),
+    );
+    render_gauge(
+        f,
+        left[1],
+        "Memory",
+        series_last(&stats, "memory"),
+        server_colour(&app.server_name),
+    );
+    render_gauge(
+        f,
+        left[2],
+        "Disk",
+        series_last(&stats, "disk"),
+        server_colour(&app.server_name),
+    );
     f.render_widget(
         Paragraph::new(format!(
             " {} cores — load {}",
@@ -538,7 +573,10 @@ pub(super) fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
     let cpu = series_percent(&stats, "cpu", 120);
     let ceiling = axis_ceiling(cpu.iter().copied().max().unwrap_or(0));
     let spark = Sparkline::default()
-        .block(Block::bordered().title(format!(" CPU History (0–{ceiling}%) ")))
+        .block(pane(
+            format!(" CPU History (0–{ceiling}%) "),
+            server_colour(&app.server_name),
+        ))
         .data(cpu)
         .max(ceiling)
         .style(Style::default().fg(Color::Cyan));
@@ -558,9 +596,9 @@ pub(super) fn axis_ceiling(max: u64) -> u64 {
         .unwrap_or(100)
 }
 
-pub(super) fn render_gauge(f: &mut Frame, area: Rect, label: &str, pct: f64) {
+pub(super) fn render_gauge(f: &mut Frame, area: Rect, label: &str, pct: f64, tint: Color) {
     let g = Gauge::default()
-        .block(Block::bordered().title(format!(" {label} ")))
+        .block(pane(format!(" {label} "), tint))
         // The bg matters: ratatui swaps fg/bg for the part of the label that sits
         // ON the filled bar, so leaving bg unset made that half render as the
         // terminal's DEFAULT foreground on green — light on light, unreadable at
@@ -598,7 +636,7 @@ pub(super) fn render_nodes(f: &mut Frame, area: Rect, app: &App) {
         ],
     )
     .header(header)
-    .block(Block::bordered().title(" Nodes "));
+    .block(pane(" Nodes ", server_colour(&app.server_name)));
     f.render_widget(table, area);
 }
 
@@ -756,7 +794,7 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     app.table_area = area;
     let table = Table::new(body, widths)
         .header(header)
-        .block(Block::bordered().title(title))
+        .block(pane(title, server_colour(&app.server_name)))
         .row_highlight_style(hl)
         .highlight_symbol("› ");
     f.render_stateful_widget(table, area, &mut app.services_table);
@@ -809,6 +847,7 @@ fn pulse_red(ms: u128) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_table(
     f: &mut Frame,
     area: Rect,
@@ -817,6 +856,7 @@ pub(super) fn render_table(
     widths: &[Constraint],
     rows: Vec<Vec<String>>,
     state: &mut TableState,
+    tint: Color,
 ) {
     let header = Row::new(headers.to_vec()).style(
         Style::default()
@@ -826,7 +866,7 @@ pub(super) fn render_table(
     );
     let table = Table::new(rows.into_iter().map(Row::new), widths.to_vec())
         .header(header)
-        .block(Block::bordered().title(title))
+        .block(pane(title, tint))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("› ");
     f.render_stateful_widget(table, area, state);
@@ -897,7 +937,7 @@ pub(super) fn render_maintenance(f: &mut Frame, area: Rect, app: &App) {
         // consequence has been cut off is worse than no help at all.
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" Maintenance ")),
+            .block(pane(" Maintenance ", server_colour(&app.server_name))),
         area,
     );
 }
@@ -1022,7 +1062,10 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
             .collect::<Vec<_>>(),
     )
     .header(header)
-    .block(Block::bordered().title(format!(" Hosts ({}) ", app.hosts.len())))
+    .block(pane(
+        format!(" Hosts ({}) ", app.hosts.len()),
+        server_colour(&app.server_name),
+    ))
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
     .highlight_symbol("› ");
     app.table_area = area;
@@ -1072,6 +1115,7 @@ pub(super) fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
         &widths,
         rows,
         &mut app.actions_state,
+        server_colour(&app.server_name),
     );
 }
 
@@ -1155,7 +1199,7 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_widget(
             Paragraph::new(msg)
                 .style(Style::default().fg(Color::DarkGray))
-                .block(Block::bordered().title(title)),
+                .block(pane(title, server_colour(&app.server_name))),
             area,
         );
         return;
@@ -1168,6 +1212,7 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
         &widths,
         rows,
         &mut app.domains_state,
+        server_colour(&app.server_name),
     );
 }
 
@@ -1200,6 +1245,7 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
                 ],
                 data,
                 &mut app.monitor_state,
+                server_colour(&app.server_name),
             );
         }
         MonitorView::Storage => {
@@ -1221,6 +1267,7 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
                 ],
                 data,
                 &mut app.monitor_state,
+                server_colour(&app.server_name),
             );
         }
     }
@@ -1315,7 +1362,10 @@ pub(super) fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Min(0),
         ])
         .split(cols[i].inner(Margin::new(1, 1)));
-        f.render_widget(Block::bordered().title(format!(" {label} ")), cols[i]);
+        f.render_widget(
+            pane(format!(" {label} "), server_colour(&app.server_name)),
+            cols[i],
+        );
         f.render_widget(
             Paragraph::new(value).style(Style::default().add_modifier(Modifier::BOLD)),
             inner[0],
@@ -1338,7 +1388,10 @@ pub(super) fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
 /// Embedded container terminal: draw the vt100 emulator grid in the pane, and keep
 /// the shell's size in step with the pane size (two-way resize).
 pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
-    let block = Block::bordered().title(format!(" Terminal · {} · Ctrl-Q exit ", app.term_title));
+    let block = pane(
+        format!(" Terminal · {} · Ctrl-Q exit ", app.term_title),
+        server_colour(&app.server_name),
+    );
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1418,7 +1471,7 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
         app.viewer_scroll.min(max_scroll)
     };
     let block = |app: &App| {
-        Block::bordered()
+        pane(String::new(), server_colour(&app.server_name))
             .title(format!(
                 " {}{} ",
                 app.viewer_title,
