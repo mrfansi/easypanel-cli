@@ -303,6 +303,47 @@ pub(super) fn create_domains(form: &Form) -> Option<Value> {
 /// (EasyPanel's convention: 0 means no limit). Units follow the EasyPanel
 /// dashboard — CPU in cores (decimals allowed, e.g. 0.5), memory in MB.
 /// inspectService stores and returns the numbers as-is (verified round-trip live).
+/// Fields for the deploy form; `deploy` is the `deploy` object from inspectService.
+pub(super) fn deploy_fields(deploy: Option<&Value>) -> Vec<Field> {
+    let get = |ptr: &str, default: &str| match deploy.map(|d| field(d, ptr)) {
+        Some(v) if v != "-" => v,
+        _ => default.to_string(),
+    };
+    let zero = deploy
+        .and_then(|d| d.get("zeroDowntime"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    vec![
+        Field::text("Replicas", &get("/replicas", "1")),
+        Field::text("Command", &get("/command", "")),
+        Field::boolean("Zero downtime", zero),
+    ]
+}
+
+/// The `deploy` object for updateDeploy.
+///
+/// It goes NESTED under "deploy" — a flat `{replicas: 3}` is answered with 200
+/// and silently changes nothing, so the shape is not optional and not guessable.
+pub(super) fn deploy_body(form: &Form) -> std::result::Result<Value, String> {
+    let raw = form.by_label("Replicas");
+    let replicas: u32 = raw
+        .trim()
+        .parse()
+        .map_err(|_| format!("Replicas must be a whole number, not '{raw}'"))?;
+    // Swarm accepts 0 (scale to nothing), but from a form it is almost always a
+    // typo, and the honest way to stop a service is Lifecycle ▸ Stop.
+    if replicas == 0 {
+        return Err("0 replicas stops the service — use Lifecycle ▸ Stop for that".into());
+    }
+    let command = form.by_label("Command");
+    Ok(json!({
+        "replicas": replicas,
+        // An empty command means "the image's own", which the server stores as null.
+        "command": if command.trim().is_empty() { Value::Null } else { json!(command) },
+        "zeroDowntime": form.is_on_label("Zero downtime"),
+    }))
+}
+
 pub(super) fn resource_fields(resources: Option<&Value>) -> Vec<Field> {
     // resources may be null (never set) → everything defaults to "0".
     let get = |ptr: &str| match resources.map(|r| field(r, ptr)) {
@@ -914,6 +955,11 @@ pub(super) enum FormKind {
     DomainCreate,
     DomainEdit {
         id: String,
+    },
+    /// Replicas, start command and zero-downtime — the `deploy` block.
+    DeployEdit {
+        project: String,
+        service: String,
     },
     /// Change an existing mount. `index` is its position as the server listed it.
     MountEdit {

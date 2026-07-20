@@ -330,6 +330,11 @@ impl App {
             v.push(MenuItem::new("Auto deploy on/off", |a, r| {
                 a.on_key(KeyCode::Char('A'), r)
             }));
+            // Replicas live in the `deploy` block, beside the start command and
+            // zero-downtime — one door for the three of them.
+            v.push(MenuItem::new("Replicas & deploy", |a, r| {
+                a.open_deploy_form(r)
+            }));
         }
         // A compose service has no updateResources route: its limits belong in the
         // compose file, and the entry could only ever draw a 404.

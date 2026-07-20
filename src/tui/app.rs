@@ -729,6 +729,24 @@ impl App {
             // The restore picker. An empty history is a real answer, not an
             // error: this database has never been backed up, and saying so beats
             // an empty box.
+            Resp::DeployForm {
+                project,
+                service,
+                deploy,
+            } => {
+                self.form = Some(
+                    Form::new(
+                        FormKind::DeployEdit {
+                            project: project.clone(),
+                            service: service.clone(),
+                        },
+                        format!(" Deploy · {project}/{service} "),
+                        deploy_fields(deploy.as_object().map(|_| &deploy)),
+                    )
+                    .with_note("takes effect on the next deploy".to_string()),
+                );
+                self.status = "Ready".into();
+            }
             Resp::MountForm {
                 project,
                 service,
@@ -2020,6 +2038,24 @@ impl App {
         false
     }
 
+    /// Open the deploy form (replicas, start command, zero-downtime).
+    ///
+    /// `updateDeploy` exists only for `app` — every other type answers the bare
+    /// 404 of a missing route — which is the same rule that already gates source
+    /// and build.
+    pub(super) fn open_deploy_form(&mut self, req: &Sender<Req>) {
+        let Some((project, service, stype)) = self.selected_row() else {
+            self.status = "Select a service first".into();
+            return;
+        };
+        if stype != "app" {
+            self.status = format!("Replicas are an app setting (this is {stype})");
+            return;
+        }
+        let _ = req.send(Req::DeployForm { project, service });
+        self.status = "Loading...".into();
+    }
+
     /// Open the add-redirect form for the highlighted web service.
     pub(super) fn open_redirect_form(&mut self) {
         let Some((project, service, stype)) = self.selected_row() else {
@@ -2314,6 +2350,20 @@ impl App {
                     services,
                 });
             }
+            FormKind::DeployEdit { project, service } => match deploy_body(form) {
+                Ok(deploy) => {
+                    let _ = req.send(Req::DeploySave {
+                        project: project.clone(),
+                        service: service.clone(),
+                        deploy,
+                    });
+                    self.status = "Saving...".into();
+                }
+                Err(msg) => {
+                    self.status = msg;
+                    return;
+                }
+            },
             FormKind::MountEdit {
                 project,
                 service,

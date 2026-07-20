@@ -2059,6 +2059,30 @@ fn a_confirmation_never_hides_the_question_or_the_keys() {
 }
 
 #[test]
+fn replicas_must_be_a_number_and_zero_is_refused() {
+    let f = |replicas: &str| {
+        form(vec![
+            Field::text("Replicas", replicas),
+            Field::text("Command", ""),
+            Field::boolean("Zero downtime", true),
+        ])
+    };
+    // The happy path, and the shape that matters: a flat {replicas} is answered
+    // 200 by the server and changes NOTHING, so these keys are the payload.
+    let body = deploy_body(&f("3")).expect("3 is fine");
+    assert_eq!(body["replicas"], json!(3));
+    assert_eq!(body["command"], json!(null), "empty means the image's own");
+    assert_eq!(body["zeroDowntime"], json!(true));
+
+    // Typos must not reach the server as something plausible.
+    assert!(deploy_body(&f("two")).is_err());
+    assert!(deploy_body(&f("")).is_err());
+    // 0 stops the service; Lifecycle ▸ Stop is the honest door for that.
+    let zero = deploy_body(&f("0")).unwrap_err();
+    assert!(zero.contains("Stop"), "{zero}");
+}
+
+#[test]
 fn a_wide_terminal_stops_cutting_the_destination() {
     // Reported from real use: at 186 columns the destination read
     // "http://harisenin-com-miniapp-gopa…" while a 25-character cuid sat beside

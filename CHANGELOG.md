@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.0] — 2026-07-20
+
+### Added
+
+- **Replicas can be changed, not just read.** The Source & build screen showed
+  `replicas: 1` with no way to alter it. Build & source ▸ *Replicas & deploy* now
+  opens the whole `deploy` block — replicas, start command and zero-downtime — in
+  one form, prefilled from the service.
+
+  The payload is nested under `deploy`; a flat `{replicas: 3}` is answered `200`
+  and changes nothing, which would have looked exactly like success. That shape
+  was found by trying it against a live panel, not assumed.
+
+  Two guards, because this is a number that gets typed: anything that is not a
+  whole number is refused by name (`Replicas must be a whole number, not 'dua'`),
+  and `0` — which would quietly stop the service — points at Lifecycle ▸ Stop
+  instead. `updateDeploy` exists only for `app` services; every other type
+  answers the bare 404 of a missing route, so it is offered nowhere else.
+
+  Verified live: 1 → 3 through the form, confirmed on the server, and both
+  refusals seen on screen.
+
 ## [0.59.2] — 2026-07-20
 
 ### Fixed

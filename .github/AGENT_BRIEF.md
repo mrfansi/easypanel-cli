@@ -776,6 +776,10 @@ found by a **human looking at the screen**, never by a test:
 
 ### Verified capability matrix per service type (probed live, 2026-07-20)
 
+**Deploy block**: `services/app/updateDeploy` takes `{projectName, serviceName, deploy:
+{replicas, command, zeroDowntime}}` — NESTED. A flat `{replicas: 3}` returns 200 and
+changes nothing, so a wrong shape is indistinguishable from success. app only.
+
 **Validation errors**: the useful text is in `data.zodErrors`, NOT the top-level
 `message` (which only ever says "Input validation failed"). It is sometimes flat
 (`{"name": "Required"}`) and sometimes nested under the payload's shape

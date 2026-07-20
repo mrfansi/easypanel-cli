@@ -88,6 +88,17 @@ pub(super) enum Req {
         action: String,
         force: bool,
     },
+    /// Open the deploy form: replicas, start command, zero-downtime.
+    DeployForm {
+        project: String,
+        service: String,
+    },
+    /// Save the deploy block (updateDeploy).
+    DeploySave {
+        project: String,
+        service: String,
+        deploy: Value,
+    },
     /// Open the edit form for one mount: fetch what it currently IS, so the box
     /// is prefilled rather than asking the user to retype a path from memory.
     MountForm {
@@ -387,6 +398,12 @@ pub(super) enum Resp {
     /// backup written there can never be restored onto another host — verified,
     /// and the reason cross-server restore refuses one.
     StorageProviders(Vec<(String, String, String)>),
+    /// The deploy block, to prefill its form.
+    DeployForm {
+        project: String,
+        service: String,
+        deploy: Value,
+    },
     /// One mount's current values, to prefill its edit form.
     MountForm {
         project: String,
@@ -690,6 +707,36 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             action,
             force,
         } => bulk_action(client, resp_tx, targets, &action, force),
+        Req::DeployForm { project, service } => {
+            let ps = json!({ "projectName": project, "serviceName": service });
+            match client.call("services/app", "inspectService", ps) {
+                Ok(v) => Resp::DeployForm {
+                    project,
+                    service,
+                    deploy: v.get("deploy").cloned().unwrap_or(Value::Null),
+                },
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::DeploySave {
+            project,
+            service,
+            deploy,
+        } => {
+            // NESTED under "deploy". A flat {replicas: 3} is answered 200 and
+            // changes nothing — verified live — so a wrong shape here would look
+            // exactly like success.
+            let body = json!({
+                "projectName": project, "serviceName": service, "deploy": deploy,
+            });
+            match client.call("services/app", "updateDeploy", body) {
+                Ok(_) => Resp::Done(
+                    format!("Deploy settings saved for {project}/{service} — press d to apply"),
+                    Refresh::Projects,
+                ),
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
         Req::MountForm {
             project,
             service,
