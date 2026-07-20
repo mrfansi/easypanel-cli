@@ -266,6 +266,15 @@ Each is grounded in an endpoint confirmed to exist in `backend.js` 2.32.2.
    (list/create/delete + send test) is doable but thin. Don't build channel management and
    call it alerting.
 
+### Scale lesson: a real host has 713 domains (2026-07-20)
+
+The owner's third host holds **713 domains and 100 services** — an order of magnitude
+past anything the earlier screens were driven at, and it immediately produced a bug that
+49 domains never would (see v0.64.1: filtering from the bottom left ONE row on screen
+under a title claiming 452). When hunting for defects, drive the BIGGEST host, scroll to
+the end, and then act — the interesting failures live where a list is longer than the
+screen and then changes length underneath the view.
+
 ### Ideas parked for a future run (2026-07-20) — judged by operator impact, not parity
 
 Ranked by impact per unit of work. None of these needs an endpoint the tool does not
