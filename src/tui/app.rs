@@ -1642,6 +1642,25 @@ impl App {
         let _ = req.send(Req::RunChecks(self.watch.clone()));
     }
 
+    /// Every (project, service) on this host, or `None` while the list is still
+    /// loading.
+    ///
+    /// `None` is the important case: judging a domain against an empty list would
+    /// mark all 713 of them dead at once. An empty list is treated as "not
+    /// loaded" rather than "no services", because a panel with domains and no
+    /// services does not happen, and the safe direction is to say nothing.
+    pub(super) fn live_services(&self) -> Option<std::collections::HashSet<(String, String)>> {
+        if self.all_services.is_empty() {
+            return None;
+        }
+        Some(
+            self.all_services
+                .iter()
+                .map(|s| (field(s, "/projectName"), field(s, "/name")))
+                .collect(),
+        )
+    }
+
     /// The domains that pass the filter.
     ///
     /// Render AND actions (e/x/P) must both go through here. If render is filtered

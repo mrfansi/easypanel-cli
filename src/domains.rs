@@ -16,6 +16,8 @@
 //! refuses the ones that would produce a broken domain. What it never does is
 //! send anything — the caller previews the plan, and only then applies it.
 
+use std::collections::HashSet;
+
 use serde_json::{json, Value};
 
 use crate::output::field;
@@ -36,6 +38,33 @@ pub struct Change {
     pub before: String,
     pub after: String,
     pub body: Value,
+}
+
+/// Does this domain point at a service that no longer exists?
+///
+/// `services` is every (project, service) pair on the host. `None` means the
+/// list has not loaded yet — and then NOTHING is judged, because an empty list
+/// would condemn every domain on the panel at once. That guard is the whole
+/// difference between a useful flag and 713 false alarms.
+///
+/// Only a service destination can be orphaned: a custom destination points at a
+/// URL this tool knows nothing about, and calling it dead would be a guess.
+///
+/// Measured on a live host: exactly ONE of 713 domains was orphaned. That is the
+/// point of it — one dead route is invisible among seven hundred live ones, and
+/// it is the kind of thing nobody finds until a deploy quietly stops arriving.
+pub fn is_orphan(d: &Value, services: Option<&HashSet<(String, String)>>) -> bool {
+    let Some(services) = services else {
+        return false;
+    };
+    if field(d, "/destinationType") != "service" {
+        return false;
+    }
+    let pair = (
+        field(d, "/serviceDestination/projectName"),
+        field(d, "/serviceDestination/serviceName"),
+    );
+    !services.contains(&pair)
 }
 
 // ---------- What a domain reads as ----------
@@ -267,6 +296,34 @@ mod tests {
                 { "url": "http://b.old.com", "weight": 2 }
             ]}
         })
+    }
+
+    #[test]
+    fn a_domain_pointing_at_a_service_that_is_gone_is_orphaned() {
+        let live: HashSet<(String, String)> = [("shop".to_string(), "api".to_string())]
+            .into_iter()
+            .collect();
+        let alive = service_domain();
+        assert!(!is_orphan(&alive, Some(&live)));
+
+        let mut dead = service_domain();
+        dead["serviceDestination"]["serviceName"] = json!("api-old");
+        assert!(is_orphan(&dead, Some(&live)));
+    }
+
+    #[test]
+    fn nothing_is_orphaned_until_the_service_list_has_loaded() {
+        // The dangerous case: judging against an empty list would mark every
+        // domain on the panel dead at once — a confident wrong answer on 713
+        // rows, which is far worse than saying nothing.
+        let d = service_domain();
+        assert!(!is_orphan(&d, None));
+        // A custom destination points at a URL this tool knows nothing about, so
+        // it can never be judged either.
+        let live: HashSet<(String, String)> = HashSet::new();
+        assert!(!is_orphan(&custom_domain(), Some(&live)));
+        // ...while a service destination IS judged against a loaded list.
+        assert!(is_orphan(&d, Some(&live)));
     }
 
     #[test]

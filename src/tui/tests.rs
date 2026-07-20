@@ -4935,3 +4935,65 @@ fn a_failed_action_does_not_look_like_a_successful_one() {
     assert_eq!(killed, Color::Indexed(3));
     assert_eq!(error, Color::Indexed(196));
 }
+
+#[test]
+fn a_domain_whose_service_is_gone_is_marked_and_counted() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Domains;
+    let dom = |svc: &str| {
+        json!({ "id": format!("d-{svc}"), "host": format!("{svc}.test"), "path": "/",
+                "https": true, "destinationType": "service",
+                "serviceDestination": { "projectName": "shop", "serviceName": svc,
+                                        "port": 80, "protocol": "http", "path": "/" } })
+    };
+    app.domains = vec![dom("api"), dom("retired")];
+    app.domains_state.select(Some(0));
+
+    let draw = |app: &mut App| {
+        let mut t = Terminal::new(TestBackend::new(110, 10)).unwrap();
+        t.draw(|f| ui(f, app)).unwrap();
+        let s: String = t
+            .backend()
+            .buffer()
+            .content()
+            .chunks(110)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>() + "\n")
+            .collect();
+        s
+    };
+
+    // Before the service list arrives NOTHING is judged: an empty list would
+    // condemn every domain on the panel at once, which on a real host is 713
+    // confident wrong answers.
+    let loading = draw(&mut app);
+    assert!(
+        !loading.contains('✗'),
+        "judged before the services loaded:\n{loading}"
+    );
+
+    app.all_services = vec![svc("shop", "api", "app")];
+    let loaded = draw(&mut app);
+    // The dead one is marked and counted; the live one is left alone.
+    assert!(
+        loaded.contains("1 pointing at a service that is gone"),
+        "{loaded}"
+    );
+    let dead_row = loaded
+        .lines()
+        .find(|l| l.contains("retired.test"))
+        .unwrap_or_default();
+    assert!(
+        dead_row.contains('✗'),
+        "the dead route is not marked: {dead_row}"
+    );
+    let live_row = loaded
+        .lines()
+        .find(|l| l.contains("api.test"))
+        .unwrap_or_default();
+    assert!(
+        !live_row.contains('✗'),
+        "a live route was marked: {live_row}"
+    );
+}

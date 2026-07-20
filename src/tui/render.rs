@@ -1334,6 +1334,9 @@ pub(super) fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
+/// What marks a domain whose destination service no longer exists.
+const ORPHAN_MARK: &str = "✗";
+
 pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
     // Source, Destination, ID. Percentages used to shrink all three together, so
     // a hostname was cut mid-word with nothing to show for it —
@@ -1381,11 +1384,23 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
     // is cut HERE — with an ellipsis — instead of silently at the edge.
     let widths_px = [src_w as usize, dest_w as usize, ID_W as usize];
 
+    // A domain whose service no longer exists is dead routing, and it is
+    // invisible among hundreds of live ones. The mark goes at the FRONT of the
+    // destination so it survives the truncation below, and it reads on its own
+    // even where colour does not carry (a pipe, a screenshot in mono).
+    let live = app.live_services();
+    let mut gone = 0usize;
     let rows: Vec<Vec<String>> = app
         .visible_domains()
         .iter()
         .map(|d| {
-            let cells = crate::domains::domain_row(d);
+            let mut cells = crate::domains::domain_row(d);
+            if crate::domains::is_orphan(d, live.as_ref()) {
+                gone += 1;
+                if let Some(dest) = cells.get_mut(1) {
+                    *dest = format!("{ORPHAN_MARK} {dest}");
+                }
+            }
             idx.iter()
                 .filter_map(|i| {
                     cells
@@ -1401,7 +1416,14 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
     let widths: Vec<Constraint> = idx.iter().map(|i| domain_cols[*i]).collect();
 
-    let title = count_title("Domains", rows.len(), app.domains.len(), app);
+    let mut title = count_title("Domains", rows.len(), app.domains.len(), app);
+    if gone > 0 {
+        // Only when there is something to say. A permanent "0 gone" is noise that
+        // trains the eye to skip the whole title.
+        title.push_str(&format!(
+            "· {ORPHAN_MARK} {gone} pointing at a service that is gone "
+        ));
+    }
     app.table_area = area;
     if rows.is_empty() {
         // A bare bordered box cannot say whether the filter excluded everything
@@ -1428,7 +1450,11 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
         rows,
         &mut app.domains_state,
         server_colour(&app.server_name),
-        |_, _| None,
+        // The destination column, and only the rows carrying the mark.
+        |col, text| {
+            (col == 1 && text.starts_with(ORPHAN_MARK))
+                .then(|| Style::default().fg(Color::Indexed(196)))
+        },
     );
 }
 

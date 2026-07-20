@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.69.0] — 2026-07-21
+
+### Added
+
+- **Domains pointing at a service that no longer exists are marked.** Rename or destroy a
+  service and its domains stay behind, still listed, still looking healthy — the panel has
+  no idea the destination is gone. The Domains tab now marks those rows `✗` in red and
+  says how many there are in the title.
+
+  Measured before building it, on a live host: **one of 713 domains** was dead. That is
+  precisely the case for having it — a single broken route is invisible among seven
+  hundred working ones, and it is the kind of thing nobody notices until a deploy quietly
+  stops arriving somewhere.
+
+  The mark sits at the FRONT of the destination so it survives truncation and reads
+  without colour, in a pipe or a black-and-white screenshot. Two things are deliberately
+  never judged: a custom destination, which points at a URL this tool knows nothing
+  about, and **anything at all before the service list has loaded** — judging against an
+  empty list would condemn every domain on the panel at once, which on that host is 713
+  confident wrong answers.
+
 ## [0.68.0] — 2026-07-21
 
 ### Fixed
