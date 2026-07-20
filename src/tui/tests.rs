@@ -4631,3 +4631,27 @@ fn a_dialog_is_as_wide_as_it_measured_itself_to_need() {
         "an irreversible action was asked without showing how to answer:\n{screen}"
     );
 }
+
+#[test]
+fn the_palette_can_find_a_service_before_you_have_visited_the_services_tab() {
+    // `:` is advertised as "jump to any service from anywhere", but the service
+    // list was only fetched when the Services tab was opened. On a fresh launch
+    // the palette therefore answered "0 results" for a service that plainly
+    // exists — a confidently wrong answer, not an empty one.
+    let (tx, rx) = std::sync::mpsc::channel();
+    super::send_initial(&tx);
+    drop(tx);
+    let asked: Vec<Req> = rx.into_iter().collect();
+    assert!(
+        asked.iter().any(|r| matches!(r, Req::AllServices)),
+        "start-up must ask for the services the palette searches"
+    );
+
+    // And with them loaded, it finds one.
+    let mut app = App::new("s".into(), vec![]);
+    app.all_services = vec![svc("harisenin-com-db", "mysql", "mysql")];
+    app.open_palette();
+    let pal = app.palette.as_mut().expect("the palette");
+    pal.query = "mysql".into();
+    assert!(!pal.matches().is_empty(), "the service is in the index");
+}

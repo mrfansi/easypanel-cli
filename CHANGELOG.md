@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.2] — 2026-07-20
+
+### Fixed
+
+- **The command palette found nothing until you had opened the Services tab.** `:` is
+  the "jump to any service from anywhere" key, but the service list was only fetched when
+  that tab was visited — so on a fresh launch, searching for a service that plainly exists
+  answered `0 results`. That is worse than an empty box: it is a confident wrong answer,
+  and the natural conclusion is that the service is gone.
+
+  The list is now fetched at start-up, for exactly the reason the storage providers
+  already were: the palette needs it the moment the key is pressed. First arrival at the
+  Services tab is quicker as a side effect.
+
 ## [0.65.1] — 2026-07-20
 
 ### Fixed

@@ -789,4 +789,10 @@ fn send_initial(req_tx: &Sender<Req>) {
     // Once, at start-up: it never changes while the TUI runs (EasyPanel has no
     // API to create one), and "Backup now" needs it the moment it is pressed.
     let _ = req_tx.send(Req::StorageProviders);
+    // Same reason: `:` is "jump to any service from anywhere", and it needs the
+    // list the moment it is pressed. Fetching it only when the Services tab was
+    // opened meant a fresh launch answered "0 results" for a service that plainly
+    // exists — worse than an empty palette, because it is a confident wrong
+    // answer rather than an obvious absence.
+    let _ = req_tx.send(Req::AllServices);
 }

@@ -58,7 +58,9 @@ searchable table, and every domain on the box — without clicking through a hie
   split into the server thinking (TTFB) and the whole response. Only what you enrol is
   watched, never all of them.
 - **Global search / command palette** (`:`) — jump to any service or tab by typing, and
-  run any action on the selected row from the same box (`deploy karir`, `logs api`).
+  run any action on the selected row from the same box (`deploy karir`, `logs api`). It
+  knows every service from the moment the app starts, so it works before you have opened
+  anything.
 - **Mouse and keyboard** — click tabs and rows, right-click for a context menu, scroll,
   hover to highlight; every action also has a key.
 
