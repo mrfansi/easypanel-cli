@@ -968,17 +968,30 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
     // easy to forget: one space BETWEEN each pair of columns, the two-column
     // highlight symbol, and the two border columns. Guessing these (the first
     // attempt used round numbers) left Disk rendering as "194.7 GB / 784.9".
-    const HOST_COLS: &[(u16, Constraint)] = &[
-        (0, Constraint::Length(14)),   // Server
-        (0, Constraint::Min(16)),      // Status — carries the failure reason
-        (0, Constraint::Length(7)),    // CPU
-        (0, Constraint::Length(19)),   // Memory
-        (83, Constraint::Length(19)),  // Disk
-        (102, Constraint::Length(18)), // Load
-        (133, Constraint::Length(30)), // URL
+    // The Server column is sized to the longest name actually configured, not to
+    // a fixed 14 — "angelia-machine" is fifteen characters and was rendered as
+    // "angelia-machin", cutting the one column whose entire job is telling the
+    // hosts apart. Names are user-chosen and now user-editable, so the width
+    // cannot be a constant; it is clamped so one very long name cannot push the
+    // metrics off the screen.
+    let name_w = app
+        .hosts
+        .iter()
+        .map(|h| h.name.chars().count())
+        .max()
+        .unwrap_or(6)
+        .clamp(6, 24) as u16;
+    let host_cols: &[(u16, Constraint)] = &[
+        (0, Constraint::Length(name_w)), // Server
+        (0, Constraint::Min(16)),        // Status — carries the failure reason
+        (0, Constraint::Length(7)),      // CPU
+        (0, Constraint::Length(19)),     // Memory
+        (83, Constraint::Length(19)),    // Disk
+        (102, Constraint::Length(18)),   // Load
+        (133, Constraint::Length(30)),   // URL
     ];
     let cols = columns_that_fit(
-        &HOST_COLS.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
+        &host_cols.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
         area.width,
     )
     .len();
@@ -1056,7 +1069,7 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
             );
     let table = Table::new(
         rows,
-        HOST_COLS
+        host_cols
             .iter()
             .take(cols)
             .map(|(_, c)| *c)

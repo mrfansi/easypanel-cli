@@ -449,6 +449,14 @@ fn event_loop(
         // Switch server: build a new worker (the old one stops when its sender is dropped).
         if let Some(name) = app.switch_to.take() {
             if let Some(server) = cfg.get(&name) {
+                // Remember it. Switching host is a deliberate "I am working on
+                // this machine now", and it used to last only until the app was
+                // closed — so the next launch silently went back to the old host,
+                // which is exactly the wrong-machine mistake the per-server
+                // colours exist to prevent. A failure here must not block the
+                // switch itself: the session is still correct, only the memory of
+                // it is lost.
+                let remembered = cfg.set_default(&name);
                 w = spawn_workers(EasypanelClient::new(&server.url, &server.token));
                 app.reset_for_server(name);
                 send_initial(&w.user);
@@ -456,6 +464,11 @@ fn event_loop(
                 // the global stuff — otherwise we stay on Services with an empty table.
                 let screen = app.screen;
                 app.goto(screen, &w.user);
+                // After the reset, which writes its own status — otherwise the
+                // warning would be overwritten by it and never seen.
+                if let Err(e) = remembered {
+                    app.status = format!("⚠ Switched, but could not remember it: {e}");
+                }
                 last_stats = Instant::now();
             }
         }
@@ -469,7 +482,18 @@ fn event_loop(
 
 fn apply_server_action(cfg: &ServerConfig, action: ServerAction) -> Result<String> {
     match action {
-        ServerAction::Save { name, url, token } => {
+        ServerAction::Save {
+            rename_from,
+            name,
+            url,
+            token,
+        } => {
+            // Rename first, so the token lookup below and `add` both work against
+            // the new name — and so a rename that clashes fails before anything
+            // else has been written.
+            if let Some(old) = &rename_from {
+                cfg.rename(old, &name)?;
+            }
             // The token is never shown back on screen; leaving it empty on edit
             // means "keep the old one", not "clear it".
             let token = match token {
@@ -480,7 +504,10 @@ fn apply_server_action(cfg: &ServerConfig, action: ServerAction) -> Result<Strin
                     .ok_or_else(|| anyhow::anyhow!("server '{name}' not found"))?,
             };
             cfg.add(&name, &url, &token)?;
-            Ok(format!("Server '{name}' saved"))
+            Ok(match rename_from {
+                Some(old) => format!("Server '{old}' renamed to '{name}'"),
+                None => format!("Server '{name}' saved"),
+            })
         }
         ServerAction::Remove(name) => {
             cfg.remove(&name)?;

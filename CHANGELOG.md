@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.63.0] — 2026-07-20
+
+### Fixed
+
+- **Switching host now outlives the session (reported by the owner).** Switching
+  from one server to another and then quitting meant the next launch silently
+  came back up on the OLD host. The switch was only ever held in memory; the
+  config's default was never moved. That is precisely the wrong-machine mistake
+  the per-server colours were added to prevent — the colour said "you are on
+  angelia" right up until you restarted and it quietly said "aurel" instead.
+  Switching is a deliberate "I am working on this machine now", so it is
+  remembered. If the config cannot be written the switch still happens, and the
+  status line says the switch worked but could not be remembered rather than
+  pretending either half succeeded.
+
+- **The Hosts table cut the one thing that identifies a host.** The Server column
+  was a fixed 14 characters, so `angelia-machine` — fifteen — rendered as
+  `angelia-machin`. It is now sized to the longest name actually configured, and
+  clamped so a single very long name cannot push the metrics off screen.
+
+### Added
+
+- **A server can be renamed (reported by the owner).** The edit form offered only
+  URL and Token, so a typo in a server's name was permanent: the only way to fix
+  one was to delete the server — taking its token, which cannot be read back from
+  anywhere, with it. The name is now the first field. A rename moves the entry in
+  place, keeping its token, its default flag and its position in the list, and
+  renaming onto a name that already exists is refused rather than merging two
+  hosts into one entry pointing at the wrong machine.
+
 ## [0.62.0] — 2026-07-20
 
 ### Added

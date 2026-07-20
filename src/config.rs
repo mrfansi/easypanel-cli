@@ -109,6 +109,24 @@ impl ServerConfig {
         self.save(&servers)
     }
 
+    /// Rename a server, keeping everything else about it.
+    ///
+    /// In place rather than remove-then-add: the token cannot be read back from
+    /// anywhere, the default flag has to survive, and the list order is how the
+    /// user recognises their own hosts. Doing it as a delete and an insert risks
+    /// all three, and a half-completed one loses a credential for good.
+    pub fn rename(&self, old: &str, new: &str) -> Result<()> {
+        let mut servers = self.try_all()?;
+        if servers.iter().any(|s| s.name == new) {
+            anyhow::bail!("A server called '{new}' already exists");
+        }
+        let Some(server) = servers.iter_mut().find(|s| s.name == old) else {
+            anyhow::bail!("No server called '{old}'");
+        };
+        server.name = new.to_string();
+        self.save(&servers)
+    }
+
     pub fn set_default(&self, name: &str) -> Result<()> {
         let mut servers = self.try_all()?;
         for s in &mut servers {
@@ -179,6 +197,38 @@ mod tests {
         assert_eq!(cfg.default().unwrap().name, "prod");
         assert_eq!(cfg.get("prod").unwrap().token, "tok-NEW");
         assert_eq!(cfg.all().len(), 2);
+    }
+
+    #[test]
+    fn renaming_keeps_the_token_the_default_and_the_position() {
+        let (_d, cfg) = temp_config();
+        cfg.add("prod", "https://p", "tok-p").unwrap();
+        cfg.add("staging", "https://s", "tok-s").unwrap();
+        cfg.set_default("staging").unwrap();
+
+        cfg.rename("staging", "staging-eu").unwrap();
+        let all = cfg.all();
+        // The token is unreadable from anywhere else, so losing it in a rename
+        // would cost the user a credential they cannot get back.
+        let renamed = cfg.get("staging-eu").unwrap();
+        assert_eq!(renamed.token, "tok-s");
+        assert_eq!(renamed.url, "https://s");
+        assert!(renamed.default, "the default must follow the rename");
+        assert!(cfg.get("staging").is_none());
+        // Position is how the user recognises their own list.
+        assert_eq!(all[1].name, "staging-eu");
+    }
+
+    #[test]
+    fn renaming_onto_an_existing_name_is_refused() {
+        let (_d, cfg) = temp_config();
+        cfg.add("prod", "https://p", "tok-p").unwrap();
+        cfg.add("staging", "https://s", "tok-s").unwrap();
+        // Silently merging two hosts into one entry would point a name at the
+        // wrong machine — the exact mistake this tool's colours exist to prevent.
+        assert!(cfg.rename("staging", "prod").is_err());
+        assert_eq!(cfg.get("prod").unwrap().token, "tok-p");
+        assert!(cfg.get("staging").is_some());
     }
 
     #[test]

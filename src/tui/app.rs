@@ -152,6 +152,9 @@ pub(super) fn status_is_error(status: &str) -> bool {
 /// A server-list change: executed in event_loop, which holds the ServerConfig.
 pub(super) enum ServerAction {
     Save {
+        /// The name it is stored under today. `Some` only when the edit form
+        /// changed it, which makes the save a rename as well.
+        rename_from: Option<String>,
         name: String,
         url: String,
         /// None = keep the stored token (an edit form left blank).
@@ -2294,10 +2297,10 @@ impl App {
                 // changing just the URL doesn't force retyping the token.
                 let (name, url, token) = match &form.kind {
                     FormKind::ServerAdd => (form.val(0), form.val(1), Some(form.val(2))),
-                    FormKind::ServerEdit { name } => (
-                        name.clone(),
+                    FormKind::ServerEdit { .. } => (
                         form.val(0),
-                        match form.val(1) {
+                        form.val(1),
+                        match form.val(2) {
                             t if t.is_empty() => None,
                             t => Some(t),
                         },
@@ -2317,6 +2320,10 @@ impl App {
                     return;
                 }
                 self.server_action = Some(ServerAction::Save {
+                    rename_from: match &form.kind {
+                        FormKind::ServerEdit { name: old } if *old != name => Some(old.clone()),
+                        _ => None,
+                    },
                     name,
                     url: url.trim_end_matches('/').to_string(),
                     token,

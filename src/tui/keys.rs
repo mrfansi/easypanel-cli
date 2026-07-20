@@ -994,6 +994,12 @@ impl App {
                         FormKind::ServerEdit { name: name.clone() },
                         format!(" Edit server: {name} "),
                         vec![
+                            // Editable: a server's name is the label the whole UI
+                            // identifies it by — the title bar, the confirmations
+                            // and its colour — so a typo in it was permanent, and
+                            // the only way out was to delete the server and lose
+                            // its token with it.
+                            Field::text("Name", &name),
                             Field::text("URL", &url),
                             // The token is deliberately not re-filled: there's no
                             // need to put it back on screen. Empty = keep the stored

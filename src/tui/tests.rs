@@ -4170,3 +4170,88 @@ fn a_project_env_change_only_offers_to_deploy_what_can_be_deployed() {
     assert!(app.confirm.is_none());
     assert!(app.status.contains("saved"), "{}", app.status);
 }
+
+#[test]
+fn a_server_name_is_editable_and_the_edit_form_knows_it_is_a_rename() {
+    use ratatui::crossterm::event::KeyCode;
+    use ratatui::widgets::ListState;
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("prod".into(), vec![]);
+    app.all_servers = vec![("prod".into(), "https://p".into())];
+    app.picker = Some(ListState::default().with_selected(Some(0)));
+    app.picker_key(KeyCode::Char('e'), &tx);
+
+    let f = app.form.as_ref().expect("the edit form");
+    // The name used to be missing entirely, so a typo in it was permanent: the
+    // only way to fix one was to delete the server, taking its token with it.
+    assert_eq!(f.val(0), "prod");
+    assert_eq!(f.val(1), "https://p");
+
+    // Saving the same name is an ordinary save, not a rename.
+    app.submit_form(&tx);
+    assert!(matches!(
+        app.server_action,
+        Some(ServerAction::Save {
+            rename_from: None,
+            ..
+        })
+    ));
+
+    // Changing it makes the save carry where it is coming FROM, which is the
+    // only way the token and the default flag can follow it.
+    app.picker = Some(ListState::default().with_selected(Some(0)));
+    app.picker_key(KeyCode::Char('e'), &tx);
+    if let Some(f) = app.form.as_mut() {
+        f.fields[0].value = "prod-eu".into();
+    }
+    app.submit_form(&tx);
+    match app.server_action {
+        Some(ServerAction::Save {
+            rename_from: Some(ref old),
+            ref name,
+            ..
+        }) => {
+            assert_eq!(old, "prod");
+            assert_eq!(name, "prod-eu");
+        }
+        _ => panic!("a changed name must travel as a rename"),
+    }
+}
+
+#[test]
+fn the_hosts_table_never_cuts_the_name_that_tells_hosts_apart() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = App::new("aurel-machine".into(), vec![]);
+    // Fifteen characters — one more than the old fixed width, which rendered it
+    // as "angelia-machin" and broke the one column that identifies the machine.
+    app.hosts = vec![
+        HostRow {
+            name: "aurel-machine".into(),
+            url: "https://a".into(),
+            state: HostState::Loading,
+        },
+        HostRow {
+            name: "angelia-machine".into(),
+            url: "https://b".into(),
+            state: HostState::Loading,
+        },
+    ];
+    app.screen = Screen::Hosts;
+    let mut t = Terminal::new(TestBackend::new(120, 12)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let buf = t.backend().buffer().clone();
+    let text: String = buf
+        .content()
+        .chunks(120)
+        .map(|row| {
+            row.iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+                + "\n"
+        })
+        .collect();
+    assert!(text.contains("angelia-machine"), "{text}");
+}
