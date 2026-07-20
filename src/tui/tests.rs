@@ -2059,6 +2059,43 @@ fn a_confirmation_never_hides_the_question_or_the_keys() {
 }
 
 #[test]
+fn a_wide_terminal_stops_cutting_the_destination() {
+    // Reported from real use: at 186 columns the destination read
+    // "http://harisenin-com-miniapp-gopa…" while a 25-character cuid sat beside
+    // it at full width. Destination was pinned at 34 and Source absorbed every
+    // spare column.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dest = "http://harisenin-com_miniapp-gopay:3000/";
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Domains;
+    app.domains = vec![json!({
+        "id": "cmrs19yie001007mc7gtd8398",
+        "host": "miniapp-gopay.harisenin.com", "path": "/", "https": true,
+        "destinationType": "service",
+        "serviceDestination": {"projectName": "harisenin-com", "serviceName": "miniapp-gopay",
+                               "protocol": "http", "port": 3000, "path": "/"}
+    })];
+
+    let mut term = Terminal::new(TestBackend::new(160, 12)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(160)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        screen.contains(dest),
+        "the destination must fit when there is room:\n{screen}"
+    );
+}
+
+#[test]
 fn a_confirmation_names_the_server_it_is_about_to_change() {
     // With several hosts configured, the only answer to "which machine?" was the
     // frame's title — behind the very dialog asking to destroy something.

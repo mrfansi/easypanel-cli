@@ -1087,26 +1087,40 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
     // at 18% it was too narrow to even show in full. Source is never dropped —
     // it is the whole point of the row.
     const ID_W: u16 = 26;
-    const DEST_W: u16 = 34;
+    const DEST_MIN: u16 = 34;
     const SRC_MIN: u16 = 30;
-    const DOMAIN_COLS: &[(u16, Constraint)] = &[
-        (0, Constraint::Min(SRC_MIN)),
-        (69, Constraint::Length(DEST_W)),
-        (96, Constraint::Length(ID_W)),
-    ];
-    let mins: Vec<u16> = DOMAIN_COLS.iter().map(|(m, _)| *m).collect();
+    let mins = [0u16, 69, 96];
     let idx = columns_that_fit(&mins, area.width);
+
+    // Source AND Destination share the spare width; only the ID is fixed.
+    //
+    // Destination used to be pinned at 34 while Source absorbed everything left
+    // over, so on a wide terminal Source had far more room than a hostname needs
+    // while destinations were still cut — "http://harisenin-com-miniapp-gopa…"
+    // beside a 25-character cuid at full width. The opaque id is the one thing
+    // here nobody reads or types, so it is the one thing that does not grow.
+    let gaps = idx.len().saturating_sub(1) as u16;
+    let id_shown = idx.contains(&2);
+    let spare = area
+        .width
+        .saturating_sub(4 + gaps + if id_shown { ID_W } else { 0 });
+    // Halved rather than given to one of them: both hold text of about the same
+    // length, and either being the only one cut is the bug this fixes.
+    let dest_w = if idx.contains(&1) {
+        (spare / 2).max(DEST_MIN)
+    } else {
+        0
+    };
+    let src_w = spare.saturating_sub(dest_w).max(SRC_MIN);
+    let domain_cols = [
+        Constraint::Min(SRC_MIN),
+        Constraint::Length(dest_w),
+        Constraint::Length(ID_W),
+    ];
 
     // The width each column will actually get, so a value too long for its column
     // is cut HERE — with an ellipsis — instead of silently at the edge.
-    let fixed: u16 = idx
-        .iter()
-        .skip(1)
-        .map(|i| if *i == 1 { DEST_W } else { ID_W })
-        .sum();
-    let gaps = idx.len().saturating_sub(1) as u16;
-    let src_w = area.width.saturating_sub(4 + fixed + gaps).max(SRC_MIN) as usize;
-    let widths_px = [src_w, DEST_W as usize, ID_W as usize];
+    let widths_px = [src_w as usize, dest_w as usize, ID_W as usize];
 
     let rows: Vec<Vec<String>> = app
         .visible_domains()
@@ -1126,7 +1140,7 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .filter_map(|i| commands::DOMAIN_HEADERS.get(*i).copied())
         .collect();
-    let widths: Vec<Constraint> = idx.iter().map(|i| DOMAIN_COLS[*i].1).collect();
+    let widths: Vec<Constraint> = idx.iter().map(|i| domain_cols[*i]).collect();
 
     let title = count_title("Domains", rows.len(), app.domains.len(), app);
     app.table_area = area;

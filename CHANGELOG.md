@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.1] — 2026-07-20
+
+### Fixed
+
+- **The Domains screen stops cutting the destination on a wide terminal.**
+  Reported from real use: at 186 columns a destination read
+  `http://harisenin-com_miniapp-gopa…` while a 25-character cuid sat beside it at
+  full width. Destination was pinned to 34 columns and Source absorbed every
+  spare one, so the wider the terminal, the more room went to the column that
+  needed it least.
+
+  Source and Destination now share the spare width; only the ID stays fixed,
+  because an opaque cuid is the one thing on that screen nobody reads or types.
+  All 22 domains on a live panel now render in full, custom destinations
+  included.
+
 ## [0.59.0] — 2026-07-20
 
 ### Added
