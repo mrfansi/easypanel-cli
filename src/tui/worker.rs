@@ -1963,10 +1963,18 @@ pub(super) fn fetch_view(
                 out.push(format!("── {title}"));
                 match v.get(key) {
                     // pointer "" = the value itself, so a string shows without quotes.
-                    Some(Value::Object(o)) if !o.is_empty() => out.extend(
-                        o.iter()
-                            .map(|(k, val)| format!("  {k}: {}", field(val, ""))),
-                    ),
+                    Some(Value::Object(o)) if !o.is_empty() => {
+                        out.extend(o.iter().map(|(k, val)| match val {
+                            // A flag reads as a word, not as JSON. `autoDeploy` is
+                            // the SAME field the Services table shows as ✓/✗ and
+                            // the Backups view shows as on/off — three renderings
+                            // of one boolean in one app, and this was the raw one.
+                            Value::Bool(b) => {
+                                format!("  {k}: {}", if *b { "yes" } else { "no" })
+                            }
+                            _ => format!("  {k}: {}", field(val, "")),
+                        }))
+                    }
                     _ => out.push("  (not set)".into()),
                 }
                 out.push(String::new());

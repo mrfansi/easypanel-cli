@@ -618,13 +618,25 @@ pub(super) fn render_nodes(f: &mut Frame, area: Rect, app: &App) {
     let header = Row::new(["Hostname", "Role", "State", "Availability", "Addr"])
         .style(Style::default().add_modifier(Modifier::BOLD));
     let rows = app.nodes.iter().map(|n| {
-        Row::new([
+        let row = Row::new([
             field(n, "/Description/Hostname"),
             field(n, "/Spec/Role"),
             field(n, "/Status/State"),
             field(n, "/Spec/Availability"),
             field(n, "/Status/Addr"),
-        ])
+        ]);
+        // Colour carries state everywhere else in this app — an unreachable host
+        // is red, a crashed service pulses red — but a swarm node that has gone
+        // `down` was painted exactly like a healthy one, on the FIRST screen the
+        // user sees. A node leaving the cluster is why services vanish.
+        match field(n, "/Status/State").as_str() {
+            "ready" => row,
+            _ => row.style(
+                Style::default()
+                    .fg(Color::Indexed(196))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        }
     });
     let table = Table::new(
         rows,
@@ -754,6 +766,20 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     const SERVICE_MINS: [u16; SERVICE_HEADERS.len()] = [0, 0, 0, 0, 0, 0, 120, 120, 120, 120];
     let cols = columns_that_fit(&SERVICE_MINS, area.width).len();
     let widths = &widths[..cols];
+    // Name and Source are both `Min`, so ratatui splits the leftover between them
+    // and neither cell knows how wide it ended up. That is how a repo came to be
+    // cut at the column edge with no ellipsis: "harisenincom/edukasistudio" read
+    // as "harisenincom/edu" — a name that looks complete and is a different repo.
+    // Worse, seven services of one project all rendered as "harisenincom/har",
+    // telling the reader nothing while appearing to. So the Source width is
+    // worked out HERE and the cell cut to it, with the ellipsis every other table
+    // in this file already uses.
+    const FIXED: [u16; SERVICE_HEADERS.len()] = [0, 8, 11, 5, 0, 5, 8, 10, 11, 11];
+    let fixed: u16 = FIXED[..cols].iter().sum();
+    let gaps = cols.saturating_sub(1) as u16;
+    let spare = area.width.saturating_sub(4 + fixed + gaps);
+    // Both minimums, then ratatui shares what is left evenly between the two.
+    let source_w = (16 + spare.saturating_sub(26 + 16) / 2) as usize;
     let header = Row::new(SERVICE_HEADERS[..cols].to_vec()).style(
         Style::default()
             .fg(Color::Black)
@@ -763,7 +789,7 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     // "down" rows pulse (bright red <-> salmon) so the eye is drawn to what's
     // broken; this is an incident state, so pulling attention to it is apt.
     let down_style = pulse_red(app.anim.elapsed().as_millis());
-    // The status dot (column 2) & the Auto mark (column 4) get their own per-cell
+    // The status dot (column 2) & the Auto mark (column 5) get their own per-cell
     // color: the state reads at a glance. "down" rows are left to inherit the red
     // pulse.
     let body = rows.into_iter().map(|(mut cells, is_down)| {
@@ -772,6 +798,7 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
             .into_iter()
             .enumerate()
             .map(|(i, c)| match i {
+                4 => Cell::from(crate::output::first_line(&c, source_w)),
                 2 => status_cell(&c, is_down),
                 5 => auto_cell(&c, is_down),
                 _ => Cell::from(c),
@@ -981,20 +1008,40 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
         .max()
         .unwrap_or(6)
         .clamp(6, 24) as u16;
+    // The thresholds move WITH the Server column. They were written when it was a
+    // fixed 14, so a fifteen-character name made every one of them one column
+    // optimistic: the last column was kept at a width where it no longer fits, and
+    // Status — the `Min` — silently absorbed the whole deficit. Status is the
+    // column the comment above promises is never dropped BECAUSE it carries the
+    // failure reason, so squeezing it is the one thing this must not do.
+    let shift = name_w as i32 - 14;
+    let at = |t: i32| (t + shift).max(0) as u16;
     let host_cols: &[(u16, Constraint)] = &[
-        (0, Constraint::Length(name_w)), // Server
-        (0, Constraint::Min(16)),        // Status — carries the failure reason
-        (0, Constraint::Length(7)),      // CPU
-        (0, Constraint::Length(19)),     // Memory
-        (83, Constraint::Length(19)),    // Disk
-        (102, Constraint::Length(18)),   // Load
-        (133, Constraint::Length(30)),   // URL
+        (0, Constraint::Length(name_w)),   // Server
+        (0, Constraint::Min(16)),          // Status — carries the failure reason
+        (0, Constraint::Length(7)),        // CPU
+        (0, Constraint::Length(19)),       // Memory
+        (at(83), Constraint::Length(19)),  // Disk
+        (at(102), Constraint::Length(18)), // Load
+        (at(133), Constraint::Length(30)), // URL
     ];
     let cols = columns_that_fit(
         &host_cols.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
         area.width,
     )
     .len();
+
+    // What Status will actually get, so a dead host's reason is cut with an
+    // ellipsis rather than at the column edge. The old cut at 40 characters was
+    // wider than this column is ever given, so it never fired and the reason was
+    // clipped silently — reading as the whole cause when it is the first half.
+    let fixed_after: u16 = [7u16, 19, 19, 18, 30][..cols.saturating_sub(2)]
+        .iter()
+        .sum();
+    let status_w = area
+        .width
+        .saturating_sub(4 + name_w + fixed_after + cols.saturating_sub(1) as u16)
+        .max(16) as usize;
 
     let rows: Vec<Row> = app
         .hosts
@@ -1016,7 +1063,10 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
                 HostState::Err(e) => (
                     vec![
                         h.name.clone(),
-                        format!("DOWN — {}", crate::output::first_line(e, 40)),
+                        format!(
+                            "DOWN — {}",
+                            crate::output::first_line(e, status_w.saturating_sub(7))
+                        ),
                         "-".into(),
                         "-".into(),
                         "-".into(),

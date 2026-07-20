@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.64.0] — 2026-07-20
+
+Five defects found by critiquing the render layer and then driving the binary to
+confirm each one on screen. They share a theme: **the same fact told two ways, or
+cut without saying it was cut.**
+
+### Fixed
+
+- **The Services table cut a repo name with no ellipsis.** `harisenincom/edukasistudio`
+  rendered as `harisenincom/edu` — a name that looks complete and is a different repo —
+  and seven services of one project all read `harisenincom/har`, telling the reader
+  nothing while appearing to. Name and Source are both flexible columns, so ratatui split
+  the leftover between them and neither cell knew how wide it ended up. The Source width
+  is now worked out up front and the cell cut to it, with the ellipsis the Actions and
+  Domains tables already use. Wide terminals still show the whole thing.
+
+- **A long host name squeezed the column that says WHY a host is unreachable.** The
+  Hosts table's drop thresholds were written when the Server column was a fixed 14
+  characters. Making it fit real names (v0.63.0) left every threshold one column
+  optimistic, so at some widths the last column was kept when it no longer fit and
+  Status — the only flexible column — silently absorbed the deficit. The thresholds now
+  move with the Server column. The failure reason is also cut at the width Status
+  actually gets: it was being trimmed at 40 characters, wider than that column is ever
+  given, so the trim never fired and the cause was clipped at the column edge instead —
+  reading as the whole reason when it was the first half.
+
+- **A Swarm node that left the cluster looked like a healthy one.** Colour carries state
+  everywhere else — an unreachable host is red, a crashed service pulses red — but the
+  Nodes table on the Dashboard, the first screen on launch, painted `down` as ordinary
+  text. A node leaving the cluster is why services vanish.
+
+- **CPU read `11.9%` on three screens and `11.9 %` on two others**, and the Services
+  table put `0.4 %` under a header already reading `CPU %`. One number now reads one way,
+  in the TUI and the CLI alike.
+
+- **The Source & build view printed raw JSON booleans.** `autoDeploy: true` — the same
+  field the Services table shows as `✓`/`✗` and the Backups view shows as `on`/`off`.
+  Three renderings of one boolean in one app; this was the raw one. It now says yes/no.
+
 ## [0.63.0] — 2026-07-20
 
 ### Fixed

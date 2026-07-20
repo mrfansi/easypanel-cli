@@ -889,7 +889,7 @@ fn metric_cols_render_bytes_and_rates() {
                         "networkIn": 12540.9, "networkOut": 32653.2 });
     assert_eq!(
         metric_cols(Some(&m)),
-        vec!["0.3 %", "547.3 MB", "12.2 KB/s", "31.9 KB/s"]
+        vec!["0.3%", "547.3 MB", "12.2 KB/s", "31.9 KB/s"]
     );
     // A service with no metrics must not panic or show a fake 0.
     assert_eq!(metric_cols(None), vec!["-", "-", "-", "-"]);
@@ -913,7 +913,7 @@ fn metrics_join_by_project_and_service() {
     let idx = app.metric_index();
     let m = *idx.get(&("proj-a", "mysql")).unwrap();
     // Must pick proj-a, not proj-b with the same name.
-    assert_eq!(metric_cols(Some(m))[0], "1.0 %");
+    assert_eq!(metric_cols(Some(m))[0], "1.0%");
     assert_eq!(metric_cols(Some(m))[1], "2.0 KB");
 
     // A service with no metrics: its columns are "-", not a fake 0.
@@ -1093,7 +1093,7 @@ fn service_extra_omits_empty_and_hidden_fields() {
 fn empty_project_shows_no_metrics_not_negative_zero() {
     // The old version of this test exercised `vec![].sum()` and `metric_cols(None)`
     // — Rust float semantics and a function the project header row doesn't call. It
-    // passed while the real screen showed "-0.0 %". Now it calls the actual row
+    // passed while the real screen showed "-0.0%". Now it calls the actual row
     // builder that render uses.
     let row = project_row("empty", 0, &[]);
     assert_eq!(row[0], "empty (0)");
@@ -1106,7 +1106,7 @@ fn empty_project_shows_no_metrics_not_negative_zero() {
     // With metrics -> actually summed, not "-".
     let m = json!({ "cpu": 1.5, "memory": 2048.0, "networkIn": 0.0, "networkOut": 0.0 });
     let row = project_row("filled", 1, &[&m]);
-    assert_eq!(row[6], "1.5 %");
+    assert_eq!(row[6], "1.5%");
 
     assert_eq!(metric_cols(None), vec!["-", "-", "-", "-"]);
 }
@@ -2759,10 +2759,15 @@ fn a_narrow_hosts_table_drops_columns_instead_of_halving_the_numbers() {
     // The columns that made room are gone, not squeezed into slivers.
     assert!(!narrow.contains("URL"), "URL is dropped first:\n{narrow}");
     assert!(!narrow.contains("Load"), "Load goes next:\n{narrow}");
-    assert!(
-        !narrow.contains("Disk"),
-        "Disk goes rather than render half a figure:\n{narrow}"
-    );
+    // Disk's presence now depends on how wide the Server column had to be — a
+    // short name leaves room a long one does not. What must hold either way is
+    // that whatever IS shown is whole.
+    if narrow.contains("Disk") {
+        assert!(
+            narrow.contains("93.1 GB / 745.1 GB"),
+            "a Disk column that is shown must be whole:\n{narrow}"
+        );
+    }
     // A width that fits Disk WHOLE must show it whole.
     let mid = render_at(90);
     assert!(
@@ -4254,4 +4259,129 @@ fn the_hosts_table_never_cuts_the_name_that_tells_hosts_apart() {
         })
         .collect();
     assert!(text.contains("angelia-machine"), "{text}");
+}
+
+#[test]
+fn the_services_table_never_cuts_a_repo_name_silently() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = App::new("s".into(), vec![]);
+    app.projects = vec!["alpha".into()];
+    let mut svc = svc("alpha", "dashboard", "app");
+    // The real case: two services of one owner whose names differ only after the
+    // point a 16-column cell can show. Cut silently they read as one repo.
+    svc["source"] = json!({
+        "type": "github", "owner": "harisenincom", "repo": "edukasistudio", "ref": "dev"
+    });
+    app.all_services = vec![svc];
+    app.screen = Screen::Projects;
+
+    for width in [100u16, 120, 200] {
+        let mut t = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        t.draw(|f| ui(f, &mut app)).unwrap();
+        let text: String = t
+            .backend()
+            .buffer()
+            .content()
+            .chunks(width as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>() + "\n")
+            .collect();
+        let row = text
+            .lines()
+            .find(|l| l.contains("dashboard"))
+            .unwrap_or_else(|| panic!("no service row at width {width}:\n{text}"))
+            .to_string();
+        // Either the whole repo is there, or what is shown says it was cut.
+        assert!(
+            row.contains("harisenincom/edukasistudio") || row.contains('…'),
+            "width {width} cut the source with no ellipsis: {row}"
+        );
+    }
+}
+
+#[test]
+fn a_long_host_name_never_squeezes_the_failure_reason() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // "angelia-machine" is fifteen characters, one more than the width the drop
+    // thresholds were written for. At 133 columns the seventh column was kept at
+    // a width that no longer fit, and Status — the only flexible column — paid
+    // for it, on the one column that carries WHY a host is unreachable.
+    let mut app = App::new("angelia-machine".into(), vec![]);
+    app.hosts = vec![HostRow {
+        name: "angelia-machine".into(),
+        url: "https://angelia.example.com".into(),
+        state: HostState::Err("error sending request for url (https://x)".into()),
+    }];
+    app.screen = Screen::Hosts;
+    for w in [100u16, 133, 160] {
+        let mut t = Terminal::new(TestBackend::new(w, 8)).unwrap();
+        t.draw(|f| ui(f, &mut app)).unwrap();
+        let text: String = t
+            .backend()
+            .buffer()
+            .content()
+            .chunks(w as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>() + "\n")
+            .collect();
+        let row = text
+            .lines()
+            .find(|l| l.contains("DOWN"))
+            .unwrap_or_else(|| panic!("no host row at {w}:\n{text}"))
+            .to_string();
+        // The name itself survives, and the reason either fits or says it was cut.
+        assert!(row.contains("angelia-machine"), "{w}: {row}");
+        assert!(
+            row.contains("error sending request for url (https://x)") || row.contains('…'),
+            "{w}: the reason was cut with no ellipsis: {row}"
+        );
+    }
+}
+
+#[test]
+fn a_swarm_node_that_left_the_cluster_is_not_painted_like_a_healthy_one() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+    let mut app = App::new("s".into(), vec![]);
+    app.nodes = vec![
+        json!({"Description":{"Hostname":"node-ok"},"Spec":{"Role":"manager","Availability":"active"},
+               "Status":{"State":"ready","Addr":"10.0.0.1"}}),
+        json!({"Description":{"Hostname":"node-gone"},"Spec":{"Role":"worker","Availability":"active"},
+               "Status":{"State":"down","Addr":"10.0.0.2"}}),
+    ];
+    app.screen = Screen::Dashboard;
+    let mut t = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let buf = t.backend().buffer().clone();
+
+    // The colour of the first cell of each node's row. A node leaving the cluster
+    // is why services vanish, and the Dashboard is the first screen on launch —
+    // it must not read as ordinary text there.
+    let colour_of = |name: &str| {
+        let w = 100usize;
+        let (i, _) = buf
+            .content()
+            .chunks(w)
+            .enumerate()
+            .find(|(_, r)| {
+                r.iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>()
+                    .contains(name)
+            })
+            .unwrap_or_else(|| panic!("no row for {name}"));
+        let row: Vec<_> = buf.content().chunks(w).nth(i).unwrap().to_vec();
+        let col = row
+            .iter()
+            .position(|c| c.symbol() != " " && c.symbol() != "│")
+            .unwrap();
+        row[col].fg
+    };
+    assert_ne!(
+        colour_of("node-gone"),
+        colour_of("node-ok"),
+        "a down node must not look like a ready one"
+    );
+    assert_eq!(colour_of("node-gone"), Color::Indexed(196));
 }

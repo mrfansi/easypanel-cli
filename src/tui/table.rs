@@ -161,7 +161,7 @@ pub(super) fn project_row(name: &str, count: usize, mets: &[&Value]) -> Vec<Stri
     }
     let sum = |ptr: &str| -> f64 { mets.iter().map(|m| num(m, ptr)).sum() };
     row.extend([
-        format!("{:.1} %", sum("/cpu")),
+        format!("{:.1}%", sum("/cpu")),
         format_bytes(sum("/memory")),
         format_rate(sum("/networkIn")),
         format_rate(sum("/networkOut")),
@@ -179,7 +179,7 @@ pub(super) fn metric_cols(m: Option<&Value>) -> Vec<String> {
         return vec!["-".into(), "-".into(), "-".into(), "-".into()];
     };
     vec![
-        format!("{:.1} %", num(m, "/cpu")),
+        format!("{:.1}%", num(m, "/cpu")),
         format_bytes(num(m, "/memory")),
         format_rate(num(m, "/networkIn")),
         format_rate(num(m, "/networkOut")),

@@ -288,7 +288,7 @@ pub fn stats_rows(s: &Value) -> Vec<Vec<String>> {
         )
     };
     vec![
-        vec!["CPU".into(), format!("{:.1} %", series_last(s, "cpu"))],
+        vec!["CPU".into(), format!("{:.1}%", series_last(s, "cpu"))],
         vec!["Cores".into(), field(s, "/cpuCores")],
         vec!["Load avg".into(), load_avg(s)],
         vec![
@@ -974,7 +974,7 @@ pub fn monitor_rows(services: &[Value]) -> Vec<Vec<String>> {
         let sum = |ptr: &str| -> f64 { svcs.iter().map(|c| num(c, ptr)).sum() };
         rows.push(vec![
             format!("{project} ({})", svcs.len()),
-            format!("{:.1} %", sum("/cpu")),
+            format!("{:.1}%", sum("/cpu")),
             format_bytes(sum("/memory")),
             format_rate(sum("/networkIn")),
             format_rate(sum("/networkOut")),
@@ -982,7 +982,7 @@ pub fn monitor_rows(services: &[Value]) -> Vec<Vec<String>> {
         for c in svcs {
             rows.push(vec![
                 format!("  {}", field(c, "/serviceName")),
-                format!("{:.1} %", num(c, "/cpu")),
+                format!("{:.1}%", num(c, "/cpu")),
                 format_bytes(num(c, "/memory")),
                 format_rate(num(c, "/networkIn")),
                 format_rate(num(c, "/networkOut")),
@@ -1309,7 +1309,7 @@ mod tests {
             vec!["big (2)", "  huge", "  tiny", "small (1)", "  a"]
         );
         // Project row = the total across its services.
-        assert_eq!(rows[0][1], "0.7 %");
+        assert_eq!(rows[0][1], "0.7%");
         assert_eq!(rows[0][4], "4.0 KB/s"); // 2048*2
     }
 
@@ -1317,7 +1317,7 @@ mod tests {
     fn monitor_formats_memory_and_rates() {
         let rows = monitor_rows(&[svc("p", "s", 1_073_741_824.0, 12.34)]);
         assert_eq!(rows[1][0], "  s");
-        assert_eq!(rows[1][1], "12.3 %");
+        assert_eq!(rows[1][1], "12.3%");
         assert_eq!(rows[1][2], "1.0 GB");
         assert_eq!(rows[1][3], "1.0 KB/s");
     }
@@ -1420,7 +1420,7 @@ mod tests {
             "networkOut": [[1, "2048"]]
         });
         let rows = stats_rows(&s);
-        assert_eq!(rows[0], vec!["CPU", "5.5 %"]); // last point
+        assert_eq!(rows[0], vec!["CPU", "5.5%"]); // last point
         assert_eq!(rows[1], vec!["Cores", "16"]);
         assert_eq!(rows[2], vec!["Load avg", "0.10, 0.20, 0.30"]);
         assert_eq!(rows[3], vec!["Memory", "25.0 % (1.0 GB / 2.0 GB)"]);
