@@ -180,7 +180,7 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
     render_status(f, chunks[2], app);
 
     if let Some(c) = &app.confirm {
-        render_confirm(f, c);
+        render_confirm(f, c, &app.server_name);
     }
     if app.picker.is_some() {
         render_picker(f, app);
@@ -421,10 +421,52 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     );
 }
 
+/// A colour that belongs to one server, derived from its name.
+///
+/// With several hosts in play, the thing that stops you working on the wrong one
+/// is not reading a label — it is noticing that the screen looks different. The
+/// colour is a pure function of the name, so a server looks the same every time
+/// you open it and different from its neighbours.
+///
+/// The palette avoids the indices that already carry meaning here: red for down,
+/// green for active, and the pink used for errors.
+pub(super) fn server_colour(name: &str) -> Color {
+    const PALETTE: &[u8] = &[
+        33,  // blue
+        135, // purple
+        208, // orange
+        37,  // teal
+        170, // magenta
+        142, // olive
+        69,  // slate blue
+        173, // tan
+    ];
+    // FNV-1a: tiny, stable across runs and platforms. `DefaultHasher` is
+    // explicitly not guaranteed to be, and a colour that changed between
+    // versions would defeat the point.
+    let mut h: u32 = 2_166_136_261;
+    for b in name.as_bytes() {
+        h ^= *b as u32;
+        h = h.wrapping_mul(16_777_619);
+    }
+    Color::Indexed(PALETTE[(h as usize) % PALETTE.len()])
+}
+
 pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) {
     // Drawn by hand (not the Tabs widget) so each tab has a definite column hitbox
     // for mouse clicks, and the active tab can briefly "flash" when it changes.
-    let block = Block::bordered().title(format!(" EasyPanel — {} ", app.server_name));
+    // The frame carries the server's colour, and its name is bold inside it: the
+    // one thing on screen that answers "which machine am I about to change?"
+    let tint = server_colour(&app.server_name);
+    let block = Block::bordered()
+        .border_style(Style::default().fg(tint))
+        .title(Line::from(vec![
+            Span::styled(" EasyPanel — ", Style::default().fg(tint)),
+            Span::styled(
+                format!("{} ", app.server_name),
+                Style::default().fg(tint).add_modifier(Modifier::BOLD),
+            ),
+        ]));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1656,7 +1698,7 @@ pub(super) fn render_chooser(f: &mut Frame, ch: &mut Chooser) {
     f.render_stateful_widget(list, area, &mut ch.state);
 }
 
-pub(super) fn render_confirm(f: &mut Frame, c: &Confirm) {
+pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str) {
     // Sized from the content, not from a percentage of the screen. At 80x24 the old
     // 52%x22% box was 41x5 for six lines of text: the question was cut mid-word and
     // the "[y] Yes [n] Cancel" line fell off the bottom entirely — the operator was
@@ -1668,8 +1710,8 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm) {
     // Word wrapping can break earlier than a hard division, so round up and add a
     // line: a dialog one row too tall is harmless, one row too short hides the keys.
     let label_lines = c.label.chars().count().div_ceil(inner) as u16 + 1;
-    // blank + label + blank + target + blank + keys, plus the two borders.
-    let h = (label_lines + 7).min(full.height);
+    // blank + label + blank + server + target + blank + keys, plus the borders.
+    let h = (label_lines + 8).min(full.height);
     let area = centered_abs(w, h, full);
     f.render_widget(Clear, area);
     // Name the actual target. The line "Affects a real service" used to be shown on
@@ -1685,20 +1727,33 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm) {
         (p, "") => format!("Target: {p}"),
         (p, s) => format!("Target: {p}/{s}"),
     };
+    // WHICH MACHINE. With several hosts configured, the answer to "am I about to
+    // change the right one?" was only in the frame's title behind this very
+    // dialog. It is the last thing read before pressing y, so it is on its own
+    // line, in that server's colour, above the target it applies to.
+    let tint = server_colour(server);
+    let body = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(c.label.clone()),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("on {server}"),
+            Style::default().fg(tint).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(target),
+        Line::from(""),
+        Line::from("[y] Yes      [n] Cancel"),
+    ]);
     f.render_widget(
-        Paragraph::new(format!(
-            "\n{}\n\n{target}\n\n[y] Yes      [n] Cancel",
-            c.label
-        ))
-        .alignment(Alignment::Center)
-        // Wrap, never truncate: a half-read question about deleting things is worse
-        // than a taller dialog.
-        .wrap(Wrap { trim: false })
-        .block(
-            Block::bordered()
-                .title(" Confirm ")
-                .border_style(Style::default().fg(Color::Yellow)),
-        ),
+        body.alignment(Alignment::Center)
+            // Wrap, never truncate: a half-read question about deleting things is
+            // worse than a taller dialog.
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::bordered()
+                    .title(" Confirm ")
+                    .border_style(Style::default().fg(Color::Yellow)),
+            ),
         area,
     );
 }

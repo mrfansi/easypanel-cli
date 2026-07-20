@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.0] — 2026-07-20
+
+### Added
+
+- **You can see which server you are on, without looking for it.** With several
+  hosts configured, the answer to "am I about to change the right machine?" lived
+  in one small line in the corner — and at the moment it mattered most, the
+  confirmation dialog, it was not there at all. A dialog asking to destroy a
+  service named the project and the service, but never the host.
+
+  Two changes, aimed at the two ways people actually notice things:
+
+  - **Every confirmation names the server**, on its own line above the target and
+    in that server's colour. It is the last thing read before pressing `y`.
+  - **Each server has its own colour**, on the frame and its name. It is a pure
+    function of the name, so a host looks the same every time you open it and
+    different from its neighbours — you register the change before you read
+    anything. The palette avoids the colours that already mean something here
+    (red for down, green for active, pink for errors).
+
+  Verified on two live hosts: the frame is blue for one and magenta for the
+  other, and stopping a service on the second asks "on angelia-machine" before
+  the target.
+
 ## [0.58.0] — 2026-07-20
 
 ### Added

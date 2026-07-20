@@ -2059,6 +2059,60 @@ fn a_confirmation_never_hides_the_question_or_the_keys() {
 }
 
 #[test]
+fn a_confirmation_names_the_server_it_is_about_to_change() {
+    // With several hosts configured, the only answer to "which machine?" was the
+    // frame's title — behind the very dialog asking to destroy something.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("angelia-machine".into(), vec![]);
+    app.confirm = Some(Confirm {
+        action: "destroy".into(),
+        project: "shop".into(),
+        service: "db".into(),
+        stype: String::new(),
+        label: "Destroy service 'db'?".into(),
+    });
+
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(80)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        screen.contains("on angelia-machine"),
+        "the host must be named where it is read:\n{screen}"
+    );
+    assert!(
+        screen.contains("shop/db"),
+        "and still the target:\n{screen}"
+    );
+    assert!(screen.contains("[y] Yes"), "keys still fit:\n{screen}");
+}
+
+#[test]
+fn a_server_keeps_its_colour_and_differs_from_its_neighbours() {
+    use super::render::server_colour;
+    // Stable: the same name gives the same colour every run, or the signal is
+    // worse than useless — it would teach the wrong association.
+    assert_eq!(
+        server_colour("aurel-machine"),
+        server_colour("aurel-machine")
+    );
+    // And the hosts actually in play must not collide, or the whole point goes.
+    assert_ne!(
+        server_colour("aurel-machine"),
+        server_colour("angelia-machine")
+    );
+}
+
+#[test]
 fn editing_a_mount_prefills_it_and_keeps_e_meaning_one_thing() {
     // Mounts could be added and deleted but not CHANGED, so moving one path
     // meant deleting a volume mount and rebuilding it. The values are fetched
