@@ -774,6 +774,11 @@ found by a **human looking at the screen**, never by a test:
 
 ### Verified capability matrix per service type (probed live, 2026-07-20)
 
+**Mounts and ports**: `mounts/*` and `ports/*` accept ONLY `app` and `box`. Databases,
+`compose` and `wordpress` answer `Invalid service type`. Checked with real services of
+each type — create the throwaway first, because an absent service can answer the same way.
+
+
 `-` = the route does NOT exist (bare `{"error":"Not found"}`); `yes` = it does (a bad
 argument answers with a tRPC `NOT_FOUND`/400 instead). Probe with a nonexistent service
 name — the two shapes stay distinguishable, cross-checked against a real service.

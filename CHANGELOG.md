@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.1] — 2026-07-20
+
+### Fixed
+
+- **Mounts and Ports are no longer offered where they cannot exist.** Opening
+  Mounts on a MySQL answered `[400] Invalid service type` — the entry was shown
+  on every service in the panel. Probed live against real services of each type:
+  `mounts` and `ports` accept only `app` and `box`; every database, `compose` and
+  `wordpress` refuse them. EasyPanel manages a database's storage itself, and a
+  compose stack declares its own in its file. The `p` and `M` keys are guarded
+  too, not just the menu — the leaf keys stay live where the menu hides an entry,
+  which is how the Lifecycle menu stayed broken for databases until v0.52.0.
+
+- **A group with nothing in it for this service says so.** Withdrawing both
+  mounts and backups correctly left Storage empty on a redis, and pressing `m`
+  then did nothing at all — the same dead end the gating set out to remove, only
+  quieter. It now answers "Nothing here for a redis service".
+
+- **A form is as wide as the note explaining it.** The box was a fixed 64 columns,
+  so its own guidance was cut mid-word: "only ones on shared remote stora". A
+  sentence that stops without warning is worse than none, because the reader
+  cannot tell what was withheld.
+
+### Note
+
+A test had asserted that redis *has* ports — an assumption never checked against
+a server, and wrong. It is corrected here. A test that encodes a wrong assumption
+is worse than no test: it turns a bug into evidence of correctness.
+
 ## [0.57.0] — 2026-07-20
 
 ### Changed

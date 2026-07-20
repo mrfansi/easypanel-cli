@@ -1047,7 +1047,13 @@ impl App {
                 let m = self.store_menu();
                 self.open_service_menu(m);
             }
-            KeyCode::Char('p') => self.open_view(View::Ports, req),
+            KeyCode::Char('p') => {
+                if let Some((_, _, t)) = self.selected_row() {
+                    if self.allows_mounts_and_ports(&t) {
+                        self.open_view(View::Ports, req)
+                    }
+                }
+            }
             KeyCode::Char('b') => self.open_view(View::Backups, req),
             KeyCode::Char('A') => self.toggle_auto_deploy(req),
             KeyCode::Char('U') => self.open_config_form(false, req),

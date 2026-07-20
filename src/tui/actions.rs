@@ -291,11 +291,16 @@ impl App {
         // "No redirects" and a footer saying `n add`, on a service type that can
         // never have one. Same type list the handlers check.
         const WEB: &[&str] = &["app", "box", "compose", "wordpress"];
-        let mut v = vec![
-            MenuItem::new("Domain", |a, r| a.open_service_domains(r)),
+        let stype = self.selected_row().map(|(_, _, t)| t).unwrap_or_default();
+        let mut v = vec![MenuItem::new("Domain", |a, r| a.open_service_domains(r))];
+        // Ports are app/box only — every other type answers "Invalid service
+        // type", so the entry could only ever open an error.
+        if crate::lifecycle::has_mounts_and_ports(&stype) {
             // The viewer adds and deletes, so "Add X" is not a separate door.
-            MenuItem::new("Ports", |a, r| a.on_key(KeyCode::Char('p'), r)),
-        ];
+            v.push(MenuItem::new("Ports", |a, r| {
+                a.on_key(KeyCode::Char('p'), r)
+            }));
+        }
         if self.is_selected_type(WEB) {
             v.push(MenuItem::new("Redirects", |a, r| {
                 a.on_key(KeyCode::Char('f'), r)
@@ -342,7 +347,10 @@ impl App {
 
     pub(super) fn store_menu(&self) -> Vec<MenuItem> {
         let stype = self.selected_row().map(|(_, _, t)| t).unwrap_or_default();
-        let mut v = vec![MenuItem::new("Mounts", |a, r| a.open_view(View::Mounts, r))];
+        let mut v = Vec::new();
+        if crate::lifecycle::has_mounts_and_ports(&stype) {
+            v.push(MenuItem::new("Mounts", |a, r| a.open_view(View::Mounts, r)));
+        }
         // Backups belong to databases. listDatabaseBackups answers [] for an app
         // rather than an error, so the entry used to open an empty box on every
         // service in the panel and explain nothing.
@@ -418,8 +426,17 @@ impl App {
     /// inside it silently fails — the action surface looks broken rather than
     /// unavailable.
     pub(super) fn open_service_menu(&mut self, items: Vec<MenuItem>) {
-        if self.selected_row().is_none() {
+        let Some((_, _, stype)) = self.selected_row() else {
             self.status = "Select a service first".into();
+            return;
+        };
+        // A group with nothing in it for THIS type must say so. Gating entries by
+        // what a type supports can empty a whole group — Storage on a redis, once
+        // mounts and backups were both correctly withdrawn — and a group key that
+        // silently does nothing is the same dead end the gating set out to fix,
+        // only quieter.
+        if items.is_empty() {
+            self.status = format!("Nothing here for a {stype} service");
             return;
         }
         self.open_menu(items);

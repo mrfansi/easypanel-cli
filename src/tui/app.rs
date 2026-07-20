@@ -1425,10 +1425,13 @@ impl App {
 
     /// Open the add-mount form for the highlighted service.
     pub(super) fn open_mount_form(&mut self) {
-        let Some((project, service, _)) = self.selected_row() else {
+        let Some((project, service, stype)) = self.selected_row() else {
             self.status = "Select a service first".into();
             return;
         };
+        if !self.allows_mounts_and_ports(&stype) {
+            return;
+        }
         self.form = Some(
             Form::new(
                 FormKind::MountCreate { project, service },
@@ -1979,6 +1982,20 @@ impl App {
             .collect();
         out.sort();
         out
+    }
+
+    /// Refuse a mounts/ports action on a type that has neither.
+    ///
+    /// The menu hides these, but the leaf keys (`p`, `M`) stay live — the exact
+    /// gap that left the Lifecycle menu wrong for databases until v0.52.0.
+    /// Returns true when the action may proceed.
+    pub(super) fn allows_mounts_and_ports(&mut self, stype: &str) -> bool {
+        if crate::lifecycle::has_mounts_and_ports(stype) {
+            return true;
+        }
+        self.status =
+            format!("A {stype} service has no mounts or ports — EasyPanel manages its storage");
+        false
     }
 
     /// Open the add-redirect form for the highlighted web service.

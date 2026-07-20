@@ -65,6 +65,17 @@ pub fn ops(stype: &str, action: &str) -> Option<Vec<&'static str>> {
     }
 }
 
+/// Does this type have mounts and ports?
+///
+/// Only `app` and `box`. Probed live with real services of each type: `mounts`
+/// and `ports` answer `Invalid service type` for compose, wordpress and every
+/// database — EasyPanel manages a database's storage itself, and a compose stack
+/// declares its own in its file. The menu used to offer both on every service in
+/// the panel, so opening Mounts on a MySQL was a guaranteed 400.
+pub fn has_mounts_and_ports(stype: &str) -> bool {
+    matches!(stype, "app" | "box")
+}
+
 /// Does this type have `updateResources`? Everything but `compose`, whose limits
 /// live in its compose file rather than in a panel field.
 pub fn has_resource_limits(stype: &str) -> bool {
@@ -126,6 +137,21 @@ mod tests {
         assert!(has_resource_limits("app") && has_resource_limits("box"));
         assert!(has_config_file("mysql") && has_config_file("box"));
         assert!(!has_config_file("app") && !has_config_file("compose"));
+    }
+
+    #[test]
+    fn mounts_and_ports_belong_to_app_and_box_only() {
+        assert!(has_mounts_and_ports("app") && has_mounts_and_ports("box"));
+        for t in [
+            "compose",
+            "wordpress",
+            "mysql",
+            "redis",
+            "postgres",
+            "mongo",
+        ] {
+            assert!(!has_mounts_and_ports(t), "{t}");
+        }
     }
 
     #[test]

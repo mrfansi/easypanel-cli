@@ -2059,6 +2059,40 @@ fn a_confirmation_never_hides_the_question_or_the_keys() {
 }
 
 #[test]
+fn a_form_is_wide_enough_for_the_note_that_explains_it() {
+    // The form was a fixed 64 columns, so its own explanation was cut mid-word:
+    // "lists that server's backups; only ones on shared remote stora". A
+    // sentence that stops without warning is worse than none, because the reader
+    // cannot tell what was withheld.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let note = "lists that server's backups; only ones on shared remote storage";
+    let mut app = App::new("s".into(), vec![]);
+    app.form = Some(
+        Form::new(
+            FormKind::ProjectCreate,
+            " Restore from another server ",
+            vec![Field::text("Server", "angelia-machine")],
+        )
+        .with_note(note.to_string()),
+    );
+
+    let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(100)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(screen.contains(note), "the whole note must fit:\n{screen}");
+}
+
+#[test]
 fn ticked_databases_are_what_gets_backed_up() {
     // Reported from real use: the picker offered "all or exactly one", so
     // backing up three of five meant running the whole flow three times.
@@ -3659,7 +3693,19 @@ fn a_menu_does_not_offer_what_the_service_type_cannot_have() {
     app.services_table.select(Some(1));
     let net = labels(app.net_menu());
     let build = labels(app.build_menu());
-    assert!(net.contains(&"Ports".to_string()), "redis does have ports");
+    // This used to assert redis HAS ports — an assumption never checked against
+    // a server. It does not: `ports` and `mounts` answer "Invalid service type"
+    // for every database, for compose and for wordpress. A test that encodes a
+    // wrong assumption is worse than no test, because it turns a bug into
+    // evidence of correctness.
+    assert!(
+        !net.contains(&"Ports".to_string()),
+        "redis has no ports: {net:?}"
+    );
+    assert!(
+        !labels(app.store_menu()).contains(&"Mounts".to_string()),
+        "nor mounts"
+    );
     for gone in ["Redirects", "Basic auth"] {
         assert!(!net.contains(&gone.to_string()), "{gone} on redis: {net:?}");
     }

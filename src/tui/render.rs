@@ -1483,8 +1483,6 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
     // Only the current step's fields show (single-page = all of them).
     let visible = form.visible_here();
     let height = (visible.len() as u16 + 5).min(f.area().height);
-    let area = centered_abs(64, height, f.area());
-    f.render_widget(Clear, area);
     // The title names the step so a wizard doesn't feel like a cut-off form.
     let steps = form.steps_present();
     let title = if form.is_wizard() {
@@ -1509,8 +1507,23 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
     } else {
         form.title.clone()
     };
+    // Wide enough for what it has to SAY. 64 columns is the comfortable default,
+    // but a fixed width silently cut a form's own explanation in half — "only
+    // ones on shared remote stora" — and a sentence that stops mid-word is worse
+    // than no sentence, because the reader cannot tell what was withheld.
+    // Counted in characters: the titles carry ·, — and ⌄.
+    let widest = title
+        .chars()
+        .count()
+        .max(form.note.as_deref().map_or(0, |n| n.chars().count()))
+        .max(form.error.as_deref().map_or(0, |e| e.chars().count()));
+    // +4: the two borders and a space either side of the text.
+    let width = (widest as u16 + 4).clamp(64, f.area().width);
+    let area = centered_abs(width, height, f.area());
+    f.render_widget(Clear, area);
+
     let mut block = Block::bordered()
-        .title(title)
+        .title(title.clone())
         .border_style(Style::default().fg(Color::Cyan));
     // A refusal replaces the guidance while it stands: it is the more urgent of
     // the two, and it names the field the user must fix to move on.
