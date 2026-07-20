@@ -96,10 +96,33 @@ pub(super) fn redirects_lines(v: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Does this field name a credential?
+///
+/// The Source view excluded the `token` and `env` KEYS of the service, which was
+/// the right instinct applied to an incomplete list: the `source` object of a
+/// private registry carries a `password`, and it was printed in full — a real
+/// GitHub token, in the clear, on screen. Matching on the NAME catches the ones
+/// nobody has thought of yet, which is the point: a new secret field added by a
+/// future EasyPanel arrives hidden rather than exposed.
+pub(super) fn is_secret(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    [
+        "password",
+        "token",
+        "secret",
+        "credential",
+        "apikey",
+        "privatekey",
+    ]
+    .iter()
+    .any(|needle| k.contains(needle))
+}
+
 /// Source, build, deploy and resources from `inspectService`.
 ///
-/// Deliberately NOT showing `token` (the deploy token) or `env`: both are
-/// credentials, and env has its own view.
+/// Credentials are never printed: the `token` and `env` keys are skipped
+/// entirely (env has its own view), and any field whose name reads like a secret
+/// is masked rather than shown.
 pub(super) fn source_lines(v: &Value) -> Vec<String> {
     let mut out = Vec::new();
     for (title, key) in [
@@ -117,6 +140,7 @@ pub(super) fn source_lines(v: &Value) -> Vec<String> {
                     // SAME field the Services table shows as ✓/✗ and the Backups
                     // view shows as on/off — three renderings of one boolean in
                     // one app, and this was the raw one.
+                    _ if is_secret(k) => format!("  {k}: ••••••••"),
                     Value::Bool(b) => format!("  {k}: {}", if *b { "yes" } else { "no" }),
                     _ => format!("  {k}: {}", field(val, "")),
                 }

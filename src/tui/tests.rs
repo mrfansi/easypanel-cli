@@ -4655,3 +4655,81 @@ fn the_palette_can_find_a_service_before_you_have_visited_the_services_tab() {
     pal.query = "mysql".into();
     assert!(!pal.matches().is_empty(), "the service is in the index");
 }
+
+#[test]
+fn the_source_view_never_prints_a_credential() {
+    use super::viewer_lines::{is_secret, source_lines};
+    // Found on a live host: a private registry's `password` — a real GitHub
+    // token — printed in full on the Source & build screen. The view already
+    // skipped the `token` and `env` KEYS of the service, which was the right
+    // instinct applied to a list that missed one. The edit form for this very
+    // field has always masked it, so one fact was rendered two ways.
+    let svc = json!({
+        "source": {
+            "type": "image",
+            "image": "ghcr.io/acme/app:latest",
+            "username": "acme-bot",
+            "password": "ghp_notarealtokenbutlookslikeone1234567890"
+        },
+        "build": {}, "deploy": { "replicas": 1 }, "resources": {}
+    });
+    let text = source_lines(&svc).join("\n");
+    assert!(
+        !text.contains("ghp_notarealtokenbutlookslikeone1234567890"),
+        "a credential reached the screen:\n{text}"
+    );
+    // Masked, not dropped: the operator still needs to know a password IS set.
+    assert!(text.contains("password: ••••••••"), "{text}");
+    // Everything that is not a secret still shows.
+    assert!(text.contains("username: acme-bot") && text.contains("ghcr.io/acme/app"));
+
+    // Matched by NAME, so a secret field added by a future EasyPanel arrives
+    // hidden rather than exposed.
+    for k in [
+        "password",
+        "apiToken",
+        "REGISTRY_SECRET",
+        "privateKey",
+        "apiKey",
+    ] {
+        assert!(is_secret(k), "{k} should be treated as a credential");
+    }
+    for k in ["image", "username", "replicas", "command"] {
+        assert!(!is_secret(k), "{k} is not a credential");
+    }
+}
+
+#[test]
+fn a_viewer_says_what_is_there_and_what_is_not() {
+    // These formatters used to live inside the function that fetched their input,
+    // so none of this could be checked without an HTTP server.
+    use super::viewer_lines::{backups_lines, mounts_lines, ports_lines, redirects_lines};
+    // An empty collection is a sentence, never a blank pane: the reader must be
+    // able to tell "nothing here" from "it failed to load".
+    assert_eq!(
+        ports_lines(&json!([]))[0],
+        "No ports yet — press n to add one"
+    );
+    assert_eq!(redirects_lines(&json!({}))[0], "No redirects");
+    assert_eq!(backups_lines(&json!([]))[0], "No database backups");
+
+    let ports = ports_lines(&json!([{ "protocol": "tcp", "published": 8080, "target": 80 }]));
+    assert!(ports[0].contains("tcp 8080->80"), "{:?}", ports);
+    // A bind mount reads host -> container; a volume reads name -> container.
+    let mounts = mounts_lines(&json!([
+        { "type": "bind", "hostPath": "/srv/a", "mountPath": "/app/a" },
+        { "type": "volume", "name": "data", "mountPath": "/var/lib/x" }
+    ]));
+    assert!(mounts[0].contains("/srv/a -> /app/a"), "{:?}", mounts);
+    assert!(mounts[1].contains("data -> /var/lib/x"), "{:?}", mounts);
+    // The backups header only earns its line when there is something under it.
+    let backups = backups_lines(
+        &json!([{ "databaseName": "app", "schedule": "0 3 * * *", "enabled": true }]),
+    );
+    assert!(backups[0].starts_with("Database"), "{:?}", backups);
+    assert!(
+        backups[1].contains("app") && backups[1].ends_with("on"),
+        "{:?}",
+        backups
+    );
+}

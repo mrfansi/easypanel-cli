@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.66.0] — 2026-07-20
+
+### Security
+
+- **The Source & build view printed registry credentials in the clear.** A service
+  pulling from a private registry stores a `password`, and that view showed it in full —
+  found on a live host, where it was a real GitHub token readable by anyone looking at
+  the screen or a screenshot.
+
+  The view already skipped the service's `token` and `env` keys, so credentials had been
+  thought about; the list simply missed one. And the edit form for that very field has
+  always masked it, so one fact was rendered two ways in the same application.
+
+  Fields are now judged by NAME — anything containing `password`, `token`, `secret`,
+  `credential`, `apikey` or `privatekey` is masked as `••••••••`. Masked rather than
+  dropped, because knowing a password IS set is useful. Matching on the name also means a
+  secret field added by a future EasyPanel arrives hidden instead of exposed, which a
+  fixed list of exclusions can never do.
+
+  **If you have opened this view on a service with a private registry, treat that
+  credential as exposed and rotate it.**
+
 ## [0.65.2] — 2026-07-20
 
 ### Fixed
