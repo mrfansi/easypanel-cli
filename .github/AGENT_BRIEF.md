@@ -298,6 +298,36 @@ and pass `--server harisenin-aurel` (or `harisenin-angelia`) explicitly for ever
 verification. Do not switch the default to make this easier — the owner's choice of
 default is theirs, and changing it is itself a mutation of their config.
 
+### A vacuous test is worse than no test (2026-07-21)
+
+Writing the regression test for the storage-path truncation took THREE attempts, and the
+first two passed against the broken code:
+
+1. The terminal was wide enough that the path fitted — the assertion never ran on a cut
+   value at all.
+2. The assertion looked for `mysql-r1`, which also appears in the **Service column** of
+   the same row. The path was being cut and the line still matched.
+
+Both times the test was green and proved nothing. The rule: **a regression test is not
+finished until it has been seen to FAIL against the old behaviour.** Disable the fix,
+run it, watch it go red, then restore. And when a test asserts on rendered output, assert
+on a string that can only appear in the cell under test — a row contains many columns.
+
+(Also: use `git stash`, never `git checkout <file>`, to try a sabotage — a checkout threw
+away an uncommitted fix during this very exercise.)
+
+### Open, not fixed: the DB shell password rides in a URL query string
+
+`ws_url` (terminal.rs) puts the base64'd shell command — which for a database shell
+contains the root password — in the WebSocket **query string**, along with the API token.
+Any proxy in front of the panel (Cloudflare, nginx, Traefik) logs full request URIs by
+default, so both land in access logs for the retention period. Base64 is encoding, not
+protection.
+
+Not fixable client-side: EasyPanel's `/ws/containerShell` takes both as query params.
+A real fix needs the panel to accept the command as a post-connect frame. Recorded rather
+than papered over. If a future EasyPanel exposes that, take it.
+
 ### Secrets: an exclusion LIST is not a policy (2026-07-20)
 
 The Source & build view skipped the service's `token` and `env` keys because they are
