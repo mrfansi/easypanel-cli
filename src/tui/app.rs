@@ -1987,6 +1987,32 @@ impl App {
             .collect()
     }
 
+    /// Compare the two marked services. The menu only offers this with exactly
+    /// two marked, so a wrong count means the marks changed under the menu — say
+    /// so rather than diffing the wrong pair.
+    pub(super) fn diff_marked(&mut self, req: &Sender<Req>) {
+        let t = self.bulk_targets();
+        let [a, b] = <[(String, String, String); 2]>::try_from(t)
+            .ok()
+            .unwrap_or_else(|| {
+                [
+                    (String::new(), String::new(), String::new()),
+                    (String::new(), String::new(), String::new()),
+                ]
+            });
+        if a.1.is_empty() || b.1.is_empty() {
+            self.status = "Mark exactly two services to compare".into();
+            return;
+        }
+        let _ = req.send(Req::DiffServices { a, b });
+        // The marks have done their job. Left set, the global "Esc clears marks"
+        // handler shadows the viewer's own Esc, so leaving the diff took two
+        // presses and read as a dead end. Bulk actions clear their marks for the
+        // same reason.
+        self.marked.clear();
+        self.status = "Comparing...".into();
+    }
+
     /// Ask before running `action` on every marked service.
     ///
     /// The confirmation NAMES them (up to a few) instead of only counting: marks

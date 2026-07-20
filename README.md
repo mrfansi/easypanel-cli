@@ -48,6 +48,11 @@ searchable table, and every domain on the box — without clicking through a hie
 - **Deploy visibility** — a service that is building shows `deploying` (and a count in
   the title), so you can see a deploy is still running instead of re-triggering it
   blindly. Immediate rejections surface instead of being swallowed.
+- **Compare two services** — mark two (`v` on each), open the menu (`Space`), "Compare the
+  2 marked services". Answers "staging works and prod doesn't — what's actually different?"
+  in one screen: source, build, deploy, resources, and env compared **by key** (which vars
+  differ or are missing, never the values — an env is full of secrets). The panel makes you
+  open two tabs and read them side by side.
 - **Dead routing, found for you** — a domain whose destination service has been renamed
   or destroyed still looks perfectly healthy in the panel. Here it is marked `✗` and
   counted in the title. On a real host with 713 domains, exactly one was dead; nobody
@@ -161,7 +166,7 @@ while dragging** to select/copy.)
 | **Domains** | Every domain on the host: source → destination (internal service or weighted custom servers), SSL resolver, wildcard. A domain pointing at a service that **no longer exists** is marked `✗` in red and counted in the title — dead routing is invisible among hundreds of live rows. `w` enrols one for uptime checks. |
 | **Uptime** | The domains you enrolled, and what they last answered — broken ones first, then the slowest. Shows the status code, TTFB, total, and how a domain compares with its peers. `r` checks them all, `e` edits the request, `x` stops watching. |
 | **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. A colored status dot reads at a glance: green `active`, yellow `stopped`, gray `disabled`, cyan `deploying` (a build is running), and a pulsing red **`down`** for a crashed/restart-looping service (its Swarm replicas are missing), counted in the title. From a selected service you can do the lot, grouped into menus — logs, terminal & DB shell, deploy/restart/stop/start, clone, env (view/edit/replace/`.env` file), ports, mounts, redirects, domains, resource limits, basic auth, and a database's config file. Selecting a project header targets the project and opens its own menu (`Space`): migrate the whole project to another host, new service, new project, destroy project. |
-| **Viewer** | Scrollable pane for logs, env, ports, mounts, redirects, backups, source & build. Credentials are masked — a field whose name reads like a secret shows as `••••••••` rather than in the clear. Reached from a service; `Esc` goes back. In the ports/mounts/redirects view, a digit key deletes that row. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. Long lines are not wrapped — `←→` scroll sideways, and the pane shows which column you are on. |
+| **Viewer** | Scrollable pane for logs, env, ports, mounts, redirects, backups, source & build, and a two-service diff. Credentials are masked — a field whose name reads like a secret shows as `••••••••` rather than in the clear. Reached from a service; `Esc` goes back. In the ports/mounts/redirects view, a digit key deletes that row. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. Long lines are not wrapped — `←→` scroll sideways, and the pane shows which column you are on. |
 
 ### Key bindings
 

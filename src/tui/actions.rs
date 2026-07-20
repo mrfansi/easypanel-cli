@@ -152,7 +152,16 @@ impl App {
         if n == 0 {
             return vec![];
         }
-        vec![
+        let mut items = vec![];
+        // Comparing needs exactly two — "diff" of three services is not a thing.
+        // It sits at the very top because it is a read, not a mutation: the one
+        // safe entry among a menu of actions that change things.
+        if n == 2 {
+            items.push(MenuItem::new("Compare the 2 marked services", |a, r| {
+                a.diff_marked(r);
+            }));
+        }
+        items.extend([
             MenuItem::new(format!("Deploy {n} marked services"), |a, _| {
                 a.open_bulk_confirm("deploy", false)
             }),
@@ -172,7 +181,8 @@ impl App {
                 a.marked.clear();
                 a.status = "Marks cleared".into();
             }),
-        ]
+        ]);
+        items
     }
 
     pub(super) fn context_items(&self) -> Vec<MenuItem> {

@@ -5062,3 +5062,39 @@ fn failures_only_hides_the_clean_successes_and_says_so() {
     assert_eq!(app.visible_actions().len(), 5);
     assert!(!app.actions_failures_only);
 }
+
+#[test]
+fn comparing_two_services_clears_the_marks_so_esc_is_not_a_dead_end() {
+    use ratatui::crossterm::event::KeyCode;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.all_services = vec![svc("prod", "api", "app"), svc("staging", "api", "app")];
+    app.marked.insert(("prod".into(), "api".into()));
+    app.marked.insert(("staging".into(), "api".into()));
+
+    app.diff_marked(&tx);
+    // The request carries both, ordered as bulk_targets sorts them.
+    match rx.try_recv().unwrap() {
+        Req::DiffServices { a, b } => {
+            assert_eq!((a.0.as_str(), a.1.as_str()), ("prod", "api"));
+            assert_eq!((b.0.as_str(), b.1.as_str()), ("staging", "api"));
+        }
+        _ => panic!("expected a diff request"),
+    }
+    // The marks are consumed. Left set, the global "Esc clears marks" handler
+    // shadows the viewer's Esc, so leaving the diff would take two presses and
+    // read as a dead end.
+    assert!(
+        app.marked.is_empty(),
+        "marks must not outlive the comparison"
+    );
+
+    // The result opens a viewer, and one Esc from it returns to Services.
+    app.handle(
+        Resp::Viewer(" Diff ".into(), vec!["prod/api   vs   staging/api".into()]),
+        &tx,
+    );
+    assert!(app.screen == Screen::Viewer);
+    app.on_key(KeyCode::Esc, &tx);
+    assert!(app.screen != Screen::Viewer, "one Esc must leave the diff");
+}

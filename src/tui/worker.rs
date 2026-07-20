@@ -90,6 +90,12 @@ pub(super) enum Req {
         action: String,
         force: bool,
     },
+    /// Compare two services field by field. Each is (project, service, type) —
+    /// the type picks the `services/{type}` endpoint group for inspectService.
+    DiffServices {
+        a: (String, String, String),
+        b: (String, String, String),
+    },
     /// Open the deploy form: replicas, start command, zero-downtime.
     DeployForm {
         project: String,
@@ -737,6 +743,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             action,
             force,
         } => bulk_action(client, resp_tx, targets, &action, force),
+        Req::DiffServices { a, b } => diff_services(client, a, b),
         Req::DeployForm { project, service } => {
             let ps = json!({ "projectName": project, "serviceName": service });
             match client.call("services/app", "inspectService", ps) {
@@ -1691,6 +1698,35 @@ fn backup_now(
 /// open one connection per service simultaneously.
 /// ponytail: fixed chunks, not a real pool — the tail of each chunk waits for its
 /// slowest member. Swap in a pool if bulk over hundreds of services gets slow.
+/// Fetch two services and hand the pair to the diff.
+///
+/// `inspectService` is grouped by type, and the two services may be different
+/// types (comparing an app with a compose is a legitimate "why are these set up
+/// differently"), so each is fetched with its own group.
+fn diff_services(
+    client: &EasypanelClient,
+    a: (String, String, String),
+    b: (String, String, String),
+) -> Resp {
+    let fetch = |(project, service, stype): &(String, String, String)| {
+        client.call(
+            &format!("services/{stype}"),
+            "inspectService",
+            json!({ "projectName": project, "serviceName": service }),
+        )
+    };
+    let (va, vb) = match (fetch(&a), fetch(&b)) {
+        (Ok(va), Ok(vb)) => (va, vb),
+        (Err(e), _) | (_, Err(e)) => return Resp::Err(e.to_string()),
+    };
+    let (la, lb) = (format!("{}/{}", a.0, a.1), format!("{}/{}", b.0, b.1));
+    let diffs = crate::services::diff(&va, &vb);
+    Resp::Viewer(
+        format!(" Diff: {la} vs {lb} "),
+        crate::services::diff_lines(&diffs, &la, &lb),
+    )
+}
+
 fn bulk_action(
     client: &EasypanelClient,
     resp_tx: &Sender<Resp>,

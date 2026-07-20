@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.71.0] — 2026-07-21
+
+### Added
+
+- **Compare two services.** "Staging works and production doesn't — what is actually
+  different?" is a question an operator asks constantly and today answers by opening two
+  screens and reading them line by line. Mark two services (`v` on each), open the menu
+  (`Space`) and pick **Compare the 2 marked services**. It shows every field that differs
+  — type, source, build, deploy block, resource limits — and the environment compared
+  **by key**: which variables differ, which exist on only one side, which agree.
+
+  The env values are never shown, only whether they match. An environment is the densest
+  collection of secrets a service has, and printing `DATABASE_URL: postgres://user:pw@… →`
+  to answer "are these the same?" would leak exactly what the recent credential-masking
+  work exists to contain. Comparison is also order-independent, so a reordered env line
+  does not read as a change.
+
+  Everything needed was already fetched (`inspectService`, which powers clone and
+  migrate); this only decides what differs. Two identical services get a plain sentence
+  saying so — itself the useful answer, pointing you outside the config to data or the
+  host. Nothing the panel offers.
+
 ## [0.70.0] — 2026-07-21
 
 ### Added

@@ -7,6 +7,7 @@ mod lifecycle;
 mod logs;
 mod migrate;
 mod output;
+mod services;
 mod source;
 mod tui;
 mod uptime;
