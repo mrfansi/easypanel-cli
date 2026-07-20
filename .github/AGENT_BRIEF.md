@@ -703,6 +703,20 @@ response-shape assumptions, metrics joins. File an issue instead.
    mismatch is worse than a missing one. Prefer `-` over a fake `0`.
 5. **Destructive actions without confirmation.** Deleting a server used to wipe its
    token instantly, with no prompt and no way to recover it.
+6. **A choice the user made that lives only in memory.** Switching host was applied to
+   the session and never written to the config, so the next launch silently came back
+   up on the old machine (v0.63.0, owner-reported). Whenever a deliberate act changes
+   which thing you are pointed at, ask what the NEXT launch will do — a per-session-only
+   answer is the same class as the wrong-machine mistake the server colours exist to
+   prevent.
+7. **Identity that cannot be corrected.** A server's name could not be edited, so a typo
+   in it was permanent: the only fix was deleting the server, and its token cannot be
+   read back from anywhere (v0.63.0). If a field is the label everything else identifies
+   a thing by, it must be editable, and the correction must not risk the credential.
+8. **A save that quietly takes no effect.** A project env change is stored immediately
+   but running containers keep the old values until they are deployed (proven live,
+   v0.62.0). Reporting "saved" and stopping there tells the user the change is live when
+   it is not — say what is still stale, and offer the step that makes it real.
 
 ## UX, workflow, and architecture are part of "done"
 
