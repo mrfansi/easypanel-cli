@@ -266,6 +266,35 @@ Each is grounded in an endpoint confirmed to exist in `backend.js` 2.32.2.
    (list/create/delete + send test) is doable but thin. Don't build channel management and
    call it alerting.
 
+### Ideas parked for a future run (2026-07-20) — judged by operator impact, not parity
+
+Ranked by impact per unit of work. None of these needs an endpoint the tool does not
+already call, which is why they are ideas rather than probes.
+
+- **Diff two services, or the same service on two hosts.** CHEAPEST of the three and the
+  most immediately useful: everything needed is already fetched (`inspectService` powers
+  clone and migrate). "Staging works and prod doesn't — what is actually different?" is a
+  question operators ask constantly and currently answer by eyeballing two screens. Show
+  a field-by-field diff of image/source, build, env, mounts, ports, resources, deploy
+  block. Cross-host makes it sharper still, since the tool already holds several hosts at
+  once. Small-to-medium: one new screen, no new endpoints, no live probing needed.
+
+- **Export a project's config to a file, and apply it back.** The tool already reads a
+  whole project's config (migrate does exactly this, in memory, host-to-host). Writing it
+  to a YAML/JSON file that can be committed to git — and applying that file to a host —
+  turns migrate into GitOps-lite for a panel that has no export and no import at all.
+  Medium-to-large: needs a stable file schema, an apply that is idempotent, and a careful
+  story about what it will NOT carry (data, secrets the API does not return). Verify the
+  round-trip against a `zzz-*` project before believing it.
+
+- **Watch mode: turn crash visibility into an actual alert.** The tool already knows when
+  a service is `down` (Swarm replicas missing) — that is the hard part, and it is done.
+  A headless `easypanel watch` that polls and fires a webhook / desktop notification /
+  non-zero exit would make it useful when nobody is looking at the screen. The brief
+  already records that EasyPanel's own alerting is not exposed through the API, so this is
+  squarely in "things the panel can't give you". Medium. Decide deliberately whether it is
+  a foreground command or a daemon — a daemon brings state, and this repo has none.
+
 ### Growth backlog — richer features (every endpoint verified in 2.32.2)
 
 Fill out the management surface. Verify live with a `zzz-*` target and clean up.
