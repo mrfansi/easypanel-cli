@@ -632,6 +632,27 @@ fn edit_config_in_editor(
     )
 }
 
+/// Write a file only this user can read, replacing whatever was there.
+///
+/// Not `fs::write` + `set_permissions`: that leaves a window where the contents
+/// are on disk world-readable. The mode is set at creation instead.
+fn write_private(path: &std::path::Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+    // A stale file from an earlier session (or one planted by another user) must
+    // not be written through — remove it and create our own.
+    let _ = std::fs::remove_file(path);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(contents.as_bytes())?;
+    Ok(())
+}
+
 /// Edit text in `$EDITOR`; None if unchanged.
 ///
 /// The terminal is released while the editor runs, then taken back — including if
@@ -642,7 +663,12 @@ fn edit_text_in_editor(
     current: &str,
 ) -> Result<Option<String>> {
     let path = std::env::temp_dir().join(filename);
-    std::fs::write(&path, current)?;
+    // 0600 BEFORE a byte is written. On Linux `temp_dir()` is the shared /tmp, so
+    // the default mode would let every account on the box read a service's whole
+    // environment — connection strings, API keys, signing secrets — under a name
+    // that is entirely predictable. The config files next door already do this;
+    // this was the one writer that missed the house rule.
+    write_private(&path, current)?;
 
     disable_mouse();
     ratatui::restore();

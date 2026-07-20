@@ -882,6 +882,50 @@ fn pulse_red(ms: u128) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// The width the single flexible column of a table actually gets.
+///
+/// `None` when the table has no `Min` column, or more than one — then the split
+/// is ratatui's business and no single answer exists.
+///
+/// This arithmetic has been written by hand five times in this file, and a
+/// column was cut with no ellipsis every time it was forgotten: a repo name, an
+/// action description, a domain, a failure reason, and a storage path where the
+/// cut landed exactly on the character telling `mysql-r1` from `mysql-r2`. It
+/// lives here now so a new table cannot be added without it.
+pub(super) fn flex_width(widths: &[Constraint], area_width: u16, selected: bool) -> Option<usize> {
+    let mut flex = None;
+    let mut fixed = 0u16;
+    for (i, c) in widths.iter().enumerate() {
+        match c {
+            Constraint::Length(n) => fixed += n,
+            Constraint::Min(_) if flex.is_none() => flex = Some(i),
+            // Two flexible columns: ratatui shares the slack between them and
+            // this cannot say how.
+            _ => return None,
+        }
+    }
+    flex?;
+    // One space between each pair of columns, the two borders, and — only when a
+    // row is selected — the two columns of the highlight symbol. Counting the
+    // symbol unconditionally would cut two characters that were never needed.
+    let gaps = widths.len().saturating_sub(1) as u16;
+    let symbol = if selected { 2 } else { 0 };
+    Some(area_width.saturating_sub(2 + symbol + fixed + gaps).max(8) as usize)
+}
+
+/// Which column is the flexible one, if exactly one is.
+fn flex_column(widths: &[Constraint]) -> Option<usize> {
+    let mut flex = None;
+    for (i, c) in widths.iter().enumerate() {
+        match c {
+            Constraint::Length(_) => {}
+            Constraint::Min(_) if flex.is_none() => flex = Some(i),
+            _ => return None,
+        }
+    }
+    flex
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_table(
     f: &mut Frame,
@@ -899,6 +943,24 @@ pub(super) fn render_table(
             .bg(Color::Green)
             .add_modifier(Modifier::BOLD),
     );
+    // The flexible column is the one that overflows, and ratatui clips it at the
+    // pane edge with no mark — so a cut path or name reads as a complete, shorter
+    // one. Cut it here instead, with the ellipsis every other table uses.
+    let rows = match (
+        flex_column(widths),
+        flex_width(widths, area.width, state.selected().is_some()),
+    ) {
+        (Some(col), Some(w)) => rows
+            .into_iter()
+            .map(|mut cells| {
+                if let Some(cell) = cells.get_mut(col) {
+                    *cell = crate::output::first_line(cell, w);
+                }
+                cells
+            })
+            .collect(),
+        _ => rows,
+    };
     let table = Table::new(rows.into_iter().map(Row::new), widths.to_vec())
         .header(header)
         .block(pane(title, tint))

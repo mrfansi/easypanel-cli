@@ -298,7 +298,9 @@ and your own link included.
 
 ### Your editor
 
-Env files, Dockerfiles and database config files open in your own editor. The first
+Env files, Dockerfiles and database config files open in your own editor. The temp file
+it hands over is created readable by you alone (`0600`) — on a shared machine `/tmp` is
+world-readable, and a service's env is the densest collection of secrets it has. The first
 of `$EASYPANEL_EDITOR`, `$VISUAL`, `$EDITOR` that is actually installed wins, falling
 back to `vi` then `nano`. `EASYPANEL_EDITOR` exists so you can use a terminal editor
 here without changing the editor the rest of your machine uses.

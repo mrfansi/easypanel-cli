@@ -67,6 +67,24 @@ pub(super) fn ws_url(
     ))
 }
 
+/// Why a terminal could not connect, WITHOUT the URL it tried.
+///
+/// The URL carries `?token={api token}` and, for a database shell, the base64 of
+/// a command containing the root password. tungstenite's `Error::Url` renders as
+/// "Unable to connect to {the whole URI}", and that was formatted straight into
+/// the status line — so any panel outage, wrong port or firewalled host printed
+/// the API token on screen and left it in the terminal's scrollback, ready to be
+/// screenshotted into a bug report.
+///
+/// Only that one variant carries the URI; `Io`, `Http` and `Protocol` do not, so
+/// their messages (which are the useful ones) pass through untouched.
+pub(super) fn connect_failure(e: &tungstenite::Error) -> String {
+    match e {
+        tungstenite::Error::Url(_) => "could not reach the panel".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Standard base64 (with padding). Hand-written — the encoding is trivial, no
 /// need to add a dependency. Used for the terminal WebSocket's `command` parameter.
 pub(super) fn base64(input: &[u8]) -> String {
@@ -205,7 +223,10 @@ pub(super) fn spawn_session(
         let mut ws = match tungstenite::connect(&url) {
             Ok((ws, _)) => ws,
             Err(e) => {
-                let _ = resp_tx.send(Resp::Err(format!("terminal failed to connect: {e}")));
+                let _ = resp_tx.send(Resp::Err(format!(
+                    "terminal failed to connect: {}",
+                    connect_failure(&e)
+                )));
                 let _ = resp_tx.send(Resp::TermClosed);
                 return;
             }

@@ -4733,3 +4733,142 @@ fn a_viewer_says_what_is_there_and_what_is_not() {
         backups
     );
 }
+
+#[test]
+fn a_failed_terminal_connection_never_prints_the_url_it_tried() {
+    use super::terminal::connect_failure;
+    use tungstenite::error::UrlError;
+    // The WebSocket URL carries ?token={api token}, and for a database shell the
+    // base64 of a command containing the root password. tungstenite renders this
+    // variant as "Unable to connect to {the whole URI}", and that went straight
+    // to the status line — so a firewalled port or a panel outage printed the API
+    // token on screen and left it in the scrollback.
+    let secret_url = "wss://panel.example.com/ws/containerShell?container=abc\
+                      &command=TVlTUUxfUFdEPSdodW50ZXIyJw==&token=ep_realtokenvalue";
+    let e = tungstenite::Error::Url(UrlError::UnableToConnect(secret_url.into()));
+    let shown = connect_failure(&e);
+    assert!(
+        !shown.contains("ep_realtokenvalue"),
+        "token leaked: {shown}"
+    );
+    assert!(!shown.contains("TVlTUUxfUFdE"), "command leaked: {shown}");
+    assert!(!shown.contains("wss://"), "the URL leaked: {shown}");
+    assert!(shown.contains("could not reach the panel"), "{shown}");
+
+    // The variants that do NOT carry the URI keep their message: those are the
+    // useful ones, and blanket-suppressing them would trade one problem for
+    // another.
+    let io = tungstenite::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::ConnectionRefused,
+        "connection refused",
+    ));
+    assert!(connect_failure(&io).contains("connection refused"));
+}
+
+#[test]
+fn an_editor_temp_file_is_readable_only_by_its_owner() {
+    // On Linux temp_dir() is the shared /tmp and the default mode would let every
+    // account on the box read a service's whole environment. The config files
+    // next door already chmod 0600; this writer did not.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("easypanel-p-s.env");
+    super::write_private(&path, "SECRET=hunter2\n").unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "SECRET=hunter2\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "world-readable secrets: {mode:o}");
+    }
+    // A stale file from an earlier session is replaced, not written through.
+    super::write_private(&path, "SECRET=changed\n").unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "SECRET=changed\n");
+}
+
+#[test]
+fn a_table_cuts_its_flexible_column_with_an_ellipsis() {
+    use super::render::{flex_width, render_table};
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Constraint;
+    use ratatui::widgets::TableState;
+    use ratatui::Terminal;
+    // Found on the Monitor tab: two storage paths differing only in their last
+    // character both rendered as ".../mysql-r", so the column that identifies the
+    // row said nothing while looking complete. Every table drawn through
+    // render_table now cuts its one flexible column here rather than letting
+    // ratatui clip it at the pane edge.
+    let widths = [
+        Constraint::Length(20),
+        Constraint::Length(18),
+        Constraint::Length(11),
+        Constraint::Min(20),
+    ];
+    let rows = vec![
+        vec![
+            "viding-co-db".into(),
+            "mysql-r1".into(),
+            "78.1 GB".into(),
+            "/etc/easypanel/projects/viding-co-db/mysql-r1".into(),
+        ],
+        vec![
+            "viding-co-db".into(),
+            "mysql-r2".into(),
+            "78.2 GB".into(),
+            "/etc/easypanel/projects/viding-co-db/mysql-r2".into(),
+        ],
+    ];
+    // A selected row, as every real table has: the highlight symbol takes two
+    // columns, and the first version of this test forgot that — the path fitted
+    // exactly, so the test passed whether or not anything was cut.
+    let mut state = TableState::default().with_selected(Some(0));
+    let mut t = Terminal::new(TestBackend::new(100, 8)).unwrap();
+    t.draw(|f| {
+        let area = f.area();
+        render_table(
+            f,
+            area,
+            " Storage ".into(),
+            &["Project", "Service", "Size", "Path"],
+            &widths,
+            rows,
+            &mut state,
+            ratatui::style::Color::Blue,
+        )
+    })
+    .unwrap();
+    let screen: String = t
+        .backend()
+        .buffer()
+        .content()
+        .chunks(100)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>() + "\n")
+        .collect();
+    println!(
+        "RENDERED:
+{screen}"
+    );
+    for line in screen.lines().filter(|l| l.contains("/etc/easypanel")) {
+        // The WHOLE path, not just its tail: "mysql-r1" also appears in the
+        // Service column, so checking for that alone passed even while the path
+        // was being cut — the first two versions of this test proved nothing.
+        assert!(
+            line.contains("/etc/easypanel/projects/viding-co-db/mysql-r1")
+                || line.contains("/etc/easypanel/projects/viding-co-db/mysql-r2")
+                || line.contains('…'),
+            "a path was cut with no ellipsis: {line}"
+        );
+    }
+
+    // Two flexible columns: ratatui shares the slack and no single width exists,
+    // so nothing is cut rather than something being cut at a guessed width.
+    assert_eq!(
+        flex_width(&[Constraint::Min(10), Constraint::Min(10)], 80, true),
+        None
+    );
+    // The highlight symbol only takes room when there is a selection.
+    let one = [Constraint::Length(10), Constraint::Min(10)];
+    assert_eq!(
+        flex_width(&one, 80, false).unwrap() - flex_width(&one, 80, true).unwrap(),
+        2
+    );
+}

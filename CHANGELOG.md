@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.67.0] — 2026-07-21
+
+### Security
+
+Two findings from a dedicated audit of one question: *where else can a credential
+reach somewhere it should not?* Both are the same mistake v0.66.0 fixed for fields,
+in the two places a field-name check cannot see — a secret inside a **URL**, and a
+secret inside a **text blob**.
+
+- **A failed terminal connection printed the API token on screen.** The container
+  shell's WebSocket URL carries `?token={your API token}`, and for a database shell
+  the base64 of a command containing the root password. When the connection failed,
+  the library's error renders as *"Unable to connect to {the whole URI}"* — and that
+  went straight to the status line. Any panel outage, wrong port or firewalled host
+  was enough, and the token stayed in the terminal's scrollback afterwards, ready to
+  be pasted into a bug report. The failure now says it could not reach the panel; the
+  error variants that do NOT carry the URI keep their own message, since those are the
+  useful ones.
+
+- **`$EDITOR` temp files were world-readable.** Editing a service's env, a project's
+  shared env, a database config file or an uptime check's headers writes the contents
+  to a temp file first. On Linux that is the shared `/tmp`, at default permissions,
+  under a fully predictable name — so any account on the machine could read a
+  service's entire environment: connection strings, third-party keys, signing secrets.
+  Denser than any single field. The file is now created `0600` before a byte is
+  written, and a stale file is replaced rather than written through.
+
+A third path was found and deliberately NOT changed: the database shell's password
+rides in the WebSocket query string, so a proxy in front of the panel will have it in
+its access logs. Fixing that needs EasyPanel to accept the command as a post-connect
+frame; it is recorded in the brief rather than papered over here.
+
+### Fixed
+
+- **A table cut its widest column without saying so — for the fifth time.** Found on
+  the Monitor tab: two storage paths differing only in their last character both
+  rendered as `…/mysql-r`, so the column that identifies the row said nothing while
+  looking complete. The arithmetic for "how wide does the flexible column actually
+  get" had been written by hand in five places and forgotten in this one, so it now
+  lives inside `render_table` itself: every table drawn through it is cut with an
+  ellipsis, including tables nobody has written yet.
+
 ## [0.66.0] — 2026-07-20
 
 ### Security
