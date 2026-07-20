@@ -500,7 +500,7 @@ pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) {
     let mut spans = Vec::new();
     let mut hits = Vec::new();
     let mut x = inner.x;
-    for (i, title) in TABS.iter().enumerate() {
+    for (i, title) in super::app::tabs_for(area.width).iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
             x += 1;
@@ -1872,7 +1872,11 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
         .max(form.error.as_deref().map_or(0, |e| e.chars().count()));
     // +4: the two borders and a space either side of the text.
     let width = (widest as u16 + 4).clamp(64, f.area().width);
-    let area = centered_abs(width, height, f.area());
+    // `_w` — COLUMNS. This measured itself carefully and then handed the number
+    // to `centered_abs`, whose first parameter is a percentage, so at 80 columns
+    // a form that needed 68 was drawn 54 wide: the measurement was doing its job
+    // and the result was thrown away. Two helpers one character apart.
+    let area = centered_abs_w(width, height, f.area());
     f.render_widget(Clear, area);
 
     let mut block = Block::bordered()
@@ -2023,7 +2027,11 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str) {
     let label_lines = c.label.chars().count().div_ceil(inner) as u16 + 1;
     // blank + label + blank + server + target + blank + keys, plus the borders.
     let h = (label_lines + 8).min(full.height);
-    let area = centered_abs(w, h, full);
+    // COLUMNS, like `w` and `inner` above. As a percentage the box came out
+    // narrower than the width the wrap was calculated with, so the label ran to
+    // more lines than the height allowed for and the line naming the keys could
+    // fall out of the bottom — on the dialog for irreversible actions.
+    let area = centered_abs_w(w, h, full);
     f.render_widget(Clear, area);
     // Name the actual target. The line "Affects a real service" used to be shown on
     // every confirmation — wrong for a maintenance action, which affects the whole
@@ -2193,6 +2201,10 @@ pub(super) fn centered_abs_w(width: u16, height: u16, r: Rect) -> Rect {
     }
 }
 
+/// Centre a box `pct_x` PERCENT of the width. For a box measured in columns use
+/// `centered_abs_w` — passing columns here silently reads them as a percentage,
+/// which is how two dialogs came to be sized by a number that meant something
+/// else entirely.
 pub(super) fn centered_abs(pct_x: u16, height: u16, r: Rect) -> Rect {
     let pad = r.height.saturating_sub(height) / 2;
     let v = Layout::vertical([

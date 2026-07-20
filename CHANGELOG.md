@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.1] — 2026-07-20
+
+### Fixed
+
+- **Enrolling a domain for uptime checks now asks what to check it with (reported by the
+  owner).** `w` used to enrol instantly with a silent GET, leaving the method, body and
+  expected status to be set later on another screen — two doors into one room, and a
+  deliberate act performed without the user deciding anything. `w` now opens the check
+  form, and nothing is stored until it is saved. On a domain already watched it reopens
+  that same form to edit it.
+
+- **Two dialogs were sized by a number that meant something else.** `render_form` and
+  `render_confirm` each measure the width they need in COLUMNS and then handed it to a
+  helper whose first parameter is a PERCENTAGE — two functions one character apart in
+  name. At 80 columns a form that measured itself at 68 was drawn 54 wide, cutting the
+  very text the measurement exists to protect: the "Watch …" form lost the second half of
+  the URL it was about. Worse for the confirmation, which wraps its label using a width
+  it never received, so the label ran to more lines than the box allowed and the
+  `[y] Yes  [n] Cancel` line could fall out of the bottom — on the dialog that guards
+  irreversible actions.
+
+- **The tab bar lost a tab at 80 columns.** Adding the eighth tab in v0.65.0 pushed the
+  full labels past the frame and the strip was clipped, so `Uptime` rendered as `Up`. The
+  two longest labels now shorten to `Dash` and `Maint` when the full set will not fit —
+  a shortened word beats a missing tab, on the one strip whose job is saying where you
+  are and where you can go.
+
 ## [0.65.0] — 2026-07-20
 
 ### Added

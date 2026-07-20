@@ -4447,35 +4447,51 @@ fn filtering_from_the_bottom_of_a_long_list_shows_the_matches_not_one_row() {
 }
 
 #[test]
-fn only_what_you_enrol_is_watched_and_w_toggles_it() {
+fn enrolling_a_domain_goes_through_the_form_not_a_silent_default() {
     use ratatui::crossterm::event::KeyCode;
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Domains;
-    app.domains = vec![
-        json!({ "id": "d1", "host": "one.test", "path": "/", "https": true }),
-        json!({ "id": "d2", "host": "two.test", "path": "/", "https": true }),
-    ];
+    app.domains = vec![json!({ "id": "d1", "host": "one.test", "path": "/", "https": true })];
     app.domains_state.select(Some(0));
 
     // Nothing is watched until the operator says so — never the whole list.
     assert!(app.watch.is_empty());
     app.on_key(KeyCode::Char('w'), &tx);
+
+    // `w` does NOT enrol on its own. Enrolling is a deliberate act, so what the
+    // domain is checked WITH is chosen here rather than defaulted silently and
+    // configured on another screen afterwards.
+    assert!(
+        app.watch.is_empty(),
+        "nothing is stored before the form is saved"
+    );
+    let form = app.form.as_ref().expect("the check form");
+    assert!(form.title.contains("one.test"), "{}", form.title);
+    assert_eq!(form.val(0), "GET", "prefilled with the obvious check");
+
+    // Backing out enrols nothing at all.
+    app.form = None;
+    assert!(app.watch.is_empty() && app.watch_action.is_none());
+
+    // Saving it does.
+    app.on_key(KeyCode::Char('w'), &tx);
+    if let Some(f) = app.form.as_mut() {
+        f.fields[0].value = "POST".into();
+    }
+    app.submit_form(&tx);
     assert_eq!(app.watch.len(), 1);
     assert_eq!(app.watch[0].url, "https://one.test/");
+    assert_eq!(app.watch[0].method, "POST", "the choice made in the form");
     // The file write is left to the event loop, which owns every path on disk.
     assert!(matches!(app.watch_action, Some(WatchAction::Put(_))));
 
-    // The same key takes it off again, and the old answer goes with it — a
-    // result for something no longer watched is worse than none.
-    app.probes = vec![crate::uptime::Probe {
-        url: "https://one.test/".into(),
-        outcome: crate::uptime::Outcome::Failed("x".into()),
-    }];
+    // A second `w` on an already-watched domain edits it rather than adding a
+    // duplicate: one door to a check, whichever screen you came from.
     app.on_key(KeyCode::Char('w'), &tx);
-    assert!(app.watch.is_empty());
-    assert!(app.probes.is_empty());
-    assert!(matches!(app.watch_action, Some(WatchAction::Remove(_))));
+    assert_eq!(app.form.as_ref().unwrap().val(0), "POST");
+    app.submit_form(&tx);
+    assert_eq!(app.watch.len(), 1);
 }
 
 #[test]
@@ -4527,4 +4543,91 @@ fn a_check_that_cannot_be_sent_keeps_the_form_open_to_be_fixed() {
     assert!(app.form.is_some(), "the fix is one character in this box");
     assert!(status_is_error(&app.status), "{}", app.status);
     assert_eq!(app.watch[0].timeout_secs, 10, "nothing was saved");
+}
+
+#[test]
+fn the_tab_bar_never_loses_a_tab_at_eighty_columns() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // Adding the eighth tab pushed the full labels past 80 columns and the strip
+    // was clipped at the frame — the newest tab vanished from the one bar whose
+    // job is saying where you are and where you can go.
+    for w in [80u16, 100, 120, 200] {
+        let mut app = App::new("s".into(), vec![]);
+        let mut t = Terminal::new(TestBackend::new(w, 8)).unwrap();
+        t.draw(|f| ui(f, &mut app)).unwrap();
+        let bar: String = t
+            .backend()
+            .buffer()
+            .content()
+            .chunks(w as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .find(|l| l.contains("Dash"))
+            .unwrap_or_default();
+        // Every tab is reachable, so every tab must be readable — whether by its
+        // full name or its shortened one.
+        for (full, short) in super::app::TABS.iter().zip(super::app::SHORT_TABS.iter()) {
+            assert!(
+                bar.contains(full) || bar.contains(short),
+                "at {w} columns the bar lost '{full}':\n{bar}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_dialog_is_as_wide_as_it_measured_itself_to_need() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // Both dialogs compute an absolute width in COLUMNS and used to hand it to a
+    // helper whose parameter is a PERCENTAGE. At 80 columns a form that measured
+    // itself at 68 was drawn 54 wide — cutting exactly the text the measurement
+    // existed to protect — and the confirmation wrapped its label using a width
+    // it never got, so the line naming the keys could fall out of the box.
+    let long = "https://harisenin-net-db-phpmyadmin.aurel.kkbahagia.com/";
+
+    let mut app = App::new("s".into(), vec![]);
+    app.form = Some(Form::new(
+        FormKind::CheckEdit { url: long.into() },
+        format!(" Watch {long} "),
+        check_fields(&crate::uptime::Check::get(long)),
+    ));
+    let mut t = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let screen: String = t
+        .backend()
+        .buffer()
+        .content()
+        .chunks(80)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>() + "\n")
+        .collect();
+    assert!(
+        screen.contains("kkbahagia.com"),
+        "the form cut the URL it is about:\n{screen}"
+    );
+
+    // The confirmation must always show how to answer it.
+    let mut app = App::new("s".into(), vec![]);
+    app.confirm = Some(Confirm {
+        action: "destroy".into(),
+        project: "p".into(),
+        service: "s".into(),
+        stype: "app".into(),
+        label: "Destroy 'harisenin-net-db-phpmyadmin'? This removes the service and \
+                everything in it, and cannot be undone."
+            .into(),
+    });
+    let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let screen: String = t
+        .backend()
+        .buffer()
+        .content()
+        .chunks(80)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>() + "\n")
+        .collect();
+    assert!(
+        screen.contains("[y] Yes"),
+        "an irreversible action was asked without showing how to answer:\n{screen}"
+    );
 }

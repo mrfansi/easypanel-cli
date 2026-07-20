@@ -248,8 +248,10 @@ was renamed, a port nothing listens on, or a container that stopped — and the 
 keep showing the rule as if it were fine. The **Uptime** tab (`8`) asks the domains
 themselves.
 
-**You choose what is watched.** Put the cursor on a domain (`6`) and press `w`; press it
-again to stop. On a host with 700 domains most are aliases and parked names, and a list
+**You choose what is watched, and what it is checked with.** Put the cursor on a domain
+(`6`) and press `w`: a form opens for the method, body, headers, timeout and expected
+status, and nothing is stored until you save it. Pressing `w` on a domain you already
+watch reopens that same form to edit it; `x` on the Uptime tab stops watching. On a host with 700 domains most are aliases and parked names, and a list
 that watches everything is a list nobody reads — so the watchlist is deliberately short
 and deliberately yours. It is stored per server in
 `~/.config/easypanel/checks.json`, mode `0600` (a check may carry an `Authorization`
@@ -270,7 +272,7 @@ domain and path answer; following the hop would report on a different URL and ti
 too. An http→https jump, a canonical host and a login wall all answer with a 3xx, and
 calling those "down" is the false alarm that teaches people to ignore alarms.
 
-`e` edits the request: **any method with a body and headers** (`Name: value`, one per
+`e` on the Uptime tab opens the same form: **any method with a body and headers** (`Name: value`, one per
 line, the shape you already paste from curl), a timeout, and the status you *expect* —
 an API that correctly answers `401` to an unauthenticated probe is working, and a `200`
 from it would be the alarming answer.

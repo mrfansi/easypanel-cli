@@ -59,6 +59,33 @@ pub(super) const TABS: [&str; 8] = [
     "Uptime",
 ];
 
+/// The same tabs, shortened, for a terminal too narrow for the full words.
+///
+/// Only the two longest are cut, and each stays a word rather than becoming an
+/// initial: "Maint" is still recognisable, "M" is a guess.
+pub(super) const SHORT_TABS: [&str; 8] = [
+    "Dash", "Hosts", "Maint", "Actions", "Monitor", "Domains", "Services", "Uptime",
+];
+
+/// The labels that FIT in `width`.
+///
+/// The eighth tab (Uptime, v0.65.0) pushed the full set past 80 columns, and the
+/// bar was clipped at the frame — so the newest tab silently disappeared from the
+/// one strip whose entire job is saying where you are and where you can go. A
+/// shortened word beats a missing one.
+pub(super) fn tabs_for(width: u16) -> &'static [&'static str; 8] {
+    // Each label is padded by one space either side, with a single-column
+    // separator between neighbours, and the bar sits inside a border.
+    let needed = |tabs: &[&str]| -> u16 {
+        (tabs.iter().map(|t| t.chars().count() + 2).sum::<usize>() + tabs.len() - 1) as u16
+    };
+    if needed(&TABS) + 2 <= width {
+        &TABS
+    } else {
+        &SHORT_TABS
+    }
+}
+
 /// Tab (by label order) → Screen, the inverse of Screen::index. For clicking a tab.
 pub(super) const TAB_SCREENS: [Screen; 8] = [
     Screen::Dashboard,
@@ -1581,23 +1608,27 @@ impl App {
             .map(|(c, _)| *c)
     }
 
-    /// Enrol a domain, or drop it if it is already watched.
+    /// Open the form that decides what this URL is checked WITH.
     ///
-    /// The list is applied to memory immediately and to the file by the event
-    /// loop; doing it the other way round would leave the screen lying about
-    /// what it is watching until the next reload.
-    pub(super) fn toggle_watch(&mut self, url: &str) {
-        if self.watch.iter().any(|c| c.url == url) {
-            self.watch.retain(|c| c.url != url);
-            self.probes.retain(|p| p.url != url);
-            self.watch_action = Some(WatchAction::Remove(url.to_string()));
-            self.status = format!("No longer watching {url}");
-            return;
-        }
-        let check = crate::uptime::Check::get(url);
-        self.watch.push(check.clone());
-        self.watch_action = Some(WatchAction::Put(check));
-        self.status = format!("Watching {url} — [8] Uptime to check it");
+    /// The one door to a check, whether it exists yet or not: from Domains it
+    /// enrols, from Uptime it edits. Enrolling used to happen instantly with a
+    /// silent GET, leaving the method and body to be set on another screen
+    /// afterwards — two doors into one room, and a deliberate act made without
+    /// the user deciding anything.
+    pub(super) fn open_check_form(&mut self, url: &str) {
+        let existing = self.watch.iter().find(|c| c.url == url).cloned();
+        let title = match &existing {
+            Some(_) => format!(" Check: {url} "),
+            None => format!(" Watch {url} "),
+        };
+        let check = existing.unwrap_or_else(|| crate::uptime::Check::get(url));
+        self.form = Some(Form::new(
+            FormKind::CheckEdit {
+                url: url.to_string(),
+            },
+            title,
+            check_fields(&check),
+        ));
     }
 
     /// Ask every watched domain at once.
@@ -2727,20 +2758,33 @@ impl App {
                 }
             },
             FormKind::CheckEdit { url } => {
-                match check_body(url, form) {
+                let url = url.clone();
+                match check_body(&url, form) {
                     Ok(check) => {
                         // Memory first so the screen is honest immediately; the
                         // event loop writes the file.
-                        if let Some(slot) = self.watch.iter_mut().find(|c| c.url == check.url) {
-                            *slot = check.clone();
-                        }
+                        let known = self.watch.iter_mut().find(|c| c.url == check.url);
+                        let enrolled = match known {
+                            Some(slot) => {
+                                *slot = check.clone();
+                                false
+                            }
+                            None => {
+                                self.watch.push(check.clone());
+                                true
+                            }
+                        };
                         // The old answer described a different request, so it is
                         // dropped rather than left on screen next to a check it
                         // no longer describes.
                         self.probes.retain(|p| p.url != check.url);
                         self.watch_action = Some(WatchAction::Put(check));
                         self.form = None;
-                        self.status = "Check saved — [r] to run it".into();
+                        self.status = if enrolled {
+                            format!("Watching {} — [8] Uptime to check it", url)
+                        } else {
+                            "Check saved — [r] to run it".into()
+                        };
                     }
                     Err(msg) => self.status = format!("⚠ {msg}"),
                 }

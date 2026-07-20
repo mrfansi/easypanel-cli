@@ -735,13 +735,14 @@ impl App {
                     let _ = req.send(Req::DomainSetPrimary(field(&d, "/id")));
                 }
             }
-            // Enrol / unenrol the selected domain. Deliberately one at a time:
-            // the watchlist is meant to be a short, curated list, and a key that
-            // swept 713 domains into it would destroy the thing that makes it
-            // useful.
+            // Enrol the selected domain for uptime checks — through the form, so
+            // the method, body and expected status are CHOSEN at the moment of
+            // enrolling rather than defaulted silently and configured on another
+            // screen later. Deliberately one domain at a time: a key that swept
+            // 713 domains into the watchlist would destroy what makes it useful.
             KeyCode::Char('w') => {
                 if let Some(d) = selected {
-                    self.toggle_watch(&crate::domains::domain_source(&d));
+                    self.open_check_form(&crate::domains::domain_source(&d));
                 }
             }
             // Rewrite one part of every domain ON SCREEN — so `/` narrows the set
@@ -775,16 +776,7 @@ impl App {
             }
             KeyCode::Char('e') => {
                 if let Some(url) = picked {
-                    if let Some(check) = self.watch.iter().find(|c| c.url == url).cloned() {
-                        self.form = Some(
-                            Form::new(
-                                FormKind::CheckEdit { url: url.clone() },
-                                format!(" Check: {url} "),
-                                check_fields(&check),
-                            )
-                            .with_original(json!({ "url": url })),
-                        );
-                    }
+                    self.open_check_form(&url);
                 }
             }
             KeyCode::Enter => self.run_checks(req),
