@@ -1091,12 +1091,38 @@ pub(super) fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
     let mins: Vec<u16> = ACTION_COLS.iter().map(|(m, _)| *m).collect();
     let idx = columns_that_fit(&mins, area.width);
 
+    // The width each column actually gets, so a value too long for it is cut
+    // HERE — with an ellipsis — instead of silently at the edge. Description was
+    // trimmed at 200 characters, a limit the column never reaches: at 80 columns
+    // it is about 23 wide, so a commit message stopped dead ("Deploy service:
+    // feat: u") and read as the whole of it. The same rule the Domains screen
+    // already follows.
+    let fixed: u16 = idx
+        .iter()
+        .filter(|i| **i != 2)
+        .map(|i| match i {
+            0 => 8,
+            1 => 28,
+            3 => 10,
+            _ => 14,
+        })
+        .sum();
+    let gaps = idx.len().saturating_sub(1) as u16;
+    let desc_w = area.width.saturating_sub(4 + fixed + gaps).max(20) as usize;
+    let widths_px = [8usize, 28, desc_w, 10, 14];
+
     let rows: Vec<Vec<String>> = app
         .visible_actions()
         .iter()
         .map(|a| {
             let cells = commands::action_row(a, commands::ACTION_DESC_TUI);
-            idx.iter().filter_map(|i| cells.get(*i).cloned()).collect()
+            idx.iter()
+                .filter_map(|i| {
+                    cells
+                        .get(*i)
+                        .map(|c| crate::output::first_line(c, widths_px[*i]))
+                })
+                .collect()
         })
         .collect();
     let headers: Vec<&str> = idx

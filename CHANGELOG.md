@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.1] — 2026-07-20
+
+### Fixed
+
+- **A cut action description now says it was cut.** Found by driving the TUI at
+  80 columns: a deploy read `Deploy service: feat: u` and stopped, which reads as
+  the whole commit message rather than the first quarter of one. The row was
+  trimmed at 200 characters — a limit a ~23-column cell never reaches — so the
+  rest was clipped silently at the column edge.
+
+  Every column on that screen is now cut at the width it will actually get, with
+  an ellipsis, which is the rule the Domains screen already followed. On a wide
+  terminal nothing is cut at all: the same message shows in full.
+
 ## [0.60.0] — 2026-07-20
 
 ### Added

@@ -2059,6 +2059,41 @@ fn a_confirmation_never_hides_the_question_or_the_keys() {
 }
 
 #[test]
+fn a_long_action_description_is_cut_with_an_ellipsis_not_silently() {
+    // Found by driving the TUI at 80 columns: a commit message stopped dead —
+    // "Deploy service: feat: u" — and read as the whole description. The row was
+    // trimmed at 200 characters, a limit a ~23-column cell never reaches, so
+    // ratatui clipped the rest at the edge with nothing to show for it.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Actions;
+    app.actions = vec![json!({
+        "projectName": "harisenin-com", "serviceName": "strapi", "status": "done",
+        "type": "deployment",
+        "description": "Deploy service: feat: unify the checkout flow across every storefront",
+        "createdAt": "2026-07-20 05:55:15", "updatedAt": "2026-07-20 06:03:14"
+    })];
+
+    let mut term = Terminal::new(TestBackend::new(80, 10)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(80)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        screen.contains('…'),
+        "a cut description must say that it was cut:\n{screen}"
+    );
+}
+
+#[test]
 fn replicas_must_be_a_number_and_zero_is_refused() {
     let f = |replicas: &str| {
         form(vec![
