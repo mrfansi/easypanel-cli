@@ -28,6 +28,35 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
+/// The per-field reasons out of a validation failure, as "field: why".
+///
+/// EasyPanel answers a rejected form with a generic `message` ("Input validation
+/// failed") and puts what actually went wrong in `data.zodErrors` — sometimes
+/// flat (`{"name": "Required"}`), sometimes nested under the payload's own shape
+/// (`{"values": {"name": "Invalid name. Use lowercase…"}}`). Showing the generic
+/// line threw away the only part that tells the user what to change.
+///
+/// The LEAF key is the field name; the path above it is the request's structure,
+/// which the user never typed and does not need.
+fn zod_message(body: &Value) -> Option<String> {
+    fn walk(v: &Value, key: &str, out: &mut Vec<String>) {
+        match v {
+            Value::String(reason) if !key.is_empty() => out.push(format!("{key}: {reason}")),
+            Value::Object(map) => {
+                for (k, v) in map {
+                    walk(v, k, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(body.pointer("/json/data/zodErrors")?, "", &mut out);
+    // Sorted so the same failure reads the same way twice — a map has no order.
+    out.sort();
+    (!out.is_empty()).then(|| out.join("; "))
+}
+
 /// Did this error mean "we stopped waiting", rather than "the server refused"?
 ///
 /// Some operations keep running long after the connection to them dies. A deploy
@@ -119,10 +148,17 @@ impl EasypanelClient {
             // response: {"json":{"code":"BAD_REQUEST","message":"Branch not found"}}.
             // Reading only a top-level "message" would discard every server
             // message and replace it with a generic status name ("Bad Request").
-            let msg = ["/json/message", "/message", "/json/error", "/error"]
-                .iter()
-                .find_map(|p| body.pointer(p).and_then(Value::as_str))
-                .unwrap_or_else(|| status.canonical_reason().unwrap_or("error"));
+            // A validation failure says only "Input validation failed" at the top
+            // level, while the reason the user needs sits in data.zodErrors —
+            // "name: Invalid name. Use lowercase letters (a-z)…". Prefer the
+            // detail; fall back to the generic line when there is none.
+            let detail = zod_message(&body);
+            let msg = detail.as_deref().or_else(|| {
+                ["/json/message", "/message", "/json/error", "/error"]
+                    .iter()
+                    .find_map(|p| body.pointer(p).and_then(Value::as_str))
+            });
+            let msg = msg.unwrap_or_else(|| status.canonical_reason().unwrap_or("error"));
             // Typed, not a formatted string: callers need the status to tell a
             // refusal from a gateway giving up, and parsing it back out of the
             // message would break the moment the wording changed.
@@ -297,5 +333,41 @@ mod tests {
             .call("services/app", "updateSourceGithub", Value::Null)
             .unwrap_err();
         assert!(err.to_string().contains("Branch not found"), "{err}");
+    }
+}
+#[cfg(test)]
+mod zod_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_rejected_form_reports_the_field_not_the_generic_line() {
+        // What the panel actually answered when a volume name had a capital in
+        // it. The top-level message says only "Input validation failed"; the
+        // sentence the user needs is nested under the payload's own shape.
+        let body = json!({"json": {"code": "BAD_REQUEST", "message": "Input validation failed",
+            "data": {"zodErrors": {"values": {"name":
+                "Invalid name. Use lowercase letters (a-z), digits (0-9), dash (-), underscore (_)."}}}}});
+        let msg = zod_message(&body).expect("the detail is there");
+        assert!(msg.starts_with("name: Invalid name."), "{msg}");
+        // The wrapper key ("values") is the request's shape, not something the
+        // user typed — it must not appear.
+        assert!(!msg.contains("values"), "{msg}");
+    }
+
+    #[test]
+    fn several_missing_fields_are_all_named_in_a_stable_order() {
+        let body = json!({"json": {"data": {"zodErrors":
+            {"schedule": "Required", "databaseName": "Required"}}}});
+        assert_eq!(
+            zod_message(&body).unwrap(),
+            "databaseName: Required; schedule: Required"
+        );
+    }
+
+    #[test]
+    fn an_error_with_no_field_detail_has_nothing_to_add() {
+        assert!(zod_message(&json!({"json": {"message": "Invariant failed"}})).is_none());
+        assert!(zod_message(&Value::Null).is_none());
     }
 }

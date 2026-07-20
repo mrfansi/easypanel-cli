@@ -274,7 +274,9 @@ Fill out the management surface. Verify live with a `zzz-*` target and clean up.
    press `[0-9]` → confirm → `deletePort` by index; list reloads in place). Verified live
    that the index equals the listed position. **Open:** a Ports step in the create wizard
    (`createService` takes `ports` inline) — additive, low priority.
-5. ~~**Mount management**~~ Add + delete done in v0.30.0, mirroring ports: `M` opens a
+5. ~~**Mount management**~~ Add + delete done in v0.30.0, **edit done in v0.58.0**
+   (`e` in the Mounts viewer → `updateMount {projectName, serviceName, index, values}`,
+   values re-fetched at edit time, list reloaded on save), mirroring ports: `M` opens a
    form (volume/bind/file → `createMount`), and in the Mounts viewer (`m`) a digit
    `[0-9]` → confirm → `deleteMount` by index, list reloads in place. Verified live that
    all three `values` shapes create and that `deleteMount` index = listed position.
@@ -773,6 +775,11 @@ found by a **human looking at the screen**, never by a test:
   unrelated target at the same moment before blaming the action.
 
 ### Verified capability matrix per service type (probed live, 2026-07-20)
+
+**Validation errors**: the useful text is in `data.zodErrors`, NOT the top-level
+`message` (which only ever says "Input validation failed"). It is sometimes flat
+(`{"name": "Required"}`) and sometimes nested under the payload's shape
+(`{"values": {"name": "…"}}`). Volume names must be lowercase a-z, 0-9, `-`, `_`.
 
 **Domains**: `createDomain` accepts ONLY web types (app, box, compose, wordpress) —
 a database answers `Wrong service type.`. Note the panel is NOT atomic about it: the

@@ -304,7 +304,7 @@ fn mount_body_builds_per_type_and_validates() {
             .value = val.into();
     };
     // volume: {type, name, mountPath}
-    let mut f = form(mount_fields());
+    let mut f = form(mount_fields(None));
     set(&mut f, "Type", "volume");
     set(&mut f, "Name", "data");
     set(&mut f, "Mount path", "/var/lib/data");
@@ -314,7 +314,7 @@ fn mount_body_builds_per_type_and_validates() {
     );
 
     // bind: {type, hostPath, mountPath}
-    let mut f = form(mount_fields());
+    let mut f = form(mount_fields(None));
     set(&mut f, "Type", "bind");
     set(&mut f, "Host path", "/etc/host/cfg");
     set(&mut f, "Mount path", "/cfg");
@@ -324,13 +324,13 @@ fn mount_body_builds_per_type_and_validates() {
     );
 
     // Empty mount path -> error, whatever the type.
-    let mut f = form(mount_fields());
+    let mut f = form(mount_fields(None));
     set(&mut f, "Type", "volume");
     set(&mut f, "Name", "data");
     assert!(mount_body(&f).is_err());
 
     // volume with no name -> error (not a silently-sent empty name).
-    let mut f = form(mount_fields());
+    let mut f = form(mount_fields(None));
     set(&mut f, "Type", "volume");
     set(&mut f, "Mount path", "/data");
     assert!(mount_body(&f).is_err());
@@ -2056,6 +2056,36 @@ fn a_confirmation_never_hides_the_question_or_the_keys() {
         screen.contains("ENTIRE host"),
         "the blast radius must stay on screen:\n{screen}"
     );
+}
+
+#[test]
+fn editing_a_mount_prefills_it_and_keeps_e_meaning_one_thing() {
+    // Mounts could be added and deleted but not CHANGED, so moving one path
+    // meant deleting a volume mount and rebuilding it. The values are fetched
+    // fresh and prefilled rather than parsed back out of the row's text.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.handle(
+        Resp::MountForm {
+            project: "proj".into(),
+            service: "web".into(),
+            index: 2,
+            values: json!({"type": "bind", "hostPath": "/srv/data", "mountPath": "/data"}),
+        },
+        &tx,
+    );
+    let form = app.form.as_ref().expect("the edit form opens");
+    assert_eq!(form.by_label("Type"), "bind");
+    assert_eq!(form.by_label("Host path"), "/srv/data");
+    assert_eq!(form.by_label("Mount path"), "/data");
+    assert!(
+        matches!(form.kind, FormKind::MountEdit { index: 2, .. }),
+        "it edits the mount it was opened on, by index"
+    );
+
+    // A mount that vanished between listing and editing is refused, not guessed.
+    app.handle(Resp::Err("Mount [2] is no longer there".into()), &tx);
+    assert!(app.status.contains("no longer there"), "{}", app.status);
 }
 
 #[test]

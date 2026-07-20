@@ -662,13 +662,21 @@ pub(super) fn basic_auth_body(form: &Form) -> std::result::Result<Value, String>
 /// Fields for the add-mount form. The type decides which fields show: volume→Name,
 /// bind→Host path, file→Content (file contents, opened in $EDITOR). Mount path is
 /// always shown.
-pub(super) fn mount_fields() -> Vec<Field> {
+/// Fields for the mount form; `existing` prefills them when editing one.
+///
+/// `field()` yields "-" for a value that is not there, which would land in the
+/// box as literal text — so an absent value becomes empty instead.
+pub(super) fn mount_fields(existing: Option<&Value>) -> Vec<Field> {
+    let get = |ptr: &str, default: &str| match existing.map(|m| field(m, ptr)) {
+        Some(v) if v != "-" => v,
+        _ => default.to_string(),
+    };
     vec![
-        Field::choice("Type", MOUNT_TYPES, "volume"),
-        Field::text("Name", "").when("Type", "volume"),
-        Field::text("Host path", "").when("Type", "bind"),
-        Field::editor("Content", "").when("Type", "file"),
-        Field::text("Mount path", ""),
+        Field::choice("Type", MOUNT_TYPES, &get("/type", "volume")),
+        Field::text("Name", &get("/name", "")).when("Type", "volume"),
+        Field::text("Host path", &get("/hostPath", "")).when("Type", "bind"),
+        Field::editor("Content", &get("/content", "")).when("Type", "file"),
+        Field::text("Mount path", &get("/mountPath", "")),
     ]
 }
 
@@ -906,6 +914,12 @@ pub(super) enum FormKind {
     DomainCreate,
     DomainEdit {
         id: String,
+    },
+    /// Change an existing mount. `index` is its position as the server listed it.
+    MountEdit {
+        project: String,
+        service: String,
+        index: usize,
     },
     /// Add a port exposed to a service.
     PortCreate {

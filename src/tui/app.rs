@@ -729,6 +729,28 @@ impl App {
             // The restore picker. An empty history is a real answer, not an
             // error: this database has never been backed up, and saying so beats
             // an empty box.
+            Resp::MountForm {
+                project,
+                service,
+                index,
+                values,
+            } => {
+                self.form = Some(
+                    Form::new(
+                        FormKind::MountEdit {
+                            project,
+                            service,
+                            index,
+                        },
+                        format!(" Edit mount [{index}] "),
+                        mount_fields(Some(&values)),
+                    )
+                    .with_note(
+                        "the mount path only takes effect after the service restarts".to_string(),
+                    ),
+                );
+                self.status = "Ready".into();
+            }
             Resp::StorageProviders(list) => self.backups.providers = list,
             Resp::DatabasesIn {
                 project,
@@ -1436,7 +1458,7 @@ impl App {
             Form::new(
                 FormKind::MountCreate { project, service },
                 " New mount ",
-                mount_fields(),
+                mount_fields(None),
             )
             .with_note("to delete one instead: 'm', then its digit"),
         );
@@ -1754,7 +1776,7 @@ impl App {
     /// pickers carry heading lines above their rows, so position 0 is a label.
     /// The same contract the collections use, and the reason a delete once
     /// offered `[13]` of 12.
-    fn picker_row(&self) -> Option<usize> {
+    pub(super) fn picker_row(&self) -> Option<usize> {
         self.viewer_row
             .selected()
             .and_then(|r| self.viewer_lines.get(r))
@@ -2292,6 +2314,25 @@ impl App {
                     services,
                 });
             }
+            FormKind::MountEdit {
+                project,
+                service,
+                index,
+            } => match mount_body(form) {
+                Ok(values) => {
+                    let _ = req.send(Req::MountUpdate {
+                        project: project.clone(),
+                        service: service.clone(),
+                        index: *index,
+                        values,
+                    });
+                    self.status = "Saving...".into();
+                }
+                Err(msg) => {
+                    self.status = msg;
+                    return;
+                }
+            },
             FormKind::MountCreate { project, service } => match mount_body(form) {
                 Ok(values) => {
                     let _ = req.send(Req::MountSave {

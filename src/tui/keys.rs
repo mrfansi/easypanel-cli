@@ -1247,6 +1247,30 @@ impl App {
             }
             KeyCode::Char('n') | KeyCode::Char('e') | KeyCode::Char('b') => {
                 let view = self.viewer_ctx.as_ref().map(|(v, ..)| *v);
+                // `e` on a mount EDITS the highlighted one, the same verb Domains
+                // uses. It lives in this handler rather than its own arm so `e`
+                // keeps one meaning per screen — a second arm shadowed Env's and
+                // Source's `e` entirely. Only mounts have an update endpoint;
+                // ports and redirects are read-modify-write on a whole array.
+                if let (Some(View::Mounts), KeyCode::Char('e')) = (view, code) {
+                    let Some((_, project, service, _)) = self.viewer_ctx.clone() else {
+                        return;
+                    };
+                    // The index comes from the marker PRINTED on the row — the
+                    // one rule, shared with the pickers and the delete above.
+                    match self.picker_row() {
+                        Some(index) => {
+                            let _ = req.send(Req::MountForm {
+                                project,
+                                service,
+                                index,
+                            });
+                            self.status = "Loading mount...".into();
+                        }
+                        None => self.status = "Select a mount first".into(),
+                    }
+                    return;
+                }
                 let leaf = match (view, code) {
                     (Some(View::Env), KeyCode::Char('e')) => Some('E'),
                     (Some(View::Ports), KeyCode::Char('n')) => Some('P'),

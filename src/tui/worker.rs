@@ -88,6 +88,20 @@ pub(super) enum Req {
         action: String,
         force: bool,
     },
+    /// Open the edit form for one mount: fetch what it currently IS, so the box
+    /// is prefilled rather than asking the user to retype a path from memory.
+    MountForm {
+        project: String,
+        service: String,
+        index: usize,
+    },
+    /// Save an edited mount (updateMount). `index` is its position as listed.
+    MountUpdate {
+        project: String,
+        service: String,
+        index: usize,
+        values: Value,
+    },
     /// Where backups are written. Listed once at start-up: EasyPanel offers no
     /// way to create one over the API, so this only ever reads what the
     /// dashboard already has.
@@ -373,6 +387,13 @@ pub(super) enum Resp {
     /// backup written there can never be restored onto another host — verified,
     /// and the reason cross-server restore refuses one.
     StorageProviders(Vec<(String, String, String)>),
+    /// One mount's current values, to prefill its edit form.
+    MountForm {
+        project: String,
+        service: String,
+        index: usize,
+        values: Value,
+    },
     /// The databases a service holds, for choosing what to back up.
     DatabasesIn {
         project: String,
@@ -669,6 +690,49 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             action,
             force,
         } => bulk_action(client, resp_tx, targets, &action, force),
+        Req::MountForm {
+            project,
+            service,
+            index,
+        } => {
+            let ps = json!({ "projectName": project, "serviceName": service });
+            match client.call("mounts", "listMounts", ps) {
+                // Read at the moment of editing, not remembered from when the
+                // list was drawn: someone else may have changed it since.
+                Ok(v) => match v.as_array().and_then(|a| a.get(index)).cloned() {
+                    Some(values) => Resp::MountForm {
+                        project,
+                        service,
+                        index,
+                        values,
+                    },
+                    None => Resp::Err(format!("Mount [{index}] is no longer there")),
+                },
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::MountUpdate {
+            project,
+            service,
+            index,
+            values,
+        } => {
+            let body = json!({
+                "projectName": project, "serviceName": service,
+                "index": index, "values": values,
+            });
+            match client.call("mounts", "updateMount", body) {
+                // Reload the list, the same way a delete does. A change you
+                // cannot see is indistinguishable from one that did not happen —
+                // the viewer sat there showing the old path while the server had
+                // the new one.
+                Ok(_) => match fetch_view(client, View::Mounts, &project, &service, "") {
+                    Ok(lines) => Resp::Viewer(format!("Mounts · {project}/{service}"), lines),
+                    Err(e) => Resp::Err(e.to_string()),
+                },
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
         Req::StorageProviders => {
             match client.call("storageProviders/common", "list", Value::Null) {
                 Ok(v) => Resp::StorageProviders(

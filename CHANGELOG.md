@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.58.0] — 2026-07-20
+
+### Added
+
+- **A mount can be edited, not just added and deleted.** Changing where a volume
+  landed meant deleting it and building it again — an alarming thing to do to a
+  volume. `e` in the Mounts viewer opens the mount under the cursor, prefilled,
+  and saves through `updateMount`. The values are fetched at the moment you press
+  `e` rather than remembered from when the list was drawn, so editing one someone
+  else has changed since fails honestly instead of overwriting them; a mount that
+  has since disappeared says so. The list reloads on save, because a change you
+  cannot see is indistinguishable from one that did not happen.
+
+  `e` keeps one meaning per screen: it lives in the same handler as the viewer's
+  other letters instead of a second arm that shadowed Env's and Source's `e`.
+
+### Fixed
+
+- **A rejected form now says which field, and why.** Every validation failure
+  reported `[400] Input validation failed` — the generic wrapper — while the
+  sentence the user needed sat untouched in `data.zodErrors`. Typing a volume
+  name with a capital letter in it now answers:
+
+  > name: Invalid name. Use lowercase letters (a-z), digits (0-9), dash (-),
+  > underscore (_).
+
+  This applies to every form in the tool, not only mounts. The field name is
+  taken from the leaf of the error, so the request's own nesting ("values") never
+  reaches the user.
+
 ## [0.57.2] — 2026-07-20
 
 ### Fixed
