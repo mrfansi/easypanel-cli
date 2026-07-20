@@ -96,6 +96,14 @@ pub(super) enum Req {
         a: (String, String, String),
         b: (String, String, String),
     },
+    /// Compare a local service against the same one on ANOTHER host. The target
+    /// host's url+token arrive here because only the event loop can read them.
+    DiffAcrossHosts {
+        local: (String, String, String),
+        target_url: String,
+        target_token: String,
+        target_name: String,
+    },
     /// Open the deploy form: replicas, start command, zero-downtime.
     DeployForm {
         project: String,
@@ -744,6 +752,35 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             force,
         } => bulk_action(client, resp_tx, targets, &action, force),
         Req::DiffServices { a, b } => diff_services(client, a, b),
+        Req::DiffAcrossHosts {
+            local,
+            target_url,
+            target_token,
+            target_name,
+        } => {
+            let other = EasypanelClient::new(&target_url, &target_token);
+            let (p, sv, ty) = local.clone();
+            // The same project/service on the other host — the whole point is a
+            // like-for-like "staging vs production".
+            let here = fetch_inspect(client, &local);
+            let there = fetch_inspect(&other, &(p.clone(), sv.clone(), ty));
+            match (here, there) {
+                (Ok(va), Ok(vb)) => {
+                    let la = format!("{}/{} @ this host", p, sv);
+                    let lb = format!("{p}/{sv} @ {target_name}");
+                    let diffs = crate::services::diff(&va, &vb);
+                    Resp::Viewer(
+                        format!(" Diff across hosts: {p}/{sv} "),
+                        crate::services::diff_lines(&diffs, &la, &lb),
+                    )
+                }
+                // Name which side failed: "not found" is the likely case (the
+                // service does not exist on the other host), and the operator
+                // needs to know WHICH host that was.
+                (Err(e), _) => Resp::Err(format!("this host: {e}")),
+                (_, Err(e)) => Resp::Err(format!("{target_name}: {e}")),
+            }
+        }
         Req::DeployForm { project, service } => {
             let ps = json!({ "projectName": project, "serviceName": service });
             match client.call("services/app", "inspectService", ps) {
@@ -1703,19 +1740,25 @@ fn backup_now(
 /// `inspectService` is grouped by type, and the two services may be different
 /// types (comparing an app with a compose is a legitimate "why are these set up
 /// differently"), so each is fetched with its own group.
+/// Fetch one service's full config. Grouped by type, since two services being
+/// compared may be different types.
+fn fetch_inspect(
+    client: &EasypanelClient,
+    (project, service, stype): &(String, String, String),
+) -> anyhow::Result<Value> {
+    client.call(
+        &format!("services/{stype}"),
+        "inspectService",
+        json!({ "projectName": project, "serviceName": service }),
+    )
+}
+
 fn diff_services(
     client: &EasypanelClient,
     a: (String, String, String),
     b: (String, String, String),
 ) -> Resp {
-    let fetch = |(project, service, stype): &(String, String, String)| {
-        client.call(
-            &format!("services/{stype}"),
-            "inspectService",
-            json!({ "projectName": project, "serviceName": service }),
-        )
-    };
-    let (va, vb) = match (fetch(&a), fetch(&b)) {
+    let (va, vb) = match (fetch_inspect(client, &a), fetch_inspect(client, &b)) {
         (Ok(va), Ok(vb)) => (va, vb),
         (Err(e), _) | (_, Err(e)) => return Resp::Err(e.to_string()),
     };

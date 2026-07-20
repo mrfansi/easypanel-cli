@@ -74,12 +74,12 @@ pub fn diff(a: &Value, b: &Value) -> Vec<Difference> {
     for (label, ptr) in SCALARS {
         // `field` renders an absent value as "-", so a field neither side sets
         // reads the same on both and is skipped — no noise for what nobody set.
-        let (l, r) = (field(a, ptr), field(b, ptr));
+        let (l, r) = (present(&field(a, ptr)), present(&field(b, ptr)));
         if l != r {
             out.push(Difference {
                 what: label.to_string(),
-                left: present(&l),
-                right: present(&r),
+                left: l,
+                right: r,
             });
         }
     }
@@ -89,9 +89,14 @@ pub fn diff(a: &Value, b: &Value) -> Vec<Difference> {
     out
 }
 
-/// A "-" from `field` means absent; anything else is a real value.
+/// A real value, or `None` for one that is absent OR empty.
+///
+/// `field` renders an absent value as "-". An EMPTY value is folded into the
+/// same None on purpose: a `deploy.command` of "" on one service and absent on
+/// another both mean "no command", and showing them as a difference is noise
+/// that trains the reader to skip the list.
 fn present(s: &str) -> Option<String> {
-    (s != "-").then(|| s.to_string())
+    (s != "-" && !s.is_empty()).then(|| s.to_string())
 }
 
 /// Compare the two env blocks by key. Values never appear in the output.
@@ -315,6 +320,17 @@ mod tests {
             !diff(&svc(), &b).iter().any(|x| x.what.starts_with("env ")),
             "reordering the env lines must not read as a change"
         );
+    }
+
+    #[test]
+    fn an_empty_value_and_an_absent_one_are_not_a_difference() {
+        // "" and missing both mean "not set"; a spurious "  →  —" line is the
+        // noise that makes a reader stop trusting the diff.
+        let mut a = svc();
+        a["deploy"]["command"] = json!(""); // set, but empty
+        let mut b = svc();
+        b["deploy"].as_object_mut().unwrap().remove("command"); // absent
+        assert!(!diff(&a, &b).iter().any(|x| x.what == "deploy.command"));
     }
 
     #[test]

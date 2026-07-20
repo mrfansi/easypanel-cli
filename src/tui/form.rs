@@ -1034,6 +1034,12 @@ pub(super) enum FormKind {
     CheckEdit {
         url: String,
     },
+    /// Compare this service against the same one on another host.
+    DiffAcross {
+        project: String,
+        service: String,
+        stype: String,
+    },
     /// Rewrite one part of MANY domains at once. Which domains is decided by the
     /// filter that is already on screen, not by a second selection UI.
     DomainBulkEdit,

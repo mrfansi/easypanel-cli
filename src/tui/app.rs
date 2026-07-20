@@ -164,6 +164,15 @@ pub(super) struct Confirm {
     pub(super) label: String,
 }
 
+/// A cross-host compare waiting for its target token. Same reason as MigrateReq:
+/// the App knows a server's name and url, never its token.
+pub(super) struct DiffAcrossReq {
+    /// The service on THIS host: (project, service, type).
+    pub(super) local: (String, String, String),
+    /// The other server to fetch the same project/service from.
+    pub(super) target_server: String,
+}
+
 /// A migration waiting for its destination token, which only event_loop can look
 /// up (the App knows each server's name and url, never its token).
 pub(super) struct MigrateReq {
@@ -220,6 +229,9 @@ pub(super) struct App {
     /// Set by the migrate form; event_loop resolves the destination token and
     /// hands the work to the worker.
     pub(super) migrate_req: Option<MigrateReq>,
+    /// A cross-host compare waiting for the event loop to resolve the target
+    /// host's token (which only the ServerConfig holds).
+    pub(super) diff_across_req: Option<DiffAcrossReq>,
     /// A pending "read the backups on another server": (server name, project,
     /// service). Resolved to a url+token by event_loop, which alone holds them.
     pub(super) restore_from_req: Option<(String, String, String)>,
@@ -399,6 +411,7 @@ impl App {
             chooser: None,
             server_action: None,
             migrate_req: None,
+            diff_across_req: None,
             restore_from_req: None,
             busy: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             edit_env: None,
@@ -1972,6 +1985,44 @@ impl App {
         );
     }
 
+    /// Open the "compare with another host" form: pick which OTHER configured
+    /// server to fetch the same project/service from, and diff the two.
+    ///
+    /// The engine is the same `crate::services::diff` the marked-pair compare
+    /// uses; only the second service comes from a different host's client. Needs
+    /// a second server, so a single-host setup is told how to add one rather than
+    /// shown an empty dropdown.
+    pub(super) fn open_diff_across_form(&mut self) {
+        let others: Vec<String> = self
+            .all_servers
+            .iter()
+            .map(|(n, _)| n.clone())
+            .filter(|n| *n != self.server_name)
+            .collect();
+        if others.is_empty() {
+            self.status =
+                "No other server configured — add one on the Hosts screen (s) first".into();
+            return;
+        }
+        let Some((project, service, stype)) = self.selected_row() else {
+            self.status = "Select a service first".into();
+            return;
+        };
+        let fields = vec![Field::choice_owned("On server", others, "")];
+        self.form = Some(
+            Form::new(
+                FormKind::DiffAcross {
+                    project: project.clone(),
+                    service: service.clone(),
+                    stype,
+                },
+                format!(" Compare {project}/{service} with another host "),
+                fields,
+            )
+            .with_note("Compares the SAME project/service on the chosen host".to_string()),
+        );
+    }
+
     /// Every service belonging to `project`, as (project, service, type).
     pub(super) fn project_services(&self, project: &str) -> Vec<(String, String, String)> {
         self.all_services
@@ -2657,6 +2708,22 @@ impl App {
                     target,
                     new_name: new_name.to_string(),
                 });
+            }
+            FormKind::DiffAcross {
+                project,
+                service,
+                stype,
+            } => {
+                let target_server = form.by_label("On server");
+                if target_server.is_empty() {
+                    self.status = "Choose a server to compare against first".into();
+                    return;
+                }
+                self.diff_across_req = Some(DiffAcrossReq {
+                    local: (project.clone(), service.clone(), stype.clone()),
+                    target_server,
+                });
+                self.status = "Comparing across hosts...".into();
             }
             FormKind::Migrate {
                 project,

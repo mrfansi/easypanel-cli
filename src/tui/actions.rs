@@ -263,6 +263,9 @@ impl App {
                 a.open_migrate_form(false)
             }),
             MenuItem::new("Migrate WHOLE project", |a, _| a.open_migrate_form(true)),
+            MenuItem::new("Compare with another host", |a, _| {
+                a.open_diff_across_form()
+            }),
             MenuItem::new("Danger ▸", |a, _| {
                 let m = a.danger_menu();
                 a.open_menu(m);
@@ -519,6 +522,9 @@ impl App {
         }));
         v.push(MenuItem::new("Migrate to another server", |a, _| {
             a.open_migrate_form(false)
+        }));
+        v.push(MenuItem::new("Compare with another host", |a, _| {
+            a.open_diff_across_form()
         }));
         v.push(MenuItem::new("Migrate WHOLE project", |a, _| {
             a.open_migrate_form(true)

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.72.0] — 2026-07-21
+
+### Added
+
+- **Compare a service against the same one on another host.** v0.71.0 compared two
+  services on one host; the sharper question is "staging vs production" — the SAME service
+  on two different machines. On any service, "Compare with another host" (in the `Space`
+  menu) picks another configured server and diffs the same project/service fetched from
+  there. Nothing in the web panel can look at two hosts at once.
+
+  The engine is the one v0.71.0 already proved — env by key, values never shown,
+  order-independent — so only the second fetch is new, using the target host's own token
+  (resolved the same way migration resolves it). A failure names WHICH host it came from,
+  because "not found" usually means the service does not exist on the other side and the
+  operator needs to know which side that is.
+
+### Fixed
+
+- **An empty value and an absent one no longer read as a difference.** A `deploy.command`
+  of `""` on one service and unset on another both mean "no command"; showing them as a
+  difference (`  →  —`) is the noise that trains a reader to stop trusting the diff. Both
+  now fold to "not set". Found on a real cross-host compare.
+
 ## [0.71.0] — 2026-07-21
 
 ### Added

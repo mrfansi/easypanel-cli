@@ -5098,3 +5098,47 @@ fn comparing_two_services_clears_the_marks_so_esc_is_not_a_dead_end() {
     app.on_key(KeyCode::Esc, &tx);
     assert!(app.screen != Screen::Viewer, "one Esc must leave the diff");
 }
+
+#[test]
+fn comparing_across_hosts_asks_the_event_loop_to_resolve_the_target_token() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(
+        "prod".into(),
+        vec![
+            ("prod".into(), "https://prod".into()),
+            ("staging".into(), "https://staging".into()),
+        ],
+    );
+    app.projects = vec!["shop".into()];
+    app.all_services = vec![svc("shop", "api", "app")];
+    app.screen = Screen::Projects;
+    app.services_table.select(Some(1)); // the service row, under its project header
+
+    app.open_diff_across_form();
+    let form = app.form.as_ref().expect("the compare form");
+    // Only OTHER hosts are offered — comparing prod with prod is not a thing.
+    assert!(form.title.contains("shop/api"));
+
+    // Pick the other host and submit.
+    if let Some(f) = app.form.as_mut() {
+        f.fields[0].value = "staging".into();
+    }
+    app.submit_form(&tx);
+    // The token lives in the ServerConfig, which only the event loop can read, so
+    // the App hands off a request naming the server rather than fetching itself.
+    let req = app.diff_across_req.as_ref().expect("a cross-host request");
+    assert_eq!(req.local, ("shop".into(), "api".into(), "app".into()));
+    assert_eq!(req.target_server, "staging");
+
+    // With the server field left empty it refuses rather than comparing prod
+    // with itself. (A lone other host is auto-selected, which is fine — this
+    // forces the empty case the guard exists for.)
+    app.diff_across_req = None;
+    app.open_diff_across_form();
+    if let Some(f) = app.form.as_mut() {
+        f.fields[0].value = String::new();
+    }
+    app.submit_form(&tx);
+    assert!(app.diff_across_req.is_none());
+    assert!(app.status.contains("Choose"), "{}", app.status);
+}
