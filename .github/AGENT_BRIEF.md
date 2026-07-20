@@ -774,6 +774,15 @@ found by a **human looking at the screen**, never by a test:
 
 ### Verified capability matrix per service type (probed live, 2026-07-20)
 
+**Domains**: `createDomain` accepts ONLY web types (app, box, compose, wordpress) —
+a database answers `Wrong service type.`. Note the panel is NOT atomic about it: the
+domain appeared in `listDomains` even though the call 400'd, so a probe leaves a stray
+record to clean up.
+
+**Env**: redis has no `env` field until you set one, but `updateAdvanced` accepts and
+stores it — so an absent field is not proof an action is unavailable. Check the write,
+not the read.
+
 **Mounts and ports**: `mounts/*` and `ports/*` accept ONLY `app` and `box`. Databases,
 `compose` and `wordpress` answer `Invalid service type`. Checked with real services of
 each type — create the throwaway first, because an absent service can answer the same way.

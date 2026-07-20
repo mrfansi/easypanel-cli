@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.2] — 2026-07-20
+
+### Fixed
+
+- **A domain is no longer offered on a service that cannot have one.** Pointing a
+  domain at a database is refused by the panel — `createDomain` answers
+  `Wrong service type.`, verified live against real mysql and redis services
+  while an app was accepted — yet "Domain" appeared in the Networking menu of
+  every service. It now follows the same web-only rule that already governed
+  redirects and basic auth.
+
+  The domain form's destination dropdown was the second way in: it listed every
+  service in the project, databases included. It now offers only the ones a
+  domain can actually reach — in a project holding four databases and one app,
+  the dropdown is that one app.
+
+  Three copies of "which types serve HTTP" existed across the menu, the form and
+  the new check; they are one list now.
+
+### Note
+
+This is the fourth entry in the same class — after lifecycle actions (v0.52.0),
+backups (v0.55.1) and mounts/ports (v0.57.1) — but the first found by auditing
+every menu entry against the API rather than by tripping over it. Two suspects
+came out clean: `Env` works on redis (the field simply does not exist until you
+set one), and the rest of the menu is type-appropriate. The verified per-type
+matrix in `.github/AGENT_BRIEF.md` now covers domains too.
+
 ## [0.57.1] — 2026-07-20
 
 ### Fixed

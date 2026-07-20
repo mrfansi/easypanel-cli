@@ -290,9 +290,13 @@ impl App {
         // is a door painted on a wall. Worse for redirects: it OPENED, showed
         // "No redirects" and a footer saying `n add`, on a service type that can
         // never have one. Same type list the handlers check.
-        const WEB: &[&str] = &["app", "box", "compose", "wordpress"];
         let stype = self.selected_row().map(|(_, _, t)| t).unwrap_or_default();
-        let mut v = vec![MenuItem::new("Domain", |a, r| a.open_service_domains(r))];
+        let mut v = Vec::new();
+        // A domain in front of a database is not a thing EasyPanel will make:
+        // createDomain answers "Wrong service type".
+        if crate::lifecycle::has_domains(&stype) {
+            v.push(MenuItem::new("Domain", |a, r| a.open_service_domains(r)));
+        }
         // Ports are app/box only — every other type answers "Invalid service
         // type", so the entry could only ever open an error.
         if crate::lifecycle::has_mounts_and_ports(&stype) {
@@ -301,7 +305,7 @@ impl App {
                 a.on_key(KeyCode::Char('p'), r)
             }));
         }
-        if self.is_selected_type(WEB) {
+        if crate::lifecycle::is_web(&stype) {
             v.push(MenuItem::new("Redirects", |a, r| {
                 a.on_key(KeyCode::Char('f'), r)
             }));

@@ -630,9 +630,17 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 "inspectProject",
                 json!({ "projectName": project }),
             ) {
+                // Only web services: this list fills the DOMAIN form's
+                // destination, and pointing a domain at a database is refused by
+                // the server ("Wrong service type") — an option that can only
+                // fail does not belong in a dropdown.
                 Ok(v) => Resp::ServicesFor(
                     project,
-                    parse_services(&v).into_iter().map(|(n, _)| n).collect(),
+                    parse_services(&v)
+                        .into_iter()
+                        .filter(|(_, t)| crate::lifecycle::has_domains(t))
+                        .map(|(n, _)| n)
+                        .collect(),
                 ),
                 Err(e) => Resp::Err(e.to_string()),
             }

@@ -65,6 +65,26 @@ pub fn ops(stype: &str, action: &str) -> Option<Vec<&'static str>> {
     }
 }
 
+/// Web service types: the ones that can sit behind a domain.
+const WEB: &[&str] = &["app", "box", "compose", "wordpress"];
+
+/// Can a domain point at this type?
+///
+/// Only a web service. `createDomain` answers `Wrong service type.` for every
+/// database — verified live against real mysql and redis services, while an app
+/// was accepted. The same list already gates redirects and basic auth, which are
+/// the other two things that only make sense in front of HTTP.
+pub fn has_domains(stype: &str) -> bool {
+    is_web(stype)
+}
+
+/// Does this type serve HTTP? Domains, redirects and basic auth are exactly the
+/// things that only make sense in front of a web service — ONE list, because
+/// three copies of it is how they drift apart.
+pub fn is_web(stype: &str) -> bool {
+    WEB.contains(&stype)
+}
+
 /// Does this type have mounts and ports?
 ///
 /// Only `app` and `box`. Probed live with real services of each type: `mounts`
@@ -137,6 +157,16 @@ mod tests {
         assert!(has_resource_limits("app") && has_resource_limits("box"));
         assert!(has_config_file("mysql") && has_config_file("box"));
         assert!(!has_config_file("app") && !has_config_file("compose"));
+    }
+
+    #[test]
+    fn only_a_web_service_can_be_behind_a_domain() {
+        for t in WEB {
+            assert!(has_domains(t), "{t}");
+        }
+        for t in ["mysql", "mariadb", "postgres", "mongo", "redis"] {
+            assert!(!has_domains(t), "{t}");
+        }
     }
 
     #[test]
