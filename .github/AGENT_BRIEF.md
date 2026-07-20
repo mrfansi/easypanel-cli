@@ -288,6 +288,19 @@ and pass `--server harisenin-aurel` (or `harisenin-angelia`) explicitly for ever
 verification. Do not switch the default to make this easier — the owner's choice of
 default is theirs, and changing it is itself a mutation of their config.
 
+### Two helpers one character apart (2026-07-20) — a class worth hunting
+
+`centered_abs(pct_x, …)` takes a PERCENTAGE; `centered_abs_w(width, …)` takes COLUMNS.
+Two dialogs computed an absolute width — carefully, with comments explaining the +4 for
+borders — and passed it to the percentage one. The measurement did its job and the result
+was thrown away, silently, in the direction that CUTS (68 → 54 at 80 columns). Nobody
+noticed because at ~100 columns the two happen to agree.
+
+The class: **a number handed to a parameter whose unit is different.** It cannot fail
+loudly — both are `u16` — and it is invisible at whatever width the author happened to
+test. When a function computes a size with care, check what the receiver thinks that
+number means. Grep for sibling functions whose names differ by a suffix.
+
 ### Scale lesson: a real host has 713 domains (2026-07-20)
 
 The owner's third host holds **713 domains and 100 services** — an order of magnitude
@@ -297,7 +310,15 @@ under a title claiming 452). When hunting for defects, drive the BIGGEST host, s
 the end, and then act — the interesting failures live where a list is longer than the
 screen and then changes length underneath the view.
 
-### Ideas parked for a future run (2026-07-20) — judged by operator impact, not parity
+### Ideas parked for a future run (2026-07-20)
+
+- **Uptime, round two: the background half.** The owner asked for both on-demand and
+  continuous; v0.65.0 shipped the first. The second needs history — which is the first
+  honest argument for real storage in this repo (see the storage ladder: memory → a JSON
+  file → SQLite only for time-series we own). Before building it, decide deliberately
+  whether it is a foreground command or a daemon, and USE the on-demand version for a
+  few days first: if "check when I suspect something" turns out to be enough, the daemon
+  should never be built at all. — judged by operator impact, not parity
 
 Ranked by impact per unit of work. None of these needs an endpoint the tool does not
 already call, which is why they are ideas rather than probes.
