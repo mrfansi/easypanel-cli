@@ -413,12 +413,9 @@ already call, which is why they are ideas rather than probes.
   among seven hundred is exactly what a person cannot find. **Measure before you build**:
   the number changed the design (a quiet mark and a count, not a whole screen).
 
-- ~~**Diff two services**~~ done in v0.71.0 (mark two → menu → Compare). env compared by
-  key, values never shown. **Still open and now cheap: CROSS-HOST diff** — the same
-  service on staging vs production. The engine (`crate::services::diff`) already takes two
-  arbitrary inspectService values; what is missing is a UI to pick a service on ANOTHER
-  configured host and a worker path that fetches it with that host's client. The migrate
-  code already builds a client for a named server — reuse that. Medium.
+- ~~**Diff two services**~~ done in v0.71.0 (same host, mark two) and v0.72.0 (across
+  hosts, "Compare with another host"). env by key, values never shown, order-independent.
+  Fully shipped.
 
 - **Export a project's config to a file, and apply it back.** The tool already reads a
   whole project's config (migrate does exactly this, in memory, host-to-host). Writing it
