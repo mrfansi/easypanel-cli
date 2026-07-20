@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.0] — 2026-07-20
+
+### Changed
+
+- **A cloned or migrated database now keeps its config file.** Since v0.51.1 the
+  config was held back entirely when it contained `read_only` / `super_read_only`
+  — safe, but it threw away configuration the user had asked to copy, which the
+  owner rightly objected to.
+
+  The whole file is copied now. Only the two directives that stop a brand-new
+  database from initialising are left as comments, with their original value
+  intact after a `# easypanel-cli:` marker — so re-enabling them is deleting a
+  prefix, not retyping a setting. Everything else (server-id, relay_log, tuning)
+  arrives active, as it should.
+
+  Verified live by cloning a real MySQL replica: 56 lines in, 56 lines out, two
+  commented; the clone then initialised cleanly — `Creating database`,
+  `Creating user`, `ready for connections`, and no `ERROR 1290` — and answered
+  `SELECT @@server_id` with the replica's own id, using the password the panel
+  recorded. Before this change that same clone came up with no root password, no
+  user and no schema, and could not be repaired.
+
 ## [0.56.0] — 2026-07-20
 
 ### Added

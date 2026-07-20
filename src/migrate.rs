@@ -50,6 +50,9 @@ use serde_json::{json, Value};
 /// the honest order is: create → deploy (initialise) → apply the config → deploy.
 ///
 /// Commented-out lines don't count; `ON`/`1`/`TRUE` all do.
+///
+/// They are not dropped — see `defer_first_boot_blockers`, which comments them
+/// out so the configuration survives the copy.
 pub fn first_boot_blockers(config: &str) -> Vec<&'static str> {
     let mut found = Vec::new();
     for line in config.lines() {
@@ -74,6 +77,54 @@ pub fn first_boot_blockers(config: &str) -> Vec<&'static str> {
         }
     }
     found
+}
+
+/// The config with the first-boot blockers COMMENTED OUT, and which they were.
+///
+/// The config is copied in full — losing a replica's tuning is not acceptable —
+/// but the two directives that stop a brand-new database from initialising are
+/// left as comments rather than active settings. They are one `#` away from
+/// being back on, which is what the user does once the replica has been seeded;
+/// dropping them would have thrown away configuration they asked to copy.
+///
+/// A commented line is left alone: it is already harmless.
+pub fn defer_first_boot_blockers(config: &str) -> (String, Vec<&'static str>) {
+    let deferred = first_boot_blockers(config);
+    if deferred.is_empty() {
+        return (config.to_string(), deferred);
+    }
+    let out = config
+        .lines()
+        .map(|line| {
+            if line_blocks_first_boot(line) {
+                // Kept verbatim after the marker, so re-enabling it is deleting
+                // the prefix — not retyping the setting from memory.
+                format!("# easypanel-cli: enable after the first boot — {line}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (out, deferred)
+}
+
+/// Does this ONE line turn a first-boot blocker on?
+fn line_blocks_first_boot(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with('#') || t.starts_with(';') {
+        return false;
+    }
+    let Some((key, value)) = t.split_once('=') else {
+        return false;
+    };
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "on" | "1" | "true"
+    ) && matches!(
+        key.trim().to_ascii_lowercase().as_str(),
+        "super_read_only" | "read_only"
+    )
 }
 
 /// Fields that identify a service to its ORIGIN and must never be carried over:
@@ -244,31 +295,32 @@ pub fn migrate_service(
     // 3) configFile (databases): carries the advanced config, e.g. MySQL
     //    replication. updateAdvanced rejects null image/command, hence the
     //    defaults rather than passing them straight through.
-    //    A config that would stop the new database from initialising is HELD
-    //    BACK rather than copied: applying it here guarantees a service that can
-    //    never boot, and the failure is unrepairable afterwards (see
-    //    first_boot_blockers). The user is told, and applies it once the database
-    //    has come up — which is also when a replica's read-only flags start to
-    //    mean anything.
+    //    The config is copied IN FULL, except that the directives which would
+    //    stop a brand-new database initialising are commented out rather than
+    //    active — see defer_first_boot_blockers. Dropping them would lose
+    //    configuration the user asked to copy; leaving them on would guarantee a
+    //    service that can never boot and cannot be repaired afterwards.
     let config = inspect
         .get("configFile")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let blockers = first_boot_blockers(config);
-    if !config.is_empty() && !blockers.is_empty() {
+    let (config_to_send, deferred) = defer_first_boot_blockers(config);
+    let config = config_to_send.as_str();
+    if !deferred.is_empty() {
         notes.push(format!(
-            "⚠ config file NOT applied — {} would stop the new database initialising \
-             (no root password, no user, no database, and unrepairable afterwards). \
-             Deploy it first so the database initialises, then copy the config from \
-             '{src_service}' — it takes effect the next time the service restarts",
-            blockers.join(" + ")
+            "⚠ config file copied, but {} left COMMENTED OUT — active, they stop a \
+             brand-new database initialising (no root password, no user, no database, \
+             and unrepairable afterwards). Deploy it, let it come up, then delete the \
+             '# easypanel-cli:' prefix on those lines and restart",
+            deferred.join(" + ")
         ));
-    } else if !config.is_empty() {
+    }
+    if !config.is_empty() {
         let adv = json!({
             "projectName": dst.project,
             "serviceName": dst.service,
             "command": inspect.get("command").cloned().unwrap_or(Value::Null),
-            "configFile": inspect.get("configFile").cloned().unwrap_or(Value::Null),
+            "configFile": config,
             "env": inspect.get("env").cloned().unwrap_or(Value::Null),
             "image": inspect.get("image").cloned().unwrap_or(Value::Null),
         });
@@ -372,6 +424,48 @@ mod tests {
             first_boot_blockers(replica),
             vec!["read_only", "super_read_only"]
         );
+    }
+
+    #[test]
+    fn a_replica_config_is_copied_with_its_blockers_commented_not_dropped() {
+        // The owner's point: the config file must be COPIED. It is — every line
+        // survives, and the two that would stop a fresh database initialising
+        // are one `#` away from being back on.
+        let replica = "[mysqld]\n\
+             server-id                  = 2\n\
+             relay_log                  = relay-bin\n\
+             read_only                  = ON\n\
+             super_read_only            = ON\n\
+             max_connections            = 500\n";
+        let (out, deferred) = defer_first_boot_blockers(replica);
+        assert_eq!(deferred, vec!["read_only", "super_read_only"]);
+
+        // Nothing was thrown away: the settings are still there, verbatim.
+        assert!(out.contains("read_only                  = ON"));
+        assert!(out.contains("super_read_only            = ON"));
+        assert!(out.contains("server-id                  = 2"));
+        assert!(out.contains("max_connections            = 500"));
+        assert!(out.contains("relay_log"));
+
+        // …but neither is ACTIVE any more, which is the whole point.
+        assert!(
+            first_boot_blockers(&out).is_empty(),
+            "the copy must be able to boot:\n{out}"
+        );
+        // Two lines commented, and only those two.
+        assert_eq!(
+            out.lines().filter(|l| l.contains("easypanel-cli:")).count(),
+            2
+        );
+        assert_eq!(out.lines().count(), replica.lines().count());
+    }
+
+    #[test]
+    fn a_config_with_nothing_to_defer_is_passed_through_untouched() {
+        let primary = "[mysqld]\nserver-id = 1\nlog_bin = mysql-bin\n";
+        let (out, deferred) = defer_first_boot_blockers(primary);
+        assert!(deferred.is_empty());
+        assert_eq!(out, primary, "not even a reflow");
     }
 
     #[test]

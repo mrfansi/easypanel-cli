@@ -805,7 +805,9 @@ assuming an endpoint exists for a type you have not tried. This one had been bro
 every database in the panel, and it silently disabled the Config File editor with it,
 since a config change needs a process restart to take effect.
 
-**A faithful copy can still be a broken one** (v0.51.1). Cloning a MySQL replica
+**A faithful copy can still be a broken one** (v0.51.1, resolved in v0.57.0 — the fix
+is to COMMENT the two offending directives, not to drop the file: the owner wants the
+configuration copied, and a commented line loses nothing). Cloning a MySQL replica
 copied its config file exactly — and `super_read_only = ON` stops a FRESH database
 from initialising, because the entrypoint has to write the root password, the user
 and the schema. The clone came up with none of them while the panel displayed the
