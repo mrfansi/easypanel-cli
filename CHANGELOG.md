@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.78.2] — 2026-07-21
+## [0.79.0] — 2026-07-21
+
+### Fixed
+
+- **The project → service hierarchy is visible again in the tables.** In the
+  Monitor (and, more subtly, the Services) table a service is meant to sit
+  indented under its project header, but `first_line` — the shared cell truncator —
+  did a full `.trim()`, eating the two-space indent, so on a busy host every row
+  read at the same level and a project header looked like just another service.
+  `first_line` now trims only the trailing side (leading whitespace is meaningful
+  indentation), and project-header rows are drawn in **bold cyan** on both tables so
+  the grouping reads at a glance. The header cue comes from the row's own type, not
+  from testing the indent, so a marked service (`✓ name`) is never mistaken for a
+  header. Reported by an operator looking at a 118-service host; verified on screen.
 
 ### Fixed
 

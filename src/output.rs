@@ -208,7 +208,11 @@ pub fn age_of(ts: &str) -> String {
 
 /// First line, truncated at `max` characters.
 pub fn first_line(s: &str, max: usize) -> String {
-    let line = s.lines().next().unwrap_or("").trim();
+    // trim_END, not trim: leading whitespace can be meaningful indentation. The
+    // Monitor table indents a service under its project header with two spaces,
+    // and eating that (the old `.trim()`) flattened the whole grouping into one
+    // undifferentiated column — a project header read like just another service.
+    let line = s.lines().next().unwrap_or("").trim_end();
     if line.chars().count() <= max {
         return line.to_string();
     }
@@ -300,6 +304,10 @@ mod tests {
         assert_eq!(first_line("one\ntwo", 20), "one");
         assert_eq!(first_line("abcdef", 4), "abc…");
         assert_eq!(first_line("abcd", 4), "abcd");
+        // Trailing space is noise; LEADING space is indentation the Monitor table
+        // relies on to nest a service under its project — it must survive.
+        assert_eq!(first_line("value   ", 20), "value");
+        assert_eq!(first_line("  service", 20), "  service");
     }
 
     #[test]

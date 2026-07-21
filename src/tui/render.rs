@@ -723,7 +723,11 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .filter(|l| matches!(l, Line2::Service(_)))
         .count();
-    let rows: Vec<(Vec<String>, bool)> = lines
+    // (cells, is_down, is_header): the header flag drives the bold-cyan project
+    // name below. It comes from the Line2 variant, NOT from testing the indent —
+    // a marked service reads "✓ name" rather than "  name", so an indent test
+    // would mistake it for a header.
+    let rows: Vec<(Vec<String>, bool, bool)> = lines
         .iter()
         .map(|r| match r {
             // Project header: an aggregate of its children, like the Monitor tab.
@@ -737,7 +741,7 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
                         metrics.get(&(p, n)).copied()
                     })
                     .collect();
-                (project_row(name, services.len(), &mets), false)
+                (project_row(name, services.len(), &mets), false, true)
             }
             Line2::Service(s) => {
                 let (project, service) = (field(s, "/projectName"), field(s, "/name"));
@@ -776,7 +780,7 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
                 let mut out = vec![name];
                 out.extend(row);
                 out.extend(metric_cols(metric));
-                (out, is_down)
+                (out, is_down, false)
             }
         })
         .collect();
@@ -845,12 +849,19 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     // The status dot (column 2) & the Auto mark (column 5) get their own per-cell
     // color: the state reads at a glance. "down" rows are left to inherit the red
     // pulse.
-    let body = rows.into_iter().map(|(mut cells, is_down)| {
+    let body = rows.into_iter().map(|(mut cells, is_down, is_header)| {
         cells.truncate(cols);
         let cells: Vec<Cell> = cells
             .into_iter()
             .enumerate()
             .map(|(i, c)| match i {
+                // A project header's name in bold cyan, so the grouping reads at a
+                // glance — the same cue the Monitor tab uses. Indexed, not named.
+                0 if is_header => Cell::from(c).style(
+                    Style::default()
+                        .fg(Color::Indexed(14))
+                        .add_modifier(Modifier::BOLD),
+                ),
                 4 => Cell::from(crate::output::first_line(&c, source_w)),
                 2 => status_cell(&c, is_down),
                 5 => auto_cell(&c, is_down),
@@ -1600,7 +1611,19 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
                 data,
                 &mut app.monitor_state,
                 server_colour(&app.server_name),
-                |_, _| None,
+                // A project-header row's name is NOT indented; its services read
+                // "  name". Bold + cyan makes the grouping visible at a glance —
+                // without it, in a list of a hundred rows, the 2-space indent is
+                // the only cue and it vanishes, so header and service look alike.
+                // (Indexed, not named: named colors have rendered unreadable under
+                // some terminal themes here before.)
+                |col, text| {
+                    (col == 0 && !text.starts_with("  ")).then(|| {
+                        Style::default()
+                            .fg(Color::Indexed(14))
+                            .add_modifier(Modifier::BOLD)
+                    })
+                },
             );
         }
         MonitorView::Storage => {

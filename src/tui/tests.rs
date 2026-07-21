@@ -2133,6 +2133,48 @@ fn a_failed_domain_load_says_so_instead_of_no_domains_yet() {
 }
 
 #[test]
+fn the_monitor_table_indents_a_service_under_its_project_header() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Monitor;
+    app.monitor = vec![
+        json!({"projectName":"shop","serviceName":"webby","cpu":1.0,"memory":1048576.0,"networkIn":0.0,"networkOut":0.0}),
+        json!({"projectName":"shop","serviceName":"dbase","cpu":2.0,"memory":2097152.0,"networkIn":0.0,"networkOut":0.0}),
+    ];
+    let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let lines: Vec<String> = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(100)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect();
+
+    // The project header is flush-left; its services are INDENTED under it — the
+    // tree the old `first_line` .trim() used to flatten (services rendered
+    // flush, indistinguishable from their header).
+    let header = lines
+        .iter()
+        .find(|l| l.contains("shop (2)"))
+        .expect("a project header row");
+    let svc = lines
+        .iter()
+        .find(|l| l.contains("webby"))
+        .expect("a service row");
+    assert!(
+        !header.contains("  shop (2)"),
+        "the project header must sit flush, not indented:\n{header}"
+    );
+    assert!(
+        svc.contains("  webby"),
+        "a service must be indented under its project:\n{svc}"
+    );
+}
+
+#[test]
 fn a_failed_services_or_stats_load_says_so_instead_of_reading_empty_or_idle() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
