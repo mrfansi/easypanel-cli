@@ -507,9 +507,13 @@ pub(super) fn validate_step(form: &Form) -> Result<(), String> {
             }
             Ok(())
         }
-        // The source step validates through the same builder that shapes the
-        // request, so the wizard cannot accept what the request would reject.
-        1 => source_body(form).map(|_| ()),
+        // The source step validates through the SAME function the submit path uses
+        // (`create_source`), so the gate and the request can't disagree. It permits
+        // an untouched source (an app created as a shell, its repo/image wired up
+        // later — what the panel allows and `a_new_service_without_a_source…`
+        // asserts), while still rejecting a half-filled one. `source_body` alone
+        // was stricter than submit and dead-ended that valid workflow.
+        1 => create_source(form).map(|_| ()),
         _ => Ok(()),
     }
 }

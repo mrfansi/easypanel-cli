@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.79.0] — 2026-07-21
+## [0.79.1] — 2026-07-21
+
+### Fixed
+
+- **The create-service wizard lets you make an app with no source yet.** The
+  Source step gate validated through `source_body` (which requires a repo/image),
+  while the submit path and the code's own docs say an app may be created as a
+  shell and its source wired up later — so a valid, panel-supported workflow was
+  dead-ended with a "Repo must be selected" message that read as a requirement. The
+  gate now uses the same lenient `create_source` the submit uses: an untouched
+  source advances, a HALF-formed one (a repo with no branch) is still refused on
+  its own step. Found by an adversarial UI review; verified on screen. One new test
+  drives the step transition; the older wizard test was realigned to demonstrate
+  its point (no deferred validation) with a half-formed source rather than an empty
+  one.
 
 ### Fixed
 

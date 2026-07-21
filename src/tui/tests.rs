@@ -1011,6 +1011,27 @@ fn a_new_service_without_a_source_sends_none_at_all() {
 }
 
 #[test]
+fn the_wizard_source_step_advances_with_no_source_and_blocks_a_half_formed_one() {
+    // The Source step (step 1) must let an app advance with NO source chosen — a
+    // shell to wire up later, which submit and the panel both allow. The gate used
+    // to validate through `source_body` (stricter than submit) and dead-ended it.
+    let mut f = create_form(&[("Name", "web"), ("Kind", "app")]);
+    f.step = 1;
+    assert!(
+        validate_step(&f).is_ok(),
+        "an untouched source must not block advancing past the Source step"
+    );
+
+    // …but a half-formed source is still blocked at the gate, same as submit.
+    let mut f = create_form(&[("Name", "web"), ("Repo", "acme/web"), ("Branch", "")]);
+    f.step = 1;
+    assert!(
+        validate_step(&f).is_err(),
+        "a repo with no branch must still be refused"
+    );
+}
+
+#[test]
 fn source_fields_hide_unless_the_service_type_is_app() {
     // Two deciders at once: the service type AND the source type. This is what used
     // to be impossible — a form had only one switch.
@@ -3366,17 +3387,20 @@ fn the_wizard_refuses_to_leave_a_step_it_cannot_satisfy() {
     assert_eq!(app.form.as_ref().unwrap().step, 1);
     assert!(app.form.as_ref().unwrap().error.is_none());
 
-    // Source is validated on the way out too — an empty repo cannot be walked past.
+    // A HALF-formed source is caught HERE, on its own step — never deferred two
+    // steps on. (An UNtouched source is fine: an app may be created as a shell and
+    // wired up later — form.rs documents this and the panel allows it. A repo with
+    // no branch, though, is a broken source and must be refused at its own step.)
+    set(&mut app, "Repo", "owner/repo");
     app.form_key(KeyCode::Enter, &tx);
     assert_eq!(
         app.form.as_ref().unwrap().step,
         1,
-        "empty repo must not advance"
+        "a half-formed source must not advance"
     );
     assert!(app.form.as_ref().unwrap().error.is_some());
 
-    // Filled in, it advances — and the failure can never surface two steps later.
-    set(&mut app, "Repo", "owner/repo");
+    // Completed, it advances — and the failure can never surface two steps later.
     set(&mut app, "Branch", "main");
     app.form_key(KeyCode::Enter, &tx);
     assert_eq!(app.form.as_ref().unwrap().step, 2);
