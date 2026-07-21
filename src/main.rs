@@ -142,6 +142,13 @@ enum ProjectCmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Export a project's config to a file (secrets redacted, no data)
+    Export {
+        name: String,
+        /// Where to write it; default `<project>.easypanel.json`. Use `-` for stdout.
+        #[arg(long)]
+        file: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -423,6 +430,7 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                 ProjectCmd::Create { name } => commands::project_create(&client, &name),
                 ProjectCmd::Inspect { name } => commands::project_inspect(&client, &name),
                 ProjectCmd::Destroy { name, yes } => commands::project_destroy(&client, &name, yes),
+                ProjectCmd::Export { name, file } => commands::project_export(&client, &name, file),
             }
         }
 

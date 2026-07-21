@@ -310,6 +310,95 @@ pub fn project_diff_lines(d: &ProjectDiff, a: &str, b: &str) -> Vec<String> {
     out
 }
 
+/// A project's config as a stable, redacted, git-committable record.
+///
+/// EasyPanel has no export and no import, so an operator who wants their config
+/// in git — to review a change, keep a record, or diff two points in time — has
+/// nowhere to get it. This produces one: every service's source, build, deploy,
+/// resources, env KEYS, domains, mounts and ports.
+///
+/// Two things it deliberately drops, so the file is safe to commit and stable to
+/// diff:
+///
+/// - **Every secret.** Env is reduced to its KEYS (never a value — an env is the
+///   densest pile of secrets a service has), the deploy `token` is gone, and any
+///   secret-named field in `source` (a registry `password`) is masked. The same
+///   rule the on-screen views enforce; a config file that leaks a token into git
+///   is worse than no export.
+/// - **Volatile, environment-specific noise** — the last commit hash, the
+///   deployment URL, the primary-domain cuid. They change on every deploy and
+///   would make a diff scream about things that are not configuration.
+pub fn export_project(project: &str, services: &[Value]) -> Value {
+    let svcs: Vec<Value> = services.iter().map(export_service).collect();
+    serde_json::json!({
+        "project": project,
+        "note": "easypanel-cli export — config only, secrets redacted, no data",
+        "services": svcs,
+    })
+}
+
+fn export_service(s: &Value) -> Value {
+    let mut env_keys: Vec<String> = env_map(s).into_keys().collect();
+    env_keys.sort();
+    let domains: Vec<String> = s
+        .get("domains")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().map(crate::domains::domain_source).collect())
+        .unwrap_or_default();
+    serde_json::json!({
+        "name": field(s, "/name"),
+        "type": field(s, "/type"),
+        "enabled": s.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+        "source": s.get("source").map(redact_source),
+        "build": s.get("build").cloned().unwrap_or(Value::Null),
+        "deploy": s.get("deploy").cloned().unwrap_or(Value::Null),
+        "resources": s.get("resources").cloned().unwrap_or(Value::Null),
+        "env": env_keys,
+        "domains": domains,
+        "mounts": s.get("mounts").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "ports": s.get("ports").cloned().unwrap_or_else(|| serde_json::json!([])),
+    })
+}
+
+/// The `source` object with any secret-named field masked (a private registry
+/// keeps a `password` here). Matched by NAME so a secret field a future EasyPanel
+/// adds arrives masked rather than leaked — the same reason the Source view does.
+fn redact_source(source: &Value) -> Value {
+    let Some(obj) = source.as_object() else {
+        return source.clone();
+    };
+    let mut out = serde_json::Map::new();
+    for (k, v) in obj {
+        // The deploy token is never config; drop it entirely.
+        if k == "token" {
+            continue;
+        }
+        if is_secret_key(k) {
+            out.insert(k.clone(), Value::String("••••••••".into()));
+        } else {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    Value::Object(out)
+}
+
+/// Does this field name a credential? A local copy of the on-screen rule (which
+/// lives in the TUI module and is not reachable from here); a three-word check is
+/// cheaper to duplicate than to hoist, and both point at the same list.
+fn is_secret_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    [
+        "password",
+        "token",
+        "secret",
+        "credential",
+        "apikey",
+        "privatekey",
+    ]
+    .iter()
+    .any(|needle| k.contains(needle))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,6 +495,60 @@ mod tests {
         assert!(d.differing.is_empty() && d.only_left.is_empty() && d.only_right.is_empty());
         let lines = project_diff_lines(&d, "prod", "staging");
         assert!(lines[0].contains("match across all 2"), "{lines:?}");
+    }
+
+    #[test]
+    fn an_export_redacts_secrets_and_reduces_env_to_keys() {
+        let s = json!({
+            "name": "api", "type": "app", "enabled": true,
+            "source": { "type": "image", "image": "ghcr.io/acme/api:latest",
+                        "username": "bot", "password": "ghp_realtoken" },
+            "build": { "type": "nixpacks" },
+            "deploy": { "replicas": 2 },
+            "env": "DATABASE_URL=postgres://user:pw@host/db\nREDIS_HOST=r1",
+            "domains": [{ "https": true, "host": "api.test", "path": "/" }],
+            "mounts": [], "ports": [],
+            "token": "deploy-secret"
+        });
+        let out = export_project("shop", &[s]);
+        let dump = serde_json::to_string(&out).unwrap();
+
+        // No secret value survives, anywhere.
+        assert!(
+            !dump.contains("ghp_realtoken"),
+            "registry password leaked: {dump}"
+        );
+        assert!(!dump.contains("postgres://"), "env value leaked: {dump}");
+        assert!(
+            !dump.contains("deploy-secret"),
+            "deploy token leaked: {dump}"
+        );
+
+        let svc = &out["services"][0];
+        // env is KEYS only, sorted.
+        assert_eq!(svc["env"], json!(["DATABASE_URL", "REDIS_HOST"]));
+        // A registry password is masked but its presence is still recorded.
+        assert_eq!(svc["source"]["password"], json!("••••••••"));
+        assert_eq!(svc["source"]["username"], json!("bot"));
+        // The domain reads as its URL.
+        assert_eq!(svc["domains"], json!(["https://api.test/"]));
+        // The deploy token is dropped entirely, not even masked.
+        assert!(svc["source"].get("token").is_none());
+        assert_eq!(svc["name"], json!("api"));
+        assert_eq!(svc["deploy"]["replicas"], json!(2));
+    }
+
+    #[test]
+    fn the_export_is_stable_regardless_of_env_line_order() {
+        // A record you diff across time must not change because the API returned
+        // the env lines in a different order.
+        let mk = |env: &str| {
+            json!({ "name": "a", "type": "app", "env": env,
+                    "source": {}, "build": {}, "deploy": {}, "mounts": [], "ports": [], "domains": [] })
+        };
+        let a = export_project("p", &[mk("B=2\nA=1")]);
+        let b = export_project("p", &[mk("A=1\nB=2")]);
+        assert_eq!(a, b);
     }
 
     #[test]

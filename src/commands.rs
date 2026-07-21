@@ -172,6 +172,41 @@ pub fn project_create(client: &EasypanelClient, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Write a project's config to a file (or stdout), secrets redacted.
+///
+/// The `--json` global flag prints the raw inspectProject instead — this command
+/// is the CURATED, git-committable form; that flag is the escape hatch for the
+/// raw API shape.
+pub fn project_export(client: &EasypanelClient, name: &str, file: Option<String>) -> Result<()> {
+    let data = client.call("projects", "inspectProject", json!({ "projectName": name }))?;
+    if output::json_output() {
+        output::print_json(&data);
+        return Ok(());
+    }
+    let services = data
+        .get("services")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let export = crate::services::export_project(name, &services);
+    let text = serde_json::to_string_pretty(&export)?;
+
+    match file.as_deref() {
+        Some("-") => println!("{text}"),
+        other => {
+            let path = other
+                .map(String::from)
+                .unwrap_or_else(|| format!("{name}.easypanel.json"));
+            std::fs::write(&path, format!("{text}\n"))?;
+            println!(
+                "Wrote {} service(s) to {path} — config only, secrets redacted.",
+                services.len()
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn project_inspect(client: &EasypanelClient, name: &str) -> Result<()> {
     let data = client.call("projects", "inspectProject", json!({ "projectName": name }))?;
     if output::json_output() {

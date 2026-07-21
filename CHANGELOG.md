@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.0] — 2026-07-21
+
+### Added
+
+- **Export a project's config to a git-committable file.** `easypanel project export
+  <name>` writes every service's source, build, deploy block, resources, env keys,
+  domains, mounts and ports to `<name>.easypanel.json` (or stdout with `--file -`).
+  EasyPanel has no export and no import at all, so until now there was nowhere to get your
+  config for a review, a record, or a diff across time.
+
+  It is built to be **safe in git and stable to diff**: env is reduced to its KEYS — never
+  a value, since an env is the densest pile of secrets a service has — the deploy token is
+  dropped, and any secret-named field like a private registry `password` is masked, the
+  same rule the on-screen views enforce. Volatile per-deploy noise (the last commit hash,
+  the deployment URL, the primary-domain id) is left out, so a diff shows configuration
+  changes rather than deploy churn. Config only: no data, no secret values, ever.
+
+  This is export only; applying a file back to a host is a separate, deliberate step not
+  built yet. Verified live that a registry password and env values never reach the file.
+
 ## [0.74.0] — 2026-07-21
 
 ### Added

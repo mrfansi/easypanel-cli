@@ -31,6 +31,8 @@ searchable table, and every domain on the box — without clicking through a hie
   config goes over: image/source, build, env, mounts, ports, resources, a database's
   advanced config file and credentials, and the domains. Moving between hosts is
   painful in the web panel, which has no export and no import — you retype everything.
+  (`easypanel project export <name>` writes that same config to a git-committable JSON
+  file, secrets redacted — see the CLI section.)
   **Config only, never data:** volume contents and database rows live on the origin
   host's disk and the API does not expose them, so plan to move those yourself
   (`mysqldump`, a volume copy). Domains come over pointing at their existing hostnames —
@@ -395,6 +397,7 @@ on a separate lane and can't block your keystrokes.
 
 ```bash
 easypanel project list|create|inspect|destroy
+easypanel project export <name> [--file <path>|-]   # config → git-committable JSON
 
 # Lifecycle
 easypanel service create|deploy|restart|start|stop|destroy <project> <service> [--type app]
@@ -430,6 +433,26 @@ easypanel notification list|delete
 
 `--type` defaults to `app`; other types (mysql, postgres, redis, mongo, mariadb,
 wordpress, compose) match your EasyPanel services.
+
+### Export a project's config
+
+```bash
+easypanel project export harisenin-net                 # → harisenin-net.easypanel.json
+easypanel project export harisenin-net --file -        # to stdout
+```
+
+EasyPanel has no export and no import, so there is nowhere to get your config for review
+or a record. This writes one: every service's source, build, deploy block, resource
+limits, **env keys** (never the values), domains, mounts and ports — a stable JSON you can
+commit to git, diff across time, or read in a review.
+
+It is **safe to commit**: env is reduced to its keys, the deploy token is dropped, and any
+secret-named field (a private registry `password`) is masked `••••••••` — the same rule
+the on-screen views enforce. Volatile, per-deploy noise (the last commit hash, the
+deployment URL, the primary-domain id) is left out so a diff shows configuration changes,
+not deploy churn. Config only — it never carries data or the secret values themselves.
+
+(This is export only; applying a file back to a host is not built yet.)
 
 ### Scripting with `--json`
 
