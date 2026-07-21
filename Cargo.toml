@@ -1,6 +1,6 @@
 [package]
 name = "easypanel"
-version = "0.79.4"
+version = "0.80.0"
 edition = "2021"
 description = "Manage multiple EasyPanel hosts from your terminal — CLI + TUI"
 license = "MIT"
@@ -41,6 +41,10 @@ clap_mangen = "0.3.0"
 tungstenite = { version = "0.24", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 libc = "0.2"
 vt100 = "0.15"
+# AWS Signature v4 for presigned S3/R2 URLs (db dump → object storage). Pure-Rust,
+# small, and shares the digest/generic-array already pulled in by the TLS stack.
+hmac = "0.12"
+sha2 = "0.10"
 
 [dev-dependencies]
 httpmock = "0.7"

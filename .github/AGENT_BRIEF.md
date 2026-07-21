@@ -324,6 +324,41 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### DONE v0.80.0 (2026-07-21): a non-locking DB dump straight to R2 — SHIPPED
+
+**Built and verified live end-to-end.** `easypanel db dump` / `db restore`
+(mysql/mariadb): `src/s3.rs` (Sig v4 presigner, tested vs AWS's published vectors),
+`src/dump.rs` (dump/restore command builders + shell-injection gate on db names),
+`src/container.rs::run_until_done` (long-running one-shot exec with a `__EZP_DONE_`
+marker for the exit code), CLI in `commands.rs`/`main.rs`. Proven on throwaway
+zzz services: seeded a row → `db dump` to R2 (non-locking, `--single-transaction`)
+→ `db restore` into a DIFFERENT service that never held the DB → the table AND its
+row arrived. Cleaned up all zzz services + R2 objects.
+
+**Hard-won gotchas (keep for postgres/mongo extension):**
+- The container shell is a PTY (`docker exec -it`). Do NOT pipe a real-sized dump
+  through it (`mysqldump | gzip`) — the pipe write hits `errno 11 (EAGAIN)` and
+  corrupts/aborts. Write mysqldump to a FILE, then gzip the file, then upload.
+- The command travels in the containerShell URL; keep it SHORT and FLAT. A braced
+  / subshell wrapper (`{ …; } … ( exit $? )`) was truncated to "syntax error:
+  unexpected end of file". No `{ } ( ) [ ]` grouping in the command.
+- `--set-gtid-purged=OFF` (mysql) both silences the GTID warning (no stray stderr
+  to the PTY) and makes the dump restore without GTID conflicts.
+- R2 rejects a streamed/chunked PUT with `411`; buffer to a file so Content-Length
+  is set, then `curl -T file`. `getServiceDatabases` returns a plain array incl.
+  system schemas; `--all` filters those out (dump::is_system_db).
+- A leftover idle mysql connection holding a lock on the target DB will hang
+  `mysqldump --single-transaction` (bit us via a stray DB-shell session). Normal
+  operation is unaffected; noted in case a future run sees a mysterious hang.
+
+**Not yet done (next backlog candidates):** postgres (`pg_dump`/`pg_dumpall`) and
+mongo (`mongodump --archive --gzip`); a pre-flight free-disk check on the
+container `/tmp`; and `run_until_done` does not kill the in-container command when
+it gives up (a blocked dump leaks a connection) — harmless normally, worth a
+follow-up.
+
+--- original scoping notes (kept for reference) ---
+
 ### BACKLOG (owner-requested 2026-07-21): a non-locking DB dump straight to R2 — FEASIBILITY PROVEN, build it
 
 The owner's real pain with EasyPanel's native backup, in their words:

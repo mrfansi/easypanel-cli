@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.80.0] — 2026-07-21
+
+### Added
+
+- **`db dump` / `db restore` — a non-locking database backup to your object
+  storage that actually restores onto a fresh server.** EasyPanel's own database
+  backup has three problems an operator hits hard: it **locks the running
+  database** (no `--single-transaction`, so apps using it error out during the
+  backup), it writes **one file per database**, and its restore only works **into
+  a database that already exists** — so moving a backup to a new host fails. This
+  adds our own path that fixes all three:
+
+  ```bash
+  easypanel db dump <project> <service> --databases a,b,c   # or --all
+  easypanel db restore <project> <service> --path <key>
+  ```
+
+  It runs `mysqldump --single-transaction` **inside the service container** (no
+  lock), gzips it, and uploads it straight to your existing remote storage
+  provider (e.g. Cloudflare R2) with a presigned URL — the data goes
+  container→storage directly, so it never crosses this tool's WebSocket or a
+  proxy's ~125 s timeout. Because the dump uses `--databases` (which embeds
+  `CREATE DATABASE`), `db restore` recreates the schema **and its data on a host
+  where it never existed** — the exact cross-server case EasyPanel can't do. One
+  self-contained `.sql.gz` can hold several databases. mysql and mariadb today
+  (postgres/mongo later). `--all` dumps every non-system schema the service holds.
+
+  Verified end-to-end on throwaway services: dumped a seeded database to R2 and
+  restored it into a *different* service that had never held it — the table and
+  its row arrived intact. The AWS Signature v4 presigner is checked against AWS's
+  published test vectors; database names are gated to a safe charset before they
+  reach the container shell; and credentials (storage secret, DB root password)
+  are never printed, including in error output.
+
 ## [0.79.4] — 2026-07-21
 
 ### Changed

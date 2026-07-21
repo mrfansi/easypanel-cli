@@ -441,6 +441,10 @@ easypanel backup db-run|db-delete|volume-run|volume-delete <id>
 easypanel backup providers
 easypanel backup db-restore --project P --service S --database D --path <path> [--yes]
 
+# Non-locking dump to object storage, and cross-server restore (mysql/mariadb)
+easypanel db dump <project> <service> --databases a,b,c   # or --all
+easypanel db restore <project> <service> --path <key> [--yes]
+
 # Maintenance (active server)
 easypanel maintenance info|prune|cleanup-images|cleanup-builder [--yes]
 
@@ -455,6 +459,34 @@ easypanel notification list|delete
 
 `--type` defaults to `app`; other types (mysql, postgres, redis, mongo, mariadb,
 wordpress, compose) match your EasyPanel services.
+
+### Non-locking database dump to object storage
+
+EasyPanel's own database backup has three problems an operator feels: it **locks
+the running database** (no `--single-transaction`, so apps error out during the
+backup), it files **one backup per database**, and its restore only works **into a
+database that already exists** — so carrying a backup to a fresh host fails. `db
+dump` / `db restore` are our own path around all three (mysql/mariadb today):
+
+```bash
+easypanel db dump vidingco-db mysql --databases studio,billing   # or --all
+easypanel db restore other-host-db mysql --path vidingco-db/mysql-20260721-1530.sql.gz
+```
+
+`db dump` runs `mysqldump --single-transaction` **inside the service container**
+(no lock), gzips it, and uploads it straight to your existing remote storage
+provider (Cloudflare R2, S3, …) with a presigned URL — the data goes
+container→storage **directly**, so it never crosses this tool's WebSocket or a
+proxy's ~125 s timeout. One self-contained `.sql.gz` can hold several databases.
+Because the dump embeds `CREATE DATABASE`, **`db restore` recreates the schema and
+its data on a host where it never existed** — the exact cross-server case
+EasyPanel can't do. `--all` dumps every non-system schema the service holds; a
+single remote provider is picked automatically, or name one with `--provider`.
+
+This is the *tool's* backup, so it does **not** appear in EasyPanel's own restore
+UI — restore it with `db restore`. It buffers to the container's `/tmp` during the
+run (needs free space ≈ the compressed size), and never prints your storage secret
+or the database root password.
 
 ### Export a project's config
 

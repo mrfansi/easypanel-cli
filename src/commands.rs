@@ -1156,6 +1156,282 @@ pub fn backup_db_restore(
     Ok(())
 }
 
+// ---------- Non-locking database dump / restore to object storage ----------
+//
+// The tool's OWN backup: dump a mysql/mariadb service's databases inside the
+// container (non-locking `--single-transaction`), gzip, and push straight to the
+// existing remote storage (R2) with a presigned URL. One self-contained file for
+// several databases, restorable onto a host where they never existed — the three
+// things EasyPanel's own per-database, locking, restore-into-an-existing-db backup
+// can't do. See `dump.rs`/`s3.rs`/`container::run_until_done`.
+
+/// A remote (S3/R2) storage provider with the credentials a presigned upload needs.
+struct RemoteStore {
+    name: String,
+    access_key: String,
+    secret_key: String,
+    bucket: String,
+    endpoint: String,
+    region: String,
+}
+
+/// The engine of a database service, read from the project's service list so we
+/// don't have to guess the `services/{type}` path. Only mysql/mariadb dump for now;
+/// anything else is a clear error, not a silently wrong command.
+fn resolve_db_engine(client: &EasypanelClient, project: &str, service: &str) -> Result<String> {
+    let data = client.call(
+        "projects",
+        "inspectProject",
+        json!({ "projectName": project }),
+    )?;
+    let stype = data
+        .get("services")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|s| field(s, "/name") == service)
+        .map(|s| field(s, "/type"))
+        .ok_or_else(|| anyhow!("{project}/{service} not found"))?;
+    match stype.as_str() {
+        "mysql" | "mariadb" => Ok(stype),
+        other => {
+            anyhow::bail!("db dump/restore supports mysql and mariadb; {service} is '{other}'.")
+        }
+    }
+}
+
+/// Pick the remote storage provider: the one named by `want` (id or name), or the
+/// only remote one when there is exactly one. Local disk is never a target — a
+/// dump you can't reach from another host defeats the whole point.
+fn pick_remote_provider(client: &EasypanelClient, want: Option<&str>) -> Result<RemoteStore> {
+    let v = client.call("storageProviders/common", "list", Value::Null)?;
+    let all = v.as_array().cloned().unwrap_or_default();
+    let remote: Vec<Value> = all
+        .into_iter()
+        .filter(|p| crate::backup::is_remote(&field(p, "/type")))
+        .collect();
+    let chosen: &Value = match want {
+        Some(w) => remote
+            .iter()
+            .find(|p| field(p, "/id") == w || field(p, "/name").eq_ignore_ascii_case(w))
+            .ok_or_else(|| {
+                anyhow!("No remote storage provider matches '{w}'. See: easypanel backup providers")
+            })?,
+        None => match remote.as_slice() {
+            [one] => one,
+            [] => anyhow::bail!(
+                "No remote storage provider is configured (local disk can't be restored elsewhere)."
+            ),
+            many => anyhow::bail!(
+                "There are {} remote providers; choose one with --provider (see: easypanel backup providers).",
+                many.len()
+            ),
+        },
+    };
+    Ok(RemoteStore {
+        name: field(chosen, "/name"),
+        access_key: field(chosen, "/accessKeyId"),
+        secret_key: field(chosen, "/secretAccessKey"),
+        bucket: field(chosen, "/bucket"),
+        endpoint: field(chosen, "/endpoint"),
+        region: field(chosen, "/region"),
+    })
+}
+
+/// The databases a dump should cover: `--all` (every non-system schema the service
+/// actually holds) or the explicit `--databases` list. Every name is gated to a
+/// safe shell token — these are spliced into an in-container command.
+fn resolve_dump_databases(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    databases: &[String],
+    all: bool,
+) -> Result<Vec<String>> {
+    let list = if all {
+        let v = client.call(
+            "databaseBackups",
+            "getServiceDatabases",
+            json!({ "projectName": project, "serviceName": service }),
+        )?;
+        let names: Vec<String> = v
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| d.as_str().map(String::from))
+            .filter(|d| !crate::dump::is_system_db(d))
+            .collect();
+        if names.is_empty() {
+            anyhow::bail!("{service} has no non-system databases to dump.");
+        }
+        names
+    } else if databases.is_empty() {
+        anyhow::bail!("Say which databases: --databases a,b  (or --all).");
+    } else {
+        databases.to_vec()
+    };
+    for d in &list {
+        if !crate::dump::valid_db_name(d) {
+            anyhow::bail!(
+                "Refusing database name {d:?}: only letters, digits, '_' and '-' allowed."
+            );
+        }
+    }
+    Ok(list)
+}
+
+/// The root password for a database service, or a clear error. Kept out of any
+/// message we print.
+fn service_root_password(
+    client: &EasypanelClient,
+    stype: &str,
+    project: &str,
+    service: &str,
+) -> Result<String> {
+    let inspect = client.call(
+        &format!("services/{stype}"),
+        "inspectService",
+        json!({ "projectName": project, "serviceName": service }),
+    )?;
+    let pw = field(&inspect, "/rootPassword");
+    if !crate::backup::is_named(&pw) {
+        anyhow::bail!("No root password on record for {service}; cannot reach the database.");
+    }
+    Ok(pw)
+}
+
+pub fn db_dump(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    databases: &[String],
+    all: bool,
+    provider: Option<&str>,
+) -> Result<()> {
+    let stype = resolve_db_engine(client, project, service)?;
+    let root_password = service_root_password(client, &stype, project, service)?;
+    let dbs = resolve_dump_databases(client, project, service, databases, all)?;
+    let store = pick_remote_provider(client, provider)?;
+
+    let now = chrono::Utc::now();
+    let ts = now.format("%Y%m%d-%H%M%S").to_string();
+    let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+    let key = format!("{project}/{service}-{ts}.sql.gz");
+    let tmp = format!("/tmp/ezp-dump-{ts}.sql.gz");
+    let url = crate::s3::presign(
+        "PUT",
+        &store.endpoint,
+        &store.bucket,
+        &key,
+        &store.access_key,
+        &store.secret_key,
+        &store.region,
+        &amz_date,
+        3600,
+    );
+    let cmd = crate::dump::dump_command(&stype, &root_password, &dbs, &tmp, &url)
+        .ok_or_else(|| anyhow!("db dump supports mysql/mariadb only"))?;
+
+    println!(
+        "Dumping {} database(s) from {project}/{service} to {} (non-locking)…",
+        dbs.len(),
+        store.name
+    );
+    println!("  {}", dbs.join(", "));
+    let run = crate::container::run_until_done(
+        client,
+        project,
+        service,
+        &cmd,
+        std::time::Duration::from_secs(600),
+    )?;
+    let redact = |s: &str| {
+        s.replace(&url, "<presigned-url>")
+            .replace(&root_password, "<redacted>")
+            .trim()
+            .to_string()
+    };
+    match run.exit_code {
+        Some(0) => {
+            println!("Done → {}/{} ({}).", store.bucket, key, store.name);
+            println!("Restore it with:  easypanel db restore {project} {service} --path {key}");
+            Ok(())
+        }
+        Some(n) => anyhow::bail!("Dump failed (exit {n}). {}", redact(&run.output)),
+        None => anyhow::bail!(
+            "Dump did not report completion within 10 min. {}",
+            redact(&run.output)
+        ),
+    }
+}
+
+pub fn db_restore(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    path: &str,
+    provider: Option<&str>,
+    yes: bool,
+) -> Result<()> {
+    let stype = resolve_db_engine(client, project, service)?;
+    let root_password = service_root_password(client, &stype, project, service)?;
+    let store = pick_remote_provider(client, provider)?;
+
+    if !confirm(
+        &format!(
+            "Restore dump '{path}' into {project}/{service}? It recreates and OVERWRITES \
+             the databases the dump contains."
+        ),
+        yes,
+    )? {
+        return Ok(());
+    }
+
+    let now = chrono::Utc::now();
+    let ts = now.format("%Y%m%d-%H%M%S").to_string();
+    let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+    let tmp = format!("/tmp/ezp-restore-{ts}.sql.gz");
+    let url = crate::s3::presign(
+        "GET",
+        &store.endpoint,
+        &store.bucket,
+        path,
+        &store.access_key,
+        &store.secret_key,
+        &store.region,
+        &amz_date,
+        3600,
+    );
+    let cmd = crate::dump::restore_command(&stype, &root_password, &tmp, &url)
+        .ok_or_else(|| anyhow!("db restore supports mysql/mariadb only"))?;
+
+    println!("Restoring {path} into {project}/{service}…");
+    let run = crate::container::run_until_done(
+        client,
+        project,
+        service,
+        &cmd,
+        std::time::Duration::from_secs(600),
+    )?;
+    let redact = |s: &str| {
+        s.replace(&url, "<presigned-url>")
+            .replace(&root_password, "<redacted>")
+            .trim()
+            .to_string()
+    };
+    match run.exit_code {
+        Some(0) => {
+            println!("Restored {path} into {project}/{service}.");
+            Ok(())
+        }
+        Some(n) => anyhow::bail!("Restore failed (exit {n}). {}", redact(&run.output)),
+        None => anyhow::bail!(
+            "Restore did not report completion within 10 min. {}",
+            redact(&run.output)
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

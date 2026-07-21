@@ -5,11 +5,13 @@ mod config;
 mod container;
 mod credentials;
 mod domains;
+mod dump;
 mod lifecycle;
 mod logs;
 mod migrate;
 mod monitor;
 mod output;
+mod s3;
 mod services;
 mod source;
 mod tui;
@@ -69,6 +71,9 @@ enum Command {
     /// Run or delete backups (by id)
     #[command(subcommand)]
     Backup(BackupCmd),
+    /// Non-locking database dump to object storage, and cross-server restore
+    #[command(subcommand)]
+    Db(DbCmd),
     /// Action history (deploy, destroy, login, ...)
     #[command(subcommand)]
     Action(ActionCmd),
@@ -369,6 +374,39 @@ enum BackupCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum DbCmd {
+    /// Dump mysql/mariadb databases to object storage — non-locking, one gzip file,
+    /// uploaded straight from the container to the existing remote storage (R2).
+    Dump {
+        project: String,
+        service: String,
+        /// Databases to include (comma-separated). Omit and pass --all instead.
+        #[arg(long, value_delimiter = ',')]
+        databases: Vec<String>,
+        /// Dump every non-system database the service holds.
+        #[arg(long)]
+        all: bool,
+        /// Storage provider id or name (optional when one remote provider exists).
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Restore a dump written by `db dump`. It recreates the databases, so it works
+    /// on a host where they never existed — the cross-server case EasyPanel can't do.
+    Restore {
+        project: String,
+        service: String,
+        /// Object key (path) of the dump in the storage provider.
+        #[arg(long)]
+        path: String,
+        /// Storage provider id or name (optional when one remote provider exists).
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     let cfg = ServerConfig::new(ServerConfig::default_path());
@@ -647,6 +685,40 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     &project,
                     &service,
                     &database,
+                    &path,
+                    provider.as_deref(),
+                    yes,
+                ),
+            }
+        }
+
+        Some(Command::Db(c)) => {
+            let client = resolve_client(cfg, &cli.server)?;
+            match c {
+                DbCmd::Dump {
+                    project,
+                    service,
+                    databases,
+                    all,
+                    provider,
+                } => commands::db_dump(
+                    &client,
+                    &project,
+                    &service,
+                    &databases,
+                    all,
+                    provider.as_deref(),
+                ),
+                DbCmd::Restore {
+                    project,
+                    service,
+                    path,
+                    provider,
+                    yes,
+                } => commands::db_restore(
+                    &client,
+                    &project,
+                    &service,
                     &path,
                     provider.as_deref(),
                     yes,

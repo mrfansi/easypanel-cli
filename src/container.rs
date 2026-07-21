@@ -141,6 +141,92 @@ pub(crate) fn run_once(
     Ok(out)
 }
 
+/// The marker `run_until_done` appends to learn when a command finished and with
+/// what exit status. Distinctive enough not to collide with real output.
+const DONE_MARK: &str = "__EZP_DONE_";
+
+/// The result of a long-running one-shot: the exit status (None if the marker
+/// never arrived — a dropped connection or a timeout) and everything the command
+/// printed, with the sentinel line stripped out.
+pub(crate) struct Run {
+    pub exit_code: Option<i32>,
+    pub output: String,
+}
+
+/// Run ONE command that may take much longer than [`run_once`]'s 20 s cap — a
+/// database dump piped to `gzip` and uploaded to object storage — and wait for it
+/// to actually finish.
+///
+/// `run_once` stops on a quiet socket, which is wrong here: a healthy `mysqldump |
+/// gzip | curl` is SILENT for its whole run, then exits. And the socket merely
+/// closing can't tell success from failure. So we append `printf '<MARK>%s__' $?`:
+/// its appearance means "done", and the number is the pipeline's exit status.
+/// Reading continues until the marker, the socket closing, or `cap` — whichever is
+/// first. A `docker exec -it -c <cmd>` passes the command as an argument (not typed
+/// on stdin), so the command text — including the password and presigned URL — is
+/// never echoed back into `output`; only the command's own stdout/stderr is.
+pub(crate) fn run_until_done(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    command: &str,
+    cap: Duration,
+) -> Result<Run> {
+    let wrapped = format!("{command}; printf '{DONE_MARK}%s__\\n' \"$?\"");
+    let url = ws_url(client, project, service, &wrapped)?;
+    let (mut ws, _) = tungstenite::connect(&url)?;
+    set_read_timeout(&mut ws, Duration::from_millis(500));
+    let start = std::time::Instant::now();
+    let mut out = String::new();
+    while start.elapsed() < cap {
+        match ws.read() {
+            Ok(Message::Text(t)) => {
+                if let Some(o) = serde_json::from_str::<Value>(&t)
+                    .ok()
+                    .and_then(|v| v.get("output").and_then(Value::as_str).map(String::from))
+                {
+                    out.push_str(&o);
+                    if out.contains(DONE_MARK) {
+                        break;
+                    }
+                }
+            }
+            Ok(Message::Close(_)) => break,
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+    }
+    let _ = ws.close(None);
+    Ok(split_done_marker(&out))
+}
+
+/// Pull the exit status out of the sentinel line and return the output without it.
+fn split_done_marker(raw: &str) -> Run {
+    if let Some(i) = raw.find(DONE_MARK) {
+        let after = &raw[i + DONE_MARK.len()..];
+        let code = after
+            .split("__")
+            .next()
+            .and_then(|s| s.trim().parse::<i32>().ok());
+        // Everything up to the marker is the real output; drop the sentinel line.
+        let mut output = raw[..i].to_string();
+        while output.ends_with('\n') || output.ends_with('\r') {
+            output.pop();
+        }
+        Run {
+            exit_code: code,
+            output,
+        }
+    } else {
+        Run {
+            exit_code: None,
+            output: raw.to_string(),
+        }
+    }
+}
+
 /// Give a blocking WebSocket read a timeout, so a quiet socket doesn't hang the
 /// caller forever. Both TLS and plain streams are handled.
 pub(crate) fn set_read_timeout(
@@ -154,5 +240,26 @@ pub(crate) fn set_read_timeout(
     };
     if let Some(s) = stream {
         let _ = s.set_read_timeout(Some(dur));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn done_marker_yields_exit_code_and_clean_output() {
+        let r = split_done_marker("some warning\n__EZP_DONE_0__\n");
+        assert_eq!(r.exit_code, Some(0));
+        assert_eq!(r.output, "some warning");
+
+        let r = split_done_marker("curl: (22) 403\n__EZP_DONE_22__\n");
+        assert_eq!(r.exit_code, Some(22));
+        assert_eq!(r.output, "curl: (22) 403");
+
+        // No marker (dropped connection / timeout) -> unknown status, raw output.
+        let r = split_done_marker("half output");
+        assert_eq!(r.exit_code, None);
+        assert_eq!(r.output, "half output");
     }
 }
