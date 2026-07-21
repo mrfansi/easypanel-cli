@@ -298,6 +298,32 @@ and pass `--server harisenin-aurel` (or `harisenin-angelia`) explicitly for ever
 verification. Do not switch the default to make this easier — the owner's choice of
 default is theirs, and changing it is itself a mutation of their config.
 
+### Wildcard domains rendered identical to their apex — fixed v0.76.0 (2026-07-21)
+
+The Domains screen showed `https://edu.harisenin.net/` on TWO rows; they looked like a
+duplicate. The owner's panel screenshot showed the truth: one was `edu.harisenin.net`, the
+other `*.edu.harisenin.net`. EasyPanel stores a wildcard as a SEPARATE flag —
+`{ host: "edu.harisenin.net", wildcard: true }`, host string unchanged (verified live via
+`project inspect --json`). `domain_source` never read the flag, so wildcard and apex
+rendered byte-identical on the one screen you open to tell domains apart. Fixed in
+`domain_source` (host → `*.{host}` when `wildcard`), which flows to the TUI, CLI
+`domain list`, cross-host domain diff, and `project export` at once. One test.
+
+**Two lessons worth keeping:**
+
+- **A "duplicate" in a rendered list can be the RENDERER lying, not the data.** This run
+  started down a "detect duplicate domains" feature — same source+path = duplicate — and
+  had the function + tests written before the screenshot revealed the two rows were never
+  the same domain. A dedup built on `host+path` would have IGNORED the same wildcard flag
+  and confidently flagged a false positive. When two rows look identical, first ask whether
+  the tool is hiding a field that distinguishes them. Verify the raw API shape before
+  building anything that treats rows as equal.
+- **Measure-before-build killed the feature honestly.** After the fix, the live host has
+  ZERO true duplicates, so a duplicate-detector had no instance to justify it — that is the
+  "don't invent filler" rule doing its job. The dropped code shape (a `duplicates()` in
+  domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
+  in this session's history if a real duplicate is ever measured on a host.
+
 ### Repoint an orphan: ALREADY POSSIBLE — do not build a new feature (2026-07-21)
 
 Follow-up to the delete-orphan dead end. Probed live: `updateDomain` DOES accept an orphan
