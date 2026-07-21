@@ -152,6 +152,48 @@ pub(crate) fn presign(
     format!("https://{host}{canonical_uri}?{canonical_query}&X-Amz-Signature={sig}")
 }
 
+/// Sign a `GET` ListObjectsV2 for objects under `prefix` and return
+/// `(url, authorization_header)`. Unlike [`presign`] this uses HEADER auth (the
+/// signature travels in `Authorization`), because listing is a one-off request the
+/// tool makes itself — the caller sends the URL with three headers: this
+/// `Authorization`, `x-amz-date: {amz_date}`, and `x-amz-content-sha256:
+/// UNSIGNED-PAYLOAD`. Used to find the dumps this tool wrote, since EasyPanel has no
+/// endpoint that lists them.
+pub(crate) fn sign_list(
+    endpoint: &str,
+    bucket: &str,
+    prefix: &str,
+    access_key: &str,
+    secret_key: &str,
+    region: &str,
+    amz_date: &str,
+) -> (String, String) {
+    let host = endpoint
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    let datestamp = &amz_date[..8];
+
+    // Query params, sorted by name (byte order): list-type before prefix.
+    let canonical_query = format!("list-type=2&prefix={}", uri_encode(prefix, false));
+    let canonical_uri = format!("/{bucket}/");
+    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+    let canonical_headers =
+        format!("host:{host}\nx-amz-content-sha256:{UNSIGNED_PAYLOAD}\nx-amz-date:{amz_date}\n");
+    let canonical_request = format!(
+        "GET\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{UNSIGNED_PAYLOAD}"
+    );
+    let sig = sign(secret_key, amz_date, datestamp, region, &canonical_request);
+    let credential = format!("{access_key}/{datestamp}/{region}/{SERVICE}/aws4_request");
+    let auth = format!(
+        "{ALGORITHM} Credential={credential}, SignedHeaders={signed_headers}, Signature={sig}"
+    );
+    (
+        format!("https://{host}{canonical_uri}?{canonical_query}"),
+        auth,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

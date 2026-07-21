@@ -376,6 +376,14 @@ enum BackupCmd {
 
 #[derive(Subcommand)]
 enum DbCmd {
+    /// List the dumps this tool has written for a service (its object keys).
+    List {
+        project: String,
+        service: String,
+        /// Storage provider id or name (optional when one remote provider exists).
+        #[arg(long)]
+        provider: Option<String>,
+    },
     /// Dump mysql/mariadb databases to object storage — non-locking, one gzip file,
     /// uploaded straight from the container to the existing remote storage (R2).
     Dump {
@@ -695,6 +703,11 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
         Some(Command::Db(c)) => {
             let client = resolve_client(cfg, &cli.server)?;
             match c {
+                DbCmd::List {
+                    project,
+                    service,
+                    provider,
+                } => commands::db_list(&client, &project, &service, provider.as_deref()),
                 DbCmd::Dump {
                     project,
                     service,

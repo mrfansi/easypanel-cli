@@ -33,6 +33,14 @@ pub(super) struct BackupUi {
     /// The backup a confirmation is currently asking about.
     pub(super) pending_restore: Option<BackupFileRow>,
 
+    // ---- restore from an object-storage dump this tool wrote (mirrors above) ----
+    /// Which service the object-storage restore picker restores INTO.
+    pub(super) r2_restore_into: Option<(String, String)>,
+    /// The dump object keys on screen, in the SAME order as the picker's rows.
+    pub(super) r2_dumps: Vec<String>,
+    /// The dump a confirmation is about to restore (its object key).
+    pub(super) pending_r2_restore: Option<String>,
+
     // ---- backup side ----
     /// The databases the picker is offering.
     pub(super) names: Vec<String>,
@@ -131,6 +139,8 @@ impl BackupUi {
         self.backup_from = None;
         self.names.clear();
         self.marked.clear();
+        self.r2_restore_into = None;
+        self.r2_dumps.clear();
     }
 }
 

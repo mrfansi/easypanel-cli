@@ -1006,6 +1006,17 @@ impl App {
                 }),
                 None => return,
             },
+            "r2restore" => match self.backups.pending_r2_restore.take() {
+                Some(path) => {
+                    self.status = "Restoring from object storage…".into();
+                    req.send(Req::RestoreR2 {
+                        project: c.project,
+                        service: c.service,
+                        path,
+                    })
+                }
+                None => return,
+            },
             "maint:systemPrune" => req.send(Req::MaintAction("systemPrune")),
             "maint:cleanupDockerImages" => req.send(Req::MaintAction("cleanupDockerImages")),
             "maint:cleanupDockerBuilder" => req.send(Req::MaintAction("cleanupDockerBuilder")),
@@ -1303,6 +1314,8 @@ impl App {
             KeyCode::Enter if !self.domain_edits.is_empty() => self.apply_domain_edits(req),
             // In the restore picker, Enter acts on the selected backup.
             KeyCode::Enter if self.backups.restore_into.is_some() => self.ask_restore(),
+            // …in the object-storage dump picker, on the selected dump.
+            KeyCode::Enter if self.backups.r2_restore_into.is_some() => self.ask_r2_restore(),
             // …and in the database picker, on the selected database.
             KeyCode::Enter if self.backups.backup_from.is_some() => self.ask_backup(),
             // `v` ticks, exactly as it marks a service in the table.

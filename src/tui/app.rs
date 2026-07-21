@@ -940,6 +940,33 @@ impl App {
                 service,
                 names,
             } => self.open_backup_picker(project, service, names),
+            Resp::R2Dumps {
+                project,
+                service,
+                keys,
+            } => {
+                let title = format!("Restore {project}/{service} from an object-storage dump");
+                let lines = if keys.is_empty() {
+                    vec![
+                        "No dumps found for this service.".into(),
+                        String::new(),
+                        "Make one first: Storage ▸ Dump now (non-locking).".into(),
+                    ]
+                } else {
+                    keys.iter()
+                        .enumerate()
+                        .map(|(i, k)| format!("{} {k}", row_marker(i)))
+                        .collect()
+                };
+                self.backups.r2_dumps = keys;
+                self.backups.r2_restore_into = Some((project, service));
+                self.show_picker(title, lines);
+                self.status = if self.backups.r2_dumps.is_empty() {
+                    "No dumps yet".into()
+                } else {
+                    "[Enter] restore the selected dump · [Esc] back".into()
+                };
+            }
             Resp::BackupHistoryFrom {
                 src_name,
                 project,
@@ -2219,6 +2246,7 @@ impl App {
     /// scrolled like prose in another.
     pub(super) fn viewer_is_collection(&self) -> bool {
         self.backups.restore_into.is_some()
+            || self.backups.r2_restore_into.is_some()
             || self.backups.backup_from.is_some()
             || self
                 .viewer
@@ -2460,6 +2488,43 @@ impl App {
             stype: String::new(),
             label: format!(
                 "Restore '{database}' from {path}? This REPLACES the data currently in it."
+            ),
+        });
+    }
+
+    /// Open the list of THIS tool's own object-storage dumps for the service, to
+    /// restore one — the other half of the non-locking `db dump`, so the TUI is not
+    /// stuck restoring only through the CLI.
+    pub(super) fn open_r2_restore(&mut self, req: &Sender<Req>) {
+        let Some((project, service, _)) = self.selected_row() else {
+            self.status = "Select a database first".into();
+            return;
+        };
+        let _ = req.send(Req::R2Dumps { project, service });
+        self.status = "Looking for dumps in object storage...".into();
+    }
+
+    /// Ask before restoring the object-storage dump under the cursor. It recreates
+    /// and OVERWRITES the databases the dump holds, so the confirmation says so.
+    pub(super) fn ask_r2_restore(&mut self) {
+        let Some((project, service)) = self.backups.r2_restore_into.clone() else {
+            return;
+        };
+        let Some(i) = self.picker_row() else {
+            self.status = "Select a dump row first".into();
+            return;
+        };
+        let Some(key) = self.backups.r2_dumps.get(i).cloned() else {
+            return;
+        };
+        self.backups.pending_r2_restore = Some(key.clone());
+        self.confirm = Some(Confirm {
+            action: "r2restore".into(),
+            project,
+            service,
+            stype: String::new(),
+            label: format!(
+                "Restore dump '{key}'? It recreates and OVERWRITES the databases in it."
             ),
         });
     }

@@ -416,6 +416,10 @@ impl App {
                     "Dump now (non-locking) → object storage",
                     |a, r| a.dump_r2_now(r),
                 ));
+                v.push(MenuItem::new(
+                    "Restore from an object-storage dump",
+                    |a, r| a.open_r2_restore(r),
+                ));
             }
             v.push(MenuItem::new("Backup now", |a, r| a.backup_now(r)));
             v.push(MenuItem::new("Restore from a backup", |a, r| {

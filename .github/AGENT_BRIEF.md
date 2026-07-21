@@ -324,6 +324,39 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### DONE v0.82.0 (2026-07-22): multi-DB dump hang FIXED + restore-from-R2 in the TUI
+
+**The big one — multi-database dumps hung.** An operator hit "Dump did not report
+completion within 10 min" dumping 4 production databases. Root cause (traced live,
+NOT guessed): `container::run_until_done` passed the whole command inside the
+WebSocket connection URL (`ws_url` → `?command=<base64>`). A multi-DB command
+(several schema names + the ~380-char presigned URL) overran the URL, arrived
+TRUNCATED, and the shell hung on an unterminated line → no marker → full-cap wait.
+Single-DB commands were short enough to fit. Confirmed by running the identical
+full command as terminal INPUT (worked, 33 s) vs via the tool (hung). FIX: send the
+command as WebSocket **input** to a plain `sh` (input has no length limit — the
+interactive terminal already proves it), and detect the completion marker by its
+RESOLVED digits (`__EZP_DONE_<code>__`) so the PTY-echoed `printf '…%s…'` isn't
+mistaken for it. Verified live: the 4-DB ~100 MB dump now finishes in ~35 s. NOTE:
+`run_once` still uses the URL command (its commands are short — SHOW DATABASES etc.
+— so fine); if a future short command ever grows, move it to input too.
+
+**Also ruled out along the way (keep, saves a future run the dig):** not disk
+(`/tmp` had 581 GB), not the dump (4 DBs → 545 MB file in 12 s), not gzip (18 s),
+not an R2 single-PUT size limit (a 130 MB single PUT succeeded), not a WS idle
+timeout (a 45 s-silent command survived). It was purely the command-in-URL length.
+
+**Restore-from-R2 in the TUI (the other half of v0.81.0's dump).** Storage ▸ now has
+"Restore from an object-storage dump": `s3::sign_list` signs an S3 ListObjectsV2 for
+the `{project}/{service}-` prefix (EasyPanel lists no such files), `commands::
+list_r2_dumps`/`restore_from_r2` are shared with the CLI (`db list`, `db restore`),
+worker `Req::R2Dumps`/`RestoreR2`, picker via `BackupUi.r2_restore_into`. Verified
+live: the picker listed a dump and restored it. mysql/mariadb only.
+
+Minor nit noticed, not fixed: the TUI restore's success status is immediately
+overwritten by the `Refresh::Projects` reload (shows "Ready"); the dump keeps its
+message (Refresh::None). Consider carrying the message through the refresh.
+
 ### DONE v0.81.0 (2026-07-22): the non-locking dump is now in the TUI too
 
 v0.80.0 shipped `db dump`/`db restore` CLI-only; the TUI still offered EasyPanel's

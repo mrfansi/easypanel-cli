@@ -1397,27 +1397,18 @@ pub fn db_dump(
     Ok(())
 }
 
-pub fn db_restore(
+/// Restore a dump this tool wrote (by its object key) into a service. Shared by
+/// the CLI `db restore` and the TUI worker; no confirmation or printing of its own.
+pub(crate) fn restore_from_r2(
     client: &EasypanelClient,
     project: &str,
     service: &str,
     path: &str,
     provider: Option<&str>,
-    yes: bool,
 ) -> Result<()> {
     let stype = resolve_db_engine(client, project, service)?;
     let root_password = service_root_password(client, &stype, project, service)?;
     let store = pick_remote_provider(client, provider)?;
-
-    if !confirm(
-        &format!(
-            "Restore dump '{path}' into {project}/{service}? It recreates and OVERWRITES \
-             the databases the dump contains."
-        ),
-        yes,
-    )? {
-        return Ok(());
-    }
 
     let now = chrono::Utc::now();
     let ts = now.format("%Y%m%d-%H%M%S").to_string();
@@ -1437,7 +1428,6 @@ pub fn db_restore(
     let cmd = crate::dump::restore_command(&stype, &root_password, &tmp, &url)
         .ok_or_else(|| anyhow!("db restore supports mysql/mariadb only"))?;
 
-    println!("Restoring {path} into {project}/{service}…");
     let run = crate::container::run_until_done(
         client,
         project,
@@ -1452,16 +1442,95 @@ pub fn db_restore(
             .to_string()
     };
     match run.exit_code {
-        Some(0) => {
-            println!("Restored {path} into {project}/{service}.");
-            Ok(())
-        }
+        Some(0) => Ok(()),
         Some(n) => anyhow::bail!("Restore failed (exit {n}). {}", redact(&run.output)),
         None => anyhow::bail!(
             "Restore did not report completion within 10 min. {}",
             redact(&run.output)
         ),
     }
+}
+
+/// The object keys of the dumps this tool has written for a service, newest last.
+/// EasyPanel has no endpoint that lists them (they are the tool's own files, not
+/// its backup actions), so this signs an S3 `ListObjectsV2` for the
+/// `{project}/{service}-` prefix directly. Shared by the CLI `db list` and the TUI.
+pub(crate) fn list_r2_dumps(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    provider: Option<&str>,
+) -> Result<Vec<String>> {
+    let store = pick_remote_provider(client, provider)?;
+    let prefix = format!("{project}/{service}-");
+    let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let (url, auth) = crate::s3::sign_list(
+        &store.endpoint,
+        &store.bucket,
+        &prefix,
+        &store.access_key,
+        &store.secret_key,
+        &store.region,
+        &amz_date,
+    );
+    let body = reqwest::blocking::Client::new()
+        .get(&url)
+        .header("Authorization", auth)
+        .header("x-amz-date", amz_date)
+        .header("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+        .send()?
+        .error_for_status()?
+        .text()?;
+    // The XML lists <Key>…</Key> per object; no XML dep needed for one tag.
+    let mut keys: Vec<String> = body
+        .split("<Key>")
+        .skip(1)
+        .filter_map(|s| s.split("</Key>").next())
+        .filter(|k| k.ends_with(".sql.gz"))
+        .map(String::from)
+        .collect();
+    keys.sort();
+    Ok(keys)
+}
+
+pub fn db_list(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    provider: Option<&str>,
+) -> Result<()> {
+    let keys = list_r2_dumps(client, project, service, provider)?;
+    if keys.is_empty() {
+        println!("No dumps found for {project}/{service}.");
+        return Ok(());
+    }
+    for k in keys {
+        println!("{k}");
+    }
+    Ok(())
+}
+
+pub fn db_restore(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    path: &str,
+    provider: Option<&str>,
+    yes: bool,
+) -> Result<()> {
+    if !confirm(
+        &format!(
+            "Restore dump '{path}' into {project}/{service}? It recreates and OVERWRITES \
+             the databases the dump contains."
+        ),
+        yes,
+    )? {
+        return Ok(());
+    }
+    println!("Restoring {path} into {project}/{service}…");
+    restore_from_r2(client, project, service, path, provider)?;
+    println!("Restored {path} into {project}/{service}.");
+    Ok(())
 }
 
 #[cfg(test)]

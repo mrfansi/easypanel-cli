@@ -141,30 +141,33 @@ pub(crate) fn run_once(
     Ok(out)
 }
 
-/// The marker `run_until_done` appends to learn when a command finished and with
-/// what exit status. Distinctive enough not to collide with real output.
-const DONE_MARK: &str = "__EZP_DONE_";
+/// The sentinel `run_until_done` prints to learn when the command finished and with
+/// what status: `<PREFIX><exit code><SUFFIX>`. The command travels to the shell as
+/// typed INPUT, which a PTY ECHOES — so the format string `printf '<PREFIX>%s<SUFFIX>'`
+/// appears in the output too. We therefore wait for a marker whose middle is DIGITS
+/// (the resolved `$?`); the echoed `%s` can never match, so the echo is ignored.
+const DONE_PREFIX: &str = "__EZP_DONE_";
+const DONE_SUFFIX: &str = "__";
 
-/// The result of a long-running one-shot: the exit status (None if the marker
-/// never arrived — a dropped connection or a timeout) and everything the command
-/// printed, with the sentinel line stripped out.
+/// The result of a long-running one-shot: the exit status (None if the marker never
+/// arrived — a dropped connection or a timeout) and what the command printed.
 pub(crate) struct Run {
     pub exit_code: Option<i32>,
     pub output: String,
 }
 
 /// Run ONE command that may take much longer than [`run_once`]'s 20 s cap — a
-/// database dump piped to `gzip` and uploaded to object storage — and wait for it
-/// to actually finish.
+/// database dump gzipped and uploaded to object storage — and wait for it to finish.
 ///
-/// `run_once` stops on a quiet socket, which is wrong here: a healthy `mysqldump |
-/// gzip | curl` is SILENT for its whole run, then exits. And the socket merely
-/// closing can't tell success from failure. So we append `printf '<MARK>%s__' $?`:
-/// its appearance means "done", and the number is the pipeline's exit status.
-/// Reading continues until the marker, the socket closing, or `cap` — whichever is
-/// first. A `docker exec -it -c <cmd>` passes the command as an argument (not typed
-/// on stdin), so the command text — including the password and presigned URL — is
-/// never echoed back into `output`; only the command's own stdout/stderr is.
+/// The command is sent to a plain `sh` as **input over the WebSocket**, NOT baked
+/// into the connection URL. Putting it in the URL is what [`run_once`] does, and it
+/// works only for short commands: a multi-database dump command (four schema names
+/// plus a ~380-char presigned URL) overran the URL, arrived truncated, and left the
+/// shell hanging on an unterminated command — so the marker never came and the caller
+/// waited out the whole cap ("did not report completion"). Input has no such limit.
+///
+/// A healthy dump is SILENT for its whole run, then prints the marker, so we read
+/// until the marker (resolved digits), the socket closing, or `cap`.
 pub(crate) fn run_until_done(
     client: &EasypanelClient,
     project: &str,
@@ -172,10 +175,15 @@ pub(crate) fn run_until_done(
     command: &str,
     cap: Duration,
 ) -> Result<Run> {
-    let wrapped = format!("{command}; printf '{DONE_MARK}%s__\\n' \"$?\"");
-    let url = ws_url(client, project, service, &wrapped)?;
+    // A short, fixed URL command — the real work travels as input below.
+    let url = ws_url(client, project, service, "sh")?;
     let (mut ws, _) = tungstenite::connect(&url)?;
     set_read_timeout(&mut ws, Duration::from_millis(500));
+
+    let line = format!("{command}; printf '{DONE_PREFIX}%s{DONE_SUFFIX}\\n' \"$?\"\n");
+    ws.send(Message::Text(json!({ "input": line }).to_string()))
+        .map_err(|e| anyhow!("failed to send command: {}", connect_failure(&e)))?;
+
     let start = std::time::Instant::now();
     let mut out = String::new();
     while start.elapsed() < cap {
@@ -186,7 +194,7 @@ pub(crate) fn run_until_done(
                     .and_then(|v| v.get("output").and_then(Value::as_str).map(String::from))
                 {
                     out.push_str(&o);
-                    if out.contains(DONE_MARK) {
+                    if find_done(&out).is_some() {
                         break;
                     }
                 }
@@ -199,31 +207,43 @@ pub(crate) fn run_until_done(
         }
     }
     let _ = ws.close(None);
-    Ok(split_done_marker(&out))
+    Ok(done_result(&out))
 }
 
-/// Pull the exit status out of the sentinel line and return the output without it.
-fn split_done_marker(raw: &str) -> Run {
-    if let Some(i) = raw.find(DONE_MARK) {
-        let after = &raw[i + DONE_MARK.len()..];
-        let code = after
-            .split("__")
-            .next()
-            .and_then(|s| s.trim().parse::<i32>().ok());
-        // Everything up to the marker is the real output; drop the sentinel line.
-        let mut output = raw[..i].to_string();
-        while output.ends_with('\n') || output.ends_with('\r') {
-            output.pop();
+/// The exit code from the first RESOLVED marker (`<PREFIX><digits><SUFFIX>`) in the
+/// output, or None if none has arrived. Skips the echoed `printf '<PREFIX>%s…'`,
+/// whose middle is `%s`, not digits.
+fn find_done(s: &str) -> Option<i32> {
+    for begin in s
+        .match_indices(DONE_PREFIX)
+        .map(|(i, _)| i + DONE_PREFIX.len())
+    {
+        let rest = &s[begin..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() && rest[digits.len()..].starts_with(DONE_SUFFIX) {
+            return digits.parse().ok();
         }
-        Run {
-            exit_code: code,
-            output,
+    }
+    None
+}
+
+/// Split the collected output at the resolved marker: the exit code, and everything
+/// before it (which the caller redacts before showing — it includes the echoed
+/// command, so the password and presigned URL are in it).
+fn done_result(raw: &str) -> Run {
+    match find_done(raw) {
+        Some(code) => {
+            let marker = format!("{DONE_PREFIX}{code}{DONE_SUFFIX}");
+            let cut = raw.find(&marker).unwrap_or(raw.len());
+            Run {
+                exit_code: Some(code),
+                output: raw[..cut].trim_end().to_string(),
+            }
         }
-    } else {
-        Run {
+        None => Run {
             exit_code: None,
             output: raw.to_string(),
-        }
+        },
     }
 }
 
@@ -249,17 +269,38 @@ mod tests {
 
     #[test]
     fn done_marker_yields_exit_code_and_clean_output() {
-        let r = split_done_marker("some warning\n__EZP_DONE_0__\n");
+        let r = done_result("some warning\n__EZP_DONE_0__\n");
         assert_eq!(r.exit_code, Some(0));
         assert_eq!(r.output, "some warning");
 
-        let r = split_done_marker("curl: (22) 403\n__EZP_DONE_22__\n");
+        let r = done_result("curl: (22) 403\n__EZP_DONE_22__\n");
         assert_eq!(r.exit_code, Some(22));
         assert_eq!(r.output, "curl: (22) 403");
 
         // No marker (dropped connection / timeout) -> unknown status, raw output.
-        let r = split_done_marker("half output");
+        let r = done_result("half output");
         assert_eq!(r.exit_code, None);
         assert_eq!(r.output, "half output");
+    }
+
+    #[test]
+    fn the_echoed_printf_is_not_mistaken_for_the_marker() {
+        // The PTY echoes the command we send, so its `printf '<PREFIX>%s<SUFFIX>'`
+        // appears BEFORE the real output. Only the resolved (digits) marker counts.
+        let echoed = "mysqldump …; printf '__EZP_DONE_%s__\\n' \"$?\"\n";
+        let raw = format!("{echoed}some real output\n__EZP_DONE_0__\n");
+        let r = done_result(&raw);
+        assert_eq!(
+            r.exit_code,
+            Some(0),
+            "must skip the echoed %s and find the 0"
+        );
+        assert!(r.output.contains("some real output"));
+        assert!(
+            !r.output.contains("__EZP_DONE_0__"),
+            "the sentinel is trimmed off"
+        );
+        // Before the real marker arrives, the echo alone yields no completion.
+        assert_eq!(find_done(echoed), None);
     }
 }

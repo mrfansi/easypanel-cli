@@ -196,6 +196,17 @@ pub(super) enum Req {
         service: String,
         databases: Vec<String>,
     },
+    /// List the object-storage dumps this tool wrote for a service, to restore one.
+    R2Dumps {
+        project: String,
+        service: String,
+    },
+    /// Restore one of those dumps (by object key) back INTO the service.
+    RestoreR2 {
+        project: String,
+        service: String,
+        path: String,
+    },
     /// All services across projects in a single call.
     AllServices,
     /// Load a project's services for a form dropdown (not the Projects panel).
@@ -481,6 +492,12 @@ pub(super) enum Resp {
         project: String,
         service: String,
         names: Vec<String>,
+    },
+    /// The object-storage dumps this tool wrote for a service, to pick one to restore.
+    R2Dumps {
+        project: String,
+        service: String,
+        keys: Vec<String>,
     },
     /// The restorable backups found on ANOTHER host. `hidden` counts the ones
     /// left out because they sit on that host's local disk and cannot be read
@@ -1115,6 +1132,27 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                     d.provider
                 ),
                 Refresh::None,
+            ),
+            Err(e) => Resp::Err(e.to_string()),
+        },
+        Req::R2Dumps { project, service } => {
+            match crate::commands::list_r2_dumps(client, &project, &service, None) {
+                Ok(keys) => Resp::R2Dumps {
+                    project,
+                    service,
+                    keys,
+                },
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
+        Req::RestoreR2 {
+            project,
+            service,
+            path,
+        } => match crate::commands::restore_from_r2(client, &project, &service, &path, None) {
+            Ok(()) => Resp::Done(
+                format!("Restored {path} into {project}/{service}"),
+                Refresh::Projects,
             ),
             Err(e) => Resp::Err(e.to_string()),
         },

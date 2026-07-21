@@ -443,6 +443,7 @@ easypanel backup db-restore --project P --service S --database D --path <path> [
 
 # Non-locking dump to object storage, and cross-server restore (mysql/mariadb)
 easypanel db dump <project> <service> --databases a,b,c   # or --all
+easypanel db list <project> <service>                     # the dumps written so far
 easypanel db restore <project> <service> --path <key> [--yes]
 
 # Maintenance (active server)
@@ -473,10 +474,11 @@ easypanel db dump vidingco-db mysql --databases studio,billing   # or --all
 easypanel db restore other-host-db mysql --path vidingco-db/mysql-20260721-1530.sql.gz
 ```
 
-In the **TUI** it is a menu item too: a database service's **Storage ▸** menu has
-**"Dump now (non-locking) → object storage"** above the native "Backup now" — pick
-the databases and it does the same thing without leaving the terminal. (Restoring
-one of these dumps is CLI-only for now.)
+In the **TUI** both sides are menu items on a database service's **Storage ▸** menu:
+**"Dump now (non-locking) → object storage"** (pick the databases) and **"Restore
+from an object-storage dump"** (pick one of the dumps this tool wrote for the
+service) — the same thing without leaving the terminal. `easypanel db list <project>
+<service>` prints those dumps on the command line.
 
 `db dump` runs `mysqldump --single-transaction` **inside the service container**
 (no lock), gzips it, and uploads it straight to your existing remote storage

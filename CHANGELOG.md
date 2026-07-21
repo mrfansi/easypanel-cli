@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.82.0] — 2026-07-22
+
+### Fixed
+
+- **Dumping several databases at once no longer hangs.** Dumping one database
+  worked, but selecting a few of them (or any dump whose command grew long) failed
+  with "Dump did not report completion within 10 min" — while the databases were
+  never locked and nothing was wrong with the data. The in-container command was
+  passed inside the WebSocket connection URL, and a multi-database command (several
+  schema names plus the ~380-character presigned upload URL) overran it: the command
+  arrived truncated and the shell sat waiting on an unterminated line, so the dump
+  never actually ran. The command is now sent to the container as terminal **input**,
+  which has no length limit — the same channel the interactive shell already uses.
+  Verified live: a four-database, ~100 MB dump that used to hang for ten minutes now
+  finishes in ~35 seconds. (Found by an operator dumping a production database.)
+
+### Added
+
+- **Restore an object-storage dump from the TUI, and `easypanel db list`.** v0.81.0
+  put the non-locking *dump* in the TUI but left *restore* to the CLI. Now a
+  mysql/mariadb service's **Storage ▸** menu has **"Restore from an object-storage
+  dump"**: it lists the dumps this tool has written for the service and restores the
+  one you pick — recreating the databases even on a host that never had them. Since
+  EasyPanel has no endpoint that lists these files, the tool signs an S3
+  `ListObjectsV2` itself; the new `easypanel db list <project> <service>` prints the
+  same list on the command line. The dump/restore/list orchestration is shared
+  between the CLI and the TUI so the two can't drift.
+
 ## [0.81.0] — 2026-07-22
 
 ### Added
