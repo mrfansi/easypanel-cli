@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1073" height="534" viewBox="0 0 1073 534" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="14">
+<rect width="1073" height="534" rx="8" fill="#0d1117"/>
+<text x="16" y="32" fill="#8b949e" font-size="13" font-weight="600">Domains — routes on the host (note the *. wildcard)</text>
+<text x="16.0" y="63.0" fill="#d75fd7" xml:space="preserve">┌ EasyPanel — </text>
+<text x="133.6" y="63.0" fill="#d75fd7" font-weight="700" xml:space="preserve">demo-cluster </text>
+<text x="242.8" y="63.0" fill="#d75fd7" xml:space="preserve">─────────────────────────────────────────────────────────────────────────────────────────────┐</text>
+<text x="16.0" y="81.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="81.0" fill="#cccccc" xml:space="preserve"> Dashboard </text>
+<text x="116.8" y="81.0" fill="#767676" xml:space="preserve">│</text>
+<text x="125.2" y="81.0" fill="#cccccc" xml:space="preserve"> Hosts </text>
+<text x="184.0" y="81.0" fill="#767676" xml:space="preserve">│</text>
+<text x="192.4" y="81.0" fill="#cccccc" xml:space="preserve"> Maintenance </text>
+<text x="301.6" y="81.0" fill="#767676" xml:space="preserve">│</text>
+<text x="310.0" y="81.0" fill="#cccccc" xml:space="preserve"> Actions </text>
+<text x="385.6" y="81.0" fill="#767676" xml:space="preserve">│</text>
+<text x="394.0" y="81.0" fill="#cccccc" xml:space="preserve"> Monitor </text>
+<text x="469.6" y="81.0" fill="#767676" xml:space="preserve">│</text>
+<text x="478.0" y="81.0" fill="#e5e510" font-weight="700" xml:space="preserve"> Domains </text>
+<text x="553.6" y="81.0" fill="#767676" xml:space="preserve">│</text>
+<text x="562.0" y="81.0" fill="#cccccc" xml:space="preserve"> Services </text>
+<text x="646.0" y="81.0" fill="#767676" xml:space="preserve">│</text>
+<text x="654.4" y="81.0" fill="#cccccc" xml:space="preserve"> Uptime </text>
+<text x="721.6" y="81.0" fill="#c9d1d9" xml:space="preserve">                                       </text>
+<text x="1049.2" y="81.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="99.0" fill="#c9d1d9" xml:space="preserve">└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘</text>
+<text x="16.0" y="117.0" fill="#c9d1d9" xml:space="preserve">┌ Domains (3/49)  /example.com ────────────────────────────────────────────────────────────────────────────────────────────┐</text>
+<text x="16.0" y="135.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<rect x="24.4" y="122.0" width="1024.8" height="18.0" fill="#0dbc79"/>
+<text x="24.4" y="135.0" fill="#0d1117" font-weight="700" xml:space="preserve">  Source                                         Destination                                    ID                        </text>
+<text x="1049.2" y="135.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="153.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="153.0" fill="#c9d1d9" xml:space="preserve">› https://acme.example.com/                      http://acme-shop_storefront:80/                cmrue2du6020907o6firvebys </text>
+<text x="1049.2" y="153.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="171.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="171.0" fill="#c9d1d9" xml:space="preserve">  https://api.example.com/                       http://acme-shop_api:80/                       cmrue2e19020d07o6a3h77uhy </text>
+<text x="1049.2" y="171.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="189.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="189.0" fill="#c9d1d9" xml:space="preserve">  https://*.shop.example.com/                    http://acme-shop_storefront:80/                cmrue37fg021707o6fogqdm0u </text>
+<text x="1049.2" y="189.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="207.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="207.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="207.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="225.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="225.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="225.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="243.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="243.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="243.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="261.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="261.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="261.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="279.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="279.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="279.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="297.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="297.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="297.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="315.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="315.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="315.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="333.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="333.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="333.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="351.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="351.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="351.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="369.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="369.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="369.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="387.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="387.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="387.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="405.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="405.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="405.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="423.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="423.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="423.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="441.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="441.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="441.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="459.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="459.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="459.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="477.0" fill="#c9d1d9" xml:space="preserve">│</text>
+<text x="24.4" y="477.0" fill="#c9d1d9" xml:space="preserve">                                                                                                                          </text>
+<text x="1049.2" y="477.0" fill="#d75fd7" xml:space="preserve">│</text>
+<text x="16.0" y="495.0" fill="#c9d1d9" xml:space="preserve">└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘</text>
+<rect x="16.0" y="500.0" width="58.8" height="18.0" fill="#444444"/>
+<text x="16.0" y="513.0" fill="#ffffff" font-weight="700" xml:space="preserve"> Ready </text>
+</svg>

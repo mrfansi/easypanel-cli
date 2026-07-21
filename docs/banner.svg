@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="200" viewBox="0 0 860 200" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">
+  <rect width="860" height="200" rx="14" fill="#0d1117"/>
+  <rect x="0" y="0" width="860" height="200" rx="14" fill="none" stroke="#21262d" stroke-width="1"/>
+  <!-- window dots -->
+  <circle cx="34" cy="32" r="6" fill="#f14c4c"/>
+  <circle cx="56" cy="32" r="6" fill="#e5c07b"/>
+  <circle cx="78" cy="32" r="6" fill="#23d18b"/>
+  <!-- prompt -->
+  <text x="34" y="104" font-size="46" font-weight="700" fill="#e6edf3">easypanel<tspan fill="#d670d6">-cli</tspan></text>
+  <text x="36" y="140" font-size="19" fill="#8b949e">many EasyPanel hosts, one terminal</text>
+  <!-- accent underline -->
+  <rect x="36" y="156" width="360" height="3" rx="1.5" fill="#d670d6"/>
+  <!-- right-side mini "table" motif -->
+  <g fill="#30363d">
+    <rect x="560" y="52" width="264" height="14" rx="3"/>
+    <rect x="560" y="78" width="230" height="10" rx="3"/>
+    <rect x="560" y="98" width="248" height="10" rx="3"/>
+    <rect x="560" y="118" width="210" height="10" rx="3"/>
+    <rect x="560" y="138" width="240" height="10" rx="3"/>
+  </g>
+  <g fill="#23d18b">
+    <circle cx="551" cy="83" r="4"/>
+    <circle cx="551" cy="103" r="4"/>
+    <circle cx="551" cy="123" r="4"/>
+    <circle cx="551" cy="143" r="4"/>
+  </g>
+</svg>

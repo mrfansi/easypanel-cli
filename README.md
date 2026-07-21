@@ -1,24 +1,34 @@
-# easypanel-cli
+<div align="center">
+
+<img src="docs/banner.svg" alt="easypanel-cli" width="820">
 
 [![CI](https://github.com/mrfansi/easypanel-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/mrfansi/easypanel-cli/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/mrfansi/easypanel-cli?sort=semver)](https://github.com/mrfansi/easypanel-cli/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/mrfansi/easypanel-cli)](LICENSE)
 
-Manage **many [EasyPanel](https://easypanel.io) hosts from one terminal** — a Rust CLI
-and a full-screen TUI.
+**Manage many [EasyPanel](https://easypanel.io) hosts from one terminal** — a Rust CLI and a full-screen TUI.
+
+</div>
 
 EasyPanel's web panel shows you one server at a time. This shows you all of them: every
 host's CPU, memory and disk side by side, every service across every project in one
 searchable table, and every domain on the box — without clicking through a hierarchy.
 
-```
-┌ Hosts (3) ──────────────────────────────────────────────────────────────────────────┐
-│ Server     Status                    CPU     Memory              Disk               │
-│ prod       ok                        5.1 %   14.9 GB / 59.0 GB   127.5 GB / 784.9 GB│
-│ staging    ok                        0.4 %   2.1 GB / 16.0 GB    38.2 GB / 200.0 GB │
-│ eu-west    DEAD — token expired (401)  -       -                   -                │
-└─────────────────────────────────────────────────────────────────────────────────────┘
-```
+## 📸 Screenshots
+
+**Every service across every project, with live metrics, in one searchable table:**
+
+![Services screen](docs/screenshots/services.svg)
+
+**Every route on the host — a wildcard shows its `*.` prefix, dead routing is marked `✗`:**
+
+![Domains screen](docs/screenshots/domains.svg)
+
+**A database's credentials — masked until you press `v`; `c` copies the value to your clipboard:**
+
+![Credentials screen](docs/screenshots/credentials.svg)
+
+<sub>The screenshots are the real TUI, rendered to SVG with [`docs/ansi2svg.py`](docs/ansi2svg.py) from a throwaway demo project; the server label is renamed. Regenerate with `tmux capture-pane -e -p | python3 docs/ansi2svg.py "Title" > out.svg`.</sub>
 
 **Things it does that the web panel can't, or can't from one screen:**
 
