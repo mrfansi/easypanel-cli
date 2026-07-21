@@ -363,6 +363,12 @@ container→R2 DIRECTLY, so it never crosses the WebSocket → **no proxy 125s t
   `{endpoint}/{bucket}/{key}`. (Reference Python presigner is in this session's
   history — port it to Rust.)
 
+**Step 1 DONE (2026-07-21):** the container command-exec primitives are extracted
+to a top-level `src/container.rs` (pub(crate): `ws_url`, `base64`, `connect_failure`,
+`run_once`, `set_read_timeout`) — reachable from `commands.rs` now, not just the TUI.
+Pure refactor, 287 test names identical, verified live. So the feature can build on
+`crate::container::*` directly; no visibility/architecture work left.
+
 **Build scope for the loop:**
 - Deps: add `hmac` + `sha2` (small, pure-Rust) for Sig v4 — the rustls `ring` in-tree
   isn't cleanly reachable. Presigner is a PURE function → test against AWS's public
