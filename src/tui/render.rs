@@ -138,6 +138,12 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
                 "scroll back through this session's output",
             ),
         ],
+        Screen::Credentials => &[
+            Key("↑↓", "select a field"),
+            Key("v", "reveal / hide the password and connection URL"),
+            Key("c / y / Enter", "copy the selected value to the clipboard"),
+            Key("Esc", "back to Services"),
+        ],
     }
 }
 
@@ -185,6 +191,7 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
         Screen::Uptime => render_uptime(f, chunks[1], app),
         Screen::Viewer => render_viewer(f, chunks[1], app),
         Screen::Terminal => render_terminal(f, chunks[1], app),
+        Screen::Credentials => render_credentials(f, chunks[1], app),
     }
     render_status(f, chunks[2], app);
 
@@ -1342,6 +1349,56 @@ pub(super) fn render_actions(f: &mut Frame, area: Rect, app: &mut App) {
                         st
                     }
                 })
+        },
+    );
+}
+
+/// A database service's connection identity: user, password, host, port, URL.
+/// Secrets are masked with bullets until `v` reveals them; the selected row is
+/// copied verbatim (the real value, even while masked) by `c`/`y`/Enter.
+pub(super) fn render_credentials(f: &mut Frame, area: Rect, app: &mut App) {
+    let colour = server_colour(&app.server_name);
+    if app.creds.items.is_empty() {
+        f.render_widget(
+            Paragraph::new("  Reading credentials…")
+                .style(Style::default().fg(Color::DarkGray))
+                .block(pane(app.creds.title.clone(), colour)),
+            area,
+        );
+        return;
+    }
+    let revealed = app.creds.revealed;
+    let rows: Vec<Vec<String>> = app
+        .creds
+        .items
+        .iter()
+        .map(|c| {
+            let value = if c.secret && !revealed {
+                // A fixed-ish run of bullets — never the real length, which would
+                // leak how long the password is.
+                "•".repeat(c.value.chars().count().clamp(8, 24))
+            } else {
+                c.value.clone()
+            };
+            vec![c.label.clone(), value]
+        })
+        .collect();
+    let headers = ["Field", "Value"];
+    let widths = [Constraint::Length(16), Constraint::Min(30)];
+    let hint = if revealed { "v hide" } else { "v reveal" };
+    let title = format!("{} · {hint} · c copy ", app.creds.title);
+    render_table(
+        f,
+        area,
+        title,
+        &headers,
+        &widths,
+        rows,
+        &mut app.creds.row,
+        colour,
+        // A masked secret is dimmed so it reads as "hidden", not as a value.
+        |col, text| {
+            (col == 1 && text.starts_with('•')).then(|| Style::default().fg(Color::DarkGray))
         },
     );
 }

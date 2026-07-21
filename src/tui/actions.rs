@@ -446,6 +446,9 @@ impl App {
             v.push(MenuItem::new("DB shell (auto login)", |a, _| {
                 a.start_db_shell()
             }));
+            v.push(MenuItem::new("Credentials (view & copy)", |a, _| {
+                a.start_credentials()
+            }));
         }
         v
     }

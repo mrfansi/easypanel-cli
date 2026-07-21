@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.76.0] — 2026-07-21
+## [0.77.0] — 2026-07-21
+
+### Added
+
+- **See and copy a database's credentials, in the TUI.** On any database service
+  (mysql, mariadb, postgres, mongo, redis) the Shell menu (`t`) now has a
+  **Credentials** entry that opens a read-only view of the connection identity the
+  panel shows: user, password, internal host, internal port, and a ready-to-paste
+  connection URL. The tool already knew these — the DB shell (`y`) logs in with
+  them — but there was nowhere to just read one off or grab it for a client.
+
+  Secrets stay **masked by default** (a password on screen is a deliberate act in
+  a tool that redacts everywhere else): `v` reveals or hides them, and `c` / `y` /
+  `Enter` copies the selected field's real value — even while masked — to the
+  system clipboard. Copy uses OSC 52, so it reaches the clipboard even over SSH and
+  through tmux (`set-clipboard on`), which is where this tool tends to run; no new
+  dependency, no `pbcopy`/`xclip` shelling. The connection URL percent-encodes the
+  user and password so a password containing `@`, `:` or `/` still parses. Verified
+  live against redis and mysql on a real host.
 
 ### Fixed
 

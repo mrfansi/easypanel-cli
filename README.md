@@ -45,6 +45,10 @@ searchable table, and every domain on the box — without clicking through a hie
 - **One-key database shell** (`y`) — `mysql`, `psql`, `mongosh` or `redis-cli` already
   logged in with that service's own stored credentials. You never type a password, and
   it never appears in `ps`. Nothing like it in the panel.
+- **Database credentials, read and copy** (Shell menu → Credentials) — user, password,
+  internal host/port and a ready-to-paste connection URL for any database service.
+  Masked by default; `v` reveals, `c` copies the selected value to your clipboard (via
+  OSC 52, so it works over SSH and tmux too).
 - **Crash visibility** — a service whose Swarm replicas are missing shows a pulsing red
   `down`, counted in the title, so "what's broken right now?" is answered at a glance.
 - **Deploy visibility** — a service that is building shows `deploying` (and a count in
@@ -196,7 +200,7 @@ while dragging** to select/copy.)
 | `u` | **Build & source** — source · build · auto deploy · resource limits · a database's **config file** |
 | `m` | **Storage** — mounts · backups |
 | `d` | **Lifecycle** — deploy · force rebuild (no cache) · restart · stop · start (each confirmed) |
-| `t` | **Shell** — container shell · DB shell |
+| `t` | **Shell** — container shell · DB shell · credentials (view & copy) |
 | `x` | **Danger** — delete service · delete project |
 
 Inside a menu: `↑↓` select · `→` enter a submenu · `←` back · `Enter` run · `Esc` close.
@@ -207,6 +211,7 @@ Inside a menu: `↑↓` select · `→` enter a submenu · `←` back · `Enter`
 |---|---|
 | `Enter` | logs for the selected service (**live**; `End` re-follows) · on **Actions**, the action's detail + deploy log |
 | `y` | **DB shell** — `mysql`/`psql`/`mongosh`/`redis-cli`, already logged in |
+| `t` → Credentials | **view & copy** a database's user, password, host, port and connection URL (`v` reveal · `c` copy) |
 | `g` | **search a keyword across every service's logs at once** |
 | `c` | **clone the service's config into a new service** (any project) |
 | `Space` | open the action menu for the selected row (a service, or a project header) |

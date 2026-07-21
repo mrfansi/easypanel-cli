@@ -172,6 +172,7 @@ impl App {
                     _ => move_table(&mut self.hosts_state, code, self.hosts.len()),
                 },
                 Screen::Maintenance => self.maint_key(code),
+                Screen::Credentials => self.credentials_key(code),
                 // Terminal is handled directly in event_loop (encode_key), not
                 // here. Dashboard has no dedicated keys.
                 Screen::Dashboard | Screen::Terminal => {}
@@ -1101,6 +1102,32 @@ impl App {
                 self.picker = None;
             }
             _ => {}
+        }
+    }
+
+    /// The Credentials screen: a database service's connection identity, read-only.
+    /// `v` reveals the masked secrets, `c`/`y`/Enter copies the selected value,
+    /// Esc returns to Services.
+    pub(super) fn credentials_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.screen = Screen::Projects,
+            KeyCode::Char('v') => self.creds.revealed = !self.creds.revealed,
+            KeyCode::Enter | KeyCode::Char('c') | KeyCode::Char('y') => {
+                match self
+                    .creds
+                    .row
+                    .selected()
+                    .and_then(|i| self.creds.items.get(i))
+                {
+                    Some(item) => {
+                        // The REAL value, even while masked on screen — a copy has to be.
+                        self.clipboard = Some(item.value.clone());
+                        self.status = format!("{} copied to clipboard", item.label);
+                    }
+                    None => self.status = "Nothing selected".into(),
+                }
+            }
+            _ => move_table(&mut self.creds.row, code, self.creds.items.len()),
         }
     }
 

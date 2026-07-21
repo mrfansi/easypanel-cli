@@ -46,7 +46,7 @@ pub(super) const TERM_SCROLLBACK: usize = 5_000;
 /// How far Shift+PageUp/PageDown move through that history.
 const TERM_PAGE: isize = 10;
 
-use app::{App, HostRow, HostState, Screen, ServerAction, WatchAction};
+use app::{App, CredsUi, HostRow, HostState, Screen, ServerAction, WatchAction};
 use render::ui;
 use worker::{spawn_workers, Req, Resp, View};
 
@@ -431,6 +431,50 @@ fn event_loop(
                 }
                 None => app.status = "Active server not found".into(),
             }
+        }
+
+        // Credentials: inspect the DB service (needs ServerConfig, only here),
+        // turn its stored fields into a readable identity, and show the screen.
+        if let Some((project, service, stype)) = app.credentials_req.take() {
+            match cfg.get(&app.server_name) {
+                Some(server) => {
+                    let client = EasypanelClient::new(&server.url, &server.token);
+                    match client.call(
+                        &format!("services/{stype}"),
+                        "inspectService",
+                        json!({ "projectName": project, "serviceName": service }),
+                    ) {
+                        Ok(v) => match crate::credentials::credentials(&stype, &v) {
+                            Some(items) => {
+                                let mut row = ratatui::widgets::TableState::default();
+                                row.select(Some(0));
+                                app.creds = CredsUi {
+                                    title: format!("Credentials — {project}/{service} ({stype})"),
+                                    items,
+                                    row,
+                                    revealed: false,
+                                };
+                                app.screen = Screen::Credentials;
+                                app.status = "v reveal · c copy · Esc back".into();
+                            }
+                            None => app.status = format!("No credentials for {stype}"),
+                        },
+                        Err(e) => app.status = format!("Credentials failed: {e}"),
+                    }
+                }
+                None => app.status = "Active server not found".into(),
+            }
+        }
+
+        // A copy request (from the Credentials screen): put it on the system
+        // clipboard with OSC 52, which reaches the real clipboard even over SSH and
+        // through tmux (set-clipboard on) — the terminals this tool lives in.
+        if let Some(text) = app.clipboard.take() {
+            use std::io::Write;
+            let seq = format!("\x1b]52;c;{}\x07", terminal::base64(text.as_bytes()));
+            let mut out = std::io::stdout();
+            let _ = out.write_all(seq.as_bytes());
+            let _ = out.flush();
         }
 
         // Edit env: release the terminal, open $EDITOR, then take it back.

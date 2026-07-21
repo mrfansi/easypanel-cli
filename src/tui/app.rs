@@ -37,6 +37,9 @@ pub(super) enum Screen {
     Viewer,
     /// An embedded container terminal; opened from a service.
     Terminal,
+    /// A database service's connection identity (user, password, host, URL),
+    /// opened from a service. Read-only, with reveal + copy.
+    Credentials,
 }
 
 /// Viewer is deliberately NOT here: it's the result of opening something on a
@@ -111,7 +114,7 @@ impl Screen {
             Screen::Uptime => 7,
             // Viewer & Terminal are always opened from Projects, so that tab stays
             // highlighted — neither has its own tab.
-            Screen::Viewer | Screen::Terminal => 6,
+            Screen::Viewer | Screen::Terminal | Screen::Credentials => 6,
         }
     }
     pub(super) fn next(self) -> Self {
@@ -124,7 +127,7 @@ impl Screen {
             Screen::Domains => Screen::Projects,
             Screen::Projects => Screen::Uptime,
             Screen::Uptime => Screen::Dashboard,
-            Screen::Viewer | Screen::Terminal => Screen::Dashboard,
+            Screen::Viewer | Screen::Terminal | Screen::Credentials => Screen::Dashboard,
         }
     }
     /// The previous tab (for ←). Wraps through TAB_SCREENS; Viewer/Terminal count
@@ -132,6 +135,28 @@ impl Screen {
     pub(super) fn prev(self) -> Self {
         let i = self.index();
         TAB_SCREENS[(i + TAB_SCREENS.len() - 1) % TAB_SCREENS.len()]
+    }
+}
+
+/// The Credentials screen's state: a database service's connection identity, the
+/// selected row, and whether the secret fields are currently revealed.
+pub(super) struct CredsUi {
+    pub(super) title: String,
+    pub(super) items: Vec<crate::credentials::Cred>,
+    pub(super) row: TableState,
+    /// Secrets are masked until the operator asks — a password on screen is a
+    /// deliberate act, not the default, in a tool that redacts everywhere else.
+    pub(super) revealed: bool,
+}
+
+impl Default for CredsUi {
+    fn default() -> Self {
+        Self {
+            title: "Credentials".into(),
+            items: Vec::new(),
+            row: TableState::default(),
+            revealed: false,
+        }
     }
 }
 
@@ -263,6 +288,14 @@ pub(super) struct App {
     /// Some(stype) for a database shell (mysql/mariadb, auto root login), None for
     /// a plain shell (sh). event_loop connects it.
     pub(super) terminal_req: Option<(String, String, Option<String>)>,
+    /// (project, service, stype) awaiting a DB credentials view; event_loop
+    /// inspects the service (it holds the ServerConfig) and fills `creds`.
+    pub(super) credentials_req: Option<(String, String, String)>,
+    /// The database credentials currently on the Credentials screen.
+    pub(super) creds: CredsUi,
+    /// Text the event_loop should put on the system clipboard (via OSC 52) on its
+    /// next pass, then clear. Set by the copy action; the loop owns the terminal.
+    pub(super) clipboard: Option<String>,
     /// The active terminal screen emulator (a vt100 parser fed by WebSocket output).
     pub(super) term_parser: Option<vt100::Parser>,
     /// Send keystrokes/resizes to the WebSocket thread. Dropping it = close the session.
@@ -401,6 +434,9 @@ impl App {
             edit_config: None,
             edit_field: None,
             terminal_req: None,
+            credentials_req: None,
+            creds: CredsUi::default(),
+            clipboard: None,
             term_parser: None,
             term_input: None,
             term_title: String::new(),
@@ -528,6 +564,27 @@ impl App {
         }
     }
 
+    /// Show a database service's stored credentials (user, password, host, port,
+    /// connection URL). event_loop inspects the service and fills `creds`.
+    pub(super) fn start_credentials(&mut self) {
+        match self.selected_row() {
+            Some((project, service, stype))
+                if matches!(
+                    stype.as_str(),
+                    "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
+                ) =>
+            {
+                self.credentials_req = Some((project, service, stype));
+                self.status = "Reading credentials...".into();
+            }
+            Some((_, _, stype)) => {
+                self.status =
+                    format!("Credentials are only for database services (this is {stype})");
+            }
+            None => self.status = "Select a service first".into(),
+        }
+    }
+
     /// The id of the highlighted action (from the shown list, honoring the filter).
     /// None = nothing selected.
     pub(super) fn selected_action_id(&self) -> Option<String> {
@@ -597,7 +654,10 @@ impl App {
         // Keep the active screen — switching servers must not throw the user back to
         // the Dashboard. Derived screens (Viewer/Terminal) hold the old server's
         // content, so fall back to Services.
-        if matches!(self.screen, Screen::Viewer | Screen::Terminal) {
+        if matches!(
+            self.screen,
+            Screen::Viewer | Screen::Terminal | Screen::Credentials
+        ) {
             self.screen = Screen::Projects;
         }
         self.term_input = None;
@@ -3162,7 +3222,8 @@ impl App {
                 let _ = req.send(Req::Storage);
             }
             Screen::Hosts => self.load_hosts = true,
-            Screen::Terminal => {}
+            // A credentials snapshot doesn't poll; reopening it re-reads.
+            Screen::Terminal | Screen::Credentials => {}
             Screen::Maintenance => {
                 let _ = req.send(Req::MaintInfo);
             }
