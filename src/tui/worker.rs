@@ -1982,7 +1982,7 @@ pub(super) fn fetch_view(
     service: &str,
     stype: &str,
 ) -> Result<Vec<String>> {
-    use super::viewer_lines as lines;
+    use super::viewer as lines;
     let ps = json!({ "projectName": project, "serviceName": service });
     // Fetch here, format there. Every arm is now one call and one formatter, so
     // what a view SAYS can be exercised without an HTTP server.

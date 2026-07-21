@@ -15,7 +15,7 @@ mod keys;
 mod render;
 mod table;
 mod terminal;
-mod viewer_lines;
+mod viewer;
 mod worker;
 
 #[cfg(test)]
@@ -152,12 +152,12 @@ fn event_loop(
             // user lane: a tail every two seconds must not queue behind (or ahead
             // of) an action the user pressed.
             if let (Screen::Viewer, Some((View::Logs, project, service, _))) =
-                (app.screen, &app.viewer_ctx)
+                (app.screen, &app.viewer.ctx)
             {
                 let _ = w.poll.send(Req::LogTail {
                     project: project.clone(),
                     service: service.clone(),
-                    since: app.log_cursor.clone(),
+                    since: app.viewer.log_cursor.clone(),
                 });
             }
             app.refresh_inflight = true;

@@ -323,35 +323,10 @@ pub(super) struct App {
     pub(super) all_services: Vec<Value>,
     pub(super) services_table: TableState,
 
-    /// The destination screen when Esc'ing from the Viewer — the viewer can be
-    /// opened from Services (back to Services) or from Actions (back to Actions).
-    pub(super) viewer_from: Screen,
-    pub(super) viewer_title: String,
-    pub(super) viewer_lines: Vec<String>,
-    pub(super) viewer_scroll: u16,
-    /// How far right the viewer is scrolled, in columns.
-    ///
-    /// The viewer neither wraps nor reflows, so a line longer than the pane used
-    /// to be simply unreachable — and this is the screen logs open in.
-    pub(super) viewer_hscroll: u16,
-    pub(super) viewer_ctx: Option<(View, String, String, String)>,
-    /// The highlighted row, for the views that ARE rows (ports, mounts,
-    /// redirects). Deleting used to be "press the digit printed on the line",
-    /// which capped the list at ten and collided with the tab keys.
-    pub(super) viewer_row: TableState,
-    /// The action whose detail the viewer is showing, if any.
-    ///
-    /// An action detail has no `viewer_ctx` (it is not a service view), so
-    /// `refresh` had nothing to re-send: `r` reported "Refreshing..." and left a
-    /// RUNNING deploy's log frozen at the moment it was first fetched — on the
-    /// screen you open precisely to watch one.
-    pub(super) action_detail: Option<String>,
-    /// The newest log timestamp already shown; the resume marker for the tail.
-    /// Some = the tail is active (only for View::Logs).
-    pub(super) log_cursor: Option<String>,
-    /// The viewer sticks to the last line. Logs grow from the bottom, so without
-    /// this a new line arrives off-screen and the tail looks dead.
-    pub(super) viewer_follow: bool,
+    /// The full-screen viewer's state — text, scroll, what it was opened from and
+    /// about, the live-log cursor. Ten loose fields, folded into one struct next
+    /// to their formatting (see `super::viewer::ViewerUi`).
+    pub(super) viewer: super::viewer::ViewerUi,
 
     /// Everything the backup and restore screens hold — the pickers, the ticks,
     /// and the panel's storage providers. Ten fields for one feature had spread
@@ -455,16 +430,7 @@ impl App {
             projects: Vec::new(),
             all_services: Vec::new(),
             services_table: TableState::default(),
-            viewer_from: Screen::Projects,
-            viewer_title: "Viewer".into(),
-            viewer_lines: Vec::new(),
-            viewer_scroll: 0,
-            viewer_row: TableState::default(),
-            action_detail: None,
-            viewer_hscroll: 0,
-            viewer_ctx: None,
-            log_cursor: None,
-            viewer_follow: false,
+            viewer: super::viewer::ViewerUi::default(),
             backups: BackupUi::default(),
             marked: HashSet::new(),
             filter: String::new(),
@@ -648,8 +614,8 @@ impl App {
         self.projects.clear();
         self.all_services.clear();
         self.services_table = TableState::default();
-        self.viewer_lines.clear();
-        self.viewer_ctx = None;
+        self.viewer.lines.clear();
+        self.viewer.ctx = None;
     }
 
     pub(super) fn handle(&mut self, resp: Resp, req: &Sender<Req>) {
@@ -771,17 +737,17 @@ impl App {
             }
             Resp::MaintInfo(rows) => self.maint = rows,
             Resp::LogTail { lines, cursor } => {
-                // The first batch arrives into an empty viewer_lines, so appending
+                // The first batch arrives into an empty viewer.lines, so appending
                 // = replacing; later rounds append. No need to know which: `since`
                 // decides what the server sends.
                 if !lines.is_empty() {
-                    self.viewer_lines.extend(lines);
+                    self.viewer.lines.extend(lines);
                     // An hours-long tail must not pile up without bound.
-                    let extra = self.viewer_lines.len().saturating_sub(LOG_BUFFER);
-                    self.viewer_lines.drain(..extra);
+                    let extra = self.viewer.lines.len().saturating_sub(LOG_BUFFER);
+                    self.viewer.lines.drain(..extra);
                 }
                 if cursor.is_some() {
-                    self.log_cursor = cursor;
+                    self.viewer.log_cursor = cursor;
                 }
             }
             Resp::Repos(repos) => {
@@ -979,9 +945,9 @@ impl App {
                     lines.push(String::new());
                     lines.extend(super::render::wrap_words(n, WRAP));
                 }
-                self.viewer_from = self.screen;
+                self.viewer.from = self.screen;
                 self.show_viewer("Done — please read".into(), lines);
-                self.viewer_ctx = None;
+                self.viewer.ctx = None;
                 self.status = format!("⚠ {msg}");
                 self.apply_refresh(refresh, req);
             }
@@ -1011,7 +977,7 @@ impl App {
                     lines.extend(ok.iter().map(|name| format!("✓ {name}")));
                 }
                 self.show_viewer(format!("Bulk {action} — {} failed", failed.len()), lines);
-                self.viewer_ctx = None;
+                self.viewer.ctx = None;
                 self.status = format!("{} of {} failed", failed.len(), failed.len() + ok.len());
             }
             // Same rule as a bulk lifecycle run: all-clear is a status line, any
@@ -1032,7 +998,7 @@ impl App {
                     format!(" Bulk domain edit — {} failed ", failed.len()),
                     lines,
                 );
-                self.viewer_ctx = None;
+                self.viewer.ctx = None;
                 self.status = format!("⚠ {} of {} failed", failed.len(), failed.len() + ok);
             }
             // Saving is only half of it: the running containers keep the OLD
@@ -1116,20 +1082,20 @@ impl App {
     /// Put `lines` on screen in the viewer.
     ///
     /// Seven places used to assemble the same five fields by hand, and they had
-    /// already drifted: two forgot `viewer_ctx`, one forgot `viewer_from` — so
+    /// already drifted: two forgot `viewer.ctx`, one forgot `viewer.from` — so
     /// Esc left it going back to whichever screen the last viewer happened to
     /// record. One definition, and what each caller does DIFFERENTLY is now a
     /// visible line next to it instead of buried in a nine-line block.
     fn show_viewer(&mut self, title: String, lines: Vec<String>) {
-        self.viewer_title = title;
-        self.viewer_lines = lines;
-        self.viewer_scroll = 0;
-        self.viewer_hscroll = 0;
+        self.viewer.title = title;
+        self.viewer.lines = lines;
+        self.viewer.scroll = 0;
+        self.viewer.hscroll = 0;
         // The SELECTED row resets too. It used to survive, so opening a
         // collection inherited whatever index the last one was left on — a
         // different service, a different resource, a row the user never chose,
         // sitting armed under `x delete`.
-        self.viewer_row = TableState::default();
+        self.viewer.row = TableState::default();
         self.screen = Screen::Viewer;
     }
 
@@ -1138,11 +1104,11 @@ impl App {
     /// screen the picker was opened from.
     fn show_picker(&mut self, title: String, lines: Vec<String>) {
         // Captured before `show_viewer` makes the current screen the Viewer.
-        self.viewer_from = self.screen;
+        self.viewer.from = self.screen;
         self.show_viewer(title, lines);
-        let first = self.viewer_lines.iter().position(|l| is_row(l));
-        self.viewer_row = TableState::default().with_selected(first);
-        self.viewer_ctx = None;
+        let first = self.viewer.lines.iter().position(|l| is_row(l));
+        self.viewer.row = TableState::default().with_selected(first);
+        self.viewer.ctx = None;
     }
 
     /// Reload whatever an operation invalidated. One definition, because two
@@ -1736,9 +1702,9 @@ impl App {
             _ => format!("{}:  {}  →  {}", c.host, c.before, c.after),
         }));
         self.domain_edits = plan;
-        self.viewer_from = Screen::Domains;
+        self.viewer.from = Screen::Domains;
         self.show_viewer(" Bulk domain edit — preview ".into(), lines);
-        self.viewer_ctx = None;
+        self.viewer.ctx = None;
         self.status = format!(
             "Nothing sent yet — [Enter] rewrites these {} domain(s) · [Esc] cancels",
             self.domain_edits.len()
@@ -1913,11 +1879,11 @@ impl App {
                 lines.push(format!("Load      {}", crate::monitor::load_avg(v)));
             }
         }
-        self.viewer_title = format!("Host · {}", h.name);
-        self.viewer_lines = lines;
-        self.viewer_scroll = 0;
-        self.viewer_hscroll = 0;
-        self.viewer_from = Screen::Hosts;
+        self.viewer.title = format!("Host · {}", h.name);
+        self.viewer.lines = lines;
+        self.viewer.scroll = 0;
+        self.viewer.hscroll = 0;
+        self.viewer.from = Screen::Hosts;
         self.screen = Screen::Viewer;
     }
 
@@ -2145,14 +2111,15 @@ impl App {
     ///
     /// ONE definition: `keys` uses it twice (wheel, movement keys) and `render`
     /// once to pick a Table over a Paragraph. They each carried their own copy
-    /// derived from `viewer_ctx`, so the restore picker — which has no
-    /// viewer_ctx — would have rendered as a selectable list in one place and
+    /// derived from `viewer.ctx`, so the restore picker — which has no
+    /// viewer.ctx — would have rendered as a selectable list in one place and
     /// scrolled like prose in another.
     pub(super) fn viewer_is_collection(&self) -> bool {
         self.backups.restore_into.is_some()
             || self.backups.backup_from.is_some()
             || self
-                .viewer_ctx
+                .viewer
+                .ctx
                 .as_ref()
                 .is_some_and(|(v, ..)| v.is_collection())
     }
@@ -2220,9 +2187,10 @@ impl App {
     /// The same contract the collections use, and the reason a delete once
     /// offered `[13]` of 12.
     pub(super) fn picker_row(&self) -> Option<usize> {
-        self.viewer_row
+        self.viewer
+            .row
             .selected()
-            .and_then(|r| self.viewer_lines.get(r))
+            .and_then(|r| self.viewer.lines.get(r))
             .and_then(|l| row_index(l))
     }
 
@@ -2233,9 +2201,9 @@ impl App {
             return;
         }
         // Rebuild in place: the selection must not jump because a tick appeared.
-        let keep = self.viewer_row.selected();
-        self.viewer_lines = self.backups.picker_lines();
-        self.viewer_row.select(keep);
+        let keep = self.viewer.row.selected();
+        self.viewer.lines = self.backups.picker_lines();
+        self.viewer.row.select(keep);
         self.status = self.backups.hint();
     }
 
@@ -2906,14 +2874,14 @@ impl App {
                     return;
                 }
                 // Open an empty Viewer; results follow once the fan-out finishes.
-                self.viewer_lines = vec!["Searching across all services...".into()];
-                self.viewer_scroll = 0;
-                self.viewer_hscroll = 0;
-                self.viewer_follow = false;
-                self.log_cursor = None;
-                self.viewer_title = format!("Search '{query}'");
-                self.viewer_ctx = None;
-                self.viewer_from = Screen::Projects;
+                self.viewer.lines = vec!["Searching across all services...".into()];
+                self.viewer.scroll = 0;
+                self.viewer.hscroll = 0;
+                self.viewer.follow = false;
+                self.viewer.log_cursor = None;
+                self.viewer.title = format!("Search '{query}'");
+                self.viewer.ctx = None;
+                self.viewer.from = Screen::Projects;
                 self.screen = Screen::Viewer;
                 self.status = format!("Searching '{query}' across all services...");
                 let _ = req.send(Req::LogSearch { query });
@@ -3097,24 +3065,24 @@ impl App {
             return;
         };
         // Leaving an action detail for a service view: stop `r` re-fetching it.
-        self.action_detail = None;
+        self.viewer.action_detail = None;
         {
-            self.viewer_from = Screen::Projects;
-            self.viewer_ctx = Some((view, p.clone(), s.clone(), t.clone()));
+            self.viewer.from = Screen::Projects;
+            self.viewer.ctx = Some((view, p.clone(), s.clone(), t.clone()));
             self.status = format!("Loading {}...", view.title());
             // A log is a stream, not a document: start empty, stick to the last
             // line, and let the poll lane keep it going. Other views are snapshots
             // and start at the top.
             if view == View::Logs {
-                self.viewer_lines.clear();
-                self.viewer_scroll = 0;
-                self.viewer_hscroll = 0;
-                self.log_cursor = None;
-                self.viewer_follow = true;
+                self.viewer.lines.clear();
+                self.viewer.scroll = 0;
+                self.viewer.hscroll = 0;
+                self.viewer.log_cursor = None;
+                self.viewer.follow = true;
                 // Other views switch screens via Resp::Viewer; logs don't go through
                 // there, so the switch has to happen here. Without it, Enter would
                 // seem to do nothing.
-                self.viewer_title = format!("Logs · {p}/{s}");
+                self.viewer.title = format!("Logs · {p}/{s}");
                 self.screen = Screen::Viewer;
                 let _ = req.send(Req::LogTail {
                     project: p,
@@ -3123,7 +3091,7 @@ impl App {
                 });
                 return;
             }
-            self.viewer_follow = false;
+            self.viewer.follow = false;
             let _ = req.send(Req::Fetch {
                 view,
                 project: p,
@@ -3170,14 +3138,14 @@ impl App {
                 let _ = req.send(Req::MonitorData);
             }
             Screen::Viewer => {
-                if let Some((view, p, s, t)) = self.viewer_ctx.clone() {
+                if let Some((view, p, s, t)) = self.viewer.ctx.clone() {
                     let _ = req.send(Req::Fetch {
                         view,
                         project: p,
                         service: s,
                         stype: t,
                     });
-                } else if let Some(id) = self.action_detail.clone() {
+                } else if let Some(id) = self.viewer.action_detail.clone() {
                     // An action detail is a one-shot snapshot; this is the key
                     // that makes it current again.
                     let _ = req.send(Req::ActionDetail(id));

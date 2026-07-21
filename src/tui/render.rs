@@ -1864,33 +1864,33 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
     // The height is only known at render, so the "stick to the bottom" position is
     // computed here — not in the handler, which doesn't know how big the screen is.
     let rows = area.height.saturating_sub(2);
-    let max_scroll = (app.viewer_lines.len() as u16).saturating_sub(rows);
-    app.viewer_scroll = if app.viewer_follow {
+    let max_scroll = (app.viewer.lines.len() as u16).saturating_sub(rows);
+    app.viewer.scroll = if app.viewer.follow {
         max_scroll
     } else {
         // Clamped on EVERY path, not just while following: Down and PageDown add
         // without an upper bound, so holding either used to scroll past the last
         // line into a blank bordered box that looks like an empty log.
-        app.viewer_scroll.min(max_scroll)
+        app.viewer.scroll.min(max_scroll)
     };
     let block = |app: &App| {
         pane(String::new(), server_colour(&app.server_name))
             .title(format!(
                 " {}{} ",
-                app.viewer_title,
+                app.viewer.title,
                 // Say so if it's really live. Without this, a quiet log can't be
                 // told apart from a dead tail.
-                match (app.log_cursor.is_some(), app.viewer_follow) {
+                match (app.viewer.log_cursor.is_some(), app.viewer.follow) {
                     (true, true) => " · live",
                     (true, false) => " · live (paused — End to follow again)",
                     _ => "",
                 }
             ))
             .title_bottom(viewer_actions(app))
-            .title_bottom(if app.viewer_hscroll > 0 {
+            .title_bottom(if app.viewer.hscroll > 0 {
                 // Say where you are once scrolled: otherwise a view missing its
                 // left edge looks like the content simply starts there.
-                format!(" ← col {} · Home to return ", app.viewer_hscroll + 1)
+                format!(" ← col {} · Home to return ", app.viewer.hscroll + 1)
             } else {
                 String::new()
             })
@@ -1900,7 +1900,7 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
             // you had no reason to try. Announce it while it is still relevant.
             .title_bottom(
                 Line::from(
-                    if app.viewer_hscroll == 0 && viewer_overflows(app, area.width) {
+                    if app.viewer.hscroll == 0 && viewer_overflows(app, area.width) {
                         " →  more · ←→ scroll ".to_string()
                     } else {
                         String::new()
@@ -1916,31 +1916,32 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
     // "press the digit on the line" had.
     // An empty collection has a PLACEHOLDER line, not a row. Highlighting it made
     // "No ports yet" look like something you had selected and could delete.
-    let has_rows = app.viewer_lines.iter().any(|l| is_row(l));
+    let has_rows = app.viewer.lines.iter().any(|l| is_row(l));
     if has_rows && app.viewer_is_collection() {
         // A one-column Table rather than a List, so the selection moves with the
         // SAME helper every other table here uses — ↑↓, PageUp/PageDown, Home/End
         // all behave as they do elsewhere instead of being a second scheme.
         let rows: Vec<Row> = app
-            .viewer_lines
+            .viewer
+            .lines
             .iter()
             .map(|l| Row::new(vec![l.clone()]))
             .collect();
-        if app.viewer_row.selected().is_none() && !rows.is_empty() {
-            app.viewer_row.select(Some(0));
+        if app.viewer.row.selected().is_none() && !rows.is_empty() {
+            app.viewer.row.select(Some(0));
         }
         let table = Table::new(rows, [Constraint::Min(10)])
             .block(block(app))
             .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
             .highlight_symbol("› ");
-        f.render_stateful_widget(table, area, &mut app.viewer_row);
+        f.render_stateful_widget(table, area, &mut app.viewer.row);
         return;
     }
 
     f.render_widget(
-        Paragraph::new(app.viewer_lines.join("\n"))
+        Paragraph::new(app.viewer.lines.join("\n"))
             .block(block(app))
-            .scroll((app.viewer_scroll, app.viewer_hscroll)),
+            .scroll((app.viewer.scroll, app.viewer.hscroll)),
         area,
     );
 }
@@ -1958,13 +1959,13 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
 /// long enough to still overflow at column 40 must keep saying there is more.
 pub(super) fn viewer_overflows(app: &App, area_width: u16) -> bool {
     let inner = area_width.saturating_sub(2) as usize;
-    let reach = inner + app.viewer_hscroll as usize;
-    app.viewer_lines.iter().any(|l| l.chars().count() > reach)
+    let reach = inner + app.viewer.hscroll as usize;
+    app.viewer.lines.iter().any(|l| l.chars().count() > reach)
 }
 
 pub(super) fn viewer_actions(app: &App) -> String {
     use super::worker::View;
-    match app.viewer_ctx.as_ref().map(|(v, ..)| *v) {
+    match app.viewer.ctx.as_ref().map(|(v, ..)| *v) {
         Some(View::Env) => " e edit ".into(),
         Some(View::Ports) | Some(View::Mounts) | Some(View::Redirects) => {
             " ↑↓ select · n add · x delete ".into()

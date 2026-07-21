@@ -121,10 +121,10 @@ impl App {
             // 1-7 still leave, so nothing became unreachable.
             KeyCode::Left | KeyCode::Right if self.screen == Screen::Viewer => {
                 const STEP: u16 = 8;
-                self.viewer_hscroll = if code == KeyCode::Right {
-                    self.viewer_hscroll.saturating_add(STEP)
+                self.viewer.hscroll = if code == KeyCode::Right {
+                    self.viewer.hscroll.saturating_add(STEP)
                 } else {
-                    self.viewer_hscroll.saturating_sub(STEP)
+                    self.viewer.hscroll.saturating_sub(STEP)
                 };
             }
             KeyCode::Right => self.goto(self.screen.next(), req),
@@ -234,27 +234,27 @@ impl App {
     /// mouse move selects the same row.
     fn on_scroll(&mut self, delta: isize) {
         // A collection is a table: the wheel moves the SELECTION, as it does on
-        // every other table here. It used to change viewer_scroll, which this
+        // every other table here. It used to change viewer.scroll, which this
         // view does not read — so the wheel did nothing at all, silently.
         if self.screen == Screen::Viewer && self.viewer_is_collection() {
-            let len = self.viewer_lines.len();
+            let len = self.viewer.lines.len();
             let key = if delta < 0 {
                 KeyCode::Up
             } else {
                 KeyCode::Down
             };
             for _ in 0..delta.unsigned_abs() {
-                move_table(&mut self.viewer_row, key, len);
+                move_table(&mut self.viewer.row, key, len);
             }
             return;
         }
         if self.screen == Screen::Viewer {
             let step = delta.unsigned_abs() as u16;
             if delta < 0 {
-                self.viewer_follow = false;
-                self.viewer_scroll = self.viewer_scroll.saturating_sub(step);
+                self.viewer.follow = false;
+                self.viewer.scroll = self.viewer.scroll.saturating_sub(step);
             } else {
-                self.viewer_scroll = self.viewer_scroll.saturating_add(step);
+                self.viewer.scroll = self.viewer.scroll.saturating_add(step);
             }
             return;
         }
@@ -576,12 +576,12 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(id) = self.selected_action_id() {
-                    self.viewer_from = Screen::Actions;
+                    self.viewer.from = Screen::Actions;
                     // Not a log-tail view: make sure the log poll doesn't latch onto it.
-                    self.viewer_ctx = None;
+                    self.viewer.ctx = None;
                     // Remembered so `r` can fetch it again — a running deploy's
                     // log is a snapshot, and this screen exists to watch it.
-                    self.action_detail = Some(id.clone());
+                    self.viewer.action_detail = Some(id.clone());
                     self.status = "Loading action detail...".into();
                     let _ = req.send(Req::ActionDetail(id));
                 }
@@ -929,10 +929,11 @@ impl App {
             }),
             // redirect-delete needs stype (services/{stype}); the index is stashed
             // in `stype` like port/mount, so the real stype is pulled from
-            // viewer_ctx (the viewer is still open during the confirmation).
+            // viewer.ctx (the viewer is still open during the confirmation).
             "redirect-delete" => {
                 let stype = self
-                    .viewer_ctx
+                    .viewer
+                    .ctx
                     .as_ref()
                     .map(|(_, _, _, t)| t.clone())
                     .unwrap_or_default();
@@ -1235,7 +1236,7 @@ impl App {
             // cannot fire a restore the user has walked away from.
             KeyCode::Esc => {
                 self.backups.close_pickers();
-                self.screen = self.viewer_from;
+                self.screen = self.viewer.from;
             }
             // The bulk-rewrite preview IS the confirmation — the list of
             // before → after lines is on screen while this key is pressed.
@@ -1264,28 +1265,28 @@ impl App {
                 // helper the other tables use — so PageDown and End behave as
                 // they do everywhere else rather than scrolling a list whose
                 // highlight then sits off screen.
-                let len = self.viewer_lines.len();
-                move_table(&mut self.viewer_row, code, len);
+                let len = self.viewer.lines.len();
+                move_table(&mut self.viewer.row, code, len);
             }
             KeyCode::Up | KeyCode::Char('k') | KeyCode::PageUp | KeyCode::Home => {
-                self.viewer_follow = false;
+                self.viewer.follow = false;
                 let step = if code == KeyCode::PageUp { 10 } else { 1 };
-                self.viewer_scroll = match code {
+                self.viewer.scroll = match code {
                     KeyCode::Home => {
                         // Home means "back to the start" — both ways, or a line
                         // scrolled right still hides its own beginning.
-                        self.viewer_hscroll = 0;
+                        self.viewer.hscroll = 0;
                         0
                     }
-                    _ => self.viewer_scroll.saturating_sub(step),
+                    _ => self.viewer.scroll.saturating_sub(step),
                 };
             }
             // End re-sticks to the last line and resumes following.
-            KeyCode::End => self.viewer_follow = true,
+            KeyCode::End => self.viewer.follow = true,
             KeyCode::Down | KeyCode::Char('j') => {
-                self.viewer_scroll = self.viewer_scroll.saturating_add(1)
+                self.viewer.scroll = self.viewer.scroll.saturating_add(1)
             }
-            KeyCode::PageDown => self.viewer_scroll = self.viewer_scroll.saturating_add(10),
+            KeyCode::PageDown => self.viewer.scroll = self.viewer.scroll.saturating_add(10),
             // A collection lives in ONE screen: this is where you see it, add to
             // it and delete from it. "View X" and "Add X" used to be separate
             // menu entries — two doors into the same room, which made looking at
@@ -1298,7 +1299,7 @@ impl App {
             // the digit printed on the line", which capped the list at [9] and
             // lost 1-7 to the tab keys.
             KeyCode::Char('x') => {
-                let Some((view, project, service, _)) = self.viewer_ctx.clone() else {
+                let Some((view, project, service, _)) = self.viewer.ctx.clone() else {
                     return;
                 };
                 let Some((action, noun)) = (match view {
@@ -1314,9 +1315,10 @@ impl App {
                 // its position: the list can hold lines that are not rows, and
                 // the server deletes by the index it gave us.
                 let picked = self
-                    .viewer_row
+                    .viewer
+                    .row
                     .selected()
-                    .and_then(|i| self.viewer_lines.get(i))
+                    .and_then(|i| self.viewer.lines.get(i))
                     .and_then(|l| row_index(l));
                 match picked {
                     Some(idx) => {
@@ -1333,14 +1335,14 @@ impl App {
                 }
             }
             KeyCode::Char('n') | KeyCode::Char('e') | KeyCode::Char('b') => {
-                let view = self.viewer_ctx.as_ref().map(|(v, ..)| *v);
+                let view = self.viewer.ctx.as_ref().map(|(v, ..)| *v);
                 // `e` on a mount EDITS the highlighted one, the same verb Domains
                 // uses. It lives in this handler rather than its own arm so `e`
                 // keeps one meaning per screen — a second arm shadowed Env's and
                 // Source's `e` entirely. Only mounts have an update endpoint;
                 // ports and redirects are read-modify-write on a whole array.
                 if let (Some(View::Mounts), KeyCode::Char('e')) = (view, code) {
-                    let Some((_, project, service, _)) = self.viewer_ctx.clone() else {
+                    let Some((_, project, service, _)) = self.viewer.ctx.clone() else {
                         return;
                     };
                     // The index comes from the marker PRINTED on the row — the

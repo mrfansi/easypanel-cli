@@ -1,18 +1,74 @@
-//! What each viewer READS AS.
+//! The full-screen viewer: its STATE and what each view READS AS.
 //!
-//! These used to sit inside `fetch_view`, interleaved with the API calls that
-//! produce their input — so "talk to the network" and "decide how this looks"
-//! were the same function, and none of the formatting could be exercised without
-//! standing up an HTTP server. The worker now fetches and hands the JSON here.
+//! State (`ViewerUi`) and formatting (the `*_lines` functions) live together
+//! here. The formatting was pulled out of `fetch_view` first — "talk to the
+//! network" and "decide how this looks" had been one function — and its state
+//! was the last cluster still spread across `App` as ten loose fields. It joins
+//! its formatting here, the same move `BackupUi` made for the backup screen.
 //!
-//! Every function takes what the API returned and gives back the lines the
-//! viewer shows. No I/O, so each of these is testable on a literal.
+//! The `*_lines` functions take what the API returned and give back the lines
+//! the viewer shows. No I/O, so each is testable on a literal.
 
+use ratatui::widgets::TableState;
 use serde_json::Value;
 
 use crate::output::field;
 
+use super::app::Screen;
 use super::table::row_marker;
+use super::worker::View;
+
+/// Everything the full-screen viewer is currently showing.
+///
+/// Ten fields that had accumulated on `App` — the text, where it scrolls, what
+/// it was opened FROM and ABOUT, the live-log cursor. They belong together, and
+/// keeping them here stops the next viewer tweak from reaching across a 77-field
+/// struct.
+pub(super) struct ViewerUi {
+    /// The screen Esc returns to — the viewer opens from Services or Actions.
+    pub(super) from: Screen,
+    pub(super) title: String,
+    pub(super) lines: Vec<String>,
+    pub(super) scroll: u16,
+    /// How far right it is scrolled, in columns. The viewer neither wraps nor
+    /// reflows, so a line longer than the pane would be unreachable without this
+    /// — and this is the screen logs open in.
+    pub(super) hscroll: u16,
+    /// The service view this is (ports/env/…), so `r` knows what to re-fetch.
+    pub(super) ctx: Option<(View, String, String, String)>,
+    /// The highlighted row, for the views that ARE rows (ports, mounts,
+    /// redirects) — what `x` deletes, without the ten-row ceiling the old
+    /// "press the digit on the line" had.
+    pub(super) row: TableState,
+    /// The action whose detail is showing, if any. An action detail has no
+    /// `ctx` (it is not a service view), so this is how `r` re-fetches it — a
+    /// running deploy's log must not freeze at first fetch.
+    pub(super) action_detail: Option<String>,
+    /// The newest log timestamp already shown; the resume marker for the tail.
+    /// Some = the tail is active (only for `View::Logs`).
+    pub(super) log_cursor: Option<String>,
+    /// Stick to the last line. Logs grow from the bottom, so without this a new
+    /// line arrives off-screen and the tail looks dead.
+    pub(super) follow: bool,
+}
+
+impl Default for ViewerUi {
+    fn default() -> Self {
+        Self {
+            // Screen has no Default; the viewer is opened from Services by default.
+            from: Screen::Projects,
+            title: "Viewer".into(),
+            lines: Vec::new(),
+            scroll: 0,
+            hscroll: 0,
+            ctx: None,
+            row: TableState::default(),
+            action_detail: None,
+            log_cursor: None,
+            follow: false,
+        }
+    }
+}
 
 /// Rows from a JSON array, or a single line saying there are none.
 ///

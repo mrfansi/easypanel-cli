@@ -2296,8 +2296,8 @@ fn ticked_databases_are_what_gets_backed_up() {
     app.on_key(KeyCode::Down, &tx);
     app.on_key(KeyCode::Char('v'), &tx);
     assert_eq!(app.backups.marked.len(), 2, "two ticked");
-    assert!(app.viewer_lines.iter().any(|l| l.contains("✓ one")));
-    assert!(app.viewer_lines.iter().any(|l| l.contains("✓ three")));
+    assert!(app.viewer.lines.iter().any(|l| l.contains("✓ one")));
+    assert!(app.viewer.lines.iter().any(|l| l.contains("✓ three")));
 
     // Enter acts on the TICKS, not on whatever row the cursor rests on.
     app.on_key(KeyCode::Enter, &tx);
@@ -2814,14 +2814,14 @@ fn an_unreachable_host_can_be_asked_why() {
     );
     // Wrapped, not cut: the viewer neither wraps nor scrolls sideways, so every
     // line has to fit the pane on its own.
-    for l in &app.viewer_lines {
+    for l in &app.viewer.lines {
         assert!(
             l.chars().count() <= 78,
             "line overflows the pane and would be cut: {l:?}"
         );
     }
     // And nothing was LOST in the wrapping — the whole reason is recoverable.
-    let rejoined = app.viewer_lines.join(" ");
+    let rejoined = app.viewer.lines.join(" ");
     let flat: String = rejoined.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         flat.contains("connection timed out"),
@@ -2833,7 +2833,7 @@ fn an_unreachable_host_can_be_asked_why() {
     );
     assert!(flat.contains("blackhole") && flat.contains("10.255.255.1"));
     // Esc goes back where you came from, not to some default screen.
-    assert!(matches!(app.viewer_from, Screen::Hosts));
+    assert!(matches!(app.viewer.from, Screen::Hosts));
 }
 
 #[test]
@@ -2847,9 +2847,9 @@ fn the_viewer_can_reach_the_end_of_a_long_line() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Viewer;
-    app.viewer_from = Screen::Projects;
-    app.viewer_title = "Logs".into();
-    app.viewer_lines = vec![format!("{}THE-END", "x".repeat(70))];
+    app.viewer.from = Screen::Projects;
+    app.viewer.title = "Logs".into();
+    app.viewer.lines = vec![format!("{}THE-END", "x".repeat(70))];
 
     let draw = |app: &mut App| {
         let mut t = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -2888,7 +2888,7 @@ fn the_viewer_can_reach_the_end_of_a_long_line() {
 
     // Home returns to the left edge, not just the first line.
     app.on_key(KeyCode::Home, &tx);
-    assert_eq!(app.viewer_hscroll, 0);
+    assert_eq!(app.viewer.hscroll, 0);
     assert!(!draw(&mut app).contains("THE-END"));
 }
 
@@ -2902,10 +2902,10 @@ fn the_viewer_cannot_scroll_past_its_last_line() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Viewer;
-    app.viewer_from = Screen::Projects;
-    app.viewer_title = "Logs".into();
-    app.viewer_lines = (1..=12).map(|i| format!("line-{i}")).collect();
-    app.viewer_follow = false;
+    app.viewer.from = Screen::Projects;
+    app.viewer.title = "Logs".into();
+    app.viewer.lines = (1..=12).map(|i| format!("line-{i}")).collect();
+    app.viewer.follow = false;
 
     for _ in 0..40 {
         app.on_key(KeyCode::PageDown, &tx);
@@ -3504,7 +3504,7 @@ fn each_collection_has_one_door_not_two() {
 
     // The doors that closed still open — from inside the screen that owns them.
     app.open_view(View::Ports, &tx);
-    app.viewer_ctx = Some((View::Ports, "proj".into(), "web".into(), "app".into()));
+    app.viewer.ctx = Some((View::Ports, "proj".into(), "web".into(), "app".into()));
     app.screen = Screen::Viewer;
     app.on_key(KeyCode::Char('n'), &tx);
     assert!(
@@ -3523,7 +3523,7 @@ fn each_collection_has_one_door_not_two() {
     );
     app2.services_table.select(Some(1));
     app2.screen = Screen::Viewer;
-    app2.viewer_ctx = Some((View::Env, "proj".into(), "web".into(), "app".into()));
+    app2.viewer.ctx = Some((View::Env, "proj".into(), "web".into(), "app".into()));
     app2.on_key(KeyCode::Char('e'), &tx);
     assert!(
         app2.edit_env.is_some(),
@@ -3613,15 +3613,15 @@ fn a_collection_row_is_selected_and_deleted_without_a_ten_row_ceiling() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Viewer;
-    app.viewer_from = Screen::Projects;
-    app.viewer_ctx = Some((View::Ports, "proj".into(), "web".into(), "app".into()));
+    app.viewer.from = Screen::Projects;
+    app.viewer.ctx = Some((View::Ports, "proj".into(), "web".into(), "app".into()));
     // Fourteen rows: past the old ceiling on purpose.
-    app.viewer_lines = (0..14).map(|i| format!("[{i}] 80{i:02}:80/tcp")).collect();
-    app.viewer_row.select(Some(0));
+    app.viewer.lines = (0..14).map(|i| format!("[{i}] 80{i:02}:80/tcp")).collect();
+    app.viewer.row.select(Some(0));
 
     app.on_key(KeyCode::Down, &tx);
     app.on_key(KeyCode::Down, &tx);
-    assert_eq!(app.viewer_row.selected(), Some(2));
+    assert_eq!(app.viewer.row.selected(), Some(2));
     app.on_key(KeyCode::Char('x'), &tx);
     let c = app.confirm.take().expect("x must ask before deleting");
     assert!(c.label.contains("[2]"), "got: {}", c.label);
@@ -3629,7 +3629,7 @@ fn a_collection_row_is_selected_and_deleted_without_a_ten_row_ceiling() {
 
     // End reaches row 13 — past [9], which the digit scheme could never address.
     app.on_key(KeyCode::End, &tx);
-    assert_eq!(app.viewer_row.selected(), Some(13));
+    assert_eq!(app.viewer.row.selected(), Some(13));
     app.on_key(KeyCode::Char('x'), &tx);
     let c = app
         .confirm
@@ -3644,7 +3644,7 @@ fn a_collection_row_is_selected_and_deleted_without_a_ten_row_ceiling() {
     // `x` where nothing is deletable says so rather than doing nothing.
     let mut env = App::new("s".into(), vec![]);
     env.screen = Screen::Viewer;
-    env.viewer_ctx = Some((View::Env, "proj".into(), "web".into(), "app".into()));
+    env.viewer.ctx = Some((View::Env, "proj".into(), "web".into(), "app".into()));
     env.on_key(KeyCode::Char('x'), &tx);
     assert!(env.confirm.is_none());
     assert!(env.status.contains("Nothing here"), "got: {}", env.status);
@@ -3656,8 +3656,8 @@ fn a_key_the_viewer_does_not_take_says_what_it_does() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Viewer;
-    app.viewer_from = Screen::Projects;
-    app.viewer_ctx = Some((View::Env, "proj".into(), "web".into(), "app".into()));
+    app.viewer.from = Screen::Projects;
+    app.viewer.ctx = Some((View::Env, "proj".into(), "web".into(), "app".into()));
 
     app.on_key(KeyCode::Char('b'), &tx);
     assert!(
@@ -3741,10 +3741,10 @@ fn an_empty_screen_says_what_to_do_instead_of_showing_a_blank_box() {
     // and deletable.
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Viewer;
-    app.viewer_from = Screen::Projects;
-    app.viewer_title = "Ports · proj/web".into();
-    app.viewer_ctx = Some((View::Ports, "proj".into(), "web".into(), "app".into()));
-    app.viewer_lines = vec!["No ports yet — press n to add one".into()];
+    app.viewer.from = Screen::Projects;
+    app.viewer.title = "Ports · proj/web".into();
+    app.viewer.ctx = Some((View::Ports, "proj".into(), "web".into(), "app".into()));
+    app.viewer.lines = vec!["No ports yet — press n to add one".into()];
     let shown = draw(&mut app, 70);
     assert!(
         shown.contains("press n to add one"),
@@ -3773,14 +3773,14 @@ fn an_empty_screen_says_what_to_do_instead_of_showing_a_blank_box() {
 
 #[test]
 fn a_freshly_opened_collection_does_not_arm_the_previous_selection() {
-    // viewer_row survived across viewer loads, and render only seeded it when it
+    // viewer.row survived across viewer loads, and render only seeded it when it
     // was None — true exactly once per process. So opening a collection inherited
     // whatever index the last one was left on: a different service, a different
     // resource, a row nobody chose, sitting armed under `x delete`.
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Viewer;
-    app.viewer_ctx = Some((View::Ports, "p".into(), "first".into(), "app".into()));
+    app.viewer.ctx = Some((View::Ports, "p".into(), "first".into(), "app".into()));
     app.handle(
         Resp::Viewer(
             "Ports · p/first".into(),
@@ -3791,10 +3791,10 @@ fn a_freshly_opened_collection_does_not_arm_the_previous_selection() {
     for _ in 0..4 {
         app.on_key(KeyCode::Down, &tx);
     }
-    assert_eq!(app.viewer_row.selected(), Some(4));
+    assert_eq!(app.viewer.row.selected(), Some(4));
 
     // A different service's mounts arrive: the selection must start over.
-    app.viewer_ctx = Some((View::Mounts, "p".into(), "other".into(), "app".into()));
+    app.viewer.ctx = Some((View::Mounts, "p".into(), "other".into(), "app".into()));
     app.handle(
         Resp::Viewer(
             "Mounts · p/other".into(),
@@ -3805,7 +3805,7 @@ fn a_freshly_opened_collection_does_not_arm_the_previous_selection() {
         &tx,
     );
     assert_eq!(
-        app.viewer_row.selected(),
+        app.viewer.row.selected(),
         None,
         "a fresh list must not arrive with a row already chosen"
     );
@@ -3813,26 +3813,26 @@ fn a_freshly_opened_collection_does_not_arm_the_previous_selection() {
 
 #[test]
 fn the_wheel_and_vim_keys_move_a_collections_selection() {
-    // The wheel and j/k wrote to viewer_scroll, which a collection view does not
+    // The wheel and j/k wrote to viewer.scroll, which a collection view does not
     // read — so both did nothing at all, on the one screen where every other
     // table answers them.
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Viewer;
-    app.viewer_ctx = Some((View::Ports, "p".into(), "web".into(), "app".into()));
-    app.viewer_lines = (0..30).map(|i| format!("[{i}] 8{i:03}:80/tcp")).collect();
-    app.viewer_row.select(Some(0));
+    app.viewer.ctx = Some((View::Ports, "p".into(), "web".into(), "app".into()));
+    app.viewer.lines = (0..30).map(|i| format!("[{i}] 8{i:03}:80/tcp")).collect();
+    app.viewer.row.select(Some(0));
 
     app.on_key(KeyCode::Char('j'), &tx);
     app.on_key(KeyCode::Char('j'), &tx);
     assert_eq!(
-        app.viewer_row.selected(),
+        app.viewer.row.selected(),
         Some(2),
         "j must move the selection"
     );
     app.on_key(KeyCode::Char('k'), &tx);
     assert_eq!(
-        app.viewer_row.selected(),
+        app.viewer.row.selected(),
         Some(1),
         "and k must move it back"
     );
@@ -3848,7 +3848,7 @@ fn the_wheel_and_vim_keys_move_a_collections_selection() {
         &tx,
     );
     assert!(
-        app.viewer_row.selected().is_some_and(|i| i > 1),
+        app.viewer.row.selected().is_some_and(|i| i > 1),
         "the wheel must move the selection, not a scroll offset nothing reads"
     );
 }
@@ -4014,7 +4014,7 @@ fn an_image_source_has_no_build_step() {
 
 #[test]
 fn r_refetches_an_action_detail_instead_of_only_claiming_to() {
-    // An action detail has no viewer_ctx, so refresh had nothing to re-send: `r`
+    // An action detail has no viewer.ctx, so refresh had nothing to re-send: `r`
     // reported "Refreshing..." and left a RUNNING deploy's log frozen where it
     // was first fetched — on the screen you open to watch one.
     let (tx, rx) = std::sync::mpsc::channel();
@@ -4033,7 +4033,7 @@ fn r_refetches_an_action_detail_instead_of_only_claiming_to() {
     );
 
     app.screen = Screen::Viewer;
-    app.viewer_ctx = None; // as actions_key leaves it
+    app.viewer.ctx = None; // as actions_key leaves it
     app.refresh(&tx);
     let sent: Vec<Req> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
     assert!(
@@ -4052,7 +4052,7 @@ fn r_refetches_an_action_detail_instead_of_only_claiming_to() {
     );
     app.services_table.select(Some(1));
     app.open_view(View::Env, &tx);
-    assert!(app.action_detail.is_none());
+    assert!(app.viewer.action_detail.is_none());
 }
 
 /// The Domains tab holding one domain per host, with a filter already applied.
@@ -4096,11 +4096,12 @@ fn a_bulk_domain_rewrite_only_touches_what_the_filter_shows() {
     assert_eq!(app.domain_edits[0].id, "d1");
     assert!(app.screen == Screen::Viewer);
     assert!(
-        app.viewer_lines
+        app.viewer
+            .lines
             .iter()
             .any(|l| l.contains("one.old.com") && l.contains("one.new.com")),
         "{:?}",
-        app.viewer_lines
+        app.viewer.lines
     );
 
     // Walking away disarms it, so a later Enter cannot fire the rewrite.
@@ -4117,11 +4118,12 @@ fn a_destination_rewrite_names_the_domain_each_line_belongs_to() {
     app.preview_domain_edits("destination service", "p/api", "p/api2");
     assert_eq!(app.domain_edits.len(), 3);
     assert!(
-        app.viewer_lines
+        app.viewer
+            .lines
             .iter()
             .any(|l| l.starts_with("one.old.com:")),
         "{:?}",
-        app.viewer_lines
+        app.viewer.lines
     );
 }
 
@@ -4658,7 +4660,7 @@ fn the_palette_can_find_a_service_before_you_have_visited_the_services_tab() {
 
 #[test]
 fn the_source_view_never_prints_a_credential() {
-    use super::viewer_lines::{is_secret, source_lines};
+    use super::viewer::{is_secret, source_lines};
     // Found on a live host: a private registry's `password` — a real GitHub
     // token — printed in full on the Source & build screen. The view already
     // skipped the `token` and `env` KEYS of the service, which was the right
@@ -4703,7 +4705,7 @@ fn the_source_view_never_prints_a_credential() {
 fn a_viewer_says_what_is_there_and_what_is_not() {
     // These formatters used to live inside the function that fetched their input,
     // so none of this could be checked without an HTTP server.
-    use super::viewer_lines::{backups_lines, mounts_lines, ports_lines, redirects_lines};
+    use super::viewer::{backups_lines, mounts_lines, ports_lines, redirects_lines};
     // An empty collection is a sentence, never a blank pane: the reader must be
     // able to tell "nothing here" from "it failed to load".
     assert_eq!(
@@ -5147,7 +5149,7 @@ fn comparing_across_hosts_asks_the_event_loop_to_resolve_the_target_token() {
 fn a_viewer_advertises_horizontal_scroll_only_when_a_line_overflows() {
     use super::render::viewer_overflows;
     let mut app = App::new("s".into(), vec![]);
-    app.viewer_lines = vec![
+    app.viewer.lines = vec![
         "short".into(),
         "a line that is definitely wider than a narrow pane will ever be".into(),
     ];
@@ -5159,14 +5161,15 @@ fn a_viewer_advertises_horizontal_scroll_only_when_a_line_overflows() {
     // The offset is added back: once scrolled far enough that the reach clears
     // the longest line, there is no longer more to show.
     let longest = app
-        .viewer_lines
+        .viewer
+        .lines
         .iter()
         .map(|l| l.chars().count())
         .max()
         .unwrap();
-    app.viewer_hscroll = 0;
+    app.viewer.hscroll = 0;
     assert!(viewer_overflows(&app, 30)); // inner 28 < longest
-    app.viewer_hscroll = longest as u16; // reach 28 + longest > longest
+    app.viewer.hscroll = longest as u16; // reach 28 + longest > longest
     assert!(!viewer_overflows(&app, 30));
 }
 
@@ -5176,8 +5179,8 @@ fn the_diff_footer_shows_the_scroll_hint_at_a_narrow_width() {
     use ratatui::Terminal;
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Viewer;
-    app.viewer_title = "Diff".into();
-    app.viewer_lines =
+    app.viewer.title = "Diff".into();
+    app.viewer.lines =
         vec!["source.image   ghcr.io/acme/a-very-long-image-name:latest  →  other/thing:v2".into()];
     let footer = |app: &mut App, w: u16| {
         let mut t = Terminal::new(TestBackend::new(w, 8)).unwrap();
