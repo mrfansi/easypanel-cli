@@ -111,9 +111,22 @@ pub fn domain_destination(d: &Value) -> String {
             .pointer("/customDestination/servers")
             .and_then(Value::as_array)
             .map(|servers| {
+                // A weight only means something RELATIVE to the other servers in
+                // the set. On a lone destination it always takes 100% of traffic,
+                // so a trailing "(1)" carries no information while reading like an
+                // unexplained token on the routing screen. Show weights only when
+                // there is more than one server to weigh against.
+                let show_weight = servers.len() > 1;
                 servers
                     .iter()
-                    .map(|s| format!("{} ({})", field(s, "/url"), field(s, "/weight")))
+                    .map(|s| {
+                        let url = field(s, "/url");
+                        if show_weight {
+                            format!("{url} ({})", field(s, "/weight"))
+                        } else {
+                            url
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             })
@@ -262,8 +275,19 @@ mod tests {
         });
         assert_eq!(
             domain_destination(&custom),
-            "https://a.test (1), https://b.test (2)"
+            "https://a.test (1), https://b.test (2)",
+            "with two servers the weights disambiguate the split"
         );
+
+        // One server: the weight is always 100% of traffic, so it is dropped —
+        // no unexplained "(1)" on the destination.
+        let single = json!({
+            "destinationType": "custom",
+            "customDestination": { "servers": [
+                { "url": "https://only.test", "weight": 1 }
+            ]}
+        });
+        assert_eq!(domain_destination(&single), "https://only.test");
 
         assert_eq!(
             domain_destination(&json!({ "destinationType": "unknown" })),

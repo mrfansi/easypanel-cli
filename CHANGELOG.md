@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.4] — 2026-07-21
+
+### Changed
+
+- **The Domains screen no longer shows a bare `(1)` after single-server
+  destinations.** A custom destination's servers each carry a load-balancing
+  weight, and every destination — even one with a single server — was rendered as
+  `https://webapp.harisenin.com (1)`. A weight only means anything relative to the
+  other servers in the set; on a lone server it is always 100% of traffic, so the
+  `(1)` was an unexplained token on the one screen you read to confirm where a
+  domain actually points. Weights now appear only when there are two or more
+  servers to weigh against (e.g. `a.test (1), b.test (2)`), where the split is
+  real information.
+- **Project header rows in the Services list dropped the row of `-` placeholders.**
+  Each project header aggregates its services' CPU/memory/network, but it was also
+  filling the Type/Status/Repl/Source/Auto columns with `-` — five dashes per
+  project, a band of noise sitting between the project name and the aggregate
+  numbers that are the row's whole point. A header has no single type or status,
+  so those cells are now blank and the name + totals read as one clean summary
+  band. (The metric columns still show `-` for "nothing measured", where the dash
+  carries meaning.) Both surfaced by an on-screen UX critique and verified live.
+
 ## [0.79.3] — 2026-07-21
 
 ### Fixed

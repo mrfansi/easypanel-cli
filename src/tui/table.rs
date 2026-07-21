@@ -152,9 +152,13 @@ pub(super) fn auto_deploy_cell(s: &Value) -> &'static str {
 /// identity is -0.0) prints "-0.0 %": a convincing-looking negative CPU.
 pub(super) fn project_row(name: &str, count: usize, mets: &[&Value]) -> Vec<String> {
     let mut row: Vec<String> = vec![format!("{name} ({count})")];
-    // Type / Status / Repl / Source / Auto: a project header aggregates metrics, not
-    // per-service state.
-    row.extend(["-", "-", "-", "-", "-"].map(String::from));
+    // Type / Status / Repl / Source / Auto: a project header aggregates metrics,
+    // not per-service state, so these are left BLANK rather than filled with "-".
+    // Five dashes per header (one line per project) is a band of noise between the
+    // project name and the aggregate stats that ARE the row's point; a header
+    // simply has no single type/status/source to show. (The metric columns still
+    // use "-" for "nothing measured" — there the dash is meaningful.)
+    row.extend(["", "", "", "", ""].map(String::from));
     if mets.is_empty() {
         row.extend(metric_cols(None));
         return row;

@@ -1118,6 +1118,13 @@ fn empty_project_shows_no_metrics_not_negative_zero() {
     // builder that render uses.
     let row = project_row("empty", 0, &[]);
     assert_eq!(row[0], "empty (0)");
+    // Type / Status / Repl / Source / Auto are blank on a header, not "-": a
+    // project has no single per-service state, and the dashes were pure noise.
+    assert_eq!(
+        &row[1..6],
+        ["", "", "", "", ""],
+        "per-service columns are blank"
+    );
     assert_eq!(&row[6..], ["-", "-", "-", "-"], "nothing measured");
     assert!(
         !row.iter().any(|c| c.contains("-0.0")),
