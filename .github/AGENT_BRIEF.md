@@ -324,6 +324,31 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### DB credentials view & copy — shipped v0.77.0 (2026-07-21)
+
+Owner asked: a database service should show its credentials like the panel's
+Credentials screen (user, password, internal host/port, connection URL) and let
+you copy the password. Built it: Shell menu (`t`) → Credentials on any
+mysql/mariadb/postgres/mongo/redis service opens a read-only `Screen::Credentials`;
+`v` reveals/hides, `c`/`y`/Enter copies the selected field. New `credentials.rs`
+bounded context turns inspectService fields into the display identity (same fields
+the DB shell authenticates with). Verified live on redis + mysql (aurel).
+
+**Clipboard = OSC 52, deliberately (reference for any future copy need).** No
+clipboard crate (arboard needs X11/Wayland libs and fails headless) and no
+pbcopy/xclip shelling. OSC 52 writes `ESC ] 52 ; c ; <base64> BEL` to stdout;
+reused the hand-written `terminal::base64`. It reaches the real clipboard over SSH
+and through tmux with `set-clipboard on` — exactly this tool's habitat. Set via
+`app.clipboard: Option<String>`; the event_loop (which owns the terminal) emits it.
+Caveat: terminals without OSC 52 (Terminal.app) silently no-op — the status line
+"X copied to clipboard" is the honest feedback either way.
+
+**Follow-up refactor available (NOT done, would be its own run):** `terminal::db_command`
+(the DB shell login builder) and `credentials::credentials` both encode the same
+per-type credential facts. They could be unified so the shell command is built from
+the credentials context — a pure refactor for a later run, kept out of this feature
+commit per the no-mixing rule.
+
 ### Repoint an orphan: ALREADY POSSIBLE — do not build a new feature (2026-07-21)
 
 Follow-up to the delete-orphan dead end. Probed live: `updateDomain` DOES accept an orphan
