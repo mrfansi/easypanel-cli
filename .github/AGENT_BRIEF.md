@@ -324,6 +324,33 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### Two "the screen lied about its state" bugs — fixed v0.78.1 (2026-07-21)
+
+Both found in one run: one by driving the live host, one by a parallel adversarial
+UI critic on the recent screens.
+
+1. **Empty-state vs failed-fetch.** On viding-idc (prod) the panel was 502ing;
+   `listDomains` failed and the Domains screen drew "No domains yet — press n to
+   add one" on a host with hundreds of domains. `Resp::Err` is generic (load AND
+   action failures share it), and a GLOBAL load-error flag would be WRONG here:
+   `listDomains` (the 713-row call) is exactly the one that times out alone while
+   `listProjectsAndServices` succeeds, and that success would clear a global flag.
+   So the fix is per-kind: new `Resp::DomainsErr` → `app.domains_error`, cleared on
+   the next successful load, shown by the empty-state. If another data screen shows
+   the same lie, repeat per-kind (don't reach for a global flag). Render test in
+   tests.rs proves empty-vs-failed.
+
+2. **A sub-screen's Esc swallowed by global guards.** The global Esc handlers
+   (clear filter, clear marks) run BEFORE the per-screen dispatch. Credentials is
+   opened from the filtered Services list, so its advertised "Esc back" silently
+   cleared the filter or DESTROYED the marks and stayed put. Fix: `App::screen_owns_esc()`
+   (Viewer | Credentials) exempts those from the filter/marks Esc guards, so Esc
+   reaches their handler and returns to the list with filter+marks INTACT. The data
+   screens still clear filter→marks on Esc. **Class to remember:** any new
+   full-screen sub-view opened from a list must be added to `screen_owns_esc`, or
+   its Esc will be eaten by the filter/marks guards. Verified live: one Esc from
+   Credentials returned to the filtered+marked list; Esc on Services still cleared.
+
 ### Bulk resource limits — shipped v0.78.0 (2026-07-21)
 
 Owner tried to bulk-update resource limits (37 marked services on prod) and there
