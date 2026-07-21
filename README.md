@@ -498,11 +498,21 @@ Works on `project list`/`inspect`, `stats`, `node list`, `monitor services`/`sto
 
 Stated plainly, because a README that promises what the code doesn't do is a bug.
 
-- **Database restore is CLI-only, deliberately.** `restoreDatabaseBackup` needs the
-  backup file's `path`, and the API has **no endpoint that lists backup files** — only
-  schedules. A TUI form with a path you have to guess, for an operation that overwrites
-  a live database, is a trap. The CLI makes you supply a path you actually know, and
-  confirms first.
+- **Restore lists your backups from the action log, not a backup-files endpoint.**
+  EasyPanel's API has **no endpoint that lists backup files** — only schedules — so both
+  restore paths work around it rather than making you guess a path for an operation that
+  overwrites a live database. In the TUI, `b` (or Storage ▸ backups) shows the backups
+  recorded in the host's action history and restores the one you pick — **including a
+  backup taken on another server** that shares the same remote storage (cross-host
+  restore). The CLI takes an explicit `--path` for scripting, or for a backup older than
+  the action window. Both confirm first.
+- **Restore needs the target database to already exist.** EasyPanel restores *into* an
+  existing database, so restoring onto a fresh host — where that database was never
+  created — used to fail with a cryptic `[400] … docker exec … exit code 1`. The tool now
+  checks the target first and refuses plainly (*"`<service>` has no database `<db>`;
+  create it first, then restore"*) instead of surfacing the opaque error. An empty or
+  unreadable listing (a stopped engine) is treated as "can't tell" and lets the restore
+  proceed.
 - **One of the panel's five source types is missing: Upload.** Github, Git, Docker
   Image and Dockerfile all work. Upload needs to hand a code archive to the server, but
   the API models it as a server-side `archivePath` — a path that must already exist on

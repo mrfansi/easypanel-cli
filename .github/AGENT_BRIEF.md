@@ -401,6 +401,18 @@ Pure refactor, 287 test names identical, verified live. So the feature can build
   DIFFERENT zzz service that has NONE of those DBs, and confirm the data matches,
   before touching anything real.
 
+**Sequencing note (2026-07-21):** this is a WHOLE VERTICAL SLICE, not an hourly
+nibble. The crate has no `#[allow(dead_code)]` and clippy runs `-D warnings`, so a
+presigner (or `dump.rs`) committed ALONE, with no caller, fails the build — landing
+it as an orphan module "for later" is exactly the scaffolding ponytail forbids. So
+`s3.rs` must land WIRED to its first real consumer (`easypanel db dump` for mysql)
+in the same effort. That effort also needs the long-running container exec (run_once
+caps at 20s) AND a live zzz mysql, whose create is a Swarm deploy that blocks for
+minutes. Net: give this a DEDICATED focused session, not a "find a quick win" run —
+don't defer it into a half-built orphan. `getServiceDatabases` (used by the v0.79.3
+restore pre-flight) returns a plain array incl. system schemas and is the `--all`
+source (minus INTERNAL).
+
 ### Restore into a fresh server fails silently — smaller companion fix (2026-07-21) — DONE v0.79.3
 **DONE (2026-07-21, v0.79.3).** The PRE-FLIGHT check shipped. Both restore paths
 (TUI worker `Req::RestoreBackup` and CLI `backup db-restore`) now call
