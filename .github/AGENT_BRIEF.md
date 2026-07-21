@@ -298,6 +298,21 @@ and pass `--server harisenin-aurel` (or `harisenin-angelia`) explicitly for ever
 verification. Do not switch the default to make this easier — the owner's choice of
 default is theirs, and changing it is itself a mutation of their config.
 
+### Repoint an orphan: ALREADY POSSIBLE — do not build a new feature (2026-07-21)
+
+Follow-up to the delete-orphan dead end. Probed live: `updateDomain` DOES accept an orphan
+and repoints it to a live service (`{}` success, verified the destination changed), and
+once repointed the domain is deletable normally. So the fix for a dead route is to REPOINT
+it, not delete it.
+
+But no new feature is needed: the existing `e` edit form already does exactly this. Opened
+on an orphan, its Service dropdown lists the project's live services, picking one and
+saving repoints it (verified end to end in the TUI, "Domain updated", destination now the
+live service). So the operator workflow already exists — v0.69.0 marks the orphan with ✗,
+`e` repoints it. Do not build a redundant "repoint" action.
+
+### Bulk-delete orphan domains: BUILT, then BACKED OUT
+
 ### Bulk-delete orphan domains: BUILT, then BACKED OUT — the panel won't delete them (2026-07-21)
 
 Probed before shipping, and the probe killed the feature — which is the probe doing its
