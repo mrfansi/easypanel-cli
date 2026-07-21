@@ -324,6 +324,31 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### README screenshots — reproducible pipeline, use demo data (2026-07-21)
+
+Directive-6 README work. There is NO screenshot tool on this box (no freeze,
+silicon, imagemagick, cairosvg, rsvg). Since this is a terminal app, a
+"screenshot" is the terminal's own output — so `docs/ansi2svg.py` converts a
+`tmux capture-pane -e -p` dump into a self-contained coloured SVG (GitHub renders
+SVG images but NOT ANSI colour in code fences). Regenerate:
+`tmux capture-pane -t <s> -e -p | python3 docs/ansi2svg.py "Title" > out.svg`.
+Verify visually with `qlmanage -t -s 1100 -o /tmp/out docs/screenshots/x.svg`
+(run it BACKGROUNDED — qlmanage blocks; poll for the .png) then Read the png.
+
+**Owner's rule (asked 2026-07-21): screenshots must use DEMO data, not real
+infrastructure.** Real captures expose the owner's production topology (domains,
+project names) to a public README. The accepted approach: stand up a throwaway
+project on the SAFE host with neutral names (acme-shop, *.shop.example.com),
+deploy a couple of `nginx:alpine` apps + a redis + a postgres (they show `active`
+with real metrics in seconds), screenshot Services/Domains/Credentials, then
+DESTROY the project and verify all three hosts are clean. The server label in the
+title bar is the one thing you cannot make "demo" without mutating the user's
+config, so `sed` it to a neutral name in the captured text before converting.
+Facts learned building the demo: a wildcard domain needs `certificateResolver`
+set (400 "Wildcard domains require a certificate resolver" without it); databases
+provision on createService and show `active` even though `deployService` on a db
+type answers 404. Keep credentials MASKED in any published screenshot.
+
 ### DB credentials view & copy — shipped v0.77.0 (2026-07-21)
 
 Owner asked: a database service should show its credentials like the panel's
