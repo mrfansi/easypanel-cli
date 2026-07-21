@@ -324,6 +324,31 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### App god-struct extractions — TermUi done (2026-07-21), next candidates ranked
+
+The App struct (~70 fields) is being shrunk one cohesive UI-state cluster at a
+time — the proven mechanical pattern: move fields into a `*Ui` struct in the
+sub-view's home module, `#[derive(Default)]`, rename access sites, ONE test body
+changes, test-NAMES byte-identical. Done so far: `ViewerUi` (viewer.rs), `BackupUi`
+(backup_ui.rs), `CredsUi` (app.rs), and now **`TermUi`** (terminal.rs — term_parser/
+term_input/term_title → `app.term`, no version bump, 286 test names identical).
+
+**Next pure-refactor candidates (architect-ranked, for a future directive-1 run):**
+- `UptimeUi` — `watch`/`probes`/`uptime_state`/`checking` into uptime.rs (DDD-aligned).
+  Trap: `watch.len()` is read inside status-string formatting, and `watch_action` is
+  a PENDING-event_loop-action field (different category) that must be EXCLUDED. Touches
+  keys.rs too. Medium risk.
+- `ActionsUi` — `actions`/`actions_state`/`actions_failures_only`. Small, but
+  `visible_actions()` filtering is entangled; keep it behaviour-identical.
+- Do NOT extract anim/mouse (read all over render, 41 sites) or monitor (reaches
+  into worker) — footprint too broad to stay clean.
+
+**The trap that makes a `*Ui` extraction NOT pure:** a partial reset. If the old code
+nulls only SOME of the cluster's fields (TermUi's switch_server/TermClosed null
+parser+input but not title, which is then read), a "tidy" `Struct::default()` reset
+wipes the rest and changes behaviour. Keep resets field-by-field; grep the reset
+sites before trusting the diff.
+
 ### first_line ate meaningful indentation — fixed v0.79.0 (2026-07-21)
 
 Owner (on a 118-service host) reported the Monitor table read as a FLAT list — no
