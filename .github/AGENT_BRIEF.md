@@ -324,6 +324,88 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### BACKLOG (owner-requested 2026-07-21): a non-locking DB dump straight to R2 — FEASIBILITY PROVEN, build it
+
+The owner's real pain with EasyPanel's native backup, in their words:
+1. It **locks/hangs the running DB** during backup (no `--single-transaction`), so
+   apps using that DB error out.
+2. It's **per-database, one file each**, and restore **requires the target database
+   to already exist** — so restoring to a NEW server (where the DB has never existed)
+   fails with `[400] … docker exec … mysql … exit code 1` (Unknown database).
+3. Owner wants a backup that is non-locking, one self-contained file for multiple
+   DBs, AND still stored in the EXISTING R2 storage provider (not just the laptop).
+
+**The solution (owner's own correct commands):** run our OWN dump in the container
+via the WebSocket shell, non-locking, and upload it to R2 with a presigned URL.
+```
+# mysql
+mysqldump -u$U -p$P --databases $DBS --single-transaction --quick --skip-lock-tables \
+  --routines --triggers --events | gzip > /tmp/d.sql.gz && curl -T /tmp/d.sql.gz '<presigned-PUT>' && rm /tmp/d.sql.gz
+# mariadb: mariadb-dump … --single-transaction --quick --routines --triggers --events --hex-blob --default-character-set=utf8mb4
+```
+`--databases` embeds `CREATE DATABASE`, so the dump restores onto a fresh server
+(fixes pain #2). `--single-transaction` = no lock (fixes #1). Data flows
+container→R2 DIRECTLY, so it never crosses the WebSocket → **no proxy 125s timeout**
+(the objection that killed the "stream to laptop" idea).
+
+**EVERY link verified live on zzz-* (2026-07-21), then cleaned up — do NOT re-probe:**
+- `storageProviders/common/list` (group `storageProviders/common`, op `list`) returns
+  the S3 provider WITH creds: `accessKeyId`, `secretAccessKey`, `bucket`
+  (harisenin-db), `endpoint` (…r2.cloudflarestorage.com), `region` "auto",
+  `subtype` "cloudflare-r2", plus the `id` used by backup meta.
+- mysql:9 container HAS `curl` (7.76.1). `mysqldump --single-transaction | gzip`
+  works (verified 881KB for 2 DBs earlier).
+- **R2 REJECTS a streaming PUT** (`curl -T -`, chunked) with `411 MissingContentLength`.
+  MUST buffer the dump to a file first (`… | gzip > /tmp/f`), then `curl -T /tmp/f`
+  so Content-Length is set. That worked: **PUT 200**, GET-back matched, DELETE 204.
+- Presigned URL recipe that worked: AWS Sig v4, `service=s3`, `region=auto`,
+  `X-Amz-SignedHeaders=host`, payload hash literal `UNSIGNED-PAYLOAD`, path-style
+  `{endpoint}/{bucket}/{key}`. (Reference Python presigner is in this session's
+  history — port it to Rust.)
+
+**Build scope for the loop:**
+- Deps: add `hmac` + `sha2` (small, pure-Rust) for Sig v4 — the rustls `ring` in-tree
+  isn't cleanly reachable. Presigner is a PURE function → test against AWS's public
+  Sig v4 test vectors.
+- New module (e.g. `src/s3.rs`): presign PUT/GET/DELETE. `src/dump.rs`: per-engine
+  dump command builder (mysql/mariadb first; postgres `pg_dump`/`pg_dumpall` and
+  mongo `mongodump --archive --gzip` later — mongo is NOT one SQL file).
+- Fetch creds via `storageProviders/common/list`; pick the s3/remote provider.
+- Container exec: `terminal::run_once` caps at 20s — TOO SHORT for a real dump+upload.
+  Need a variant that waits for completion (append `echo __DONE_<rand>__` and read
+  until the marker, or until socket close) with a long cap. The WebSocket container-
+  exec code (`ws_url`, `base64`, `run_once`) is `pub(super)` in tui/terminal.rs — to
+  use it from a CLI command (`commands.rs`) either widen visibility to `pub(crate)`
+  or (cleaner, DDD) extract those primitives to a shared `src/container.rs` FIRST as
+  a separate pure-refactor commit, then build the feature on it.
+- CLI: `easypanel db dump <project> <service> [--databases a,b,c | --all] [--provider <name>]`
+  → writes `<project>/<ts>.sql.gz` (or a chosen key) to R2, prints the path. Plus
+  `easypanel db restore <project> <service> --path <r2-key>` → presigned GET inside
+  the container → `curl … | gunzip | mysql …` (also non-locking import; `--databases`
+  dump auto-creates the DB, fixing the cross-server case). `--all` uses
+  `getServiceDatabases` (op exists) minus the system DBs (information_schema, mysql,
+  performance_schema, sys, system).
+- **Caveats to surface to the user:** (a) buffers to container `/tmp` — needs free
+  disk ≈ compressed size; warn/guard. (b) This is the TOOL's backup — it will NOT
+  appear in EasyPanel's own restore UI (that list comes from backup ACTIONS, which
+  we don't write); restore is via the tool's `db restore`. (c) Handles secrets (R2
+  key/secret, DB root pw) — never log them; presigned URL carries the accessKeyId
+  (not the secret) and is short-lived.
+- Verify end-to-end on zzz-*: dump 2+ DBs of a zzz mysql → R2, then restore into a
+  DIFFERENT zzz service that has NONE of those DBs, and confirm the data matches,
+  before touching anything real.
+
+### Restore into a fresh server fails silently — smaller companion fix (2026-07-21)
+Separate, smaller item (do even if the R2-dump feature isn't built): EasyPanel's
+restore needs the target DB to exist. When it doesn't, the tool shows the raw,
+truncated `[400] … docker exec … exit code 1`. Add a PRE-FLIGHT check in the
+restore flow: call `getServiceDatabases` on the target; if the backup's database
+isn't there, say so plainly ("<service> has no database '<db>'; EasyPanel restores
+into an existing one — create it first") instead of the cryptic docker error.
+Optionally OFFER to create the empty DB (via a one-shot `CREATE DATABASE` in the
+container shell) then restore — turns cross-server restore into one step, reusing
+EasyPanel's existing backups. Low risk (the create is tiny, not a huge stream).
+
 ### Backup/restore clarity — restore now names the database; bulk backup already exists (2026-07-21)
 
 Owner confusion, from the cross-host restore screen: "I can't tell what databases
