@@ -401,16 +401,25 @@ Pure refactor, 287 test names identical, verified live. So the feature can build
   DIFFERENT zzz service that has NONE of those DBs, and confirm the data matches,
   before touching anything real.
 
-### Restore into a fresh server fails silently — smaller companion fix (2026-07-21)
-Separate, smaller item (do even if the R2-dump feature isn't built): EasyPanel's
-restore needs the target DB to exist. When it doesn't, the tool shows the raw,
-truncated `[400] … docker exec … exit code 1`. Add a PRE-FLIGHT check in the
-restore flow: call `getServiceDatabases` on the target; if the backup's database
-isn't there, say so plainly ("<service> has no database '<db>'; EasyPanel restores
-into an existing one — create it first") instead of the cryptic docker error.
-Optionally OFFER to create the empty DB (via a one-shot `CREATE DATABASE` in the
-container shell) then restore — turns cross-server restore into one step, reusing
-EasyPanel's existing backups. Low risk (the create is tiny, not a huge stream).
+### Restore into a fresh server fails silently — smaller companion fix (2026-07-21) — DONE v0.79.3
+**DONE (2026-07-21, v0.79.3).** The PRE-FLIGHT check shipped. Both restore paths
+(TUI worker `Req::RestoreBackup` and CLI `backup db-restore`) now call
+`databaseBackups/getServiceDatabases` (returns a plain array of db names,
+system schemas included — no stype/password/container needed) and refuse up front
+with `crate::backup::missing_database_message` when the target db is not in a
+NON-EMPTY list. Key nuance learned live: an EMPTY list means the engine couldn't
+be read (a running mysql/postgres always lists its own system schemas), NOT "no
+databases" — so `service_lists_database` returns `None` (don't block) for empty
+or non-array, `Some(false)` only for a populated list that lacks the db. Verified
+live on angelia: `harisenin-com-db/mysql` (system DBs only) → blocked with the
+clear message; `edukasistudio-db/mysql-r1` (has `edu_db`) → passes pre-flight.
+Pure helpers unit-tested. NOT done (deliberately deferred, low value now): the
+optional "offer to CREATE DATABASE then restore" one-step flow — the plain
+message is enough and lower-risk; revisit only if operators ask for the auto-create.
+
+Original note: Separate, smaller item (do even if the R2-dump feature isn't
+built): EasyPanel's restore needs the target DB to exist. When it doesn't, the
+tool showed the raw, truncated `[400] … docker exec … exit code 1`.
 
 ### Backup/restore clarity — restore now names the database; bulk backup already exists (2026-07-21)
 

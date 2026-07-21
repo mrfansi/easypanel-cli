@@ -1065,6 +1065,22 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             provider,
             path,
         } => {
+            // Pre-flight: EasyPanel restores INTO an existing database, so on a
+            // host where `database` was never created the restore dies with a
+            // cryptic `[400] … docker exec … exit code 1`. Ask what the service
+            // actually holds and say so plainly instead. A failure of OUR check
+            // (network, unexpected shape) must not block a restore that might
+            // work — only a definitive "not in the list" does.
+            let names = client.call(
+                "databaseBackups",
+                "getServiceDatabases",
+                json!({ "projectName": project, "serviceName": service }),
+            );
+            if let Ok(v) = &names {
+                if crate::backup::service_lists_database(v, &database) == Some(false) {
+                    return Resp::Err(crate::backup::missing_database_message(&service, &database));
+                }
+            }
             let body = crate::backup::restore_body(&project, &service, &database, &provider, &path);
             match client.call("databaseBackups", "restoreDatabaseBackup", body) {
                 // The restore recycles the container, so the service comes back a

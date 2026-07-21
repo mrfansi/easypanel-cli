@@ -150,6 +150,41 @@ pub fn restore_body(
     })
 }
 
+/// Does the target service currently hold `database`, per `getServiceDatabases`?
+///
+/// This is the pre-flight for a restore. EasyPanel restores INTO an existing
+/// database (its `docker exec … mysql <db> < dump` fails with a cryptic
+/// `exit code 1` when `<db>` was never created), so on a fresh host the restore
+/// dies opaquely. `getServiceDatabases` returns the exact list the restore
+/// checks against; `client.call` already unwraps the `{"json":[…]}` envelope, so
+/// this is the raw array (system schemas included — membership is all we test).
+///
+/// - `Some(true)`  — it is there; the restore can proceed.
+/// - `Some(false)` — a NON-EMPTY list that does not contain it; block early with
+///   a message the operator can act on instead of the raw docker error.
+/// - `None`        — we can't tell, and that must never stop a restore that might
+///   work. Two ways to land here: the response wasn't a list we understand, or
+///   the list was EMPTY. A running mysql/postgres always reports its own
+///   `information_schema`/system schemas, so an empty answer means the engine
+///   couldn't be enumerated (a stopped container) — not "it has no databases".
+///   Blocking then would be a false alarm with a misleading "create it" fix.
+pub fn service_lists_database(list: &Value, database: &str) -> Option<bool> {
+    let names = list.as_array()?;
+    if names.is_empty() {
+        return None;
+    }
+    Some(names.iter().any(|n| n.as_str() == Some(database)))
+}
+
+/// What to tell the operator when the target service has no such database — names
+/// the service, the database, and the one action that fixes it.
+pub fn missing_database_message(service: &str, database: &str) -> String {
+    format!(
+        "{service} has no database '{database}'. EasyPanel restores into an \
+         existing database — create '{database}' in {service} first, then restore."
+    )
+}
+
 /// Can this service type be backed up at all?
 ///
 /// Redis cannot: `createDatabaseBackup` on a real redis service answers
@@ -264,6 +299,29 @@ mod tests {
             "meta": { "databaseName": "shop", "path": path,
                       "storageProviderId": "prov1" }
         })
+    }
+
+    #[test]
+    fn service_lists_database_detects_presence_absence_and_uncertainty() {
+        // The exact shape getServiceDatabases returns (system schemas included).
+        let list = json!(["information_schema", "mysql", "shop", "sys"]);
+        assert_eq!(service_lists_database(&list, "shop"), Some(true));
+        assert_eq!(service_lists_database(&list, "hscom_main"), Some(false));
+        // A shape we don't understand must read as "can't tell", NOT "absent" —
+        // otherwise a broken check would block a restore that would have worked.
+        assert_eq!(service_lists_database(&json!({"oops": 1}), "shop"), None);
+        assert_eq!(service_lists_database(&Value::Null, "shop"), None);
+        // An empty list is a stopped/unreadable engine (a live one always lists
+        // its own system schemas), not proof the database is missing — don't block.
+        assert_eq!(service_lists_database(&json!([]), "shop"), None);
+    }
+
+    #[test]
+    fn missing_database_message_names_the_service_the_db_and_the_fix() {
+        let m = missing_database_message("mysql", "hscom_main");
+        assert!(m.contains("mysql"), "must name the service");
+        assert!(m.contains("hscom_main"), "must name the missing database");
+        assert!(m.contains("create"), "must tell the operator what to do");
     }
 
     #[test]

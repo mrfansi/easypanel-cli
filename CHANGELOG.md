@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.3] — 2026-07-21
+
+### Fixed
+
+- **Restoring a backup into a service that never held that database now fails with
+  a clear reason instead of a cryptic docker error.** EasyPanel restores INTO an
+  existing database, so restoring `hscom_main` onto a fresh host — where it was
+  never created — died with `[400] … docker exec … mysql … exit code 1`, which
+  tells an operator nothing about what went wrong or how to fix it. This is the
+  common cross-host case: move a backup to a new server and the target database
+  does not exist there yet. Both restore paths (the TUI and `backup db-restore`)
+  now ask the service what databases it actually holds (`getServiceDatabases`)
+  and, if the target is not among them, refuse up front with
+  `"<service> has no database '<db>'. EasyPanel restores into an existing
+  database — create '<db>' in <service> first, then restore."` — before any
+  overwrite is attempted. An empty or unreadable listing (e.g. a stopped engine,
+  which never reports even its own system schemas) is treated as "can't tell" and
+  lets the restore proceed, so the check never blocks a restore that might work.
+  Reported by an operator restoring across hosts; the failing service and the
+  fixed behaviour were both verified live.
+
 ## [0.79.2] — 2026-07-21
 
 ### Fixed

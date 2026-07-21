@@ -1115,6 +1115,22 @@ pub fn backup_db_restore(
         }
     };
 
+    // Pre-flight: EasyPanel restores INTO an existing database, so on a host
+    // where `database` was never created the restore dies with a cryptic
+    // `[400] … docker exec … exit code 1`. Ask what the service actually holds
+    // and refuse plainly, before prompting to overwrite something that can't be.
+    // A failure of OUR check (or an empty/unreadable list) is ambiguous — let it
+    // through so a restore that might work still can.
+    if let Ok(listed) = client.call(
+        "databaseBackups",
+        "getServiceDatabases",
+        json!({ "projectName": project, "serviceName": service }),
+    ) {
+        if crate::backup::service_lists_database(&listed, database) == Some(false) {
+            anyhow::bail!(crate::backup::missing_database_message(service, database));
+        }
+    }
+
     if !confirm(
         &format!(
             "Restore '{database}' on {project}/{service} from '{path}'? \
