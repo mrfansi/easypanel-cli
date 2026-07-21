@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.73.0] — 2026-07-21
+
+### Fixed
+
+- **A viewer now says when a line runs off the right edge.** A diff or a bulk-result line
+  wider than the pane was cut at the border with nothing to say it could scroll — the
+  "← col N" indicator only appeared AFTER you had scrolled, which you had no reason to try.
+  A `→ more · ←→ scroll` hint now shows at the bottom-right exactly while a line is cut and
+  you have not yet scrolled, and disappears both when it fits and once you start scrolling.
+  Found by driving the new two-service diff at 78 columns.
+
 ## [0.72.0] — 2026-07-21
 
 ### Added

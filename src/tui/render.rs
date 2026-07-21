@@ -1894,6 +1894,20 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
             } else {
                 String::new()
             })
+            // Discoverability: a diff or a bulk-result line wider than the pane
+            // is cut at the edge, and until v0.73 nothing said it could scroll —
+            // the ← indicator only appeared AFTER you had already scrolled, which
+            // you had no reason to try. Announce it while it is still relevant.
+            .title_bottom(
+                Line::from(
+                    if app.viewer_hscroll == 0 && viewer_overflows(app, area.width) {
+                        " →  more · ←→ scroll ".to_string()
+                    } else {
+                        String::new()
+                    },
+                )
+                .right_aligned(),
+            )
     };
 
     // A collection is a LIST with a highlighted row; everything else is prose.
@@ -1936,6 +1950,18 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
 /// Each collection is one screen — see it, add to it, delete from it — so the
 /// screen says which keys do that. These were separate menu entries: findable,
 /// but disconnected from the thing they act on.
+/// Is any viewer line wider than the pane? Then content is cut at the right edge
+/// and horizontal scroll is worth advertising.
+///
+/// Counted in characters against the inner width (the two borders removed). The
+/// hscroll offset is added back so the answer stays true as you scroll: a line
+/// long enough to still overflow at column 40 must keep saying there is more.
+pub(super) fn viewer_overflows(app: &App, area_width: u16) -> bool {
+    let inner = area_width.saturating_sub(2) as usize;
+    let reach = inner + app.viewer_hscroll as usize;
+    app.viewer_lines.iter().any(|l| l.chars().count() > reach)
+}
+
 pub(super) fn viewer_actions(app: &App) -> String {
     use super::worker::View;
     match app.viewer_ctx.as_ref().map(|(v, ..)| *v) {

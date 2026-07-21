@@ -5142,3 +5142,62 @@ fn comparing_across_hosts_asks_the_event_loop_to_resolve_the_target_token() {
     assert!(app.diff_across_req.is_none());
     assert!(app.status.contains("Choose"), "{}", app.status);
 }
+
+#[test]
+fn a_viewer_advertises_horizontal_scroll_only_when_a_line_overflows() {
+    use super::render::viewer_overflows;
+    let mut app = App::new("s".into(), vec![]);
+    app.viewer_lines = vec![
+        "short".into(),
+        "a line that is definitely wider than a narrow pane will ever be".into(),
+    ];
+    // Inner width = area_width - 2. At 30 cols the long line overflows.
+    assert!(viewer_overflows(&app, 30));
+    // At a width that fits every line, nothing to advertise.
+    assert!(!viewer_overflows(&app, 200));
+
+    // The offset is added back: once scrolled far enough that the reach clears
+    // the longest line, there is no longer more to show.
+    let longest = app
+        .viewer_lines
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap();
+    app.viewer_hscroll = 0;
+    assert!(viewer_overflows(&app, 30)); // inner 28 < longest
+    app.viewer_hscroll = longest as u16; // reach 28 + longest > longest
+    assert!(!viewer_overflows(&app, 30));
+}
+
+#[test]
+fn the_diff_footer_shows_the_scroll_hint_at_a_narrow_width() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer_title = "Diff".into();
+    app.viewer_lines =
+        vec!["source.image   ghcr.io/acme/a-very-long-image-name:latest  →  other/thing:v2".into()];
+    let footer = |app: &mut App, w: u16| {
+        let mut t = Terminal::new(TestBackend::new(w, 8)).unwrap();
+        t.draw(|f| ui(f, app)).unwrap();
+        t.backend()
+            .buffer()
+            .content()
+            .chunks(w as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // Narrow: the line is cut, so the hint is shown.
+    assert!(
+        footer(&mut app, 50).contains("scroll"),
+        "no scroll hint when cut"
+    );
+    // Wide: it fits, so no hint clutters the footer.
+    assert!(
+        !footer(&mut app, 120).contains("scroll"),
+        "hint shown when it fits"
+    );
+}
