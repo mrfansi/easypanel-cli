@@ -7,3 +7,6 @@
 # Artefak tooling agent
 .omc/
 .superpowers/
+.claude/
+CLAUDE.md
+graphify-out/
