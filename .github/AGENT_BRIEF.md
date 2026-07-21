@@ -324,6 +324,29 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### Backup/restore clarity — restore now names the database; bulk backup already exists (2026-07-21)
+
+Owner confusion, from the cross-host restore screen: "I can't tell what databases
+are in each backup, and why is multi-database backup one-by-one?" Ground truth of
+the EasyPanel backup model (already in backup.rs docs): a database SERVICE holds
+several DATABASES (schemas); backups are PER-DATABASE (`createDatabaseBackup`/
+`restoreDatabaseBackup` take `databaseName`); the action `meta` carries
+`databaseName` + `path`.
+
+- **Fixed v0.79.2:** the "restore from another server" list (`history_all`, worker
+  ~L1026 + header app.rs ~L977) showed When/From(project/service)/File but DROPPED
+  the database — so every backup of one service read identically. Added a Database
+  column. The single-service restore (`BackupFile::row()`) already showed it.
+- **Bulk BACKUP already exists — tell the owner, don't rebuild:** "Backup now" opens
+  a database picker whose row 0 is "All N databases" (backup_ui.rs:66), enumerated
+  via a `SHOW DATABASES`-style listing (`backup::parse_databases`). Tick individual
+  databases or pick All. So the multiple backup rows ARE the result of one "All"
+  backup, one file per schema.
+- **Bulk RESTORE is still one-at-a-time** (one `pending_restore`). A real follow-up
+  feature if wanted: multi-select restore (tick several files → restore each). With
+  the database names now visible, picking the right ones one-by-one is at least
+  unambiguous. Medium; heavier blast radius (writes), verify on zzz-* first.
+
 ### App god-struct extractions — TermUi done (2026-07-21), next candidates ranked
 
 The App struct (~70 fields) is being shrunk one cohesive UI-state cluster at a
