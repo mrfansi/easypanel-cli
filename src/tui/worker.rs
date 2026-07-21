@@ -960,7 +960,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 }
             };
             let names = match cmd {
-                Some(c) => match super::terminal::run_once(client, &project, &service, &c) {
+                Some(c) => match crate::container::run_once(client, &project, &service, &c) {
                     Ok(out) => {
                         let n = crate::backup::parse_databases(&out);
                         if n.is_empty() {

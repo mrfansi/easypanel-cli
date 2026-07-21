@@ -176,7 +176,7 @@ fn resource_body_parses_numbers_defaults_zero_and_rejects_junk() {
 
 #[test]
 fn base64_matches_known_values() {
-    use super::terminal::base64;
+    use crate::container::base64;
     assert_eq!(base64(b"sh"), "c2g="); // the container shell we use
     assert_eq!(base64(b""), "");
     assert_eq!(base64(b"M"), "TQ==");
@@ -1857,7 +1857,7 @@ fn terminal_ws_roundtrip_live() {
     let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
     let srv = cfg.default().expect("a default server exists");
     let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
-    let url = super::terminal::ws_url(&client, "zzz-emb", "zzz-redis", "sh").expect("ws_url");
+    let url = crate::container::ws_url(&client, "zzz-emb", "zzz-redis", "sh").expect("ws_url");
 
     let (out_tx, out_rx) = channel::<Resp>();
     let (in_tx, in_rx) = channel::<super::terminal::TermMsg>();
@@ -4887,7 +4887,7 @@ fn a_viewer_says_what_is_there_and_what_is_not() {
 
 #[test]
 fn a_failed_terminal_connection_never_prints_the_url_it_tried() {
-    use super::terminal::connect_failure;
+    use crate::container::connect_failure;
     use tungstenite::error::UrlError;
     // The WebSocket URL carries ?token={api token}, and for a database shell the
     // base64 of a command containing the root password. tungstenite renders this

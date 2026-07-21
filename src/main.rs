@@ -2,6 +2,7 @@ mod backup;
 mod client;
 mod commands;
 mod config;
+mod container;
 mod credentials;
 mod domains;
 mod lifecycle;

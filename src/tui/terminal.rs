@@ -16,13 +16,11 @@
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{json, Value};
-use tungstenite::stream::MaybeTlsStream;
 use tungstenite::Message;
 
-use crate::client::EasypanelClient;
+use crate::container::{connect_failure, set_read_timeout};
 
 use super::worker::Resp;
 
@@ -47,131 +45,6 @@ pub(super) struct TermUi {
     pub(super) input: Option<Sender<TermMsg>>,
     /// The terminal pane title (project/service).
     pub(super) title: String,
-}
-
-/// Resolve the running container ID for a service (swarm name
-/// "{project}_{service}"), then build its terminal WebSocket URL. `command` is
-/// what to run inside the container (e.g. "sh" for a shell, or a mysql command
-/// for a database shell) — the server wraps it with `docker exec -it … /bin/sh -c`.
-pub(super) fn ws_url(
-    client: &EasypanelClient,
-    project: &str,
-    service: &str,
-    command: &str,
-) -> Result<String> {
-    let containers = client.call(
-        "projects",
-        "getDockerContainers",
-        json!({ "service": format!("{project}_{service}") }),
-    )?;
-    let cid = containers
-        .as_array()
-        .and_then(|a| {
-            a.iter()
-                .find(|c| c.get("State").and_then(Value::as_str) == Some("running"))
-        })
-        .and_then(|c| c.get("Id").and_then(Value::as_str))
-        .ok_or_else(|| anyhow!("No running container for {project}/{service}"))?;
-    let wss = client
-        .url()
-        .trim_end_matches('/')
-        .replacen("https://", "wss://", 1)
-        .replacen("http://", "ws://", 1);
-    Ok(format!(
-        "{wss}/ws/containerShell?container={cid}&command={}&token={}",
-        base64(command.as_bytes()),
-        client.token()
-    ))
-}
-
-/// Why a terminal could not connect, WITHOUT the URL it tried.
-///
-/// The URL carries `?token={api token}` and, for a database shell, the base64 of
-/// a command containing the root password. tungstenite's `Error::Url` renders as
-/// "Unable to connect to {the whole URI}", and that was formatted straight into
-/// the status line — so any panel outage, wrong port or firewalled host printed
-/// the API token on screen and left it in the terminal's scrollback, ready to be
-/// screenshotted into a bug report.
-///
-/// Only that one variant carries the URI; `Io`, `Http` and `Protocol` do not, so
-/// their messages (which are the useful ones) pass through untouched.
-pub(super) fn connect_failure(e: &tungstenite::Error) -> String {
-    match e {
-        tungstenite::Error::Url(_) => "could not reach the panel".to_string(),
-        other => other.to_string(),
-    }
-}
-
-/// Standard base64 (with padding). Hand-written — the encoding is trivial, no
-/// need to add a dependency. Used for the terminal WebSocket's `command` parameter.
-pub(super) fn base64(input: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let n = ((chunk[0] as u32) << 16)
-            | ((*chunk.get(1).unwrap_or(&0) as u32) << 8)
-            | (*chunk.get(2).unwrap_or(&0) as u32);
-        out.push(T[((n >> 18) & 63) as usize] as char);
-        out.push(T[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            T[((n >> 6) & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            T[(n & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
-/// Run ONE command in a container and return what it printed.
-///
-/// The interactive session in `spawn_session` is a long-lived conversation; this
-/// is the opposite — connect, let the command run, collect, close. It exists so
-/// the tool can ask a database engine what schemas it holds, which no EasyPanel
-/// endpoint will tell you.
-///
-/// Output stops being collected after `quiet` with nothing new, so a command that
-/// hangs (a database still starting) returns what it managed to say instead of
-/// blocking the worker forever.
-pub(super) fn run_once(
-    client: &EasypanelClient,
-    project: &str,
-    service: &str,
-    command: &str,
-) -> Result<String> {
-    const QUIET: Duration = Duration::from_millis(1200);
-    const CAP: Duration = Duration::from_secs(20);
-
-    let url = ws_url(client, project, service, command)?;
-    let (mut ws, _) = tungstenite::connect(&url)?;
-    set_read_timeout(&mut ws, Duration::from_millis(200));
-    let (start, mut last) = (std::time::Instant::now(), std::time::Instant::now());
-    let mut out = String::new();
-    while start.elapsed() < CAP && last.elapsed() < QUIET {
-        match ws.read() {
-            Ok(Message::Text(t)) => {
-                if let Some(o) = serde_json::from_str::<Value>(&t)
-                    .ok()
-                    .and_then(|v| v.get("output").and_then(Value::as_str).map(String::from))
-                {
-                    out.push_str(&o);
-                    last = std::time::Instant::now();
-                }
-            }
-            Ok(Message::Close(_)) => break,
-            Ok(_) => {}
-            // A read timeout is the normal quiet case, not a failure.
-            Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(_) => break,
-        }
-    }
-    let _ = ws.close(None);
-    Ok(out)
 }
 
 /// The shell command that opens a service's database client using its already
@@ -315,20 +188,6 @@ pub(super) fn spawn_session(
 
 fn resize_msg(cols: u16, rows: u16) -> Message {
     Message::Text(json!({ "resize": [cols, rows] }).to_string())
-}
-
-fn set_read_timeout(
-    ws: &mut tungstenite::WebSocket<MaybeTlsStream<std::net::TcpStream>>,
-    dur: Duration,
-) {
-    let stream = match ws.get_ref() {
-        MaybeTlsStream::Plain(s) => Some(s),
-        MaybeTlsStream::Rustls(s) => Some(s.get_ref()),
-        _ => None,
-    };
-    if let Some(s) = stream {
-        let _ = s.set_read_timeout(Some(dur));
-    }
 }
 
 /// Encode a KeyEvent into bytes to send to the shell (xterm encoding).

@@ -408,7 +408,7 @@ fn event_loop(
                         }
                         None => "sh".to_string(),
                     };
-                    match terminal::ws_url(&client, &project, &service, &command) {
+                    match crate::container::ws_url(&client, &project, &service, &command) {
                         Ok(url) => {
                             let (cols, rows) =
                                 ratatui::crossterm::terminal::size().unwrap_or((80, 24));
@@ -471,7 +471,10 @@ fn event_loop(
         // through tmux (set-clipboard on) — the terminals this tool lives in.
         if let Some(text) = app.clipboard.take() {
             use std::io::Write;
-            let seq = format!("\x1b]52;c;{}\x07", terminal::base64(text.as_bytes()));
+            let seq = format!(
+                "\x1b]52;c;{}\x07",
+                crate::container::base64(text.as_bytes())
+            );
             let mut out = std::io::stdout();
             let _ = out.write_all(seq.as_bytes());
             let _ = out.flush();
