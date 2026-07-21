@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.76.0] — 2026-07-21
+
+### Fixed
+
+- **A wildcard domain now shows its `*.` prefix.** EasyPanel stores `*.edu.example` as
+  `{ host: "edu.example", wildcard: true }` — the star is a separate flag, not part of the
+  host — and the tool was ignoring that flag. So a wildcard domain and its apex rendered
+  **identically** (`https://edu.example/` for both): two genuinely different routes that
+  looked like one duplicate row, on the screen you go to precisely to tell domains apart.
+  A wildcard host now reads `https://*.edu.example/`, matching the panel's own UI. The fix
+  is in `domain_source`, so it flows to the TUI Domains screen, the CLI `domain list`, the
+  cross-host domain diff, and `project export` at once. Found by driving the live host.
+
 ## [0.75.0] — 2026-07-21
 
 ### Added

@@ -74,14 +74,26 @@ pub fn is_orphan(d: &Value, services: Option<&HashSet<(String, String)>>) -> boo
 // is. They are the domain's own vocabulary: both surfaces now depend on this
 // context instead of on each other.
 
-/// Domain source: "https://host/path".
+/// Domain source: "https://host/path", with a "*." in front of a wildcard host.
+///
+/// EasyPanel stores `*.edu.example` as `{ host: "edu.example", wildcard: true }`
+/// — the star is a separate flag, not part of the host. Ignoring it renders a
+/// wildcard and its apex identically ("https://edu.example/" for both), so two
+/// different routes look like one duplicate. The panel's own UI shows the star;
+/// so does this now.
 pub fn domain_source(d: &Value) -> String {
     let scheme = if d.get("https").and_then(Value::as_bool).unwrap_or(false) {
         "https"
     } else {
         "http"
     };
-    format!("{scheme}://{}{}", field(d, "/host"), field(d, "/path"))
+    let host = field(d, "/host");
+    let host = if d.get("wildcard").and_then(Value::as_bool).unwrap_or(false) {
+        format!("*.{host}")
+    } else {
+        host
+    };
+    format!("{scheme}://{host}{}", field(d, "/path"))
 }
 
 /// Domain destination: an internal service, or a list of custom servers with their weights.
@@ -268,6 +280,26 @@ mod tests {
         assert_eq!(
             domain_source(&json!({ "https": false, "host": "a.test", "path": "/" })),
             "http://a.test/"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_host_shows_its_star_prefix() {
+        // EasyPanel stores *.edu.example as { host: "edu.example", wildcard: true }.
+        // Without the star, a wildcard and its apex render identically — two
+        // different routes that look like one.
+        assert_eq!(
+            domain_source(
+                &json!({ "https": true, "host": "edu.example", "path": "/", "wildcard": true })
+            ),
+            "https://*.edu.example/"
+        );
+        // A non-wildcard host keeps its bare name.
+        assert_eq!(
+            domain_source(
+                &json!({ "https": true, "host": "edu.example", "path": "/", "wildcard": false })
+            ),
+            "https://edu.example/"
         );
     }
 
