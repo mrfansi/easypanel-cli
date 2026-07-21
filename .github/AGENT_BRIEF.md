@@ -462,13 +462,15 @@ already call, which is why they are ideas rather than probes.
   only one side plus per-service drift counts, two inspectProject calls). env by key,
   values never shown, order-independent. Fully shipped.
 
-- **Export a project's config to a file, and apply it back.** The tool already reads a
-  whole project's config (migrate does exactly this, in memory, host-to-host). Writing it
-  to a YAML/JSON file that can be committed to git — and applying that file to a host —
-  turns migrate into GitOps-lite for a panel that has no export and no import at all.
-  Medium-to-large: needs a stable file schema, an apply that is idempotent, and a careful
-  story about what it will NOT carry (data, secrets the API does not return). Verify the
-  round-trip against a `zzz-*` project before believing it.
+- ~~**Export a project's config to a file**~~ EXPORT done in v0.75.0 (`project export`) —
+  redacted, stable, git-committable JSON; env keys only, token dropped, secret fields
+  masked, volatile per-deploy noise excluded. **APPLY (import) is still open and is the
+  valuable-but-risky half.** To build it, first probe: the export omits env VALUES and
+  secrets by design, so an apply cannot recreate them — decide whether apply (a) only
+  touches non-secret config (source/build/deploy/resources/domains/ports/mounts) and
+  leaves env/secrets alone, or (b) takes a separate secrets file. Must be idempotent
+  (updateX not createX where the service exists) and verified round-trip on a zzz-* project
+  before trust. Medium-to-large.
 
 - **Watch mode: turn crash visibility into an actual alert.** The tool already knows when
   a service is `down` (Swarm replicas missing) — that is the hard part, and it is done.
