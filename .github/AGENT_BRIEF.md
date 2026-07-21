@@ -457,9 +457,10 @@ already call, which is why they are ideas rather than probes.
   among seven hundred is exactly what a person cannot find. **Measure before you build**:
   the number changed the design (a quiet mark and a count, not a whole screen).
 
-- ~~**Diff two services**~~ done in v0.71.0 (same host, mark two) and v0.72.0 (across
-  hosts, "Compare with another host"). env by key, values never shown, order-independent.
-  Fully shipped.
+- ~~**Diff two services**~~ done in v0.71.0 (same host, mark two), v0.72.0 (one service
+  across hosts), and v0.74.0 (WHOLE project across hosts — surfaces services present on
+  only one side plus per-service drift counts, two inspectProject calls). env by key,
+  values never shown, order-independent. Fully shipped.
 
 - **Export a project's config to a file, and apply it back.** The tool already reads a
   whole project's config (migrate does exactly this, in memory, host-to-host). Writing it
