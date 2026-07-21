@@ -76,19 +76,30 @@ pub fn dump_command(
     // `tmp_file` ends in .gz; mysqldump writes the .sql, then `gzip` produces the .gz.
     // `--set-gtid-purged=OFF` also silences mysqldump's GTID warning, so nothing is
     // written to stderr on success — important because the container shell is a PTY
-    // and a stray write racing our read can EAGAIN. Kept SHORT and flat: the command
-    // travels in the containerShell URL, and a longer/braced form was truncated
-    // ("syntax error: unexpected end of file"), so no `{ } / ( ) / [ ]` wrappers.
+    // and a stray write racing our read can EAGAIN.
     let sql_file = tmp_file.strip_suffix(".gz").unwrap_or(tmp_file);
-    Some(format!(
+    let work = format!(
         "MYSQL_PWD='{pw}' {tool} -uroot --databases {dbs} \
          --single-transaction --quick --routines --triggers --events {extra} > '{sql}' \
-         && gzip -f '{sql}' && curl -sfS -T '{gz}' '{url}' && rm -f '{gz}'",
+         && gzip -f '{sql}' && curl -sfS -T '{gz}' '{url}'",
         pw = sh_quote(root_password),
         sql = sql_file,
         gz = tmp_file,
         url = presigned_put_url,
-    ))
+    );
+    Some(cleanup(&work, sql_file, tmp_file))
+}
+
+/// Wrap an in-container command so its temp files are removed WHATEVER happens —
+/// on a failed upload the gzip (~the dump's compressed size) would otherwise sit in
+/// the container's `/tmp` forever. The command's real exit status is preserved for
+/// [`crate::container::run_until_done`]'s marker: `(exit $ec)` sets `$?` without
+/// ending the shell, so `rm` between them can't mask a dump/curl failure.
+///
+/// Safe to brace/subshell now that commands travel as WebSocket INPUT (v0.82.0), not
+/// baked into the connection URL where a long one used to be truncated.
+fn cleanup(work: &str, a: &str, b: &str) -> String {
+    format!("{work}; ec=$?; rm -f '{a}' '{b}' 2>/dev/null; (exit $ec)")
 }
 
 /// The download+import command for a dump this tool wrote. Buffers the object to
@@ -110,14 +121,15 @@ pub fn restore_command(
     // `gunzip -c | mysql`. Same reason as the dump: a pipe through the container
     // PTY hits EAGAIN on a real-sized stream. `tmp_file` is the `.sql.gz`.
     let sql_file = tmp_file.strip_suffix(".gz").unwrap_or(tmp_file);
-    Some(format!(
+    let work = format!(
         "curl -sfS '{url}' -o '{gz}' && gunzip -f '{gz}' \
-         && MYSQL_PWD='{pw}' {client} -uroot < '{sql}' && rm -f '{sql}'",
+         && MYSQL_PWD='{pw}' {client} -uroot < '{sql}'",
         pw = sh_quote(root_password),
         gz = tmp_file,
         sql = sql_file,
         url = presigned_get_url,
-    ))
+    );
+    Some(cleanup(&work, sql_file, tmp_file))
 }
 
 #[cfg(test)]
@@ -172,14 +184,15 @@ mod tests {
             !cmd.contains("| gzip"),
             "no pipe into gzip (PTY corrupts it)"
         );
-        // Flat and unbraced: the command travels in the containerShell URL and a
-        // braced/subshell form was truncated ("unexpected end of file").
-        for wrapper in ["{ ", "( exit", "] || "] {
-            assert!(
-                !cmd.contains(wrapper),
-                "keep the command flat: found {wrapper:?}"
-            );
-        }
+        // Temp files are removed WHATEVER happens (a failed upload must not leave the
+        // gzip in the container's /tmp), and the real exit status is preserved so a
+        // failure still surfaces — the cleanup sits AFTER the work, not `&&`-chained.
+        assert!(cmd.contains("; ec=$?; rm -f '/tmp/ezp-dump.sql' '/tmp/ezp-dump.sql.gz'"));
+        assert!(
+            cmd.trim_end().ends_with("(exit $ec)"),
+            "exit status preserved"
+        );
+        assert!(!cmd.contains("&& rm"), "cleanup must not depend on success");
         // The password is single-quote-escaped, not raw.
         assert!(cmd.contains("MYSQL_PWD='p@ss'\\''w'"));
     }
@@ -201,6 +214,9 @@ mod tests {
         assert!(dl < imp, "download fully before importing");
         // Feed mysql from a file, not `gunzip -c | mysql` (PTY corrupts a pipe).
         assert!(!cmd.contains("| mysql") && !cmd.contains("| MYSQL_PWD"));
+        // Temp files cleaned whatever happens, exit status preserved.
+        assert!(cmd.contains("; ec=$?; rm -f '/tmp/r.sql' '/tmp/r.sql.gz'"));
+        assert!(cmd.trim_end().ends_with("(exit $ec)"));
     }
 
     #[test]

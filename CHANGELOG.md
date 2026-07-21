@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.82.1] — 2026-07-22
+
+### Fixed
+
+- **A failed dump or restore no longer leaves its temp file in the container.** The
+  dump buffers to the container's `/tmp` and removed that file with `&& rm` — which
+  runs only if every step *succeeded*. So a **failed upload** (the exact case that
+  hangs least gracefully) left the gzip, roughly the dump's compressed size, sitting
+  in `/tmp` — and repeated failures could fill it. Cleanup now runs whatever happens
+  (`…; ec=$?; rm -f <files>; (exit $ec)`), and the command's real exit status is
+  preserved so a genuine failure still surfaces. The database itself was, and stays,
+  never touched — the dump only reads it. (Now safe to write this way because commands
+  travel as WebSocket input since 0.82.0, not baked into the length-limited URL.)
+
 ## [0.82.0] — 2026-07-22
 
 ### Fixed
