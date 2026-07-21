@@ -324,6 +324,25 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### first_line ate meaningful indentation — fixed v0.79.0 (2026-07-21)
+
+Owner (on a 118-service host) reported the Monitor table read as a FLAT list — no
+project→service hierarchy. Root cause was NOT the Monitor code: `output::first_line`
+(the shared cell truncator that `render_table` runs on every flexible column) did a
+full `.trim()`, eating the two-space indent `monitor_rows` puts on a service. So the
+indent was stripped at RENDER time even though the data had it — and the Services
+tab kept its indent only because `render_projects` runs first_line on the Source
+column, not the name. Fix: `first_line` trims trailing only (leading whitespace is
+indentation). Plus project-header rows now bold-cyan on BOTH tables (Monitor: detect
+by un-indented name; Services: by the `Line2::Project` type — NEVER by an indent
+test, since a marked service is `✓ name` not `  name`). Tests: first_line preserves
+leading space; a render test asserts a Monitor service is indented.
+
+**Class:** a shared display helper that `.trim()`s destroys any caller's deliberate
+leading whitespace. If a table ever needs an indent/tree, check that the truncator
+in its path preserves it. Grep other `.trim()` in the render/output path if a
+future alignment looks flattened.
+
 ### Empty-vs-failed CLASS — now closed across the screens that mattered (v0.78.1 + v0.78.2)
 
 An adversarial fan-out audit (one code-reviewer agent over all 8 data screens)
