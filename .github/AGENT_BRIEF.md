@@ -324,6 +324,21 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### Bulk resource limits — shipped v0.78.0 (2026-07-21)
+
+Owner tried to bulk-update resource limits (37 marked services on prod) and there
+was no such menu entry — single-service `L` only. Built it: mark (`v`/`V`) → action
+menu → "Set resource limits on N marked" → one resource form → applied to each via
+its own `services/{stype}/updateResources`. New `FormKind::BulkResourceEdit` (no
+target; marked set read at submit via `bulk_targets()`), `Req::BulkResource`,
+worker `bulk_resource()` reusing `Resp::BulkDone` for the per-item pass/fail
+report. Menu entry gated on `has_resource_limits` so it never opens a no-op form;
+compose types are reported by name, not silently skipped. Verified live on a
+throwaway (cpuLimit=0.5/memLimit=512 onto 3 app services in one submit, confirmed
+via inspectService, torn down). Pattern to reuse for the NEXT bulk-config request
+(bulk env? bulk basic-auth?): form → resolve `bulk_targets()` at submit → worker
+loop → `BulkDone`. updateResources only stores config; a deploy applies it.
+
 ### README screenshots — reproducible pipeline, use demo data (2026-07-21)
 
 Directive-6 README work. There is NO screenshot tool on this box (no freeze,
