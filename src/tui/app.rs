@@ -1228,7 +1228,7 @@ impl App {
     /// from the unfiltered list and the title never showed a count, so the filter
     /// was both inert and invisible.
     pub(super) fn visible_storage_rows(&self) -> Vec<Vec<String>> {
-        commands::storage_rows(&self.storage)
+        crate::monitor::storage_rows(&self.storage)
             .into_iter()
             .filter(|r| keep(r, &self.filter))
             .collect()
@@ -1260,7 +1260,7 @@ impl App {
     /// SEE kept filtering flat, so fixing the other one changed nothing on screen.
     /// Built once here, so both the rows and the count come from the same pass.
     pub(super) fn monitor_table(&self) -> (Vec<Vec<String>>, usize) {
-        let all = commands::monitor_rows(&self.monitor);
+        let all = crate::monitor::monitor_rows(&self.monitor);
         let total = all.len();
         if self.filter.is_empty() {
             return (all, total);
@@ -1910,7 +1910,7 @@ impl App {
                     "Disk      {}",
                     pair("/diskUsedBytes", "/diskTotalBytes")
                 ));
-                lines.push(format!("Load      {}", commands::load_avg(v)));
+                lines.push(format!("Load      {}", crate::monitor::load_avg(v)));
             }
         }
         self.viewer_title = format!("Host · {}", h.name);

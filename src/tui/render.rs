@@ -569,7 +569,7 @@ pub(super) fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(format!(
             " {} cores — load {}",
             field(&stats, "/cpuCores"),
-            commands::load_avg(&stats)
+            crate::monitor::load_avg(&stats)
         )),
         left[3],
     );
@@ -1206,7 +1206,7 @@ pub(super) fn render_hosts(f: &mut Frame, area: Rect, app: &mut App) {
                             // it's three strings, the 1/5/15-minute averages.
                             // series_last() looks for p[1] at each point, doesn't
                             // find it, then returns 0.00 — a convincing wrong number.
-                            commands::load_avg(v),
+                            crate::monitor::load_avg(v),
                             h.url.clone(),
                         ],
                         // A healthy host needn't draw attention.
@@ -1489,7 +1489,7 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
                 f,
                 rows[1],
                 title,
-                &commands::MONITOR_HEADERS,
+                &crate::monitor::MONITOR_HEADERS,
                 &[
                     Constraint::Min(20),
                     Constraint::Length(9),
@@ -1505,7 +1505,7 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
         }
         MonitorView::Storage => {
             let data = app.visible_storage_rows();
-            let total = commands::storage_rows(&app.storage).len();
+            let total = crate::monitor::storage_rows(&app.storage).len();
             render_table(
                 f,
                 rows[1],
@@ -1513,7 +1513,7 @@ pub(super) fn render_monitor(f: &mut Frame, area: Rect, app: &mut App) {
                     "{}· [v] Services ",
                     count_title("Storage", data.len(), total, app)
                 ),
-                &commands::STORAGE_HEADERS,
+                &crate::monitor::STORAGE_HEADERS,
                 &[
                     Constraint::Length(20),
                     Constraint::Length(18),
@@ -1719,9 +1719,9 @@ pub(super) fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
                 format!(
                     "{} cores — load {}",
                     field(&s, "/cpuCores"),
-                    commands::load_avg(&s)
+                    crate::monitor::load_avg(&s)
                 ),
-                format!("load {}", commands::load_avg(&s)),
+                format!("load {}", crate::monitor::load_avg(&s)),
                 format!("{} cores", field(&s, "/cpuCores")),
             ],
             series_percent(&s, "cpu", 60),

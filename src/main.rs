@@ -6,6 +6,7 @@ mod domains;
 mod lifecycle;
 mod logs;
 mod migrate;
+mod monitor;
 mod output;
 mod services;
 mod source;
