@@ -981,6 +981,21 @@ impl App {
                 self.status = "Backing up...".into();
                 return;
             }
+            // A non-locking dump of ALL the chosen databases into ONE file, straight
+            // to object storage — a single request, unlike native backup's one-per-db.
+            "r2dump" => {
+                let databases = std::mem::take(&mut self.backups.pending);
+                if databases.is_empty() {
+                    return;
+                }
+                let _ = req.send(Req::DumpR2 {
+                    project: c.project,
+                    service: c.service,
+                    databases,
+                });
+                self.status = "Dumping (non-locking) to object storage…".into();
+                return;
+            }
             "restore" => match self.backups.pending_restore.take() {
                 Some((database, provider, path)) => req.send(Req::RestoreBackup {
                     project: c.project,

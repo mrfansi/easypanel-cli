@@ -407,6 +407,16 @@ impl App {
         // rather than an error, so the entry used to open an empty box on every
         // service in the panel and explain nothing.
         if crate::backup::can_back_up(&stype) {
+            // A NON-LOCKING dump straight to object storage — one file for several
+            // databases, restorable on a host that never had them. Only mysql/mariadb
+            // for now: it uploads with `curl` from inside the container, and those
+            // images ship it while the postgres image does not.
+            if matches!(stype.as_str(), "mysql" | "mariadb") {
+                v.push(MenuItem::new(
+                    "Dump now (non-locking) → object storage",
+                    |a, r| a.dump_r2_now(r),
+                ));
+            }
             v.push(MenuItem::new("Backup now", |a, r| a.backup_now(r)));
             v.push(MenuItem::new("Restore from a backup", |a, r| {
                 a.open_restore(r)

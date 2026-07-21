@@ -324,6 +324,26 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### DONE v0.81.0 (2026-07-22): the non-locking dump is now in the TUI too
+
+v0.80.0 shipped `db dump`/`db restore` CLI-only; the TUI still offered EasyPanel's
+locking native backup (owner noticed the gap). Closed: the dump/restore
+orchestration is now a shared `commands::dump_to_r2` (used by both the CLI and a new
+`worker::Req::DumpR2`), and a mysql/mariadb service's **Storage ▸** menu has "Dump
+now (non-locking) → object storage" above "Backup now". Reuses the existing database
+picker via a `BackupUi.r2_mode` flag (confirm action `"r2dump"`). Verified live from
+the TUI: dumped two seeded databases into one R2 file with the row intact.
+
+**TOP NEXT ITEM — restore an R2 dump from the TUI (close the other half).** The TUI
+can now DUMP to R2 but can only RESTORE via the CLI, which is the asymmetry to
+finish. It needs: (a) list the tool's own dumps — there's no EasyPanel endpoint, so
+sign an S3 `ListObjectsV2` for prefix `{project}/{service}-` (extend `s3::presign`
+to take extra query params, or header-sign; fetch with reqwest, regex the `<Key>`s);
+(b) a picker → confirm → a new `worker::Req::RestoreR2` calling a shared
+`commands::restore_from_r2` (extract it from `db_restore` the same way `dump_to_r2`
+was extracted); (c) a "Restore from an object-storage dump" menu entry. Mirror the
+dump side exactly. Mysql/mariadb only (curl).
+
 ### DONE v0.80.0 (2026-07-21): a non-locking DB dump straight to R2 — SHIPPED
 
 **Built and verified live end-to-end.** `easypanel db dump` / `db restore`

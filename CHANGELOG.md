@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.81.0] — 2026-07-22
+
+### Added
+
+- **The non-locking dump to object storage is now in the TUI, not just the CLI.**
+  v0.80.0 added `db dump`/`db restore` but only wired them into the CLI — so an
+  operator working in the TUI still got EasyPanel's native backup, the one that
+  **locks the running database**. That gap is closed: a mysql/mariadb service's
+  **Storage ▸** menu now offers **"Dump now (non-locking) → object storage"** right
+  above the native "Backup now". It reuses the same database picker (tick one, some,
+  or *All*), then dumps every chosen database into ONE gzip file straight to your
+  remote storage provider — non-locking, one request instead of one-per-database.
+  The dump/restore orchestration is now shared between the CLI and the TUI so the
+  two surfaces can't drift again. Verified live: dumped two seeded databases from
+  the TUI into a single file on R2 and confirmed the table and its row were in it.
+
+  (Restoring one of these dumps from the TUI is the next step — for now use
+  `easypanel db restore`; the TUI's existing restore paths cover EasyPanel's own
+  backups. The dump is mysql/mariadb only: it uploads with `curl` from inside the
+  container, which those images ship and the postgres image does not.)
+
 ## [0.80.0] — 2026-07-21
 
 ### Added

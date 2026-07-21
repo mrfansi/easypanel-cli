@@ -188,6 +188,14 @@ pub(super) enum Req {
         provider: String,
         path: String,
     },
+    /// Non-locking dump of the chosen databases straight to object storage — the
+    /// same path as the CLI `db dump`, so the TUI is not stuck on the old locking
+    /// backup. Databases already chosen in the picker.
+    DumpR2 {
+        project: String,
+        service: String,
+        databases: Vec<String>,
+    },
     /// All services across projects in a single call.
     AllServices,
     /// Load a project's services for a form dropdown (not the Projects panel).
@@ -1092,6 +1100,24 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 Err(e) => Resp::Err(format!("Restore failed: {e}")),
             }
         }
+        Req::DumpR2 {
+            project,
+            service,
+            databases,
+        } => match crate::commands::dump_to_r2(client, &project, &service, &databases, false, None)
+        {
+            Ok(d) => Resp::Done(
+                format!(
+                    "Dumped {} database(s) → {}/{} ({}), non-locking",
+                    d.databases.len(),
+                    d.bucket,
+                    d.key,
+                    d.provider
+                ),
+                Refresh::None,
+            ),
+            Err(e) => Resp::Err(e.to_string()),
+        },
         Req::LogSearch { query } => log_search(client, &query),
         Req::Repos => Resp::Repos(github_repos(client)),
         Req::ConfigForm {

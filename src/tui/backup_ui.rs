@@ -48,6 +48,10 @@ pub(super) struct BackupUi {
     pub(super) provider: Option<(String, String)>,
     /// The databases a confirmation is about to back up.
     pub(super) pending: Vec<String>,
+    /// True when the picker is for a NON-LOCKING dump straight to object storage
+    /// (`db dump`), false for EasyPanel's native per-database backup. Both share
+    /// the same database picker; this decides what the confirmation runs.
+    pub(super) r2_mode: bool,
 
     /// The storage providers this panel has: (id, name, type). EasyPanel exposes
     /// a list but no way to create one, so this is whatever the dashboard

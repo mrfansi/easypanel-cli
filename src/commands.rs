@@ -1300,14 +1300,26 @@ fn service_root_password(
     Ok(pw)
 }
 
-pub fn db_dump(
+/// The result of a completed non-locking dump to object storage.
+pub(crate) struct R2Dump {
+    pub bucket: String,
+    pub key: String,
+    pub provider: String,
+    pub databases: Vec<String>,
+}
+
+/// Run a non-locking dump of a service's databases to the remote storage and
+/// return where it landed. Shared by the CLI (`db dump`) and the TUI worker, so
+/// both surfaces get the identical behaviour instead of the TUI keeping the old
+/// locking path. No I/O of its own — the caller reports progress/results.
+pub(crate) fn dump_to_r2(
     client: &EasypanelClient,
     project: &str,
     service: &str,
     databases: &[String],
     all: bool,
     provider: Option<&str>,
-) -> Result<()> {
+) -> Result<R2Dump> {
     let stype = resolve_db_engine(client, project, service)?;
     let root_password = service_root_password(client, &stype, project, service)?;
     let dbs = resolve_dump_databases(client, project, service, databases, all)?;
@@ -1332,12 +1344,6 @@ pub fn db_dump(
     let cmd = crate::dump::dump_command(&stype, &root_password, &dbs, &tmp, &url)
         .ok_or_else(|| anyhow!("db dump supports mysql/mariadb only"))?;
 
-    println!(
-        "Dumping {} database(s) from {project}/{service} to {} (non-locking)…",
-        dbs.len(),
-        store.name
-    );
-    println!("  {}", dbs.join(", "));
     let run = crate::container::run_until_done(
         client,
         project,
@@ -1352,17 +1358,43 @@ pub fn db_dump(
             .to_string()
     };
     match run.exit_code {
-        Some(0) => {
-            println!("Done → {}/{} ({}).", store.bucket, key, store.name);
-            println!("Restore it with:  easypanel db restore {project} {service} --path {key}");
-            Ok(())
-        }
+        Some(0) => Ok(R2Dump {
+            bucket: store.bucket,
+            key,
+            provider: store.name,
+            databases: dbs,
+        }),
         Some(n) => anyhow::bail!("Dump failed (exit {n}). {}", redact(&run.output)),
         None => anyhow::bail!(
             "Dump did not report completion within 10 min. {}",
             redact(&run.output)
         ),
     }
+}
+
+pub fn db_dump(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    databases: &[String],
+    all: bool,
+    provider: Option<&str>,
+) -> Result<()> {
+    println!("Dumping {project}/{service} to object storage (non-locking)…");
+    let d = dump_to_r2(client, project, service, databases, all, provider)?;
+    println!(
+        "Done → {}/{} ({}) — {} database(s): {}.",
+        d.bucket,
+        d.key,
+        d.provider,
+        d.databases.len(),
+        d.databases.join(", ")
+    );
+    println!(
+        "Restore it with:  easypanel db restore {project} {service} --path {}",
+        d.key
+    );
+    Ok(())
 }
 
 pub fn db_restore(

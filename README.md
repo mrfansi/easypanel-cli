@@ -473,6 +473,11 @@ easypanel db dump vidingco-db mysql --databases studio,billing   # or --all
 easypanel db restore other-host-db mysql --path vidingco-db/mysql-20260721-1530.sql.gz
 ```
 
+In the **TUI** it is a menu item too: a database service's **Storage ▸** menu has
+**"Dump now (non-locking) → object storage"** above the native "Backup now" — pick
+the databases and it does the same thing without leaving the terminal. (Restoring
+one of these dumps is CLI-only for now.)
+
 `db dump` runs `mysqldump --single-transaction` **inside the service container**
 (no lock), gzips it, and uploads it straight to your existing remote storage
 provider (Cloudflare R2, S3, …) with a presigned URL — the data goes

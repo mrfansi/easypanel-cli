@@ -2228,7 +2228,28 @@ impl App {
     }
 
     /// Back the selected database up once, into the panel's storage provider.
+    /// Non-locking dump of the chosen databases straight to object storage — the
+    /// same path as the CLI `db dump`, offered in the TUI so the backup here is not
+    /// stuck on EasyPanel's locking native backup. Reuses the database picker; the
+    /// remote provider is resolved by the worker (a dump must be remote to be
+    /// useful), so unlike `backup_now` it does not pre-pick one.
+    pub(super) fn dump_r2_now(&mut self, req: &Sender<Req>) {
+        let Some((project, service, stype)) = self.selected_row() else {
+            self.status = "Select a database first".into();
+            return;
+        };
+        self.backups.r2_mode = true;
+        self.backups.provider = None;
+        let _ = req.send(Req::DatabasesIn {
+            project,
+            service,
+            stype,
+        });
+        self.status = "Reading the databases in this service...".into();
+    }
+
     pub(super) fn backup_now(&mut self, req: &Sender<Req>) {
+        self.backups.r2_mode = false;
         let Some((project, service, stype)) = self.selected_row() else {
             self.status = "Select a database first".into();
             return;
@@ -2264,8 +2285,15 @@ impl App {
     /// "All databases" leads, because backing up everything is the common intent
     /// and doing it by hand meant repeating the whole flow per schema.
     fn open_backup_picker(&mut self, project: String, service: String, names: Vec<String>) {
-        let Some((_, where_to)) = self.backups.provider.clone() else {
-            return;
+        // A native backup names its provider up front; a non-locking dump resolves
+        // the remote provider later (in the worker), so it has none picked here.
+        let (header_verb, where_to) = if self.backups.r2_mode {
+            ("Dump", "object storage (non-locking, one file)".to_string())
+        } else {
+            match self.backups.provider.clone() {
+                Some((_, w)) => ("Back up", w),
+                None => return,
+            }
         };
         // Nothing to choose from is an answer, not an empty box: it means the
         // engine could not be asked and the panel recorded no database either.
@@ -2275,7 +2303,7 @@ impl App {
         }
         self.backups.names = names;
         self.backups.marked.clear();
-        self.backups.header = format!("Back up from {project}/{service} to {where_to}");
+        self.backups.header = format!("{header_verb} from {project}/{service} to {where_to}");
         self.backups.backup_from = Some((project, service));
         let lines = self.backups.picker_lines();
         self.show_picker("Which database?".into(), lines);
@@ -2310,12 +2338,9 @@ impl App {
         self.status = self.backups.hint();
     }
 
-    /// Confirm the backup of whatever the picker has selected.
+    /// Confirm the backup/dump of whatever the picker has selected.
     pub(super) fn ask_backup(&mut self) {
         let Some((project, service)) = self.backups.backup_from.clone() else {
-            return;
-        };
-        let Some((provider, where_to)) = self.backups.provider.clone() else {
             return;
         };
         let Some(i) = self.picker_row() else {
@@ -2332,12 +2357,27 @@ impl App {
             format!("{} databases ({})", chosen.len(), chosen.join(", "))
         };
         self.backups.pending = chosen;
-        self.confirm = Some(Confirm {
-            action: "backup".into(),
-            project,
-            service,
-            stype: provider,
-            label: format!("Back {what} up to {where_to}?"),
+        self.confirm = Some(if self.backups.r2_mode {
+            // A non-locking dump: the remote provider is resolved by the worker, so
+            // no provider id rides along in `stype`.
+            Confirm {
+                action: "r2dump".into(),
+                project,
+                service,
+                stype: String::new(),
+                label: format!("Dump {what} to object storage — non-locking, one file?"),
+            }
+        } else {
+            let Some((provider, where_to)) = self.backups.provider.clone() else {
+                return;
+            };
+            Confirm {
+                action: "backup".into(),
+                project,
+                service,
+                stype: provider,
+                label: format!("Back {what} up to {where_to}?"),
+            }
         });
     }
 
