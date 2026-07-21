@@ -48,10 +48,11 @@ searchable table, and every domain on the box — without clicking through a hie
 - **Deploy visibility** — a service that is building shows `deploying` (and a count in
   the title), so you can see a deploy is still running instead of re-triggering it
   blindly. Immediate rejections surface instead of being swallowed.
-- **Compare two services — on the same host or across hosts.** Mark two (`v` on each),
-  open the menu (`Space`), "Compare the 2 marked services"; or on any service pick
-  "Compare with another host" to diff it against the SAME service on another configured
-  server — the real "staging vs production" question. One screen: source, build, deploy,
+- **Compare two services, or a whole project, across hosts.** Mark two services (`v` on
+  each) → "Compare the 2 marked services"; or on any service pick "Compare with another
+  host" for the same service on another server; or on a project pick "Compare WHOLE
+  project with another host" to see, in one screen, which services exist on only one side
+  and which have drifted — the real "is staging in sync with production?" question. One screen: source, build, deploy,
   resources, and env compared **by key** (which vars differ or are missing, never the
   values — an env is full of secrets). The panel makes you open two tabs and read them
   side by side, and cannot compare across hosts at all.

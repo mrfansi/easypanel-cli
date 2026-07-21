@@ -211,6 +211,105 @@ pub fn diff_lines(diffs: &[Difference], a: &str, b: &str) -> Vec<String> {
     out
 }
 
+/// How two versions of a whole project compare, service by service.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectDiff {
+    /// Services present only on the left host.
+    pub only_left: Vec<String>,
+    /// Services present only on the right host.
+    pub only_right: Vec<String>,
+    /// Services on both, but differing — with how many fields differ.
+    pub differing: Vec<(String, usize)>,
+    /// Services on both and identically configured.
+    pub identical: Vec<String>,
+}
+
+/// Compare every service of a project across two hosts.
+///
+/// `a` and `b` are the `services` arrays from `inspectProject` on each host —
+/// which already carry each service's full config, so this needs no per-service
+/// fetch. Matched by NAME: a service missing on one side is the drift a
+/// service-by-service compare can never show you ("staging is missing the worker
+/// prod has"), and it is the first thing this surfaces.
+pub fn project_diff(a: &[Value], b: &[Value]) -> ProjectDiff {
+    use std::collections::BTreeMap;
+    let by_name = |list: &[Value]| -> BTreeMap<String, Value> {
+        list.iter()
+            .map(|s| (field(s, "/name"), s.clone()))
+            .collect()
+    };
+    let (ma, mb) = (by_name(a), by_name(b));
+    let mut d = ProjectDiff {
+        only_left: Vec::new(),
+        only_right: Vec::new(),
+        differing: Vec::new(),
+        identical: Vec::new(),
+    };
+    for (name, sa) in &ma {
+        match mb.get(name) {
+            None => d.only_left.push(name.clone()),
+            Some(sb) => {
+                let n = diff(sa, sb).len();
+                if n == 0 {
+                    d.identical.push(name.clone());
+                } else {
+                    d.differing.push((name.clone(), n));
+                }
+            }
+        }
+    }
+    for name in mb.keys() {
+        if !ma.contains_key(name) {
+            d.only_right.push(name.clone());
+        }
+    }
+    // Most differences first: the service that has drifted furthest is the one to
+    // look at, and a long identical list should not bury it.
+    d.differing
+        .sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(&y.0)));
+    d
+}
+
+/// The project diff as the viewer shows it. `a` and `b` label the two hosts.
+pub fn project_diff_lines(d: &ProjectDiff, a: &str, b: &str) -> Vec<String> {
+    let total = d.only_left.len() + d.only_right.len() + d.differing.len() + d.identical.len();
+    if d.only_left.is_empty() && d.only_right.is_empty() && d.differing.is_empty() {
+        return vec![
+            format!("{a} and {b} match across all {total} service(s)."),
+            String::new(),
+            "Same services, same config on each. Any difference in behaviour is".into(),
+            "outside the config — data, or the host itself.".into(),
+        ];
+    }
+    let mut out = vec![format!("{a}   vs   {b}"), String::new()];
+    // Existence drift leads: a missing service is a bigger finding than a changed
+    // field, and it is invisible on a per-service compare.
+    if !d.only_left.is_empty() {
+        out.push(format!("Only on {a}:  {}", d.only_left.join(", ")));
+    }
+    if !d.only_right.is_empty() {
+        out.push(format!("Only on {b}:  {}", d.only_right.join(", ")));
+    }
+    if !d.differing.is_empty() {
+        out.push(String::new());
+        out.push("Differ (open one with \"Compare with another host\" to see how):".into());
+        out.extend(
+            d.differing
+                .iter()
+                .map(|(name, n)| format!("  {name}  —  {n} field(s) differ")),
+        );
+    }
+    if !d.identical.is_empty() {
+        out.push(String::new());
+        out.push(format!(
+            "Identical ({}): {}",
+            d.identical.len(),
+            d.identical.join(", ")
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +358,54 @@ mod tests {
         assert!(diff_lines(&one, "a", "b")
             .iter()
             .any(|l| l.contains("—  →  1")));
+    }
+
+    fn named(name: &str) -> Value {
+        let mut v = svc();
+        v["name"] = json!(name);
+        v
+    }
+
+    #[test]
+    fn a_service_missing_on_one_host_is_the_headline() {
+        let a = vec![named("api"), named("worker")];
+        let b = vec![named("api")]; // worker missing on the right
+        let d = project_diff(&a, &b);
+        assert_eq!(d.only_left, vec!["worker"]);
+        assert!(d.only_right.is_empty());
+        assert_eq!(d.identical, vec!["api"]);
+        // The missing service is named first in the rendered form.
+        let lines = project_diff_lines(&d, "prod", "staging");
+        assert!(
+            lines.iter().any(|l| l.contains("Only on prod:  worker")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn differing_services_are_sorted_most_changed_first() {
+        let mut b_api = named("api");
+        b_api["deploy"]["replicas"] = json!(3); // 1 diff
+        let mut b_db = named("db");
+        b_db["source"]["ref"] = json!("old");
+        b_db["deploy"]["replicas"] = json!(9);
+        b_db["env"] = json!("X=1"); // several diffs
+        let a = vec![named("api"), named("db")];
+        let b = vec![b_api, b_db];
+        let d = project_diff(&a, &b);
+        // db drifted further, so it comes first.
+        assert_eq!(d.differing[0].0, "db");
+        assert!(d.differing[0].1 > d.differing[1].1);
+        assert_eq!(d.differing[1].0, "api");
+    }
+
+    #[test]
+    fn two_matching_projects_say_so_rather_than_listing_nothing() {
+        let a = vec![named("api"), named("web")];
+        let d = project_diff(&a, &a.clone());
+        assert!(d.differing.is_empty() && d.only_left.is_empty() && d.only_right.is_empty());
+        let lines = project_diff_lines(&d, "prod", "staging");
+        assert!(lines[0].contains("match across all 2"), "{lines:?}");
     }
 
     #[test]

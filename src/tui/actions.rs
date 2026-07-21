@@ -207,6 +207,9 @@ impl App {
                 MenuItem::new("Migrate WHOLE project to another server", |a, _| {
                     a.open_migrate_form(true)
                 }),
+                MenuItem::new("Compare WHOLE project with another host", |a, _| {
+                    a.open_diff_project_across_form()
+                }),
                 MenuItem::new("New service", |a, r| a.on_key(KeyCode::Char('n'), r)),
                 MenuItem::new("New project", |a, r| a.on_key(KeyCode::Char('N'), r)),
                 MenuItem::new("Destroy project", |a, r| a.on_key(KeyCode::Char('X'), r)),
@@ -265,6 +268,9 @@ impl App {
             MenuItem::new("Migrate WHOLE project", |a, _| a.open_migrate_form(true)),
             MenuItem::new("Compare with another host", |a, _| {
                 a.open_diff_across_form()
+            }),
+            MenuItem::new("Compare WHOLE project with another host", |a, _| {
+                a.open_diff_project_across_form()
             }),
             MenuItem::new("Danger ▸", |a, _| {
                 let m = a.danger_menu();
@@ -526,6 +532,10 @@ impl App {
         v.push(MenuItem::new("Compare with another host", |a, _| {
             a.open_diff_across_form()
         }));
+        v.push(MenuItem::new(
+            "Compare WHOLE project with another host",
+            |a, _| a.open_diff_project_across_form(),
+        ));
         v.push(MenuItem::new("Migrate WHOLE project", |a, _| {
             a.open_migrate_form(true)
         }));

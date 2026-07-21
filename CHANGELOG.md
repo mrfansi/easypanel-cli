@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.74.0] — 2026-07-21
+
+### Added
+
+- **Compare a WHOLE project across two hosts.** v0.72.0 compared one service on two hosts;
+  this compares every service in a project at once — "is staging actually in sync with
+  production?". On a project (or any service in it), pick "Compare WHOLE project with
+  another host". It surfaces, in one screen:
+  - services that exist on **only one** host — the drift a service-by-service compare can
+    never show you, and usually the one that matters (staging is missing the worker prod
+    has);
+  - services that exist on both but **differ**, with a count of differing fields, worst
+    first, so you know which one to open;
+  - the services that are identical.
+
+  Just two API calls — `inspectProject` already carries every service's full config, so no
+  per-service round-trip. The per-field engine is the one v0.71.0/v0.72.0 proved, so env
+  is still compared by key with values never shown. A failure names which host it came
+  from. Nothing in the web panel can look at two hosts at once.
+
 ## [0.73.0] — 2026-07-21
 
 ### Fixed

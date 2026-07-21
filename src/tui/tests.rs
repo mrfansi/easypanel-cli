@@ -5201,3 +5201,43 @@ fn the_diff_footer_shows_the_scroll_hint_at_a_narrow_width() {
         "hint shown when it fits"
     );
 }
+
+#[test]
+fn comparing_a_whole_project_across_hosts_resolves_the_target_token() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(
+        "prod".into(),
+        vec![
+            ("prod".into(), "https://prod".into()),
+            ("staging".into(), "https://staging".into()),
+        ],
+    );
+    app.projects = vec!["shop".into()];
+    app.all_services = vec![svc("shop", "api", "app")];
+    app.screen = Screen::Projects;
+    app.services_table.select(Some(0)); // the project header
+
+    app.open_diff_project_across_form();
+    let form = app.form.as_ref().expect("the project compare form");
+    assert!(form.title.contains("project shop"), "{}", form.title);
+
+    if let Some(f) = app.form.as_mut() {
+        f.fields[0].value = "staging".into();
+    }
+    app.submit_form(&tx);
+    // The token lives only in the ServerConfig, so the App hands off a request
+    // naming the server rather than fetching itself.
+    let req = app.diff_project_across_req.as_ref().expect("a request");
+    assert_eq!(req.project, "shop");
+    assert_eq!(req.target_server, "staging");
+
+    // Empty server refuses rather than comparing prod with itself.
+    app.diff_project_across_req = None;
+    app.open_diff_project_across_form();
+    if let Some(f) = app.form.as_mut() {
+        f.fields[0].value = String::new();
+    }
+    app.submit_form(&tx);
+    assert!(app.diff_project_across_req.is_none());
+    assert!(app.status.contains("Choose"), "{}", app.status);
+}

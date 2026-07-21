@@ -166,6 +166,11 @@ pub(super) struct Confirm {
 
 /// A cross-host compare waiting for its target token. Same reason as MigrateReq:
 /// the App knows a server's name and url, never its token.
+pub(super) struct DiffProjectAcrossReq {
+    pub(super) project: String,
+    pub(super) target_server: String,
+}
+
 pub(super) struct DiffAcrossReq {
     /// The service on THIS host: (project, service, type).
     pub(super) local: (String, String, String),
@@ -232,6 +237,7 @@ pub(super) struct App {
     /// A cross-host compare waiting for the event loop to resolve the target
     /// host's token (which only the ServerConfig holds).
     pub(super) diff_across_req: Option<DiffAcrossReq>,
+    pub(super) diff_project_across_req: Option<DiffProjectAcrossReq>,
     /// A pending "read the backups on another server": (server name, project,
     /// service). Resolved to a url+token by event_loop, which alone holds them.
     pub(super) restore_from_req: Option<(String, String, String)>,
@@ -412,6 +418,7 @@ impl App {
             server_action: None,
             migrate_req: None,
             diff_across_req: None,
+            diff_project_across_req: None,
             restore_from_req: None,
             busy: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             edit_env: None,
@@ -2023,6 +2030,40 @@ impl App {
         );
     }
 
+    /// Open the "compare whole project with another host" form. The project is
+    /// the selected one, or the project of the selected service.
+    pub(super) fn open_diff_project_across_form(&mut self) {
+        let others: Vec<String> = self
+            .all_servers
+            .iter()
+            .map(|(n, _)| n.clone())
+            .filter(|n| *n != self.server_name)
+            .collect();
+        if others.is_empty() {
+            self.status =
+                "No other server configured — add one on the Hosts screen (s) first".into();
+            return;
+        }
+        let project = self
+            .selected_project()
+            .or_else(|| self.selected_row().map(|(p, ..)| p));
+        let Some(project) = project else {
+            self.status = "Select a project or a service first".into();
+            return;
+        };
+        let fields = vec![Field::choice_owned("On server", others, "")];
+        self.form = Some(
+            Form::new(
+                FormKind::DiffProjectAcross {
+                    project: project.clone(),
+                },
+                format!(" Compare project {project} with another host "),
+                fields,
+            )
+            .with_note("Compares every service in the project, both ways".to_string()),
+        );
+    }
+
     /// Every service belonging to `project`, as (project, service, type).
     pub(super) fn project_services(&self, project: &str) -> Vec<(String, String, String)> {
         self.all_services
@@ -2724,6 +2765,18 @@ impl App {
                     target_server,
                 });
                 self.status = "Comparing across hosts...".into();
+            }
+            FormKind::DiffProjectAcross { project } => {
+                let target_server = form.by_label("On server");
+                if target_server.is_empty() {
+                    self.status = "Choose a server to compare against first".into();
+                    return;
+                }
+                self.diff_project_across_req = Some(DiffProjectAcrossReq {
+                    project: project.clone(),
+                    target_server,
+                });
+                self.status = "Comparing project across hosts...".into();
             }
             FormKind::Migrate {
                 project,

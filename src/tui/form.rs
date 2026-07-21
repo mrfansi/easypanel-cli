@@ -1040,6 +1040,10 @@ pub(super) enum FormKind {
         service: String,
         stype: String,
     },
+    /// Compare a WHOLE project against the same project on another host.
+    DiffProjectAcross {
+        project: String,
+    },
     /// Rewrite one part of MANY domains at once. Which domains is decided by the
     /// filter that is already on screen, not by a second selection UI.
     DomainBulkEdit,

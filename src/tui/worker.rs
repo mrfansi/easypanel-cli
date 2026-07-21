@@ -104,6 +104,14 @@ pub(super) enum Req {
         target_token: String,
         target_name: String,
     },
+    /// Compare a whole project against the same project on another host. Only two
+    /// calls: inspectProject carries every service's full config.
+    DiffProjectAcross {
+        project: String,
+        target_url: String,
+        target_token: String,
+        target_name: String,
+    },
     /// Open the deploy form: replicas, start command, zero-downtime.
     DeployForm {
         project: String,
@@ -777,6 +785,39 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 // Name which side failed: "not found" is the likely case (the
                 // service does not exist on the other host), and the operator
                 // needs to know WHICH host that was.
+                (Err(e), _) => Resp::Err(format!("this host: {e}")),
+                (_, Err(e)) => Resp::Err(format!("{target_name}: {e}")),
+            }
+        }
+        Req::DiffProjectAcross {
+            project,
+            target_url,
+            target_token,
+            target_name,
+        } => {
+            let other = EasypanelClient::new(&target_url, &target_token);
+            let inspect = |c: &EasypanelClient| {
+                c.call(
+                    "projects",
+                    "inspectProject",
+                    json!({ "projectName": project }),
+                )
+            };
+            match (inspect(client), inspect(&other)) {
+                (Ok(va), Ok(vb)) => {
+                    let services = |v: &Value| {
+                        v.get("services")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default()
+                    };
+                    let d = crate::services::project_diff(&services(&va), &services(&vb));
+                    let (la, lb) = ("this host".to_string(), target_name.clone());
+                    Resp::Viewer(
+                        format!(" Diff project across hosts: {project} "),
+                        crate::services::project_diff_lines(&d, &la, &lb),
+                    )
+                }
                 (Err(e), _) => Resp::Err(format!("this host: {e}")),
                 (_, Err(e)) => Resp::Err(format!("{target_name}: {e}")),
             }

@@ -276,6 +276,22 @@ fn event_loop(
 
         // Cross-host compare: same as migrate, the target token lives only in the
         // ServerConfig here.
+        if let Some(d) = app.diff_project_across_req.take() {
+            match cfg.get(&d.target_server) {
+                Some(server) => {
+                    let _ = w.user.send(Req::DiffProjectAcross {
+                        project: d.project,
+                        target_url: server.url,
+                        target_token: server.token,
+                        target_name: d.target_server,
+                    });
+                }
+                None => {
+                    app.status = format!("Server '{}' is no longer configured", d.target_server)
+                }
+            }
+        }
+
         if let Some(d) = app.diff_across_req.take() {
             match cfg.get(&d.target_server) {
                 Some(server) => {
