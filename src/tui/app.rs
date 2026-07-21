@@ -296,12 +296,8 @@ pub(super) struct App {
     /// Text the event_loop should put on the system clipboard (via OSC 52) on its
     /// next pass, then clear. Set by the copy action; the loop owns the terminal.
     pub(super) clipboard: Option<String>,
-    /// The active terminal screen emulator (a vt100 parser fed by WebSocket output).
-    pub(super) term_parser: Option<vt100::Parser>,
-    /// Send keystrokes/resizes to the WebSocket thread. Dropping it = close the session.
-    pub(super) term_input: Option<Sender<super::terminal::TermMsg>>,
-    /// The terminal pane title (project/service).
-    pub(super) term_title: String,
+    /// The active container-terminal session (emulator + input channel + title).
+    pub(super) term: super::terminal::TermUi,
 
     pub(super) screen: Screen,
     pub(super) should_quit: bool,
@@ -446,9 +442,7 @@ impl App {
             credentials_req: None,
             creds: CredsUi::default(),
             clipboard: None,
-            term_parser: None,
-            term_input: None,
-            term_title: String::new(),
+            term: super::terminal::TermUi::default(),
             screen: Screen::Dashboard,
             should_quit: false,
             refresh_inflight: false,
@@ -672,8 +666,8 @@ impl App {
         ) {
             self.screen = Screen::Projects;
         }
-        self.term_input = None;
-        self.term_parser = None;
+        self.term.input = None;
+        self.term.parser = None;
         self.stats = None;
         self.stats_error = None;
         self.nodes.clear();
@@ -1164,17 +1158,17 @@ impl App {
                 self.status = "Ready".into();
             }
             Resp::TermOutput(bytes) => {
-                if let Some(p) = self.term_parser.as_mut() {
+                if let Some(p) = self.term.parser.as_mut() {
                     p.process(&bytes);
                 }
             }
             Resp::TermClosed => {
                 // Shell exited / socket closed: back to Services.
-                self.term_parser = None;
-                self.term_input = None;
+                self.term.parser = None;
+                self.term.input = None;
                 if self.screen == Screen::Terminal {
                     self.screen = Screen::Projects;
-                    self.status = format!("Terminal {} closed", self.term_title);
+                    self.status = format!("Terminal {} closed", self.term.title);
                 }
             }
             Resp::Done(msg, what) => {
@@ -1625,7 +1619,7 @@ impl App {
     /// Clamped to what actually exists, so holding the key stops at the oldest
     /// line rather than scrolling into blank space.
     pub(super) fn term_scroll(&mut self, delta: isize) {
-        let Some(p) = self.term_parser.as_mut() else {
+        let Some(p) = self.term.parser.as_mut() else {
             return;
         };
         // vt100 clamps the far end to the history it actually holds, so only the
@@ -1636,10 +1630,10 @@ impl App {
     }
 
     pub(super) fn close_terminal(&mut self) {
-        self.term_input = None;
-        self.term_parser = None;
+        self.term.input = None;
+        self.term.parser = None;
         self.screen = Screen::Projects;
-        self.status = format!("Terminal {} closed", self.term_title);
+        self.status = format!("Terminal {} closed", self.term.title);
     }
 
     pub(super) fn toggle_auto_deploy(&mut self, req: &Sender<Req>) {

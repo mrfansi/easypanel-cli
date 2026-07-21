@@ -203,7 +203,7 @@ fn event_loop(
                         } else if shift && key.code == KeyCode::PageDown {
                             app.term_scroll(-TERM_PAGE);
                         } else if let (Some(bytes), Some(tx)) =
-                            (terminal::encode_key(key), app.term_input.as_ref())
+                            (terminal::encode_key(key), app.term.input.as_ref())
                         {
                             let _ = tx.send(terminal::TermMsg::Input(
                                 String::from_utf8_lossy(&bytes).into_owned(),
@@ -416,12 +416,12 @@ fn event_loop(
                             // tabs+status; render sets the exact size.
                             let (tcols, trows) = (cols, rows.saturating_sub(5).max(1));
                             let (tx, rx) = std::sync::mpsc::channel();
-                            app.term_parser =
+                            app.term.parser =
                                 Some(vt100::Parser::new(trows, tcols, TERM_SCROLLBACK));
-                            app.term_input = Some(tx);
+                            app.term.input = Some(tx);
                             let label =
                                 db.as_deref().map(|s| format!(" ({s})")).unwrap_or_default();
-                            app.term_title = format!("{project}/{service}{label}");
+                            app.term.title = format!("{project}/{service}{label}");
                             terminal::spawn_session(url, w.resp_tx.clone(), rx, tcols, trows);
                             app.screen = Screen::Terminal;
                             app.status = "Terminal — type `exit` or Ctrl-Q to leave".into();

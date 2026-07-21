@@ -1915,20 +1915,20 @@ pub(super) fn render_tiles(f: &mut Frame, area: Rect, app: &App) {
 /// the shell's size in step with the pane size (two-way resize).
 pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
     let block = pane(
-        format!(" Terminal · {} · Ctrl-Q exit ", app.term_title),
+        format!(" Terminal · {} · Ctrl-Q exit ", app.term.title),
         server_colour(&app.server_name),
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let (cols, rows) = (inner.width.max(1), inner.height.max(1));
-    let Some(parser) = app.term_parser.as_mut() else {
+    let Some(parser) = app.term.parser.as_mut() else {
         return;
     };
     // Keep the shell's size aligned with the pane. vt100 uses (rows, cols).
     if parser.screen().size() != (rows, cols) {
         parser.set_size(rows, cols);
-        if let Some(tx) = app.term_input.as_ref() {
+        if let Some(tx) = app.term.input.as_ref() {
             let _ = tx.send(super::terminal::TermMsg::Resize(cols, rows));
         }
     }

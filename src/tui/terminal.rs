@@ -32,6 +32,23 @@ pub(super) enum TermMsg {
     Resize(u16, u16),
 }
 
+/// The active container-terminal session's state, grouped out of `App` the same
+/// way `ViewerUi`/`BackupUi`/`CredsUi` were — one sub-view, one struct, next to
+/// the code that drives it.
+///
+/// `parser` and `input` are the live session (dropping `input` closes it);
+/// `title` is the pane label and is deliberately NOT cleared alongside them —
+/// the "Terminal {title} closed" message reads it after the session ends.
+#[derive(Default)]
+pub(super) struct TermUi {
+    /// The screen emulator: a vt100 parser fed by WebSocket output.
+    pub(super) parser: Option<vt100::Parser>,
+    /// Keystrokes/resizes to the WebSocket thread. Dropping it = close the session.
+    pub(super) input: Option<Sender<TermMsg>>,
+    /// The terminal pane title (project/service).
+    pub(super) title: String,
+}
+
 /// Resolve the running container ID for a service (swarm name
 /// "{project}_{service}"), then build its terminal WebSocket URL. `command` is
 /// what to run inside the container (e.g. "sh" for a shell, or a mysql command

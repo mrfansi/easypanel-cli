@@ -3393,19 +3393,19 @@ fn a_terminal_keeps_history_you_can_scroll_back_to() {
     for i in 1..=40 {
         parser.process(format!("line-{i}\r\n").as_bytes());
     }
-    app.term_parser = Some(parser);
+    app.term.parser = Some(parser);
 
     // There IS history behind the four visible rows.
     app.term_scroll(10);
     assert_eq!(
-        app.term_parser.as_ref().unwrap().screen().scrollback(),
+        app.term.parser.as_ref().unwrap().screen().scrollback(),
         10,
         "must be able to move back into the session's output"
     );
 
     // Scrolling further back stops at the oldest line rather than running off.
     app.term_scroll(10_000);
-    let deepest = app.term_parser.as_ref().unwrap().screen().scrollback();
+    let deepest = app.term.parser.as_ref().unwrap().screen().scrollback();
     assert!(
         deepest > 0 && deepest < 10_000,
         "clamped to real history: {deepest}"
@@ -3413,10 +3413,10 @@ fn a_terminal_keeps_history_you_can_scroll_back_to() {
 
     // And the near end is guarded too: back to live, never past it.
     app.term_scroll(isize::MIN / 2);
-    assert_eq!(app.term_parser.as_ref().unwrap().screen().scrollback(), 0);
+    assert_eq!(app.term.parser.as_ref().unwrap().screen().scrollback(), 0);
 
     // With no session open it is simply a no-op, not a panic.
-    app.term_parser = None;
+    app.term.parser = None;
     app.term_scroll(5);
 }
 
