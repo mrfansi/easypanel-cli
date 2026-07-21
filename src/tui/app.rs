@@ -974,7 +974,10 @@ impl App {
                 if rows.is_empty() {
                     lines.push("No backups on shared remote storage.".into());
                 } else {
-                    lines.push(format!("    {:<21}{:<20}{}", "When", "From", "File"));
+                    lines.push(format!(
+                        "    {:<21}{:<24}{:<20}{}",
+                        "When", "From", "Database", "File"
+                    ));
                     lines.extend(
                         rows.iter()
                             .enumerate()

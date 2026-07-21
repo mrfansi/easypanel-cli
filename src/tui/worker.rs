@@ -1023,7 +1023,13 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                         hidden: total - usable.len(),
                         rows: usable
                             .iter()
-                            .map(|(origin, f)| format!("{:<21}{:<20}{}", f.when, origin, f.path))
+                            // The database (schema) name is what tells you WHAT a
+                            // backup restores — a service can hold several, and the
+                            // file path names only the service, not the schema. It
+                            // was carried for the restore but never shown; now it is.
+                            .map(|(origin, f)| {
+                                format!("{:<21}{:<24}{:<20}{}", f.when, origin, f.database, f.path)
+                            })
                             .collect(),
                         files: usable
                             .into_iter()

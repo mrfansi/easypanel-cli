@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.79.1] — 2026-07-21
+## [0.79.2] — 2026-07-21
+
+### Fixed
+
+- **The "restore from another server" list now shows which database each backup
+  holds.** A database service can hold several databases (schemas), and EasyPanel
+  backs each up to its own file — so the list was full of rows that all read
+  `harisenin-com-db/mysql` with no way to tell `hscom_core` from `hscom_learning`
+  apart, or to know what a given file would restore. The database name was already
+  carried for the restore itself; it is now a column (When · From · **Database** ·
+  File), so you can pick the right backup by what is actually inside it. Reported by
+  an operator restoring across hosts; verified live. (The single-service restore
+  already showed the database; only the cross-host list dropped it.)
 
 ### Fixed
 
