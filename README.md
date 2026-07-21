@@ -215,6 +215,13 @@ while dragging** to select/copy.)
 
 Inside a menu: `↑↓` select · `→` enter a submenu · `←` back · `Enter` run · `Esc` close.
 
+**Act on many services at once.** `v` marks the row under the cursor (a project header
+marks all its services); `V` marks every row the filter has left on screen. With anything
+marked, the action menu (`Space`) grows a bulk section: **deploy / force-rebuild / restart
+/ stop / start** the marked set, **set the same resource limits** (CPU/memory) across all
+of them in one form, or **compare** exactly two. Every bulk entry names its count, and the
+result reports each service that succeeded or failed — nothing is changed silently.
+
 **Services — direct keys**
 
 | Key | Action |

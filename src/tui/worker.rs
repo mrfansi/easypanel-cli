@@ -214,6 +214,13 @@ pub(super) enum Req {
         stype: String,
         resources: Value,
     },
+    /// Set the same resource limit on every marked service. Each is updated under
+    /// its own `services/{stype}` group; a type with no limits is reported, not
+    /// silently skipped.
+    BulkResource {
+        targets: Vec<(String, String, String)>,
+        resources: Value,
+    },
     /// Open the basic auth form: inspectService for the current `basicAuth`.
     BasicAuthForm {
         project: String,
@@ -759,6 +766,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             action,
             force,
         } => bulk_action(client, resp_tx, targets, &action, force),
+        Req::BulkResource { targets, resources } => bulk_resource(client, targets, resources),
         Req::DiffServices { a, b } => diff_services(client, a, b),
         Req::DiffAcrossHosts {
             local,
@@ -1894,6 +1902,48 @@ fn bulk_action(
     }
     Resp::BulkDone {
         action: action.to_string(),
+        ok,
+        failed,
+    }
+}
+
+/// Apply the same resource limit to every marked service, one PUT each under its
+/// own `services/{stype}` group. `updateResources` only stores config (it takes
+/// effect on the next deploy), so this is a low-risk write done sequentially with
+/// a per-service pass/fail — the same honest accounting as `bulk_action`.
+///
+/// A type that has no resource route (compose sets its limits in its file) is
+/// reported as failed with the reason, never silently skipped: the summary must
+/// account for every service that was marked.
+fn bulk_resource(
+    client: &EasypanelClient,
+    targets: Vec<(String, String, String)>,
+    resources: Value,
+) -> Resp {
+    if targets.is_empty() {
+        return Resp::Err("Nothing marked".into());
+    }
+    let mut ok = Vec::new();
+    let mut failed = Vec::new();
+    for (project, service, stype) in &targets {
+        let name = format!("{project}/{service}");
+        if !crate::lifecycle::has_resource_limits(stype) {
+            failed.push((
+                name,
+                format!("a {stype} service sets limits in its compose file"),
+            ));
+            continue;
+        }
+        let mut input = resources.clone();
+        input["projectName"] = json!(project);
+        input["serviceName"] = json!(service);
+        match client.call(&format!("services/{stype}"), "updateResources", input) {
+            Ok(_) => ok.push(name),
+            Err(e) => failed.push((name, e.to_string())),
+        }
+    }
+    Resp::BulkDone {
+        action: "resource limits".into(),
         ok,
         failed,
     }

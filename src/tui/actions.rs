@@ -177,11 +177,24 @@ impl App {
             MenuItem::new(format!("Start {n} marked services"), |a, _| {
                 a.open_bulk_confirm("start", false)
             }),
-            MenuItem::new(format!("Clear the {n} marks"), |a, _| {
-                a.marked.clear();
-                a.status = "Marks cleared".into();
-            }),
         ]);
+        // Setting the same CPU/memory limit across many services is a real chore
+        // one at a time. Only offered when at least one marked service can take a
+        // limit (compose can't) — so it never opens a form that changes nothing.
+        if self
+            .bulk_targets()
+            .iter()
+            .any(|(_, _, t)| crate::lifecycle::has_resource_limits(t))
+        {
+            items.push(MenuItem::new(
+                format!("Set resource limits on {n} marked services"),
+                |a, _| a.open_bulk_resource_form(),
+            ));
+        }
+        items.extend([MenuItem::new(format!("Clear the {n} marks"), |a, _| {
+            a.marked.clear();
+            a.status = "Marks cleared".into();
+        })]);
         items
     }
 

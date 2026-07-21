@@ -1085,6 +1085,10 @@ pub(super) enum FormKind {
         service: String,
         stype: String,
     },
+    /// Set the SAME CPU/memory limit on every marked service at once. Carries no
+    /// target — the marked set is read at submit time, each service updated under
+    /// its own `services/{stype}` group.
+    BulkResourceEdit,
     /// Clone a service's config into a new service (name filled by the user).
     CloneService {
         project: String,

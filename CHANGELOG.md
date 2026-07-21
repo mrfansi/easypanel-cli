@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.77.1] — 2026-07-21
+## [0.78.0] — 2026-07-21
+
+### Added
+
+- **Bulk-set resource limits across many services at once.** Mark services (`v`,
+  or `V` for every row the filter shows), open the action menu, and pick **Set
+  resource limits on N marked services** — one form for CPU/memory limit and
+  reservation, applied to all of them under each service's own type endpoint.
+  Setting the same cap on thirty services used to be thirty trips through the
+  single `L` form; now it is one. A marked service whose type keeps its limits in
+  a compose file (not the API) is reported by name in the result, never silently
+  skipped, so the summary accounts for every service you marked. Like the single
+  form, `updateResources` only stores the values — a deploy applies them. Verified
+  live: the same limit round-tripped onto three services via one submit.
 
 ### Fixed
 

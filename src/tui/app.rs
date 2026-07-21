@@ -2574,6 +2574,27 @@ impl App {
         self.status = "Loading...".into();
     }
 
+    /// Set the SAME resource limit on every marked service. Opens the ordinary
+    /// resource form (values default to 0 = unlimited, NOT prefilled from any one
+    /// service since the marked set differs), and submit applies it to all.
+    pub(super) fn open_bulk_resource_form(&mut self) {
+        let n = self.marked.len();
+        if n == 0 {
+            self.status = "Mark some services first — [v] marks the row".into();
+            return;
+        }
+        self.form = Some(
+            Form::new(
+                FormKind::BulkResourceEdit,
+                format!(" Resource limits · {n} marked services "),
+                resource_fields(None),
+            )
+            .with_note(format!(
+                "0 = unlimited · applied to all {n} marked (deploy to take effect)"
+            )),
+        );
+    }
+
     /// Load the currently selected repo's branches into the "Branch" dropdown.
     pub(super) fn load_form_branches(&mut self, req: &Sender<Req>) {
         let Some(form) = self.form.as_ref() else {
@@ -2739,6 +2760,22 @@ impl App {
                         stype: stype.clone(),
                         resources,
                     });
+                }
+                Err(msg) => {
+                    self.status = msg;
+                    return;
+                }
+            },
+            FormKind::BulkResourceEdit => match resource_body(form) {
+                Ok(resources) => {
+                    let targets = self.bulk_targets();
+                    if targets.is_empty() {
+                        self.status = "Nothing marked any more — cancelled".into();
+                        self.form = None;
+                        return;
+                    }
+                    let _ = req.send(Req::BulkResource { targets, resources });
+                    self.status = "Setting resource limits...".into();
                 }
                 Err(msg) => {
                     self.status = msg;
