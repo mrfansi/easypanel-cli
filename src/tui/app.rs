@@ -309,6 +309,9 @@ pub(super) struct App {
     pub(super) status: String,
 
     pub(super) stats: Option<Value>,
+    /// Set when the system-stats fetch failed, so the Dashboard says "couldn't
+    /// load" instead of drawing 0.0% gauges. Cleared by the next successful load.
+    pub(super) stats_error: Option<String>,
     pub(super) nodes: Vec<Value>,
 
     pub(super) actions: Vec<Value>,
@@ -357,6 +360,9 @@ pub(super) struct App {
     /// hierarchy: drill-down can't be searched and collapses under hundreds of
     /// services.
     pub(super) all_services: Vec<Value>,
+    /// Set when the service list failed to load, so an empty Services table reads
+    /// as "couldn't load" rather than "this host has nothing". Cleared on success.
+    pub(super) services_error: Option<String>,
     pub(super) services_table: TableState,
 
     /// The full-screen viewer's state — text, scroll, what it was opened from and
@@ -448,6 +454,7 @@ impl App {
             refresh_inflight: false,
             status: "Ready".into(),
             stats: None,
+            stats_error: None,
             nodes: Vec::new(),
             actions: Vec::new(),
             actions_state: TableState::default(),
@@ -469,6 +476,7 @@ impl App {
             checking: false,
             projects: Vec::new(),
             all_services: Vec::new(),
+            services_error: None,
             services_table: TableState::default(),
             viewer: super::viewer::ViewerUi::default(),
             backups: BackupUi::default(),
@@ -667,6 +675,7 @@ impl App {
         self.term_input = None;
         self.term_parser = None;
         self.stats = None;
+        self.stats_error = None;
         self.nodes.clear();
         self.actions.clear();
         self.actions_state = TableState::default();
@@ -678,6 +687,7 @@ impl App {
         self.domains_error = None;
         self.projects.clear();
         self.all_services.clear();
+        self.services_error = None;
         self.services_table = TableState::default();
         self.viewer.lines.clear();
         self.viewer.ctx = None;
@@ -696,7 +706,15 @@ impl App {
         match resp {
             Resp::Stats(v) => {
                 self.refresh_inflight = false;
+                self.stats_error = None;
                 self.stats = Some(v);
+            }
+            Resp::StatsErr(e) => {
+                // Keep last-good stats on a refresh failure; only note the error so
+                // a Dashboard with NO stats yet says so instead of drawing 0.0%.
+                self.refresh_inflight = false;
+                self.stats_error = Some(e.clone());
+                self.status = format!("Error: {e}");
             }
             Resp::Nodes(n) => self.nodes = n,
             Resp::Actions(a) => {
@@ -718,7 +736,14 @@ impl App {
                 self.status = format!("Error: {e}");
             }
             Resp::Projects(p) => self.projects = p,
+            Resp::AllServicesErr(e) => {
+                // Keep any services already on screen; only mark the failure so an
+                // EMPTY list reads as "couldn't load", not "this host has nothing".
+                self.services_error = Some(e.clone());
+                self.status = format!("Error: {e}");
+            }
             Resp::AllServices { projects, services } => {
+                self.services_error = None;
                 self.projects = projects;
                 self.all_services = services;
                 self.all_services

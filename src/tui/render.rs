@@ -538,6 +538,24 @@ pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 pub(super) fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
+    // A FAILED stats load with nothing cached must not draw 0.0% gauges — numbers
+    // that read as real, at once alarming ("disk empty?!") and falsely reassuring
+    // ("CPU idle"). Say what happened instead. A refresh failure keeps last-good
+    // stats (still Some), so this only fires when the first load never arrived.
+    if app.stats.is_none() {
+        if let Some(err) = &app.stats_error {
+            f.render_widget(
+                Paragraph::new(format!("  ⚠ Couldn't load stats — {err}. Press r to retry"))
+                    .style(Style::default().fg(Color::DarkGray))
+                    .block(pane(
+                        "Dashboard".to_string(),
+                        server_colour(&app.server_name),
+                    )),
+                area,
+            );
+            return;
+        }
+    }
     let stats = app.stats.clone().unwrap_or(Value::Null);
 
     let rows = Layout::vertical([Constraint::Length(11), Constraint::Min(0)]).split(area);
@@ -669,6 +687,26 @@ pub(super) fn render_nodes(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
+    // No services at all: distinguish a genuinely empty host from a failed load.
+    // On a host with hundreds of services a 502 that drew a bare table read as
+    // "this host has nothing" — the Domains bug, on the biggest screen.
+    if app.all_services.is_empty() {
+        let msg = if let Some(err) = &app.services_error {
+            format!("  ⚠ Couldn't load services — {err}. Press r to retry")
+        } else {
+            "  No services on this host yet — press n to add one".to_string()
+        };
+        f.render_widget(
+            Paragraph::new(msg)
+                .style(Style::default().fg(Color::DarkGray))
+                .block(pane(
+                    "Services".to_string(),
+                    server_colour(&app.server_name),
+                )),
+            area,
+        );
+        return;
+    }
     // (cells, is_down): down rows are painted red so "what's broken" is
     // immediately visible. Indexed(9), not the named Color::Red: a terminal theme
     // once made named colors unreadable in this project (see AGENT_BRIEF).

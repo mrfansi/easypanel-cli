@@ -2133,6 +2133,50 @@ fn a_failed_domain_load_says_so_instead_of_no_domains_yet() {
 }
 
 #[test]
+fn a_failed_services_or_stats_load_says_so_instead_of_reading_empty_or_idle() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let render = |app: &mut App, w: u16, h: u16| -> String {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| super::render::ui(f, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .chunks(w as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // Services: a failed fetch (empty list + error) must not read as "this host
+    // has nothing" on a host that may have hundreds.
+    let mut svc = App::new("s".into(), vec![]);
+    svc.screen = Screen::Projects;
+    svc.services_error = Some("[502] Bad Gateway".into());
+    let s = render(&mut svc, 100, 12);
+    assert!(
+        s.contains("Couldn't load services") && s.contains("502"),
+        "a failed service load must name the failure:\n{s}"
+    );
+
+    // Dashboard: a failed stats load must NOT draw a fabricated 0.0% gauge; it
+    // must say the load failed.
+    let mut dash = App::new("s".into(), vec![]);
+    dash.screen = Screen::Dashboard;
+    dash.stats_error = Some("[502] Bad Gateway".into());
+    let s = render(&mut dash, 100, 16);
+    assert!(
+        s.contains("Couldn't load stats"),
+        "a failed stats load must say so, not draw 0.0% gauges:\n{s}"
+    );
+    assert!(
+        !s.contains("0.0%"),
+        "a failed stats load must not fabricate a 0.0% gauge:\n{s}"
+    );
+}
+
+#[test]
 fn replicas_must_be_a_number_and_zero_is_refused() {
     let f = |replicas: &str| {
         form(vec![

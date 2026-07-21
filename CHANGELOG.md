@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.78.1] — 2026-07-21
+## [0.78.2] — 2026-07-21
+
+### Fixed
+
+- **Services and the Dashboard no longer lie when their fetch fails** — the same
+  bug v0.78.1 fixed on Domains, found on its two worst siblings by an adversarial
+  audit of every data screen. On a failed load (e.g. a gateway 502): the **Services**
+  screen drew a bare empty table that read as "this host has nothing" on a host
+  with hundreds of services; the **Dashboard** was worse still — it drew CPU/memory/
+  disk gauges at a fabricated **0.0%**, numbers that look real and are at once
+  alarming ("disk empty?!") and falsely reassuring ("CPU idle"). Both now say
+  "⚠ Couldn't load … — <error>. Press r to retry" and keep any data already loaded
+  (a refresh failure preserves last-good values). Verified live against an
+  unreachable host. The audit confirmed the other data screens are fine: the
+  service-detail collections open only on success, and the Hosts screen already
+  renders per-host failure — so they were left untouched.
 
 ### Fixed
 

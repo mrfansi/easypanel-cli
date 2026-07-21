@@ -413,6 +413,10 @@ pub(super) enum Req {
 
 pub(super) enum Resp {
     Stats(Value),
+    /// The system-stats fetch FAILED. Kept apart from `Resp::Err` so the Dashboard
+    /// can say "couldn't load" instead of drawing 0.0% gauges — numbers that read
+    /// as real and are both alarming and falsely reassuring.
+    StatsErr(String),
     Nodes(Vec<Value>),
     Projects(Vec<String>),
     Actions(Vec<Value>),
@@ -430,6 +434,9 @@ pub(super) enum Resp {
         projects: Vec<String>,
         services: Vec<Value>,
     },
+    /// The service list FAILED to load — kept apart from `Resp::Err` so an empty
+    /// Services table reads as "couldn't load", not "this host has nothing".
+    AllServicesErr(String),
     /// An operation that SUCCEEDED but left the user something to act on.
     ///
     /// The notes used to be appended to the status line — which is one line, so
@@ -646,7 +653,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
     match req {
         Req::Stats => match client.call("metrics", "getSystemStats", json!({})) {
             Ok(v) => Resp::Stats(v),
-            Err(e) => Resp::Err(e.to_string()),
+            Err(e) => Resp::StatsErr(e.to_string()),
         },
         Req::Nodes => match client.call("cluster", "listNodes", Value::Null) {
             Ok(v) => Resp::Nodes(v.as_array().cloned().unwrap_or_default()),
@@ -723,7 +730,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                     .cloned()
                     .unwrap_or_default(),
             },
-            Err(e) => Resp::Err(e.to_string()),
+            Err(e) => Resp::AllServicesErr(e.to_string()),
         },
         Req::ServicesFor(project) => {
             match client.call(
