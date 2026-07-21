@@ -327,6 +327,9 @@ pub(super) struct App {
     pub(super) monitor_view: MonitorView,
     pub(super) domains: Vec<Value>,
     pub(super) domains_state: TableState,
+    /// Set when the last domain fetch FAILED, so the empty screen can say "couldn't
+    /// load" instead of "no domains yet". Cleared by the next successful load.
+    pub(super) domains_error: Option<String>,
     /// The (project, service) origin when entering the Domains tab via `o` from a
     /// service — used to prefill the "New domain" form to that service. None = the
     /// Domains tab was opened normally.
@@ -456,6 +459,7 @@ impl App {
             monitor_view: MonitorView::Services,
             domains: Vec::new(),
             domains_state: TableState::default(),
+            domains_error: None,
             domain_scope: None,
             domain_edits: Vec::new(),
             watch: Vec::new(),
@@ -671,11 +675,21 @@ impl App {
         self.storage.clear();
         self.domains.clear();
         self.domains_state = TableState::default();
+        self.domains_error = None;
         self.projects.clear();
         self.all_services.clear();
         self.services_table = TableState::default();
         self.viewer.lines.clear();
         self.viewer.ctx = None;
+    }
+
+    /// A full-screen sub-view opened from a list (Viewer, Credentials) whose Esc
+    /// means "back to that list". These handle Esc themselves, so the global
+    /// filter/marks Esc guards must step aside and let the keypress reach them.
+    /// Terminal is absent on purpose: its keystrokes go straight to the shell and
+    /// never reach this dispatch.
+    pub(super) fn screen_owns_esc(&self) -> bool {
+        matches!(self.screen, Screen::Viewer | Screen::Credentials)
     }
 
     pub(super) fn handle(&mut self, resp: Resp, req: &Sender<Req>) {
@@ -693,8 +707,15 @@ impl App {
             Resp::TaskStats(t) => self.task_stats = t,
             Resp::Storage(s) => self.storage = s,
             Resp::Domains(d) => {
+                self.domains_error = None;
                 self.domains = d;
                 select_first(&mut self.domains_state, self.domains.len());
+            }
+            Resp::DomainsErr(e) => {
+                // Keep any previously loaded domains on screen; only remember that
+                // the refresh failed so an EMPTY list reads as "couldn't load".
+                self.domains_error = Some(e.clone());
+                self.status = format!("Error: {e}");
             }
             Resp::Projects(p) => self.projects = p,
             Resp::AllServices { projects, services } => {

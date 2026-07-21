@@ -421,6 +421,10 @@ pub(super) enum Resp {
     TaskStats(HashMap<String, (i64, i64)>),
     Storage(Vec<Value>),
     Domains(Vec<Value>),
+    /// The domain list FAILED to load — kept separate from `Resp::Err` so the
+    /// screen can tell "the host has no domains" from "the fetch died", instead of
+    /// drawing the empty-state ("No domains yet") over a host with hundreds.
+    DomainsErr(String),
     /// All services across projects + the project names for a form dropdown.
     AllServices {
         projects: Vec<String>,
@@ -704,7 +708,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
         },
         Req::Domains => match client.call("domains", "listDomains", json!({})) {
             Ok(v) => Resp::Domains(v.as_array().cloned().unwrap_or_default()),
-            Err(e) => Resp::Err(e.to_string()),
+            Err(e) => Resp::DomainsErr(e.to_string()),
         },
         Req::AllServices => match client.call("projects", "listProjectsAndServices", Value::Null) {
             Ok(v) => Resp::AllServices {

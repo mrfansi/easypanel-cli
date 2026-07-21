@@ -1495,9 +1495,14 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
     }
     app.table_area = area;
     if rows.is_empty() {
-        // A bare bordered box cannot say whether the filter excluded everything
-        // or there is genuinely nothing here — and those need different actions.
-        let msg = if app.filter.is_empty() {
+        // A bare bordered box cannot say whether the fetch FAILED, the filter
+        // excluded everything, or there is genuinely nothing here — three states
+        // that read identically as "empty" but need different actions. On a host
+        // with hundreds of domains, a 502 that drew "No domains yet" is alarming
+        // and wrong; say what actually happened.
+        let msg = if let Some(err) = &app.domains_error {
+            format!("  ⚠ Couldn't load domains — {err}. Press r to retry")
+        } else if app.filter.is_empty() {
             "  No domains yet — press n to add one".to_string()
         } else {
             format!("  Nothing matches '{}' — Esc clears the filter", app.filter)

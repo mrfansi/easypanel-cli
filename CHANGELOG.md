@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.78.0] — 2026-07-21
+## [0.78.1] — 2026-07-21
+
+### Fixed
+
+- **The Domains screen no longer reads "No domains yet" when the fetch failed.** A
+  gateway 502 (seen live on a host with hundreds of domains) left the list empty,
+  and the empty-state drew "No domains yet — press n to add one" — as if the host
+  had none. A failed load is now tracked apart from a genuinely empty one, so the
+  screen says "⚠ Couldn't load domains — <error>. Press r to retry" and keeps any
+  domains it had already loaded. Found by driving the biggest live host.
+- **"Esc back" on the Credentials screen now actually goes back.** Credentials is
+  opened from the (usually filtered) Services list, and the global Esc handlers —
+  "clear the filter", "clear the marks" — fired first, so Esc silently cleared the
+  filter or *destroyed the marked set* and stayed on the screen; the advertised
+  "Esc back" did nothing until a second press. Full-screen sub-views (Viewer,
+  Credentials) now own their Esc: it returns to the list with the filter and marks
+  intact. The reveal (`v`) status hint also stays in step with the masked/revealed
+  state instead of going stale. (Found by an adversarial UI review.)
 
 ### Added
 

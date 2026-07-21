@@ -2094,6 +2094,45 @@ fn a_long_action_description_is_cut_with_an_ellipsis_not_silently() {
 }
 
 #[test]
+fn a_failed_domain_load_says_so_instead_of_no_domains_yet() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let render = |app: &mut App| -> String {
+        let mut term = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        term.draw(|f| super::render::ui(f, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // A genuinely empty host: the invitation to add one is right.
+    let mut empty = App::new("s".into(), vec![]);
+    empty.screen = Screen::Domains;
+    let s = render(&mut empty);
+    assert!(s.contains("No domains yet"), "empty host:\n{s}");
+
+    // A FAILED fetch leaves the list empty too — but it must NOT read as "no
+    // domains yet" on a host that may have hundreds; it must name the failure.
+    let mut failed = App::new("s".into(), vec![]);
+    failed.screen = Screen::Domains;
+    failed.domains_error = Some("[502] Bad Gateway".into());
+    let s = render(&mut failed);
+    assert!(
+        !s.contains("No domains yet"),
+        "a 502 must not read as an empty host:\n{s}"
+    );
+    assert!(
+        s.contains("Couldn't load") && s.contains("502"),
+        "the failure must be named:\n{s}"
+    );
+}
+
+#[test]
 fn replicas_must_be_a_number_and_zero_is_refused() {
     let f = |replicas: &str| {
         form(vec![

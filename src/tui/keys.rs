@@ -85,11 +85,19 @@ impl App {
                 self.status = "Bulk edit cancelled — nothing was changed".into();
             }
             KeyCode::Esc if self.domain_scope.is_some() => self.goto(Screen::Projects, req),
-            KeyCode::Esc if !self.filter.is_empty() => self.clear_filter(),
+            // A full-screen sub-view (Viewer, Credentials) OWNS its Esc — it means
+            // "back to the list I came from", with my filter and marks intact so I
+            // land where I was. Without this exemption Esc there fired these guards
+            // instead: it silently cleared the Services filter (invisible on that
+            // screen) or DESTROYED the marked set, and the "Esc back" the screen
+            // advertises did nothing until a second press.
+            KeyCode::Esc if !self.filter.is_empty() && !self.screen_owns_esc() => {
+                self.clear_filter()
+            }
             // Marks outlive the filter that helped make them, so Esc clears them
             // too — after the filter, since a filtered view is usually the thing
             // the user wants out of first.
-            KeyCode::Esc if !self.marked.is_empty() => {
+            KeyCode::Esc if !self.marked.is_empty() && !self.screen_owns_esc() => {
                 self.marked.clear();
                 self.status = "Marks cleared".into();
             }
@@ -1111,7 +1119,17 @@ impl App {
     pub(super) fn credentials_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => self.screen = Screen::Projects,
-            KeyCode::Char('v') => self.creds.revealed = !self.creds.revealed,
+            KeyCode::Char('v') => {
+                self.creds.revealed = !self.creds.revealed;
+                // Keep the status in step with the reveal — the border toggles
+                // v reveal / v hide, and a stale status must not contradict it.
+                self.status = if self.creds.revealed {
+                    "Revealed — c copies · v hides again"
+                } else {
+                    "Hidden — v reveals · c still copies the real value"
+                }
+                .into();
+            }
             KeyCode::Enter | KeyCode::Char('c') | KeyCode::Char('y') => {
                 match self
                     .creds
