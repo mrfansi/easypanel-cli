@@ -324,6 +324,32 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### Empty-vs-failed CLASS — now closed across the screens that mattered (v0.78.1 + v0.78.2)
+
+An adversarial fan-out audit (one code-reviewer agent over all 8 data screens)
+ranked the Domains bug's siblings. The verdict, and what shipped:
+
+- **Domains** (v0.78.1), **Services** (v0.78.2), **Dashboard/Stats** (v0.78.2) — the
+  three that actively mislead. Services drew a bare table reading as "host has
+  nothing"; Dashboard was WORST, fabricating 0.0% gauges (`app.stats.unwrap_or(Null)`)
+  that look real. All three now use the per-kind pattern: `Resp::<Kind>Err(String)`
+  → `App.<kind>_error: Option<String>`, cleared on the next success, branch the
+  render's empty/idle state on it, keep last-good on refresh failure. Live-verified
+  by pointing a THROWAWAY server (`server add zzz-unreachable --url http://127.0.0.1:1`)
+  at a dead URL, then removing it and restoring the config byte-identical.
+
+- **DO NOT "fix" these — they are correct by construction** (audit confirmed, don't
+  re-audit): the service-detail collections (ports/mounts/redirects/env/backups)
+  open the viewer ONLY on `Resp::Viewer` (success), so their "No X yet" is
+  unreachable on a failed fetch; **Hosts** already renders per-host failure as
+  "DOWN — <reason>" via the `HostState::{Loading,Ok,Err}` enum (the gold-standard
+  pattern the fields above imitate). Nodes/Monitor/Actions/Storage draw blank tables
+  on failure — MEDIUM/LOW, left alone as tidiness-not-defects per the audit rubric.
+
+- **Pattern for a NEW network-backed screen:** either add a per-kind `_error` field
+  (small) or use the `HostState` enum (cleaner). Never draw a placeholder/zero that
+  can't tell "empty" from "failed".
+
 ### Two "the screen lied about its state" bugs — fixed v0.78.1 (2026-07-21)
 
 Both found in one run: one by driving the live host, one by a parallel adversarial
