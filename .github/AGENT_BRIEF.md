@@ -298,6 +298,35 @@ and pass `--server harisenin-aurel` (or `harisenin-angelia`) explicitly for ever
 verification. Do not switch the default to make this easier — the owner's choice of
 default is theirs, and changing it is itself a mutation of their config.
 
+### Bulk-delete orphan domains: BUILT, then BACKED OUT — the panel won't delete them (2026-07-21)
+
+Probed before shipping, and the probe killed the feature — which is the probe doing its
+job. Findings against a live non-production host:
+
+- **`deleteDomain` validates the destination and rejects an orphan.** A domain pointing
+  at a service that does not exist is refused with `[400] Wrong service type.` — the exact
+  domains a "delete orphans" button would target. Verified: created domains pointing at a
+  ghost service, and every deleteDomain returned that 400.
+- **Destroying a service CASCADE-deletes its domains.** So the normal path never produces
+  an orphan; the domain goes with the service. Real orphans (1 of 713 on the owner's prod
+  host) arise from other paths — a rename, a manual mispointing — and the one real orphan
+  is structurally identical to the ghost ones, so deleteDomain would almost certainly
+  refuse it too. Not tested against the real one: it is production and must not be deleted.
+- **`deleteDomain` back-to-back is also unreliable** (some calls in a tight loop error
+  transiently while the domain survives) — so IF it ever became deletable, bulk delete
+  would still need to be sequential with per-item failure reporting, never a fan-out.
+
+The feature was fully built (preview → confirm → sequential delete with a failure report,
+`D` on the Domains screen) and verified to identify/preview orphans correctly and report
+failures honestly. But it was backed out unshipped: a destructive button whose targets
+the panel refuses to delete is worse than none. The orphan MARKING (v0.69.0) stands — it
+tells the operator; deletion is the panel's to fix (or a `viding-static2`-style domain has
+to be repointed, not deleted).
+
+**Do not rebuild this** unless a future EasyPanel makes deleteDomain accept an orphan, or
+a repoint-then-delete flow is found. If revisited, the code shape is in git stash history
+of this session's abandoned work.
+
 ### git checkout <file> threw away uncommitted work AGAIN (2026-07-21)
 
 Second time in two runs. While sabotage-testing, a python patch's anchor did not match
