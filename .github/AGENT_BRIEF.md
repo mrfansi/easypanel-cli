@@ -351,8 +351,30 @@ row arrived. Cleaned up all zzz services + R2 objects.
   `mysqldump --single-transaction` (bit us via a stray DB-shell session). Normal
   operation is unaffected; noted in case a future run sees a mysterious hang.
 
-**Not yet done (next backlog candidates):** postgres (`pg_dump`/`pg_dumpall`) and
-mongo (`mongodump --archive --gzip`); a pre-flight free-disk check on the
+**postgres — ATTEMPTED 2026-07-21, BLOCKED by the image (do NOT retry as-is).**
+The command builders are easy (`pg_dump -U <user> --create --clean --if-exists
+<db>` per database → file; restore `psql -U <user> -d postgres -f file`; creds are
+`/user`+`/password`, non-locking is free). The blocker is the TRANSPORT: the
+**official `postgres` image ships NO `curl` and NO `wget`** (verified live on
+`postgres:17` — `command -v curl wget` is empty). The whole architecture uploads
+container→R2 with `curl` from inside the container, and postgres has no HTTP client
+to do it, so a postgres `db dump` fails at the upload (or hangs). mysql/mariadb
+images DO have curl, which is why v0.80.0 works for them. v0.80.0 already rejects a
+postgres service cleanly at `resolve_db_engine` ("supports mysql and mariadb"), so
+there is no bug to fix — postgres simply can't use this path.
+  To actually ship postgres you must change the TRANSPORT so it doesn't need an
+  in-container HTTP client. Best option: dump to the container `/tmp`, then read the
+  gzipped file back over the WebSocket **base64-encoded** (text survives the PTY;
+  raw binary EAGAINs — see [[container-exec-pty-constraints]]), and upload from the
+  TOOL with reqwest (already a dependency) + the `s3.rs` presigner. That also drops
+  the curl dependency for mysql/mariadb. Caveat: the dump then crosses the WS, so
+  test whether the containerShell endpoint has the same ~125 s proxy limit that
+  killed the original "stream to laptop" idea (it may not — it's a persistent
+  socket, not a single blocked request). This is a real design change, a full
+  focused run, not a nibble.
+
+**Also not yet done:** mongo (`mongodump --archive --gzip`, needs the same
+transport rethink + it's not one SQL file); a pre-flight free-disk check on the
 container `/tmp`; and `run_until_done` does not kill the in-container command when
 it gives up (a blocked dump leaks a connection) — harmless normally, worth a
 follow-up.
