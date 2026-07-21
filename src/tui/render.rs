@@ -1374,9 +1374,9 @@ pub(super) fn render_credentials(f: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .map(|c| {
             let value = if c.secret && !revealed {
-                // A fixed-ish run of bullets — never the real length, which would
-                // leak how long the password is.
-                "•".repeat(c.value.chars().count().clamp(8, 24))
+                // A FIXED run of bullets, never the value's real length — the bullet
+                // count must not leak how long the password is.
+                "•".repeat(12)
             } else {
                 c.value.clone()
             };

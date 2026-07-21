@@ -30,7 +30,19 @@ pub struct Cred {
 /// shown when it exists, falling back to `root`; postgres falls back to
 /// `postgres` — matching how each image seeds its default account.
 pub fn credentials(stype: &str, s: &Value) -> Option<Vec<Cred>> {
-    let f = |k: &str| field(s, &format!("/{k}"));
+    // `field` returns "-" for a MISSING key, not "" — so a raw `.is_empty()` on
+    // it never sees an absent field, and a root-only database (no `user` key)
+    // would show `User = -` instead of falling back to root. `f` normalises that
+    // sentinel to empty, the same "-" guard the rest of the codebase uses
+    // (see backup::is_named).
+    let f = |k: &str| {
+        let v = field(s, &format!("/{k}"));
+        if v == "-" {
+            String::new()
+        } else {
+            v
+        }
+    };
     let host = format!("{}_{}", f("projectName"), f("name"));
 
     let (user, password, port, db) = match stype {
@@ -179,6 +191,18 @@ mod tests {
         let c = credentials("mysql", &root_only).unwrap();
         assert_eq!(c[0].value, "root");
         assert_eq!(c[1].value, "rp");
+
+        // The `user` key ABSENT entirely (not just empty): `field` yields "-",
+        // which must still fall back to root — not show "User = -".
+        let no_user_key = json!({
+            "projectName": "shop", "name": "mysql",
+            "rootPassword": "rp", "databaseName": "shop"
+        });
+        let c = credentials("mysql", &no_user_key).unwrap();
+        assert_eq!(c[0].value, "root");
+        assert_eq!(c[1].value, "rp");
+        // …and no stray "-" leaks into the URL from the absent app password.
+        assert_eq!(c[4].value, "mysql://root:rp@shop_mysql:3306/shop");
     }
 
     #[test]

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.77.1] — 2026-07-21
+
+### Fixed
+
+- **Credentials: a root-only database no longer shows `User = -`.** The fallback
+  to `root`/`postgres` was decided with `field(...).is_empty()`, but `field`
+  returns the string `"-"` for a MISSING key, not `""` — so a database whose
+  `inspectService` omits the `user` key (a root-only setup) took the app-user
+  branch and rendered `User = -`, `Password = -`, and a `mysql://-:-@…` URL. The
+  `"-"` sentinel is now normalised to empty (the same guard the rest of the code
+  uses), so an absent field falls back correctly. Found by an adversarial review
+  of the v0.77.0 change.
+- **Credentials: the masked password no longer hints at its length.** The bullet
+  run was sized from the value's own length for 8–24 char secrets, so the number
+  of `•` usually equalled the real password length. It is now a fixed width.
+
 ## [0.77.0] — 2026-07-21
 
 ### Added
