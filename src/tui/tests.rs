@@ -5478,12 +5478,18 @@ fn help_opens_in_the_cloudflare_workspace_and_documents_cf_keys() {
     app.on_key(KeyCode::Char('?'), &tx);
     assert!(app.help, "? opens help in the Cloudflare workspace");
 
-    let zones: Vec<&str> = cf_screen_keys(CfScreen::Zones).iter().map(|k| k.0).collect();
+    let zones: Vec<&str> = cf_screen_keys(CfScreen::Zones)
+        .iter()
+        .map(|k| k.0)
+        .collect();
     assert!(
         zones.contains(&"a") && zones.contains(&"Enter"),
         "zones help lists the account picker and records keys"
     );
-    let records: Vec<&str> = cf_screen_keys(CfScreen::Records).iter().map(|k| k.0).collect();
+    let records: Vec<&str> = cf_screen_keys(CfScreen::Records)
+        .iter()
+        .map(|k| k.0)
+        .collect();
     assert!(
         records.contains(&"e") && records.contains(&"Space"),
         "records help lists the edit and bulk keys"
