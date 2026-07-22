@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.4] — 2026-07-22
+
+### Added
+
+- **The Cloudflare Zones screen now has a row action menu, like the EasyPanel screens.**
+  Press **`Space`** (or **right-click** a zone) to open an "Actions" menu — *Open DNS
+  records* and *Delete zone…* — the same `open_menu` machinery and feel as EasyPanel's
+  per-row menus, where those actions previously only had bare keys. (The Records screen
+  keeps `Space` for its bulk menu; a per-record right-click menu there is a separate
+  future item.)
+
 ## [0.83.3] — 2026-07-22
 
 ### Fixed

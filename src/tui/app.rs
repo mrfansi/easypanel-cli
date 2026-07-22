@@ -1255,6 +1255,22 @@ impl App {
         );
     }
 
+    /// The row action menu for the selected zone (Space / right-click) — the CF
+    /// mirror of EasyPanel's per-row menu, built with the same `open_menu` /
+    /// `MenuItem` machinery. Presentation only: its items route to the SAME flows
+    /// the keys already use — open the zone's DNS records (as Enter does) and the
+    /// typed-name delete form.
+    pub(super) fn open_cf_zone_menu(&mut self) {
+        if self.selected_cf_zone().is_none() {
+            self.status = "No zone selected".into();
+            return;
+        }
+        self.open_menu(vec![
+            MenuItem::new("Open DNS records", |a, r| a.cf_open_records(r)),
+            MenuItem::new("Delete zone…", |a, _| a.open_cf_zone_delete_form()),
+        ]);
+    }
+
     /// The bulk action menu for the marked records.
     pub(super) fn open_cf_bulk_menu(&mut self) {
         let n = self.cf.marked.len();

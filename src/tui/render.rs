@@ -168,9 +168,10 @@ pub(super) const CF_GLOBAL_KEYS: &[Key] = &[
 ];
 
 /// The mouse actions available in the Cloudflare workspace (no tab-click with one
-/// product tab, no per-row right-click menu yet).
+/// product tab; right-click opens the row menu on the Zones screen).
 pub(super) const CF_MOUSE_KEYS: &[Key] = &[
     Key("Click row", "select the row"),
+    Key("Right click", "action menu for the selected zone"),
     Key("Scroll", "scroll the list"),
 ];
 
@@ -387,6 +388,7 @@ pub(super) fn cf_screen_keys(screen: CfScreen) -> &'static [Key] {
                 "switch Cloudflare account (a picker, like `s` switches servers)",
             ),
             Key("Enter", "open the selected zone's DNS records"),
+            Key("Space", "action menu for the selected zone"),
             Key("n", "add a zone"),
             Key("x", "delete a zone (type its name to confirm)"),
             Key("/", "filter the list"),

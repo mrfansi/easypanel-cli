@@ -5498,9 +5498,10 @@ fn help_opens_in_the_cloudflare_workspace_and_documents_cf_keys() {
 
 #[test]
 fn cf_help_anywhere_and_mouse_omit_keys_that_are_inert_in_the_workspace() {
-    // The CF workspace has no EasyPanel tabs / `:` palette / `s` server picker, and no
-    // tab-click or per-row right-click menu — so the help's "Anywhere" and "Mouse"
-    // sections must not advertise them (help that lies is worse than no help).
+    // The CF workspace has no EasyPanel tabs / `:` palette / `s` server picker and no
+    // tab-click — so the help's "Anywhere" and "Mouse" sections must not advertise
+    // them (help that lies is worse than no help). Right-click IS live now: it opens
+    // the Zones row menu, so the Mouse section documents it.
     let g: Vec<&str> = CF_GLOBAL_KEYS.iter().map(|k| k.0).collect();
     assert!(g.contains(&"W") && g.contains(&"?") && g.contains(&"r"));
     for stale in ["1-8 / Tab / ←→", "s", ":"] {
@@ -5512,8 +5513,8 @@ fn cf_help_anywhere_and_mouse_omit_keys_that_are_inert_in_the_workspace() {
     let m: Vec<&str> = CF_MOUSE_KEYS.iter().map(|k| k.0).collect();
     assert!(m.contains(&"Click row") && m.contains(&"Scroll"));
     assert!(
-        !m.contains(&"Right click"),
-        "right-click is a no-op in the CF workspace"
+        m.contains(&"Right click"),
+        "right-click opens the zone action menu, so the Mouse help lists it"
     );
     assert!(
         !m.contains(&"Click tab"),
@@ -5814,6 +5815,113 @@ fn cf_hover_and_click_select_the_row_under_the_cursor() {
     );
     // Click selects only — it must not drill into Records (that's Enter).
     assert_eq!(app.cf.screen, CfScreen::Zones);
+}
+
+#[test]
+fn cf_space_opens_the_zone_action_menu_and_records_route_drills_in() {
+    // Space on the Zones screen opens the row action menu (the CF mirror of
+    // EasyPanel's row menu), and "Open DNS records" reaches Records — the same
+    // flow as Enter. State transitions only — no paint.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.zones = vec![cf_zone("z1", "example.com")];
+    app.cf.zones_row.select(Some(0));
+
+    app.on_key(KeyCode::Char(' '), &tx);
+    let labels: Vec<String> = app
+        .menu
+        .as_ref()
+        .expect("Space opens the zone action menu")
+        .items
+        .iter()
+        .map(|it| it.label.clone())
+        .collect();
+    assert!(
+        labels.iter().any(|l| l == "Open DNS records"),
+        "the menu offers the records route: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l == "Delete zone…"),
+        "the menu offers the delete route: {labels:?}"
+    );
+
+    // Selecting "Open DNS records" (index 0) drills into the zone's Records.
+    app.menu.as_mut().unwrap().state.select(Some(0));
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(app.menu.is_none(), "activating a leaf item closes the menu");
+    assert_eq!(app.cf.screen, CfScreen::Records);
+    assert_eq!(
+        app.cf.current_zone.as_ref().map(|z| z.name.as_str()),
+        Some("example.com"),
+        "the records route carries the selected zone"
+    );
+}
+
+#[test]
+fn cf_zone_menu_delete_opens_the_form_and_right_click_opens_the_menu() {
+    // "Delete zone…" opens the typed-name delete form (the existing flow), and a
+    // right click on a Zones row selects it and opens the SAME menu.
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.zones = vec![cf_zone("z1", "example.com"), cf_zone("z2", "other.com")];
+    app.cf.zones_row.select(Some(0));
+    app.table_area = ratatui::layout::Rect::new(0, 0, 80, 20);
+
+    // Space → pick "Delete zone…" → the typed-name delete form opens.
+    app.on_key(KeyCode::Char(' '), &tx);
+    let del = app
+        .menu
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .position(|it| it.label == "Delete zone…")
+        .expect("the menu offers Delete zone…");
+    app.menu.as_mut().unwrap().state.select(Some(del));
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(
+        matches!(
+            app.form.as_ref().map(|f| &f.kind),
+            Some(FormKind::CfZoneDelete { .. })
+        ),
+        "Delete zone… opens the zone-delete form"
+    );
+    app.form = None; // clear the form so the next menu isn't swallowed by it
+
+    // Right-click on the 2nd data row (idx 1 = table_area.y + 2 + 1) selects it,
+    // then opens the same action menu.
+    app.on_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 5,
+            row: 3,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        },
+        &tx,
+    );
+    assert_eq!(
+        app.cf.zones_row.selected(),
+        Some(1),
+        "right-click selects the row under the cursor"
+    );
+    let labels: Vec<String> = app
+        .menu
+        .as_ref()
+        .expect("right-click opens the zone action menu")
+        .items
+        .iter()
+        .map(|it| it.label.clone())
+        .collect();
+    assert!(
+        labels.iter().any(|l| l == "Open DNS records")
+            && labels.iter().any(|l| l == "Delete zone…"),
+        "right-click opens the same menu: {labels:?}"
+    );
 }
 
 #[test]
