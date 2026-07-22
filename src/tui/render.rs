@@ -676,11 +676,18 @@ fn cf_breadcrumb(segments: &[&str], tail: &str) -> String {
 /// no account configured it shows the empty state (press `a`), never a dead end.
 fn render_cf_zones(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     let acct = app.cf.active.as_ref().map(|a| a.name.clone());
-    let segs: Vec<&str> = acct.as_deref().into_iter().collect();
+    // The home screen names the active account exactly like EasyPanel's header names the
+    // active server ("EasyPanel — <server>" → "Cloudflare — <account>"), switched with the
+    // `a` account picker the way `s` switches servers. The `— zones` breadcrumb is dropped
+    // here (this IS the zones home); Records keeps the full breadcrumb as a drill-in.
+    let title = match &acct {
+        Some(name) => format!("Cloudflare — {name}"),
+        None => "Cloudflare".to_string(),
+    };
     cf_header(
         f,
         header,
-        &cf_breadcrumb(&segs, "zones"),
+        &title,
         "a account · Enter records · n add zone · x delete · / filter · r refresh · Esc EasyPanel",
     );
 
