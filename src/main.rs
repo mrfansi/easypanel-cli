@@ -439,9 +439,26 @@ enum CfCmd {
 
 #[derive(Subcommand)]
 enum CfR2Cmd {
-    /// Manage R2 buckets (object browsing is a separate future slice)
+    /// Manage R2 buckets
     #[command(subcommand)]
     Bucket(CfR2BucketCmd),
+    /// Browse objects inside a bucket (list only; upload/download/delete are a future slice)
+    #[command(subcommand)]
+    Object(CfR2ObjectCmd),
+}
+
+#[derive(Subcommand)]
+enum CfR2ObjectCmd {
+    /// List objects in a bucket (needs the account's Workers R2 Storage token permission)
+    List {
+        /// The bucket to browse
+        bucket: String,
+        /// Only objects whose key starts with this prefix
+        #[arg(long)]
+        prefix: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1005,6 +1022,18 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                         CfR2BucketCmd::Delete { name, account, yes } => {
                             commands::cf_r2_bucket_delete(&cf, account.as_deref(), &name, yes)
                         }
+                    },
+                    CfR2Cmd::Object(o) => match o {
+                        CfR2ObjectCmd::List {
+                            bucket,
+                            prefix,
+                            account,
+                        } => commands::cf_r2_object_list(
+                            &cf,
+                            account.as_deref(),
+                            &bucket,
+                            prefix.as_deref(),
+                        ),
                     },
                 },
             }

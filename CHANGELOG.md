@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.84.0] — 2026-07-22
+## [0.85.0] — 2026-07-22
+
+### Added
+
+- **Browse the objects inside an R2 bucket.** In the TUI, **Enter** on a bucket (R2 tab)
+  drills into its objects — Key / Size / Modified, with a `/` filter — mirroring the
+  zone→records drill-in; on the CLI, `easypanel cf r2 object list <bucket> [--prefix …]`.
+  It uses Cloudflare's REST objects API with the account's **existing API token** (the
+  same one that lists buckets) — **no separate R2 S3 credentials required**. Verified live
+  against real buckets and objects. (Uploading/downloading/deleting objects is still to
+  come.)
 
 ### Added
 

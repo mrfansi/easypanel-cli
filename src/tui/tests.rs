@@ -6089,6 +6089,76 @@ fn cf_buckets_key_handles_add_delete_and_filter() {
     );
 }
 
+fn cf_object(key: &str, size: u64) -> crate::cloudflare::R2Object {
+    crate::cloudflare::R2Object {
+        key: key.into(),
+        size,
+        last_modified: "2026-01-02T03:04:05.000Z".into(),
+        storage_class: "STANDARD".into(),
+    }
+}
+
+#[test]
+fn cf_bucket_enter_drills_into_objects_and_esc_walks_back() {
+    // Enter on a bucket drills into its Objects — an R2Objects request goes out carrying
+    // the account's Bearer token + id (no separate credentials); Esc walks back to the
+    // buckets home. State transitions only — no network. Mirrors zone → records.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.set_workspace(Workspace::Cloudflare);
+    app.on_key(KeyCode::Tab, &tx); // → R2
+    assert_eq!(app.cf.product, CfProduct::R2);
+    let _ = rx.try_recv(); // drain the buckets load from switching to R2
+
+    app.cf.r2_buckets = vec![cf_bucket("assets"), cf_bucket("backups")];
+    app.cf.r2_row.select(Some(0));
+    app.on_key(KeyCode::Enter, &tx);
+    assert_eq!(
+        app.cf.screen,
+        CfScreen::Objects,
+        "Enter drills into objects"
+    );
+    assert_eq!(app.cf.current_bucket.as_deref(), Some("assets"));
+    assert!(
+        matches!(
+            rx.try_recv(),
+            Ok(Req::Cf(CfReq::R2Objects { bucket, .. })) if bucket == "assets"
+        ),
+        "Enter fires an R2Objects request for the selected bucket"
+    );
+
+    // A reply for the current bucket populates the list; a stale one is discarded.
+    app.handle(
+        Resp::Cf(CfResp::R2Objects {
+            bucket: "assets".into(),
+            objects: vec![cf_object("img/logo.png", 2048)],
+        }),
+        &tx,
+    );
+    assert_eq!(app.cf.r2_objects.len(), 1);
+    app.handle(
+        Resp::Cf(CfResp::R2Objects {
+            bucket: "some-other-bucket".into(),
+            objects: vec![cf_object("stale.txt", 1)],
+        }),
+        &tx,
+    );
+    assert_eq!(
+        app.cf.r2_objects.len(),
+        1,
+        "a reply for a bucket the user already left is discarded"
+    );
+
+    // Esc: Objects → buckets home (an R2 non-Objects screen), drill-in state cleared.
+    app.on_key(KeyCode::Esc, &tx);
+    assert_ne!(app.cf.screen, CfScreen::Objects);
+    assert_eq!(app.cf.current_bucket, None);
+    // Esc again leaves the workspace (the buckets home's Esc).
+    app.on_key(KeyCode::Esc, &tx);
+    assert!(app.workspace == Workspace::Easypanel);
+}
+
 #[test]
 fn cf_status_hints_name_each_screens_keys() {
     // The header carries the tab bar; the per-screen keys live in the status bar,

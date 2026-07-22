@@ -576,11 +576,13 @@ non-default account.
 easypanel cf r2 bucket list
 easypanel cf r2 bucket create my-bucket
 easypanel cf r2 bucket delete my-bucket        # must be empty; asks to type the name
+easypanel cf r2 object list my-bucket [--prefix path/]   # browse a bucket's objects
 ```
 
-Bucket management needs the account-scoped **Workers R2 Storage** token permission (the
-tool hints at that if it's missing). Browsing the *objects* inside a bucket is separate —
-it goes through R2's own S3 credentials — and lands in a later release.
+R2 needs the account-scoped **Workers R2 Storage** token permission (the tool hints at
+that if it's missing) — the same API token lists buckets AND their objects, so there are
+**no separate R2 S3 credentials to set up**. Uploading/downloading/deleting objects lands
+in a later release.
 
 **In the TUI:** press **`W`** to switch into an isolated, Cloudflare-orange workspace with
 its own product tab bar (**DNS │ R2**, switched with `1`/`2`/`Tab`/`←→`). On **DNS**, the
@@ -588,8 +590,9 @@ home is the active account's zones; **`a`** opens an account picker (select / ad
 just like the server switcher), **Enter** on a zone drills into its records, and records
 support add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a
 `Space` menu (`Space`/right-click also opens a per-zone action menu). On **R2**, the same
-shape lists buckets with `n` create / `x` delete. The EasyPanel tabs and 1–8 keys are inert
-inside the Cloudflare workspace, and vice-versa.
+shape lists buckets with `n` create / `x` delete, and **Enter** drills into a bucket's
+objects. The EasyPanel tabs and 1–8 keys are inert inside the Cloudflare workspace, and
+vice-versa.
 
 v1 covers the common record types (A, AAAA, CNAME, TXT, NS, MX). Every endpoint shape was
 checked against Cloudflare's official API reference; the request/error plumbing is verified

@@ -1290,18 +1290,21 @@ impl App {
             _ => {}
         }
         match self.cf.product {
-            CfProduct::R2 => self.cf_buckets_key(code, req),
+            CfProduct::R2 => match self.cf.screen {
+                CfScreen::Objects => self.cf_objects_key(code, req),
+                _ => self.cf_buckets_key(code, req),
+            },
             CfProduct::Dns => match self.cf.screen {
                 CfScreen::Zones => self.cf_zones_key(code, req),
-                CfScreen::Records => self.cf_records_key(code, req),
+                CfScreen::Records | CfScreen::Objects => self.cf_records_key(code, req),
             },
         }
     }
 
     /// The R2 buckets home. Mirrors the Zones home: `a` switches account (picker),
-    /// `n` adds a bucket, `x` deletes (typed-name confirm), Space opens the row
-    /// menu, Esc leaves the workspace (after clearing an active filter first).
-    /// Enter is a no-op for now — object browsing is the next slice.
+    /// Enter drills into the bucket's objects, `n` adds a bucket, `x` deletes
+    /// (typed-name confirm), Space opens the row menu, Esc leaves the workspace
+    /// (after clearing an active filter first).
     fn cf_buckets_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
             KeyCode::Esc if !self.cf.filter.is_empty() => {
@@ -1319,12 +1322,39 @@ impl App {
             KeyCode::Char('n') => self.open_cf_bucket_form(),
             KeyCode::Char('x') => self.open_cf_bucket_delete_form(),
             KeyCode::Char(' ') => self.open_cf_bucket_menu(),
-            KeyCode::Enter => {
-                self.status = "Object browsing is coming in a later release".into();
-            }
+            KeyCode::Enter => self.cf_open_objects(req),
             _ => {
                 let len = self.cf_buckets_shown().len();
                 move_table(&mut self.cf.r2_row, code, len);
+            }
+        }
+    }
+
+    /// The R2 objects drill-in (the mirror of the DNS Records screen): `/` filter,
+    /// `r` refresh, Esc backs out to the buckets home (clearing an active filter
+    /// first). No add/delete yet — object mutation is a later slice.
+    fn cf_objects_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        match code {
+            KeyCode::Esc if !self.cf.filter.is_empty() => {
+                self.cf.filter.clear();
+                self.cf_clamp_filtered();
+            }
+            KeyCode::Esc => {
+                // Back to the buckets home. R2's home is any non-Objects screen; the
+                // buckets stay loaded, so no reload — just drop the drill-in state.
+                self.cf.screen = CfScreen::Zones;
+                self.cf.current_bucket = None;
+                self.cf.error = None;
+            }
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('/') => {
+                self.cf.filter_input = true;
+                self.cf.filter.clear();
+            }
+            KeyCode::Char('r') => self.cf_reload(req),
+            _ => {
+                let len = self.cf_objects_shown().len();
+                move_table(&mut self.cf.r2_objects_row, code, len);
             }
         }
     }

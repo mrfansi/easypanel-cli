@@ -8,7 +8,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::client::EasypanelClient;
-use crate::cloudflare::{CloudflareClient, R2Bucket, Record, RecordFilter, Zone};
+use crate::cloudflare::{CloudflareClient, R2Bucket, R2Object, Record, RecordFilter, Zone};
 use crate::output::field;
 
 // ---------- Worker (networking on a separate thread so the UI doesn't freeze) ----------
@@ -502,6 +502,14 @@ pub(super) enum CfReq {
         account_id: String,
         name: String,
     },
+    /// List a bucket's objects via the REST API — the SAME Bearer token as buckets, no
+    /// S3 credentials. Account-scoped, so the account_id travels alongside the token.
+    R2Objects {
+        token: String,
+        account_id: String,
+        bucket: String,
+        prefix: Option<String>,
+    },
 }
 
 pub(super) enum Resp {
@@ -686,6 +694,12 @@ pub(super) enum CfResp {
     },
     /// The R2 buckets for the active account.
     R2Buckets(Vec<R2Bucket>),
+    /// The objects for `bucket` — the name is echoed back so a stale reply for a bucket
+    /// the user already left is discarded rather than drawn.
+    R2Objects {
+        bucket: String,
+        objects: Vec<R2Object>,
+    },
     /// A create/edit/delete succeeded; the app re-lists the affected screen.
     Done(String),
     /// A bulk fan-out: how many succeeded and, per failed id, the reason.
@@ -2010,6 +2024,19 @@ fn handle_cf(req: CfReq) -> CfResp {
             name,
         } => match CloudflareClient::new(&token).delete_r2_bucket(&account_id, &name) {
             Ok(()) => CfResp::Done(format!("Bucket '{name}' deleted")),
+            Err(e) => CfResp::Err(e.to_string()),
+        },
+        CfReq::R2Objects {
+            token,
+            account_id,
+            bucket,
+            prefix,
+        } => match CloudflareClient::new(&token).list_r2_objects(
+            &account_id,
+            &bucket,
+            prefix.as_deref(),
+        ) {
+            Ok(objects) => CfResp::R2Objects { bucket, objects },
             Err(e) => CfResp::Err(e.to_string()),
         },
     }

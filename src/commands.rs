@@ -566,6 +566,51 @@ pub fn cf_r2_bucket_delete(
     Ok(())
 }
 
+// ---------- R2 objects (REST API, account-scoped) ----------
+
+/// Resolve the account and print a bucket's objects: Key / Size / Modified. Uses the
+/// SAME Bearer token as buckets (no separate credentials); needs only the account-id.
+/// A token missing the Workers R2 Storage permission surfaces the same `r2_hint`.
+pub fn cf_r2_object_list(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    bucket: &str,
+    prefix: Option<&str>,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let objects = client.list_r2_objects(&account_id, bucket, prefix)?;
+    if output::json_output() {
+        output::print_json(&serde_json::to_value(
+            objects
+                .iter()
+                .map(|o| {
+                    json!({ "key": o.key, "size": o.size,
+                            "last_modified": o.last_modified,
+                            "storage_class": o.storage_class })
+                })
+                .collect::<Vec<_>>(),
+        )?);
+        return Ok(());
+    }
+    if objects.is_empty() {
+        println!("No objects in bucket '{bucket}'.");
+        return Ok(());
+    }
+    let rows = objects
+        .iter()
+        .map(|o| {
+            vec![
+                o.key.clone(),
+                output::format_bytes(o.size as f64),
+                o.last_modified.clone(),
+            ]
+        })
+        .collect();
+    table(&["Key", "Size", "Modified"], rows);
+    Ok(())
+}
+
 fn mask_token(token: &str) -> String {
     // Per CHARACTER, not byte: the token comes from a config file that can be
     // hand-edited. `&token[..6]` slices at a byte index, and a token with a

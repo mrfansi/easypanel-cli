@@ -7,8 +7,8 @@ use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
 
 use crate::cloudflare::{
-    apply_patch, proxyable, record_body, valid_record_type, CloudflareAccount, R2Bucket, Record,
-    RecordFilter, RecordPatch, Zone,
+    apply_patch, proxyable, record_body, valid_record_type, CloudflareAccount, R2Bucket, R2Object,
+    Record, RecordFilter, RecordPatch, Zone,
 };
 use crate::commands;
 use crate::output::field;
@@ -183,6 +183,9 @@ pub(super) enum CfScreen {
     #[default]
     Zones,
     Records,
+    /// The R2 objects drill-in from a selected bucket — the mirror of Records for
+    /// DNS. R2's buckets home is any non-`Objects` state (R2 dispatches on this).
+    Objects,
 }
 
 /// A Cloudflare product section, shown as a tab in the CF workspace. DNS (zones +
@@ -239,6 +242,11 @@ pub(super) struct CfUi {
     /// loaded when the R2 tab is selected; the shared `filter`/`error` cover it too.
     pub(super) r2_buckets: Vec<R2Bucket>,
     pub(super) r2_row: TableState,
+    /// R2 objects drill-in state (the mirror of `records`/`current_zone`): the objects
+    /// of `current_bucket` and the selected row. Loaded via the S3 API on Enter.
+    pub(super) r2_objects: Vec<R2Object>,
+    pub(super) r2_objects_row: TableState,
+    pub(super) current_bucket: Option<String>,
     /// A CF-local text filter, narrowing the loaded list client-side.
     pub(super) filter: String,
     pub(super) filter_input: bool,
@@ -322,6 +330,16 @@ pub(super) fn filter_buckets<'a>(buckets: &'a [R2Bucket], needle: &str) -> Vec<&
                     .to_ascii_lowercase()
                     .contains(&n)
         })
+        .collect()
+}
+
+/// The R2 objects whose key contains `needle` (case-insensitive). An empty needle
+/// keeps everything — narrows the already-loaded page client-side, like `filter_records`.
+pub(super) fn filter_objects<'a>(objects: &'a [R2Object], needle: &str) -> Vec<&'a R2Object> {
+    let n = needle.to_ascii_lowercase();
+    objects
+        .iter()
+        .filter(|o| n.is_empty() || o.key.to_ascii_lowercase().contains(&n))
         .collect()
 }
 
@@ -720,10 +738,13 @@ impl App {
         // filtered CF list under the cursor.
         if self.workspace == Workspace::Cloudflare {
             return match self.cf.product {
-                CfProduct::R2 => self.cf_buckets_shown().len(),
+                CfProduct::R2 => match self.cf.screen {
+                    CfScreen::Objects => self.cf_objects_shown().len(),
+                    _ => self.cf_buckets_shown().len(),
+                },
                 CfProduct::Dns => match self.cf.screen {
                     CfScreen::Zones => self.cf_zones_shown().len(),
-                    CfScreen::Records => self.cf_records_shown().len(),
+                    CfScreen::Records | CfScreen::Objects => self.cf_records_shown().len(),
                 },
             };
         }
@@ -745,10 +766,13 @@ impl App {
         // CF row state.
         if self.workspace == Workspace::Cloudflare {
             return Some(match self.cf.product {
-                CfProduct::R2 => &mut self.cf.r2_row,
+                CfProduct::R2 => match self.cf.screen {
+                    CfScreen::Objects => &mut self.cf.r2_objects_row,
+                    _ => &mut self.cf.r2_row,
+                },
                 CfProduct::Dns => match self.cf.screen {
                     CfScreen::Zones => &mut self.cf.zones_row,
-                    CfScreen::Records => &mut self.cf.records_row,
+                    CfScreen::Records | CfScreen::Objects => &mut self.cf.records_row,
                 },
             });
         }
@@ -1033,6 +1057,11 @@ impl App {
         self.cf.active.as_ref().and_then(|a| a.account_id.clone())
     }
 
+    /// The objects shown right now (after the CF-local filter).
+    pub(super) fn cf_objects_shown(&self) -> Vec<&R2Object> {
+        filter_objects(&self.cf.r2_objects, &self.cf.filter)
+    }
+
     /// The account to activate on first entering the workspace: the config default,
     /// else the first stored account, else none (the empty state).
     fn cf_default_account(&self) -> Option<CloudflareAccount> {
@@ -1161,8 +1190,32 @@ impl App {
         }
     }
 
-    /// Reset the per-list transient state when entering Zones or Records: clear the
-    /// old list so the loading state shows, drop the filter, marks and last error.
+    /// Enter on a bucket: drill into its objects (the R2 mirror of zone → records).
+    /// Objects come from the REST API with the SAME Bearer token as buckets — no
+    /// separate credentials. A token missing the R2 permission fails the fetch and
+    /// lands in the normal error state (with the "Workers R2 Storage" hint).
+    pub(super) fn cf_open_objects(&mut self, req: &Sender<Req>) {
+        let Some(bucket) = self.selected_cf_bucket() else {
+            self.status = "No bucket selected".into();
+            return;
+        };
+        let name = bucket.name.clone();
+        self.cf.current_bucket = Some(name.clone());
+        self.cf.screen = CfScreen::Objects;
+        self.cf_enter_list();
+        if let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id()) {
+            let _ = req.send(Req::Cf(CfReq::R2Objects {
+                token,
+                account_id,
+                bucket: name.clone(),
+                prefix: None,
+            }));
+            self.status = format!("Loading objects in {name}…");
+        }
+    }
+
+    /// Reset the per-list transient state when entering Zones, Records or Objects:
+    /// clear the old list so the loading state shows, drop the filter, marks and error.
     fn cf_enter_list(&mut self) {
         self.cf.filter.clear();
         self.cf.filter_input = false;
@@ -1177,6 +1230,10 @@ impl App {
                 self.cf.records.clear();
                 self.cf.records_row.select(None);
             }
+            CfScreen::Objects => {
+                self.cf.r2_objects.clear();
+                self.cf.r2_objects_row.select(None);
+            }
         }
     }
 
@@ -1186,6 +1243,21 @@ impl App {
             return;
         };
         if self.cf.product == CfProduct::R2 {
+            // In the objects drill-in, `r` re-lists that bucket; on the buckets home it
+            // re-lists buckets. Both go through the same Bearer token as the rest of CF.
+            if self.cf.screen == CfScreen::Objects {
+                if let (Some(account_id), Some(bucket)) =
+                    (self.cf_account_id(), self.cf.current_bucket.clone())
+                {
+                    let _ = req.send(Req::Cf(CfReq::R2Objects {
+                        token,
+                        account_id,
+                        bucket,
+                        prefix: None,
+                    }));
+                }
+                return;
+            }
             if let Some(account_id) = self.cf_account_id() {
                 let _ = req.send(Req::Cf(CfReq::R2Buckets { token, account_id }));
             }
@@ -1205,12 +1277,20 @@ impl App {
                     }));
                 }
             }
+            // Objects is an R2 screen, handled by the R2 branch above.
+            CfScreen::Objects => {}
         }
     }
 
     /// Keep the CF selection in range after the filter narrows the list.
     pub(super) fn cf_clamp_filtered(&mut self) {
         if self.cf.product == CfProduct::R2 {
+            if self.cf.screen == CfScreen::Objects {
+                let len = self.cf_objects_shown().len();
+                *self.cf.r2_objects_row.offset_mut() = 0;
+                self.cf.r2_objects_row.select((len > 0).then_some(0));
+                return;
+            }
             let len = self.cf_buckets_shown().len();
             *self.cf.r2_row.offset_mut() = 0;
             self.cf.r2_row.select((len > 0).then_some(0));
@@ -1227,6 +1307,8 @@ impl App {
                 *self.cf.records_row.offset_mut() = 0;
                 self.cf.records_row.select((len > 0).then_some(0));
             }
+            // Objects is an R2 screen, handled by the R2 branch above.
+            CfScreen::Objects => {}
         }
     }
 
@@ -1431,9 +1513,10 @@ impl App {
             self.status = "No bucket selected".into();
             return;
         }
-        self.open_menu(vec![MenuItem::new("Delete bucket…", |a, _| {
-            a.open_cf_bucket_delete_form()
-        })]);
+        self.open_menu(vec![
+            MenuItem::new("Browse objects", |a, r| a.cf_open_objects(r)),
+            MenuItem::new("Delete bucket…", |a, _| a.open_cf_bucket_delete_form()),
+        ]);
     }
 
     /// The bulk action menu for the marked records.
@@ -2026,6 +2109,15 @@ impl App {
                 self.cf.r2_buckets = buckets;
                 let len = self.cf_buckets_shown().len();
                 select_first(&mut self.cf.r2_row, len);
+            }
+            CfResp::R2Objects { bucket, objects } => {
+                // Discard a stale reply for a bucket the user has already left.
+                if self.cf.current_bucket.as_deref() == Some(bucket.as_str()) {
+                    self.cf.error = None;
+                    self.cf.r2_objects = objects;
+                    let len = self.cf_objects_shown().len();
+                    select_first(&mut self.cf.r2_objects_row, len);
+                }
             }
             CfResp::Done(msg) => {
                 self.status = msg;

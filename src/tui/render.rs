@@ -405,17 +405,21 @@ pub(super) fn cf_screen_keys(screen: CfScreen) -> &'static [Key] {
             Key("r", "refresh"),
             Key("Esc", "back to zones"),
         ],
+        // Objects is an R2 screen (render_help routes R2 to cf_objects_keys); it shares
+        // this fn only to keep the match exhaustive.
+        CfScreen::Objects => cf_objects_keys(),
     }
 }
 
 /// The R2 Buckets screen's keys (product-selected in `render_help`, since R2 has
-/// no `CfScreen`). Enter is intentionally absent — object browsing is a later slice.
+/// no `CfScreen` of its own). Enter drills into the bucket's objects.
 pub(super) fn cf_buckets_keys() -> &'static [Key] {
     &[
         Key(
             "a",
             "switch Cloudflare account (a picker, like `s` switches servers)",
         ),
+        Key("Enter", "browse the selected bucket's objects"),
         Key("Space", "action menu for the selected bucket"),
         Key("n", "add a bucket"),
         Key("x", "delete a bucket (type its name to confirm)"),
@@ -425,13 +429,26 @@ pub(super) fn cf_buckets_keys() -> &'static [Key] {
     ]
 }
 
+/// The R2 Objects drill-in keys. Browse-only for now — add/delete of objects is a
+/// later slice, so only filter/refresh and Esc back to the buckets are listed.
+pub(super) fn cf_objects_keys() -> &'static [Key] {
+    &[
+        Key("/", "filter the list"),
+        Key("r", "refresh"),
+        Key("Esc", "back to buckets"),
+    ]
+}
+
 pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     // In the Cloudflare workspace the "this screen" section documents the CF screen's
     // keys, not the (stale) EasyPanel Screen's — the two workspaces are isolated.
     let cf = app.workspace == Workspace::Cloudflare;
     let rows = if cf {
         match app.cf.product {
-            CfProduct::R2 => cf_buckets_keys(),
+            CfProduct::R2 => match app.cf.screen {
+                CfScreen::Objects => cf_objects_keys(),
+                _ => cf_buckets_keys(),
+            },
             CfProduct::Dns => cf_screen_keys(app.cf.screen),
         }
     } else {
@@ -488,10 +505,13 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
 
     let screen_label = if cf {
         match app.cf.product {
-            CfProduct::R2 => "Cloudflare · R2",
+            CfProduct::R2 => match app.cf.screen {
+                CfScreen::Objects => "Cloudflare · R2 · objects",
+                _ => "Cloudflare · R2",
+            },
             CfProduct::Dns => match app.cf.screen {
                 CfScreen::Zones => "Cloudflare · DNS",
-                CfScreen::Records => "Cloudflare · DNS · records",
+                CfScreen::Records | CfScreen::Objects => "Cloudflare · DNS · records",
             },
         }
     } else {
@@ -656,9 +676,12 @@ pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &m
     match app.cf.product {
         CfProduct::Dns => match app.cf.screen {
             CfScreen::Zones => render_cf_zones(f, header, body, app),
-            CfScreen::Records => render_cf_records(f, header, body, app),
+            CfScreen::Records | CfScreen::Objects => render_cf_records(f, header, body, app),
         },
-        CfProduct::R2 => render_cf_buckets(f, header, body, app),
+        CfProduct::R2 => match app.cf.screen {
+            CfScreen::Objects => render_cf_objects(f, header, body, app),
+            _ => render_cf_buckets(f, header, body, app),
+        },
     }
 }
 
@@ -667,11 +690,13 @@ pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &m
 /// keys as a hint line. One source, so the render and its test cannot drift.
 pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
     match screen {
-        CfScreen::Zones => {
-            "a account · Enter records · n add zone · x delete · / filter · r refresh · Esc EasyPanel"
-        }
         CfScreen::Records => {
             "n add · e edit · x delete · v/V mark · Space bulk · / filter · r refresh · Esc zones"
+        }
+        // The Zones home. R2's Objects drill-in never routes here (R2 uses the CF_*_HINTS
+        // consts), so it shares this arm only to keep the match exhaustive.
+        CfScreen::Zones | CfScreen::Objects => {
+            "a account · Enter records · n add zone · x delete · / filter · r refresh · Esc EasyPanel"
         }
     }
 }
@@ -679,7 +704,11 @@ pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
 /// The R2 Buckets status-bar hint. Product-selected in the status bar (the DNS
 /// hints come from `cf_status_hints`), so the two can't drift from the keys.
 pub(super) const CF_BUCKETS_HINTS: &str =
-    "a account · n add bucket · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
+    "a account · Enter objects · n add bucket · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
+
+/// The R2 Objects drill-in status-bar hint. No add/delete yet — object mutation is a
+/// later slice, so this lists only browse/filter/refresh and Esc back to the buckets.
+pub(super) const CF_OBJECTS_HINTS: &str = "/ filter · r refresh · Esc buckets";
 
 /// The orange workspace header: the bordered title + the PRODUCT tab bar (DNS
 /// today; D1/R2/KV/Workers/Connectors slot in later). Drawn exactly like the
@@ -1059,6 +1088,81 @@ fn render_cf_buckets(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         &widths,
         rows,
         &mut app.cf.r2_row,
+        CF_ORANGE,
+        |_, _| None,
+    );
+}
+
+/// The R2 Objects drill-in: Key / Size / Modified, filterable, with loading/empty/
+/// error — the R2 mirror of `render_cf_records`. A token lacking the R2 permission
+/// lands in the error state with Cloudflare's "Workers R2 Storage" hint.
+fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    let acct = app.cf.active.as_ref().map(|a| a.name.clone());
+    let bucket = app.cf.current_bucket.clone();
+    let segs: Vec<&str> = [acct.as_deref(), bucket.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    cf_header(
+        f,
+        header,
+        &cf_breadcrumb(&segs, "objects"),
+        app.cf.product,
+        app.cf_product_at.elapsed().as_millis() < 300,
+    );
+
+    let state = cf_list_state(
+        app.busy() > 0,
+        app.cf.error.is_some(),
+        app.cf.r2_objects.is_empty(),
+    );
+    if state != CfListState::Ready {
+        cf_placeholder(f, body, "objects", &state, app.cf.error.as_deref());
+        return;
+    }
+
+    let shown = app.cf_objects_shown();
+    let title = format!(
+        "Objects ({} of {}){}",
+        shown.len(),
+        app.cf.r2_objects.len(),
+        if app.cf.filter.is_empty() {
+            String::new()
+        } else {
+            format!(" · /{}", app.cf.filter)
+        }
+    );
+    let rows: Vec<Vec<String>> = shown
+        .iter()
+        .map(|o| {
+            vec![
+                o.key.clone(),
+                format_bytes(o.size as f64),
+                // LastModified is an ISO-8601 timestamp; drop the sub-second tail.
+                o.last_modified
+                    .split('.')
+                    .next()
+                    .unwrap_or(&o.last_modified)
+                    .to_string(),
+            ]
+        })
+        .collect();
+    let headers = ["Key", "Size", "Modified"];
+    let widths = [
+        Constraint::Min(30),
+        Constraint::Length(12),
+        Constraint::Length(22),
+    ];
+    // Record the table's Rect so the shared mouse layer can map a click/hover to a row.
+    app.table_area = body;
+    render_table(
+        f,
+        body,
+        title,
+        &headers,
+        &widths,
+        rows,
+        &mut app.cf.r2_objects_row,
         CF_ORANGE,
         |_, _| None,
     );
@@ -2657,7 +2761,10 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
             format!(" filter: {}▏  Enter apply · Esc cancel", app.cf.filter)
         } else {
             let hints = match app.cf.product {
-                CfProduct::R2 => CF_BUCKETS_HINTS,
+                CfProduct::R2 => match app.cf.screen {
+                    CfScreen::Objects => CF_OBJECTS_HINTS,
+                    _ => CF_BUCKETS_HINTS,
+                },
                 CfProduct::Dns => cf_status_hints(app.cf.screen),
             };
             format!(" {hints}")

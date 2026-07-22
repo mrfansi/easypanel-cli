@@ -70,17 +70,36 @@ struct BucketsResult {
     buckets: Vec<R2Bucket>,
 }
 
-/// Cloudflare's pagination block. `total_pages` drives the DNS page loop; `cursor`
-/// drives R2's cursor pagination (present only while more pages remain). serde
-/// ignores the other keys (page/per_page/count/total_count) the API also sends.
+/// One object inside an R2 bucket, from the Cloudflare REST API (`GET
+/// /accounts/{account_id}/r2/buckets/{bucket}/objects`) — the SAME Bearer token as
+/// buckets/DNS, no S3 credentials. `result` is a bare array of these. Browsing only for
+/// now; upload/download/delete are a later slice. serde ignores the other keys the API
+/// sends (etag/custom_metadata/http_metadata/ssec).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct R2Object {
+    pub key: String,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub last_modified: String,
+    #[serde(default)]
+    pub storage_class: String,
+}
+
+/// Cloudflare's pagination block. `total_pages` drives the DNS page loop; `cursor` +
+/// `is_truncated` drive R2's cursor pagination (`is_truncated` is the authoritative
+/// "more pages" flag). serde ignores the other keys (page/per_page/count/total_count)
+/// the API also sends.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ResultInfo {
     #[serde(default)]
     pub total_pages: u32,
-    /// R2's next-page cursor: pass it back as the `cursor` query param; absent or
-    /// empty means the last page has been reached.
+    /// R2's next-page cursor: pass it back as the `cursor` query param.
     #[serde(default)]
     pub cursor: Option<String>,
+    /// R2 objects: true while more pages remain. Absent (buckets) defaults to false.
+    #[serde(default)]
+    pub is_truncated: bool,
 }
 
 // ---------- Envelope parsing ----------
@@ -492,6 +511,38 @@ impl CloudflareClient {
         .map_err(r2_hint)?;
         Ok(())
     }
+
+    /// List a bucket's objects, following R2's CURSOR pagination. Unlike buckets, the
+    /// objects `result` is a BARE array (not wrapped) — `is_truncated` says whether to
+    /// loop, `cursor` is the next page. Same Bearer token as buckets; `prefix` narrows.
+    pub fn list_r2_objects(
+        &self,
+        account_id: &str,
+        bucket: &str,
+        prefix: Option<&str>,
+    ) -> Result<Vec<R2Object>> {
+        let path = format!("/accounts/{account_id}/r2/buckets/{bucket}/objects");
+        let mut all = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut q: Vec<(String, String)> = vec![("per_page".into(), "1000".into())];
+            if let Some(p) = prefix.filter(|p| !p.is_empty()) {
+                q.push(("prefix".into(), p.to_string()));
+            }
+            if let Some(c) = &cursor {
+                q.push(("cursor".into(), c.clone()));
+            }
+            let body = self.get(&path, &q).map_err(r2_hint)?;
+            let (mut objs, info): (Vec<R2Object>, ResultInfo) =
+                parse_envelope_paged(&body).map_err(r2_hint)?;
+            all.append(&mut objs);
+            match info.cursor.filter(|c| info.is_truncated && !c.is_empty()) {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        Ok(all)
+    }
 }
 
 #[cfg(test)]
@@ -519,6 +570,47 @@ mod tests {
     fn envelope_failure_with_no_error_array_still_fails_cleanly() {
         let body = r#"{"success":false,"errors":[],"messages":[],"result":null}"#;
         assert!(parse_envelope::<Vec<Record>>(body).is_err());
+    }
+
+    // The list-objects REST envelope as Cloudflare documents it: `result` is a BARE
+    // array of objects (NOT wrapped like buckets), and pagination lives in
+    // `result_info` as `cursor` + `is_truncated`. A fixture pins the verified shape.
+    #[test]
+    fn r2_objects_result_is_a_bare_array_with_cursor_pagination() {
+        let body = r#"{"success":true,"errors":[],"messages":[],
+            "result":[
+                {"key":"img/logo.png","size":2048,"last_modified":"2026-01-02T03:04:05.000Z",
+                 "storage_class":"Standard","etag":"e1"},
+                {"key":"img/hero.jpg","size":10485760,"last_modified":"2026-01-03T00:00:00.000Z",
+                 "storage_class":"Standard"}
+            ],
+            "result_info":{"cursor":"next-page-cursor","is_truncated":true,"per_page":1000}}"#;
+        let (objects, info): (Vec<R2Object>, ResultInfo) = parse_envelope_paged(body).unwrap();
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].key, "img/logo.png");
+        assert_eq!(objects[0].size, 2048);
+        assert_eq!(objects[0].last_modified, "2026-01-02T03:04:05.000Z");
+        assert_eq!(objects[0].storage_class, "Standard");
+        assert_eq!(objects[1].size, 10_485_760);
+        // Truncated → the caller loops with this cursor.
+        assert!(info.is_truncated);
+        assert_eq!(info.cursor.as_deref(), Some("next-page-cursor"));
+    }
+
+    #[test]
+    fn r2_objects_last_page_is_not_truncated_and_empty_is_empty() {
+        let last = r#"{"success":true,"errors":[],"messages":[],
+            "result":[{"key":"only.txt","size":5,"last_modified":"2026-01-01T00:00:00.000Z",
+                       "storage_class":"Standard"}],
+            "result_info":{"is_truncated":false,"per_page":1000}}"#;
+        let (objects, info): (Vec<R2Object>, ResultInfo) = parse_envelope_paged(last).unwrap();
+        assert_eq!(objects.len(), 1);
+        assert!(!info.is_truncated, "a non-truncated page never loops");
+
+        let empty = r#"{"success":true,"errors":[],"messages":[],
+            "result":[],"result_info":{"is_truncated":false}}"#;
+        let (objects, _): (Vec<R2Object>, ResultInfo) = parse_envelope_paged(empty).unwrap();
+        assert!(objects.is_empty());
     }
 
     #[test]
