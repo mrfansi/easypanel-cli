@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.7] — 2026-07-23
+
+### Fixed
+
+- **Right-clicking a file in the R2 object browser no longer offers to delete the bucket
+  you're inside.** The right-click handler opened the bucket action menu for the whole R2
+  product, without checking which screen you were on — so on the Objects drill-in,
+  right-clicking a file popped up "Browse objects / **Delete bucket…**", a destructive
+  action aimed at the very bucket you were browsing (and reachable from a stray
+  right-click on a data dump). The Objects screen is browse-only for now, so it opens no
+  row menu at all; the bucket menu stays where it belongs — the Buckets home. `Space`
+  was already correct (it routes to the objects handler, which has no menu); only the
+  mouse path was wrong.
+
 ## [0.87.6] — 2026-07-23
 
 ### Fixed

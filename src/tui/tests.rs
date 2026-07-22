@@ -6061,6 +6061,55 @@ fn cf_object_folders_use_bold_not_a_wide_colour_tint() {
 }
 
 #[test]
+fn right_click_on_an_r2_object_opens_no_bucket_menu() {
+    // The Objects drill-in is browse-only (no per-object actions yet). Right-clicking a
+    // file there must NOT open the BUCKET action menu ("Browse objects / Delete bucket…")
+    // — that offered to delete the very bucket you were inside. The bucket menu belongs
+    // only on the Buckets home (R2 + the non-Objects screen).
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::R2;
+    app.cf.r2_buckets = vec![cf_bucket("assets")]; // still loaded from the buckets screen
+    app.table_area = Rect::new(0, 0, 80, 20);
+    let right_click = |app: &mut App, tx: &std::sync::mpsc::Sender<_>| {
+        app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Right),
+                column: 5,
+                row: 2, // first data row (row 0 = border, row 1 = header)
+                modifiers: KeyModifiers::empty(),
+            },
+            tx,
+        );
+    };
+
+    // Inside a bucket, browsing objects: right-click opens NO menu.
+    app.cf.screen = CfScreen::Objects;
+    app.cf.current_bucket = Some("assets".into());
+    app.cf.r2_objects = vec![cf_object("dump.sql.gz", 42)];
+    right_click(&mut app, &tx);
+    assert!(
+        app.menu.is_none(),
+        "right-click on an object opens no menu (browse-only, and NOT the bucket menu)"
+    );
+
+    // On the Buckets home the same right-click DOES open the bucket menu.
+    app.cf.screen = CfScreen::Zones; // R2's buckets home is the non-Objects screen
+    app.cf.r2_row.select(Some(0));
+    right_click(&mut app, &tx);
+    assert!(
+        app.menu
+            .as_ref()
+            .is_some_and(|m| m.items.iter().any(|it| it.label == "Delete bucket…")),
+        "the bucket menu still opens on the Buckets home"
+    );
+}
+
+#[test]
 fn cf_home_is_zones_and_the_account_picker_switches_accounts() {
     // Entering the workspace lands on the Zones home of the active (default)
     // account; `a` opens the account picker; Enter there activates the account.

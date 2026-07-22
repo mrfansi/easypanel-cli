@@ -450,10 +450,16 @@ impl App {
         // menu (marked rows) and gets a single-record menu here.
         if self.workspace == Workspace::Cloudflare {
             if self.select_row_at(col, row) {
-                match self.cf.product {
-                    CfProduct::R2 => self.open_cf_bucket_menu(),
-                    CfProduct::Dns if self.cf.screen == CfScreen::Zones => self.open_cf_zone_menu(),
-                    CfProduct::Dns => self.open_cf_record_menu(),
+                match (self.cf.product, self.cf.screen) {
+                    // R2 Buckets: the bucket row menu. But the Objects drill-in has NO
+                    // per-object actions yet (browse-only), so right-clicking a file must
+                    // NOT open the bucket's menu ("Browse objects / Delete bucket") — that
+                    // would offer to delete the very bucket you are inside. No menu there,
+                    // matching "no action for that row, no menu".
+                    (CfProduct::R2, CfScreen::Objects) => {}
+                    (CfProduct::R2, _) => self.open_cf_bucket_menu(),
+                    (CfProduct::Dns, CfScreen::Zones) => self.open_cf_zone_menu(),
+                    (CfProduct::Dns, _) => self.open_cf_record_menu(),
                 }
             }
             return;
