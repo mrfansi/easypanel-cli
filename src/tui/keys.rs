@@ -444,16 +444,16 @@ impl App {
     /// Right-clicking a row selects it, then opens its action menu. With no action
     /// for that row/screen, no menu appears.
     fn on_right_click(&mut self, col: u16, row: u16) {
-        // In the Cloudflare workspace only the Zones screen has a per-row menu (the
-        // CF mirror of EasyPanel's right-click): select the row under the cursor,
-        // then open its action menu. Records uses Space for its bulk menu, so its
-        // right-click stays a no-op for now.
+        // In the Cloudflare workspace, right-click opens the row's action menu (the CF
+        // mirror of EasyPanel's right-click): select the row under the cursor, then open
+        // the menu for whatever screen is active. Records keeps `Space` for its bulk
+        // menu (marked rows) and gets a single-record menu here.
         if self.workspace == Workspace::Cloudflare {
             if self.select_row_at(col, row) {
                 match self.cf.product {
                     CfProduct::R2 => self.open_cf_bucket_menu(),
                     CfProduct::Dns if self.cf.screen == CfScreen::Zones => self.open_cf_zone_menu(),
-                    CfProduct::Dns => {}
+                    CfProduct::Dns => self.open_cf_record_menu(),
                 }
             }
             return;

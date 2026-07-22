@@ -5960,6 +5960,30 @@ fn cf_filter_narrows_the_loaded_records() {
 }
 
 #[test]
+fn cf_records_have_a_right_click_action_menu_like_easypanel() {
+    // EasyPanel opens a per-row action menu on right-click; the CF Records screen now
+    // mirrors it (Space stays the bulk menu) with a single-record Edit/Delete menu.
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_zone = Some(cf_zone("z1", "example.com"));
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.screen = CfScreen::Records;
+    app.cf.records = vec![cf_record("r1", "A", "www.example.com", "1.2.3.4")];
+    app.cf.records_row.select(Some(0));
+
+    app.open_cf_record_menu();
+    let menu = app
+        .menu
+        .as_ref()
+        .expect("right-click opens the record menu");
+    let labels: Vec<&str> = menu.items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.contains("Edit")) && labels.iter().any(|l| l.contains("Delete")),
+        "the record menu offers edit + delete, got {labels:?}"
+    );
+}
+
+#[test]
 fn the_cf_product_tab_bar_renders_with_dns_active() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

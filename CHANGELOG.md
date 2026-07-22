@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.85.1] — 2026-07-22
+## [0.85.2] — 2026-07-22
+
+### Added
+
+- **Right-click a DNS record for its action menu**, like everywhere in EasyPanel. The CF
+  Records screen previously ignored right-click (a record's edit/delete were keys-only);
+  it now opens a per-record menu (*Edit record* / *Delete record…*), matching the zone and
+  bucket row menus. `Space` there still opens the bulk menu for marked records.
 
 ### Fixed
 

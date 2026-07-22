@@ -171,7 +171,7 @@ pub(super) const CF_GLOBAL_KEYS: &[Key] = &[
 /// product tab; right-click opens the row menu on the Zones screen).
 pub(super) const CF_MOUSE_KEYS: &[Key] = &[
     Key("Click row", "select the row"),
-    Key("Right click", "action menu for the selected zone"),
+    Key("Right click", "action menu for the selected row"),
     Key("Scroll", "scroll the list"),
 ];
 

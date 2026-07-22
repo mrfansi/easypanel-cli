@@ -1467,6 +1467,20 @@ impl App {
         ]);
     }
 
+    /// The per-record action menu — the CF mirror of EasyPanel's right-click row menu on
+    /// the Records screen. `Space` there is the bulk menu (marked rows), so a single
+    /// record's actions (edit / delete) get their own menu on right-click.
+    pub(super) fn open_cf_record_menu(&mut self) {
+        if self.selected_cf_record().is_none() {
+            self.status = "No record selected".into();
+            return;
+        }
+        self.open_menu(vec![
+            MenuItem::new("Edit record", |a, _| a.open_cf_record_edit()),
+            MenuItem::new("Delete record…", |a, _| a.ask_cf_record_delete()),
+        ]);
+    }
+
     /// The add-bucket form. Requires an account-id (R2 is account-scoped); on submit
     /// it sends a CreateR2Bucket request.
     pub(super) fn open_cf_bucket_form(&mut self) {
