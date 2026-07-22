@@ -336,6 +336,15 @@ the domain layer and keep worker/render thin (a caller + presentation). New Clou
 products (R2, D1, …) each get their domain types + pure functions in `cloudflare.rs` (or a
 sibling), with the client/TUI as thin consumers.
 
+**The EXISTING architecture should move toward this too (owner, 2026-07-22): the whole
+repo should read as DDD, not just new code.** So a valid directive-1 refactor run is:
+pick one place where domain logic currently lives in `tui/worker.rs` / `tui/render.rs` /
+`tui/keys.rs` (or is duplicated between the CLI and the TUI worker) and PULL it into its
+domain module (or a shared `commands::` orchestration), leaving the worker/render as a
+thin caller — behaviour-preserving, test names identical, no version bump. Do these one
+coherent extraction at a time (the `*Ui` struct extractions and the shared
+`commands::dump_to_r2`/`restore_from_r2` are the model). Don't rewrite everything at once.
+
 ### FOCUS (owner, 2026-07-22): Cloudflare TUI — mirror EasyPanel behaviour
 
 Standing loop focus, owner-requested: **keep improving the Cloudflare TUI so it
@@ -373,17 +382,22 @@ all need the account's `account_id` (already stored on `CloudflareAccount`), and
 token must carry the matching permission (surface a clear "token lacks R2/D1 permission"
 hint on the auth error, same pitfall as Zone:DNS).
 
-- **R2 (object storage).** New `CfProduct::R2` tab. Bucket management via the Cloudflare
-  API (`/accounts/{account_id}/r2/buckets` — list/create/delete). Object operations
-  (list/upload/download/delete within a bucket) go through the **S3-compatible API** —
-  and this repo ALREADY has a working SigV4 S3 client at `src/s3.rs` (built for the DB
-  dump → R2 feature: `presign`, `sign_list`), so object listing/transfer should REUSE
-  `s3.rs` rather than reinvent it. R2's S3 endpoint is `{account_id}.r2.cloudflarestorage.com`;
-  the S3 access-key/secret are SEPARATE from the API token (R2 → Manage R2 API Tokens) —
-  the account may need to store an R2 access-key/secret alongside the API token, or reuse
-  the existing storage-provider creds the DB-dump feature already reads. TUI shape (mirror
-  DNS): Buckets list (like Zones) → Enter → Objects list (like Records), `/` filter,
-  drill-in. Confirm the exact R2 bucket API shapes against the official docs first.
+- **R2 (object storage) — buckets DONE v0.84.0, object browsing DONE v0.85.0.**
+  `CfProduct::R2` tab. Buckets: `GET/POST/DELETE /accounts/{account_id}/r2/buckets`
+  (list result nests as `result.buckets`; cursor pagination). Objects: `GET /accounts/
+  {account_id}/r2/buckets/{bucket}/objects` (list `result` a BARE array; `result_info.
+  cursor`+`is_truncated`). Domain `R2Bucket`/`R2Object` + `list_r2_buckets`/`list_r2_objects`
+  on `CloudflareClient`; TUI Buckets→Enter→Objects drill-in; CLI `cf r2 bucket …` /
+  `cf r2 object list`. Verified live read-only.
+  **CORRECTION to the old note above — object ops DO NOT use the S3 API / s3.rs.** The
+  earlier assumption (objects are S3-only, store R2 S3 access-key/secret, reuse s3.rs) was
+  WRONG: Cloudflare's REST API lists objects with the SAME Bearer API token as buckets —
+  no separate R2 S3 credentials at all. `s3.rs` stays DB-dump-only. The needed token
+  permission is account-scoped **Workers R2 Storage** (Read for list, Edit for
+  create/delete); the `r2_hint` surfaces that on an auth error.
+  **NEXT R2 slice:** object **upload / download / delete** — also REST
+  (`PUT/GET/DELETE /accounts/{account_id}/r2/buckets/{bucket}/objects/{key}`, Bearer),
+  NOT S3. Guard delete behind a confirm; upload/download stream a file via reqwest.
 - **D1 (serverless SQL database).** New `CfProduct::D1` tab. Databases via
   `/accounts/{account_id}/d1/database` (list/create/delete); run SQL via
   `POST /accounts/{account_id}/d1/database/{database_id}/query` (or `/raw`), which returns
