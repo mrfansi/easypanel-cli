@@ -502,13 +502,14 @@ pub(super) enum CfReq {
         account_id: String,
         name: String,
     },
-    /// List a bucket's objects via the REST API — the SAME Bearer token as buckets, no
-    /// S3 credentials. Account-scoped, so the account_id travels alongside the token.
+    /// List ONE folder level of a bucket via the REST API (delimiter=/) — the SAME Bearer
+    /// token as buckets, no S3 credentials. Account-scoped, so the account_id travels
+    /// alongside the token. `prefix` is "" at the bucket root, or e.g. `assets/css/` deeper.
     R2Objects {
         token: String,
         account_id: String,
         bucket: String,
-        prefix: Option<String>,
+        prefix: String,
     },
 }
 
@@ -694,12 +695,16 @@ pub(super) enum CfResp {
     },
     /// The R2 buckets for the active account.
     R2Buckets(Vec<R2Bucket>),
-    /// The objects for `bucket` — the name is echoed back so a stale reply for a bucket
-    /// the user already left is discarded rather than drawn.
+    /// One folder level of `bucket` at `prefix` — the subfolders (`folders`, full key
+    /// prefixes ending in `/`) and the files directly here. Both bucket AND prefix are
+    /// echoed back so a stale reply for a level the user already left (a different bucket
+    /// OR a different prefix) is discarded rather than drawn over the current one.
     R2Objects {
         bucket: String,
+        prefix: String,
+        folders: Vec<String>,
         objects: Vec<R2Object>,
-        /// The bucket held more than one page; the app tells the user to narrow.
+        /// This level held more than one page; the app tells the user to narrow.
         truncated: bool,
     },
     /// A create/edit/delete succeeded; the app re-lists the affected screen.
@@ -2033,15 +2038,13 @@ fn handle_cf(req: CfReq) -> CfResp {
             account_id,
             bucket,
             prefix,
-        } => match CloudflareClient::new(&token).list_r2_objects(
-            &account_id,
-            &bucket,
-            prefix.as_deref(),
-        ) {
-            Ok((objects, truncated)) => CfResp::R2Objects {
+        } => match CloudflareClient::new(&token).list_r2_level(&account_id, &bucket, &prefix) {
+            Ok(level) => CfResp::R2Objects {
                 bucket,
-                objects,
-                truncated,
+                prefix,
+                folders: level.folders,
+                objects: level.files,
+                truncated: level.truncated,
             },
             Err(e) => CfResp::Err(e.to_string()),
         },

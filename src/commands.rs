@@ -568,9 +568,11 @@ pub fn cf_r2_bucket_delete(
 
 // ---------- R2 objects (REST API, account-scoped) ----------
 
-/// Resolve the account and print a bucket's objects: Key / Size / Modified. Uses the
-/// SAME Bearer token as buckets (no separate credentials); needs only the account-id.
-/// A token missing the Workers R2 Storage permission surfaces the same `r2_hint`.
+/// Resolve the account and print ONE folder level of a bucket (delimiter=/): the
+/// subfolders at `--prefix` (default root) with a trailing `/`, then the files here
+/// (newest-first). Mirrors the TUI folder view. Uses the SAME Bearer token as buckets (no
+/// separate credentials); needs only the account-id. A token missing the Workers R2
+/// Storage permission surfaces the same `r2_hint`.
 pub fn cf_r2_object_list(
     cfg: &CloudflareConfig,
     account: Option<&str>,
@@ -579,39 +581,40 @@ pub fn cf_r2_object_list(
 ) -> Result<()> {
     let (client, acc) = cf_client(cfg, account)?;
     let account_id = cf_account_id(&acc)?;
-    let (objects, truncated) = client.list_r2_objects(&account_id, bucket, prefix)?;
+    let level = client.list_r2_level(&account_id, bucket, prefix.unwrap_or(""))?;
     if output::json_output() {
-        output::print_json(&serde_json::to_value(
-            objects
-                .iter()
-                .map(|o| {
-                    json!({ "key": o.key, "size": o.size,
-                            "last_modified": o.last_modified,
-                            "storage_class": o.storage_class })
-                })
-                .collect::<Vec<_>>(),
-        )?);
+        output::print_json(&json!({
+            "folders": level.folders,
+            "files": level.files.iter().map(|o| {
+                json!({ "key": o.key, "size": o.size,
+                        "last_modified": o.last_modified,
+                        "storage_class": o.storage_class })
+            }).collect::<Vec<_>>(),
+        }));
         return Ok(());
     }
-    if objects.is_empty() {
+    if level.folders.is_empty() && level.files.is_empty() {
         println!("No objects in bucket '{bucket}'.");
         return Ok(());
     }
-    let rows = objects
+    // Folders first (full prefix, trailing `/`, no size/date), then files.
+    let mut rows: Vec<Vec<String>> = level
+        .folders
         .iter()
-        .map(|o| {
-            vec![
-                o.key.clone(),
-                output::format_bytes(o.size as f64),
-                o.last_modified.clone(),
-            ]
-        })
+        .map(|folder| vec![folder.clone(), String::new(), String::new()])
         .collect();
+    rows.extend(level.files.iter().map(|o| {
+        vec![
+            o.key.clone(),
+            output::format_bytes(o.size as f64),
+            o.last_modified.clone(),
+        ]
+    }));
     table(&["Key", "Size", "Modified"], rows);
-    if truncated {
+    if level.truncated {
         println!(
-            "\nShowing the first {} object(s) — more exist. Narrow with --prefix <path/>.",
-            objects.len()
+            "\nShowing the first {} row(s) at this level — more exist. Narrow with --prefix <path/>.",
+            level.folders.len() + level.files.len()
         );
     }
     Ok(())

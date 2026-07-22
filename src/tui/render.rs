@@ -706,9 +706,9 @@ pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
 pub(super) const CF_BUCKETS_HINTS: &str =
     "a account · Enter objects · n add bucket · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
 
-/// The R2 Objects drill-in status-bar hint. No add/delete yet — object mutation is a
-/// later slice, so this lists only browse/filter/refresh and Esc back to the buckets.
-pub(super) const CF_OBJECTS_HINTS: &str = "/ filter · r refresh · Esc buckets";
+/// The R2 Objects folder-browser status-bar hint. No add/delete yet — object mutation is
+/// a later slice. Esc goes up a folder inside the tree, or out to the buckets at the root.
+pub(super) const CF_OBJECTS_HINTS: &str = "Enter open · / filter · r refresh · Esc up/buckets";
 
 /// The orange workspace header: the bordered title + the PRODUCT tab bar (DNS
 /// today; D1/R2/KV/Workers/Connectors slot in later). Drawn exactly like the
@@ -1093,13 +1093,22 @@ fn render_cf_buckets(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     );
 }
 
-/// The R2 Objects drill-in: Key / Size / Modified, filterable, with loading/empty/
-/// error — the R2 mirror of `render_cf_records`. A token lacking the R2 permission
-/// lands in the error state with Cloudflare's "Workers R2 Storage" hint.
+/// The R2 Objects FOLDER browser: subfolders first (a `▸ name/` marker, no size/date),
+/// then the files at this level (basename / Size / Modified), filterable, with loading/
+/// empty/error. `/`-delimited keys browse as a tree — Enter descends, Esc goes up. A
+/// token lacking the R2 permission lands in the error state with the "Workers R2 Storage"
+/// hint.
 fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     let acct = app.cf.active.as_ref().map(|a| a.name.clone());
-    let bucket = app.cf.current_bucket.clone();
-    let segs: Vec<&str> = [acct.as_deref(), bucket.as_deref()]
+    // The breadcrumb tail is the bucket PLUS the path inside it, e.g. `assets/css/`.
+    let loc = app.cf.current_bucket.as_ref().map(|b| {
+        if app.cf.current_prefix.is_empty() {
+            b.clone()
+        } else {
+            format!("{b}/{}", app.cf.current_prefix)
+        }
+    });
+    let segs: Vec<&str> = [acct.as_deref(), loc.as_deref()]
         .into_iter()
         .flatten()
         .collect();
@@ -1111,22 +1120,53 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         app.cf_product_at.elapsed().as_millis() < 300,
     );
 
+    // Empty means no subfolders AND no files at this level.
     let state = cf_list_state(
         app.busy() > 0,
         app.cf.error.is_some(),
-        app.cf.r2_objects.is_empty(),
+        app.cf.r2_folders.is_empty() && app.cf.r2_objects.is_empty(),
     );
     if state != CfListState::Ready {
         cf_placeholder(f, body, "objects", &state, app.cf.error.as_deref());
         return;
     }
 
-    let shown = app.cf_objects_shown();
+    let prefix = app.cf.current_prefix.clone();
+    // Build the combined row list (folders first, then files) as owned data so the
+    // immutable borrows of `app` end before the mutable `render_table` borrow below.
+    let (rows, shown_count) = {
+        let folders = app.cf_folders_shown();
+        let files = app.cf_objects_shown();
+        let mut rows: Vec<Vec<String>> = folders
+            .iter()
+            .map(|folder| {
+                // Show only the next path segment; the marker makes a folder read as a
+                // folder (and `cell_style` tints it), with no size/date.
+                let seg = folder.strip_prefix(&prefix).unwrap_or(folder);
+                vec![format!("▸ {seg}"), String::new(), String::new()]
+            })
+            .collect();
+        rows.extend(files.iter().map(|o| {
+            // Strip the current prefix so the file reads as its basename at this level.
+            let name = o.key.strip_prefix(&prefix).unwrap_or(&o.key);
+            vec![
+                name.to_string(),
+                format_bytes(o.size as f64),
+                // LastModified is an ISO-8601 timestamp; drop the sub-second tail.
+                o.last_modified
+                    .split('.')
+                    .next()
+                    .unwrap_or(&o.last_modified)
+                    .to_string(),
+            ]
+        }));
+        (rows, folders.len() + files.len())
+    };
     let title = format!(
         "Objects ({} of {}){}{}",
-        shown.len(),
-        app.cf.r2_objects.len(),
-        // A large bucket loads only its first page; say so rather than implying it's whole.
+        shown_count,
+        app.cf.r2_folders.len() + app.cf.r2_objects.len(),
+        // A big level loads only its first page; say so rather than implying it's whole.
         if app.cf.r2_truncated {
             " · first page, more exist — narrow with /"
         } else {
@@ -1138,22 +1178,7 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
             format!(" · /{}", app.cf.filter)
         }
     );
-    let rows: Vec<Vec<String>> = shown
-        .iter()
-        .map(|o| {
-            vec![
-                o.key.clone(),
-                format_bytes(o.size as f64),
-                // LastModified is an ISO-8601 timestamp; drop the sub-second tail.
-                o.last_modified
-                    .split('.')
-                    .next()
-                    .unwrap_or(&o.last_modified)
-                    .to_string(),
-            ]
-        })
-        .collect();
-    let headers = ["Key", "Size", "Modified"];
+    let headers = ["Name", "Size", "Modified"];
     let widths = [
         Constraint::Min(30),
         Constraint::Length(12),
@@ -1170,7 +1195,12 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         rows,
         &mut app.cf.r2_objects_row,
         CF_ORANGE,
-        |_, _| None,
+        // Paint the folder rows (the `▸ ` marker in the Name column) in bold CF orange so
+        // a folder reads as a folder, not a file.
+        |col, text| {
+            (col == 0 && text.starts_with("▸ "))
+                .then(|| Style::default().fg(CF_ORANGE).add_modifier(Modifier::BOLD))
+        },
     );
 }
 

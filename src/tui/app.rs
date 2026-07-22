@@ -242,12 +242,20 @@ pub(super) struct CfUi {
     /// loaded when the R2 tab is selected; the shared `filter`/`error` cover it too.
     pub(super) r2_buckets: Vec<R2Bucket>,
     pub(super) r2_row: TableState,
-    /// R2 objects drill-in state (the mirror of `records`/`current_zone`): the objects
-    /// of `current_bucket` and the selected row. Loaded via the REST objects API on Enter.
+    /// R2 objects drill-in state (the mirror of `records`/`current_zone`): the browse
+    /// level of `current_bucket` at `current_prefix`. `/`-delimited keys browse as a
+    /// folder tree — `r2_folders` are the subfolders here (full key prefixes ending in
+    /// `/`), `r2_objects` the files directly at this level. Rendered folders-first into a
+    /// single table over `r2_objects_row`. Loaded via the REST objects API (delimiter=/).
+    pub(super) r2_folders: Vec<String>,
     pub(super) r2_objects: Vec<R2Object>,
     pub(super) r2_objects_row: TableState,
-    /// The bucket had more than one page of objects; only the first is loaded, so the
-    /// screen says "narrow with a filter" rather than pretending it's the whole bucket.
+    /// The path INSIDE the bucket currently browsed: "" at the root, or e.g.
+    /// `assets/admin-front-end/css/` deeper. Enter on a folder appends its segment; Esc
+    /// strips the last one. Drives the request prefix and the breadcrumb.
+    pub(super) current_prefix: String,
+    /// This level had more than one page; only the first is loaded, so the screen says
+    /// "narrow with a filter" rather than pretending it's the whole level.
     pub(super) r2_truncated: bool,
     pub(super) current_bucket: Option<String>,
     /// A CF-local text filter, narrowing the loaded list client-side.
@@ -344,6 +352,38 @@ pub(super) fn filter_objects<'a>(objects: &'a [R2Object], needle: &str) -> Vec<&
         .iter()
         .filter(|o| n.is_empty() || o.key.to_ascii_lowercase().contains(&n))
         .collect()
+}
+
+/// The R2 subfolders whose next-segment name (the prefix stripped of `current`) contains
+/// `needle` (case-insensitive). An empty needle keeps everything — the same client-side
+/// narrowing as `filter_objects`, matching what the user sees (the segment, not the full
+/// key prefix).
+pub(super) fn filter_folders<'a>(
+    folders: &'a [String],
+    current: &str,
+    needle: &str,
+) -> Vec<&'a String> {
+    let n = needle.to_ascii_lowercase();
+    folders
+        .iter()
+        .filter(|f| {
+            n.is_empty()
+                || f.strip_prefix(current)
+                    .unwrap_or(f)
+                    .to_ascii_lowercase()
+                    .contains(&n)
+        })
+        .collect()
+}
+
+/// The parent of an R2 browse prefix: `assets/css/` → `assets/`, `assets/` → "" (root).
+/// Strips the trailing `/`, then everything after the previous `/`. Drives Esc "go up".
+pub(super) fn parent_prefix(prefix: &str) -> String {
+    let trimmed = prefix.strip_suffix('/').unwrap_or(prefix);
+    match trimmed.rfind('/') {
+        Some(i) => trimmed[..=i].to_string(),
+        None => String::new(),
+    }
 }
 
 /// Build the patch an edit form describes. `content` is always sent (the field is
@@ -742,7 +782,7 @@ impl App {
         if self.workspace == Workspace::Cloudflare {
             return match self.cf.product {
                 CfProduct::R2 => match self.cf.screen {
-                    CfScreen::Objects => self.cf_objects_shown().len(),
+                    CfScreen::Objects => self.cf_level_len(),
                     _ => self.cf_buckets_shown().len(),
                 },
                 CfProduct::Dns => match self.cf.screen {
@@ -1060,9 +1100,25 @@ impl App {
         self.cf.active.as_ref().and_then(|a| a.account_id.clone())
     }
 
-    /// The objects shown right now (after the CF-local filter).
+    /// The subfolders shown right now (after the CF-local filter). Rendered ABOVE the
+    /// files, so a row index below this count is a folder.
+    pub(super) fn cf_folders_shown(&self) -> Vec<&String> {
+        filter_folders(
+            &self.cf.r2_folders,
+            &self.cf.current_prefix,
+            &self.cf.filter,
+        )
+    }
+
+    /// The files shown right now (after the CF-local filter).
     pub(super) fn cf_objects_shown(&self) -> Vec<&R2Object> {
         filter_objects(&self.cf.r2_objects, &self.cf.filter)
+    }
+
+    /// The total rows in the objects table: subfolders + files, after the filter. The
+    /// table is one list — folders first, then files — so this is its length.
+    pub(super) fn cf_level_len(&self) -> usize {
+        self.cf_folders_shown().len() + self.cf_objects_shown().len()
     }
 
     /// The account to activate on first entering the workspace: the config default,
@@ -1202,18 +1258,58 @@ impl App {
             self.status = "No bucket selected".into();
             return;
         };
-        let name = bucket.name.clone();
-        self.cf.current_bucket = Some(name.clone());
+        self.cf.current_bucket = Some(bucket.name.clone());
         self.cf.screen = CfScreen::Objects;
-        self.cf_enter_list();
+        self.cf.marked.clear();
+        // Land at the bucket root; deeper levels come from Enter on a folder.
+        self.cf_request_level(String::new(), req);
+    }
+
+    /// Load ONE folder level of `current_bucket` at `prefix` (delimiter=/): reset the
+    /// per-level view (folders, files, filter, selection) so the loading state shows,
+    /// then fetch. Shared by Enter-on-bucket ("" root), Enter-on-folder (descend) and
+    /// Esc (ascend). `current_prefix` is set NOW so the reply's prefix echo can be matched.
+    pub(super) fn cf_request_level(&mut self, prefix: String, req: &Sender<Req>) {
+        let Some(bucket) = self.cf.current_bucket.clone() else {
+            return;
+        };
+        self.cf.current_prefix = prefix.clone();
+        self.cf.r2_folders.clear();
+        self.cf.r2_objects.clear();
+        self.cf.r2_objects_row.select(None);
+        self.cf.filter.clear();
+        self.cf.filter_input = false;
+        self.cf.error = None;
         if let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id()) {
             let _ = req.send(Req::Cf(CfReq::R2Objects {
                 token,
                 account_id,
-                bucket: name.clone(),
-                prefix: None,
+                bucket: bucket.clone(),
+                prefix,
             }));
-            self.status = format!("Loading objects in {name}…");
+            let where_ = if self.cf.current_prefix.is_empty() {
+                bucket
+            } else {
+                format!("{bucket}/{}", self.cf.current_prefix)
+            };
+            self.status = format!("Loading {where_}…");
+        }
+    }
+
+    /// Enter on the selected objects row: descend into a folder, or (on a file) a no-op
+    /// with a status — object actions are a later slice. Row indices below the folder
+    /// count are folders; the rest are files.
+    pub(super) fn cf_object_enter(&mut self, req: &Sender<Req>) {
+        let n_folders = self.cf_folders_shown().len();
+        match self.cf.r2_objects_row.selected() {
+            Some(i) if i < n_folders => {
+                let folder = self.cf_folders_shown()[i].clone();
+                self.cf_request_level(folder, req);
+            }
+            Some(_) => {
+                self.status = "Object actions are a later slice — [Esc] up".into();
+            }
+            None => {}
         }
     }
 
@@ -1252,11 +1348,12 @@ impl App {
                 if let (Some(account_id), Some(bucket)) =
                     (self.cf_account_id(), self.cf.current_bucket.clone())
                 {
+                    // Refresh the SAME level in place (no clear → no loading flash).
                     let _ = req.send(Req::Cf(CfReq::R2Objects {
                         token,
                         account_id,
                         bucket,
-                        prefix: None,
+                        prefix: self.cf.current_prefix.clone(),
                     }));
                 }
                 return;
@@ -1289,7 +1386,7 @@ impl App {
     pub(super) fn cf_clamp_filtered(&mut self) {
         if self.cf.product == CfProduct::R2 {
             if self.cf.screen == CfScreen::Objects {
-                let len = self.cf_objects_shown().len();
+                let len = self.cf_level_len();
                 *self.cf.r2_objects_row.offset_mut() = 0;
                 self.cf.r2_objects_row.select((len > 0).then_some(0));
                 return;
@@ -2129,15 +2226,21 @@ impl App {
             }
             CfResp::R2Objects {
                 bucket,
+                prefix,
+                folders,
                 objects,
                 truncated,
             } => {
-                // Discard a stale reply for a bucket the user has already left.
-                if self.cf.current_bucket.as_deref() == Some(bucket.as_str()) {
+                // Discard a stale reply for a level the user has already left — a different
+                // bucket OR a different prefix (an old level must not overwrite a newer one).
+                if self.cf.current_bucket.as_deref() == Some(bucket.as_str())
+                    && self.cf.current_prefix == prefix
+                {
                     self.cf.error = None;
+                    self.cf.r2_folders = folders;
                     self.cf.r2_objects = objects;
                     self.cf.r2_truncated = truncated;
-                    let len = self.cf_objects_shown().len();
+                    let len = self.cf_level_len();
                     select_first(&mut self.cf.r2_objects_row, len);
                 }
             }

@@ -100,6 +100,33 @@ pub struct ResultInfo {
     /// R2 objects: true while more pages remain. Absent (buckets) defaults to false.
     #[serde(default)]
     pub is_truncated: bool,
+    /// R2 delimiter-mode common prefixes: the subfolders at this level. Present only
+    /// when the request carries `delimiter=/`; each entry is a FULL key prefix ending
+    /// in `/` (e.g. `assets/css/`). Absent otherwise → empty.
+    #[serde(default)]
+    pub delimited: Vec<String>,
+}
+
+/// One level of an R2 bucket browsed as a folder tree: the subfolders at this level
+/// (`folders`, full key prefixes ending in `/`) and the files directly here (`files`).
+/// `truncated` is set when a single level held more than one page. Built by
+/// [`CloudflareClient::list_r2_level`] with `delimiter=/`, so `/`-delimited object keys
+/// browse as nested folders instead of one flat 1000-row dump.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct R2Level {
+    pub folders: Vec<String>,
+    pub files: Vec<R2Object>,
+    pub truncated: bool,
+}
+
+/// Sort a level for display: folders alphabetically (ascending), files newest-first
+/// (by `last_modified`, ISO-8601 so a string compare is chronological). Pure, so the
+/// ordering is unit-tested from a fixture without a live call.
+pub fn sort_r2_level(level: &mut R2Level) {
+    level.folders.sort();
+    level
+        .files
+        .sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
 }
 
 // ---------- Envelope parsing ----------
@@ -512,31 +539,43 @@ impl CloudflareClient {
         Ok(())
     }
 
-    /// List a bucket's objects, following R2's CURSOR pagination. Unlike buckets, the
-    /// objects `result` is a BARE array (not wrapped) — `is_truncated` says whether to
-    /// loop, `cursor` is the next page. Same Bearer token as buckets; `prefix` narrows.
-    /// The FIRST page of a bucket's objects (up to 1000), plus whether more exist.
+    /// List ONE level of a bucket browsed as a folder tree. Sends `delimiter=/` so the
+    /// `/`-delimited keys group into subfolders instead of a flat 1000-row dump: `result`
+    /// is the files directly at `prefix` (no further `/`), and `result_info.delimited`
+    /// (VERIFIED against the R2 list-objects API docs — an array of full key prefixes
+    /// ending in `/`) is the subfolders. `prefix` is "" at the bucket root, or e.g.
+    /// `assets/css/` deeper. Same Bearer token as buckets — no S3 credentials.
     ///
-    /// A bucket can hold millions of objects, so paging the whole thing before showing
-    /// anything looked like a hang on a large bucket (the TUI stuck on "Loading objects…").
-    /// We fetch one page and report `truncated` so the caller can say "narrow with a
-    /// prefix" instead of walking every cursor page. `prefix` narrows server-side.
-    pub fn list_r2_objects(
-        &self,
-        account_id: &str,
-        bucket: &str,
-        prefix: Option<&str>,
-    ) -> Result<(Vec<R2Object>, bool)> {
+    /// A bucket can hold millions of objects, so one level is fetched (up to 1000 rows)
+    /// and `truncated` reported rather than walking every cursor page. The result is
+    /// sorted for display (folders A→Z, files newest-first) inside the domain.
+    pub fn list_r2_level(&self, account_id: &str, bucket: &str, prefix: &str) -> Result<R2Level> {
         let path = format!("/accounts/{account_id}/r2/buckets/{bucket}/objects");
-        let mut q: Vec<(String, String)> = vec![("per_page".into(), "1000".into())];
-        if let Some(p) = prefix.filter(|p| !p.is_empty()) {
-            q.push(("prefix".into(), p.to_string()));
+        let mut q: Vec<(String, String)> = vec![
+            ("per_page".into(), "1000".into()),
+            ("delimiter".into(), "/".into()),
+        ];
+        if !prefix.is_empty() {
+            q.push(("prefix".into(), prefix.to_string()));
         }
         let body = self.get(&path, &q).map_err(r2_hint)?;
-        let (objs, info): (Vec<R2Object>, ResultInfo) =
-            parse_envelope_paged(&body).map_err(r2_hint)?;
-        Ok((objs, info.is_truncated))
+        parse_r2_level(&body).map_err(r2_hint)
     }
+}
+
+/// Parse a delimiter-mode objects response into one browse level: the files at this
+/// level (`result`) plus the subfolder prefixes (`result_info.delimited`), sorted for
+/// display. Pure, so the folder/file split + sort is unit-tested from a fixture with no
+/// live call.
+fn parse_r2_level(body: &str) -> Result<R2Level> {
+    let (files, info): (Vec<R2Object>, ResultInfo) = parse_envelope_paged(body)?;
+    let mut level = R2Level {
+        folders: info.delimited,
+        files,
+        truncated: info.is_truncated,
+    };
+    sort_r2_level(&mut level);
+    Ok(level)
 }
 
 #[cfg(test)]
@@ -605,6 +644,73 @@ mod tests {
             "result":[],"result_info":{"is_truncated":false}}"#;
         let (objects, _): (Vec<R2Object>, ResultInfo) = parse_envelope_paged(empty).unwrap();
         assert!(objects.is_empty());
+    }
+
+    // The delimiter-mode (`delimiter=/`) envelope: `result` is the FILES at this level and
+    // `result_info.delimited` is the SUBFOLDERS (full key prefixes ending in `/`) — the
+    // verified field for common prefixes. A fixture pins the shape; the parse splits and
+    // sorts it into one browse level.
+    #[test]
+    fn r2_level_splits_files_from_folders_and_sorts_them() {
+        let body = r#"{"success":true,"errors":[],"messages":[],
+            "result":[
+                {"key":"assets/admin-front-end/app.js","size":10,
+                 "last_modified":"2026-01-02T00:00:00.000Z","storage_class":"Standard"},
+                {"key":"assets/admin-front-end/index.html","size":20,
+                 "last_modified":"2026-03-09T00:00:00.000Z","storage_class":"Standard"}
+            ],
+            "result_info":{"is_truncated":true,"per_page":1000,
+                "delimited":["assets/admin-front-end/js/","assets/admin-front-end/css/"]}}"#;
+        let level = parse_r2_level(body).unwrap();
+        // Folders come from `delimited`, sorted A→Z.
+        assert_eq!(
+            level.folders,
+            vec![
+                "assets/admin-front-end/css/".to_string(),
+                "assets/admin-front-end/js/".to_string()
+            ]
+        );
+        // Files come from `result`, newest-first (index.html is the newer one).
+        assert_eq!(level.files.len(), 2);
+        assert_eq!(level.files[0].key, "assets/admin-front-end/index.html");
+        assert_eq!(level.files[1].key, "assets/admin-front-end/app.js");
+        // A level with more than one page reports truncated for the "narrow with /" note.
+        assert!(level.truncated);
+    }
+
+    #[test]
+    fn r2_level_root_with_no_subfolders_parses_empty_folders() {
+        let body = r#"{"success":true,"errors":[],"messages":[],
+            "result":[{"key":"readme.txt","size":3,
+                       "last_modified":"2026-01-01T00:00:00.000Z","storage_class":"Standard"}],
+            "result_info":{"is_truncated":false,"per_page":1000}}"#;
+        let level = parse_r2_level(body).unwrap();
+        assert!(level.folders.is_empty(), "no delimited → no subfolders");
+        assert_eq!(level.files.len(), 1);
+        assert!(!level.truncated);
+    }
+
+    #[test]
+    fn sort_r2_level_folders_ascending_files_newest_first() {
+        let mk = |key: &str, ts: &str| R2Object {
+            key: key.into(),
+            size: 1,
+            last_modified: ts.into(),
+            storage_class: "Standard".into(),
+        };
+        let mut level = R2Level {
+            folders: vec!["z/".into(), "a/".into(), "m/".into()],
+            files: vec![
+                mk("old.txt", "2026-01-01T00:00:00.000Z"),
+                mk("new.txt", "2026-06-01T00:00:00.000Z"),
+                mk("mid.txt", "2026-03-01T00:00:00.000Z"),
+            ],
+            truncated: false,
+        };
+        sort_r2_level(&mut level);
+        assert_eq!(level.folders, vec!["a/", "m/", "z/"]);
+        let order: Vec<&str> = level.files.iter().map(|f| f.key.as_str()).collect();
+        assert_eq!(order, vec!["new.txt", "mid.txt", "old.txt"]);
     }
 
     #[test]

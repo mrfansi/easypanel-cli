@@ -576,13 +576,15 @@ non-default account.
 easypanel cf r2 bucket list
 easypanel cf r2 bucket create my-bucket
 easypanel cf r2 bucket delete my-bucket        # must be empty; asks to type the name
-easypanel cf r2 object list my-bucket [--prefix path/]   # browse a bucket's objects
+easypanel cf r2 object list my-bucket [--prefix path/]   # browse a bucket as a folder tree
 ```
 
 R2 needs the account-scoped **Workers R2 Storage** token permission (the tool hints at
 that if it's missing) — the same API token lists buckets AND their objects, so there are
-**no separate R2 S3 credentials to set up**. Uploading/downloading/deleting objects lands
-in a later release.
+**no separate R2 S3 credentials to set up**. Objects browse as a **folder tree** (subfolders
+then files, newest first) rather than one flat list; in the TUI, **Enter** descends into a
+folder and **Esc** goes back up. Uploading/downloading/deleting objects lands in a later
+release.
 
 **In the TUI:** press **`W`** to switch into an isolated, Cloudflare-orange workspace with
 its own product tab bar (**DNS │ R2**, switched with `1`/`2`/`Tab`/`←→`). On **DNS**, the

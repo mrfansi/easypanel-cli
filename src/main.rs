@@ -449,11 +449,11 @@ enum CfR2Cmd {
 
 #[derive(Subcommand)]
 enum CfR2ObjectCmd {
-    /// List objects in a bucket (needs the account's Workers R2 Storage token permission)
+    /// Browse one folder level of a bucket (needs the account's Workers R2 Storage token permission)
     List {
         /// The bucket to browse
         bucket: String,
-        /// Only objects whose key starts with this prefix
+        /// The folder level to list, e.g. `assets/css/` (default: the bucket root)
         #[arg(long)]
         prefix: Option<String>,
         #[arg(long)]

@@ -14,8 +14,8 @@ use crate::output::field;
 
 use super::actions::Menu;
 use super::app::{
-    App, CfAction, CfProduct, CfScreen, Confirm, MonitorView, Screen, ServerAction, WatchAction,
-    Workspace, CF_PRODUCTS, TAB_SCREENS,
+    parent_prefix, App, CfAction, CfProduct, CfScreen, Confirm, MonitorView, Screen, ServerAction,
+    WatchAction, Workspace, CF_PRODUCTS, TAB_SCREENS,
 };
 use super::form::*;
 use super::table::*;
@@ -1330,20 +1330,28 @@ impl App {
         }
     }
 
-    /// The R2 objects drill-in (the mirror of the DNS Records screen): `/` filter,
-    /// `r` refresh, Esc backs out to the buckets home (clearing an active filter
-    /// first). No add/delete yet — object mutation is a later slice.
+    /// The R2 objects FOLDER browser (the mirror of the DNS Records screen): Enter
+    /// descends into a folder (files are a no-op for now), `/` filters this level, `r`
+    /// refreshes it. Esc goes UP one folder while inside the tree, and only backs out to
+    /// the buckets home at the root. An active filter is cleared first. No add/delete yet
+    /// — object mutation is a later slice.
     fn cf_objects_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
             KeyCode::Esc if !self.cf.filter.is_empty() => {
                 self.cf.filter.clear();
                 self.cf_clamp_filtered();
             }
+            KeyCode::Esc if !self.cf.current_prefix.is_empty() => {
+                // Inside a folder: go UP one level (reload the parent), not out of objects.
+                let parent = parent_prefix(&self.cf.current_prefix);
+                self.cf_request_level(parent, req);
+            }
             KeyCode::Esc => {
-                // Back to the buckets home. R2's home is any non-Objects screen; the
-                // buckets stay loaded, so no reload — just drop the drill-in state.
+                // At the bucket root: back to the buckets home. R2's home is any non-Objects
+                // screen; the buckets stay loaded, so no reload — just drop the drill-in.
                 self.cf.screen = CfScreen::Zones;
                 self.cf.current_bucket = None;
+                self.cf.current_prefix.clear();
                 self.cf.error = None;
             }
             KeyCode::Char('q') => self.should_quit = true,
@@ -1352,8 +1360,9 @@ impl App {
                 self.cf.filter.clear();
             }
             KeyCode::Char('r') => self.cf_reload(req),
+            KeyCode::Enter => self.cf_object_enter(req),
             _ => {
-                let len = self.cf_objects_shown().len();
+                let len = self.cf_level_len();
                 move_table(&mut self.cf.r2_objects_row, code, len);
             }
         }

@@ -6152,17 +6152,19 @@ fn cf_bucket_enter_drills_into_objects_and_esc_walks_back() {
         "Enter fires an R2Objects request for the selected bucket"
     );
 
-    // A reply for the current bucket populates the list; a stale one is discarded.
+    // A reply for the current bucket+prefix populates the level; a stale one is discarded.
     app.handle(
         Resp::Cf(CfResp::R2Objects {
             bucket: "assets".into(),
+            prefix: String::new(),
+            folders: vec![],
             objects: vec![cf_object("img/logo.png", 2048)],
             truncated: true,
         }),
         &tx,
     );
     assert_eq!(app.cf.r2_objects.len(), 1);
-    // A big bucket loads only its first page; the flag drives the "more exist" note.
+    // A big level loads only its first page; the flag drives the "more exist" note.
     assert!(
         app.cf.r2_truncated,
         "the truncated flag is stored for the screen"
@@ -6170,6 +6172,8 @@ fn cf_bucket_enter_drills_into_objects_and_esc_walks_back() {
     app.handle(
         Resp::Cf(CfResp::R2Objects {
             bucket: "some-other-bucket".into(),
+            prefix: String::new(),
+            folders: vec![],
             objects: vec![cf_object("stale.txt", 1)],
             truncated: false,
         }),
@@ -6181,13 +6185,111 @@ fn cf_bucket_enter_drills_into_objects_and_esc_walks_back() {
         "a reply for a bucket the user already left is discarded"
     );
 
-    // Esc: Objects → buckets home (an R2 non-Objects screen), drill-in state cleared.
+    // Esc at the bucket root: Objects → buckets home (an R2 non-Objects screen), drill-in
+    // state cleared.
     app.on_key(KeyCode::Esc, &tx);
     assert_ne!(app.cf.screen, CfScreen::Objects);
     assert_eq!(app.cf.current_bucket, None);
     // Esc again leaves the workspace (the buckets home's Esc).
     app.on_key(KeyCode::Esc, &tx);
     assert!(app.workspace == Workspace::Easypanel);
+}
+
+#[test]
+fn cf_objects_folder_tree_enter_descends_and_esc_goes_up() {
+    // The objects screen is a folder browser: Enter on a folder appends its segment to
+    // current_prefix and reloads; Esc goes UP one folder, and only backs out to the
+    // buckets at the root. State transitions only — no network.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.set_workspace(Workspace::Cloudflare);
+    app.on_key(KeyCode::Tab, &tx); // → R2
+    let _ = rx.try_recv(); // drain the buckets load
+
+    app.cf.r2_buckets = vec![cf_bucket("assets")];
+    app.cf.r2_row.select(Some(0));
+    app.on_key(KeyCode::Enter, &tx); // drill into objects at the root
+    assert_eq!(app.cf.current_prefix, "");
+    // The root R2Objects request carries an empty prefix.
+    assert!(
+        matches!(
+            rx.try_recv(),
+            Ok(Req::Cf(CfReq::R2Objects { prefix, .. })) if prefix.is_empty()
+        ),
+        "the root level requests prefix \"\""
+    );
+
+    // The root level: one subfolder, one file at the root.
+    app.handle(
+        Resp::Cf(CfResp::R2Objects {
+            bucket: "assets".into(),
+            prefix: String::new(),
+            folders: vec!["admin-front-end/".into()],
+            objects: vec![cf_object("readme.txt", 3)],
+            truncated: false,
+        }),
+        &tx,
+    );
+    assert_eq!(app.cf.r2_folders.len(), 1);
+    assert_eq!(app.cf_level_len(), 2, "one folder + one file");
+
+    // Enter on the folder row (index 0 — folders render first) descends into it.
+    app.cf.r2_objects_row.select(Some(0));
+    app.on_key(KeyCode::Enter, &tx);
+    assert_eq!(app.cf.current_prefix, "admin-front-end/");
+    assert!(
+        matches!(
+            rx.try_recv(),
+            Ok(Req::Cf(CfReq::R2Objects { prefix, .. })) if prefix == "admin-front-end/"
+        ),
+        "descending requests the folder's full prefix"
+    );
+    // A reply for the OLD prefix must not overwrite the new level.
+    app.handle(
+        Resp::Cf(CfResp::R2Objects {
+            bucket: "assets".into(),
+            prefix: String::new(),
+            folders: vec!["stale/".into()],
+            objects: vec![],
+            truncated: false,
+        }),
+        &tx,
+    );
+    assert!(
+        app.cf.r2_folders.is_empty(),
+        "a reply for a prefix the user already left is discarded"
+    );
+
+    // Enter on a FILE is a no-op (no request, stays on the level).
+    app.handle(
+        Resp::Cf(CfResp::R2Objects {
+            bucket: "assets".into(),
+            prefix: "admin-front-end/".into(),
+            folders: vec!["admin-front-end/css/".into()],
+            objects: vec![cf_object("admin-front-end/app.js", 9)],
+            truncated: false,
+        }),
+        &tx,
+    );
+    app.cf.r2_objects_row.select(Some(1)); // the file row (folder is index 0)
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(rx.try_recv().is_err(), "Enter on a file fires no request");
+    assert_eq!(app.cf.current_prefix, "admin-front-end/", "and stays put");
+
+    // Esc inside the tree goes UP one folder, not out to the buckets.
+    app.on_key(KeyCode::Esc, &tx);
+    assert_eq!(app.cf.current_prefix, "");
+    assert_eq!(app.cf.screen, CfScreen::Objects, "still browsing objects");
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::R2Objects { .. }))),
+        "going up reloads the parent level"
+    );
+
+    // Esc at the root backs out to the buckets home.
+    app.on_key(KeyCode::Esc, &tx);
+    assert_ne!(app.cf.screen, CfScreen::Objects);
+    assert_eq!(app.cf.current_bucket, None);
 }
 
 #[test]

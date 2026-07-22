@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.85.2] — 2026-07-22
+## [0.86.0] — 2026-07-22
+
+### Changed
+
+- **R2 objects now browse as a folder tree, not one flat 1000-row dump.** A bucket whose
+  keys look like `assets/admin-front-end/css/foo.css` was showing every object in one long
+  list; it now shows one level at a time — the subfolders (as `▸ name/`) and the files
+  directly at that level — like Cloudflare's dashboard or any S3 browser. **Enter** descends
+  into a folder, **Esc** goes up a level (then back to the buckets list at the root), and
+  the breadcrumb shows the current path. Folders are listed A→Z and files **newest-first**;
+  `/` still filters the current level. This uses the objects API's `delimiter` mode over the
+  same API token. On the CLI, `cf r2 object list <bucket> [--prefix path/]` shows the same
+  level view (and its `--json` now returns `{ "folders": […], "files": […] }`).
 
 ### Added
 
