@@ -350,6 +350,40 @@ like one app. Concretely, replicate EasyPanel's patterns in the CF workspace:
   that the token likely lacks the **Zone : DNS** permission (use the "Edit zone DNS"
   template) — a common pitfall, proven via curl this session.
 
+### BACKLOG (owner-requested 2026-07-22): more Cloudflare products — R2, D1
+
+The CF workspace's product tab bar was built to grow (`CF_PRODUCTS`; DNS is tab 1).
+Owner wants these next products, each a NEW product tab beside DNS. Each is a real
+vertical slice — brainstorm a spec first (docs/superpowers/specs/), verify live READ-ONLY
+against the owner's `pt-karya-kaya-bahagia` account (has real resources; never mutate
+production — use owner-supplied throwaway names for any create/delete test). Account-scoped:
+all need the account's `account_id` (already stored on `CloudflareAccount`), and the API
+token must carry the matching permission (surface a clear "token lacks R2/D1 permission"
+hint on the auth error, same pitfall as Zone:DNS).
+
+- **R2 (object storage).** New `CfProduct::R2` tab. Bucket management via the Cloudflare
+  API (`/accounts/{account_id}/r2/buckets` — list/create/delete). Object operations
+  (list/upload/download/delete within a bucket) go through the **S3-compatible API** —
+  and this repo ALREADY has a working SigV4 S3 client at `src/s3.rs` (built for the DB
+  dump → R2 feature: `presign`, `sign_list`), so object listing/transfer should REUSE
+  `s3.rs` rather than reinvent it. R2's S3 endpoint is `{account_id}.r2.cloudflarestorage.com`;
+  the S3 access-key/secret are SEPARATE from the API token (R2 → Manage R2 API Tokens) —
+  the account may need to store an R2 access-key/secret alongside the API token, or reuse
+  the existing storage-provider creds the DB-dump feature already reads. TUI shape (mirror
+  DNS): Buckets list (like Zones) → Enter → Objects list (like Records), `/` filter,
+  drill-in. Confirm the exact R2 bucket API shapes against the official docs first.
+- **D1 (serverless SQL database).** New `CfProduct::D1` tab. Databases via
+  `/accounts/{account_id}/d1/database` (list/create/delete); run SQL via
+  `POST /accounts/{account_id}/d1/database/{database_id}/query` (or `/raw`), which returns
+  result rows + meta. TUI shape: Databases list (like Zones) → Enter → a query/tables view
+  (list tables, run a read-only `SELECT`, show rows in a table; guard destructive SQL
+  behind a confirm). Uses the API token (Bearer), account-scoped. Verify the query
+  request/response shape against the official D1 API docs before building.
+
+Both are their own dedicated runs (client + domain + CLI + a new product tab), not hourly
+nibbles. Keep the DNS behaviour untouched; each product is an independent arm under the
+existing CF workspace + tab bar.
+
 ### DONE v0.83.0 (2026-07-22): Cloudflare — zones + DNS records (CLI + isolated TUI), owner-requested
 
 A whole new bounded context OUTSIDE EasyPanel, owner-requested: manage one or more
