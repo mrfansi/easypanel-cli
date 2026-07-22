@@ -1123,9 +1123,15 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
 
     let shown = app.cf_objects_shown();
     let title = format!(
-        "Objects ({} of {}){}",
+        "Objects ({} of {}){}{}",
         shown.len(),
         app.cf.r2_objects.len(),
+        // A large bucket loads only its first page; say so rather than implying it's whole.
+        if app.cf.r2_truncated {
+            " · first page, more exist — narrow with /"
+        } else {
+            ""
+        },
         if app.cf.filter.is_empty() {
             String::new()
         } else {

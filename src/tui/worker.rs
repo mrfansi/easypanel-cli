@@ -699,6 +699,8 @@ pub(super) enum CfResp {
     R2Objects {
         bucket: String,
         objects: Vec<R2Object>,
+        /// The bucket held more than one page; the app tells the user to narrow.
+        truncated: bool,
     },
     /// A create/edit/delete succeeded; the app re-lists the affected screen.
     Done(String),
@@ -2036,7 +2038,11 @@ fn handle_cf(req: CfReq) -> CfResp {
             &bucket,
             prefix.as_deref(),
         ) {
-            Ok(objects) => CfResp::R2Objects { bucket, objects },
+            Ok((objects, truncated)) => CfResp::R2Objects {
+                bucket,
+                objects,
+                truncated,
+            },
             Err(e) => CfResp::Err(e.to_string()),
         },
     }

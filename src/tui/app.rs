@@ -243,9 +243,12 @@ pub(super) struct CfUi {
     pub(super) r2_buckets: Vec<R2Bucket>,
     pub(super) r2_row: TableState,
     /// R2 objects drill-in state (the mirror of `records`/`current_zone`): the objects
-    /// of `current_bucket` and the selected row. Loaded via the S3 API on Enter.
+    /// of `current_bucket` and the selected row. Loaded via the REST objects API on Enter.
     pub(super) r2_objects: Vec<R2Object>,
     pub(super) r2_objects_row: TableState,
+    /// The bucket had more than one page of objects; only the first is loaded, so the
+    /// screen says "narrow with a filter" rather than pretending it's the whole bucket.
+    pub(super) r2_truncated: bool,
     pub(super) current_bucket: Option<String>,
     /// A CF-local text filter, narrowing the loaded list client-side.
     pub(super) filter: String,
@@ -2110,11 +2113,16 @@ impl App {
                 let len = self.cf_buckets_shown().len();
                 select_first(&mut self.cf.r2_row, len);
             }
-            CfResp::R2Objects { bucket, objects } => {
+            CfResp::R2Objects {
+                bucket,
+                objects,
+                truncated,
+            } => {
                 // Discard a stale reply for a bucket the user has already left.
                 if self.cf.current_bucket.as_deref() == Some(bucket.as_str()) {
                     self.cf.error = None;
                     self.cf.r2_objects = objects;
+                    self.cf.r2_truncated = truncated;
                     let len = self.cf_objects_shown().len();
                     select_first(&mut self.cf.r2_objects_row, len);
                 }

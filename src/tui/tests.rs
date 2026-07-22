@@ -6133,14 +6133,21 @@ fn cf_bucket_enter_drills_into_objects_and_esc_walks_back() {
         Resp::Cf(CfResp::R2Objects {
             bucket: "assets".into(),
             objects: vec![cf_object("img/logo.png", 2048)],
+            truncated: true,
         }),
         &tx,
     );
     assert_eq!(app.cf.r2_objects.len(), 1);
+    // A big bucket loads only its first page; the flag drives the "more exist" note.
+    assert!(
+        app.cf.r2_truncated,
+        "the truncated flag is stored for the screen"
+    );
     app.handle(
         Resp::Cf(CfResp::R2Objects {
             bucket: "some-other-bucket".into(),
             objects: vec![cf_object("stale.txt", 1)],
+            truncated: false,
         }),
         &tx,
     );

@@ -579,7 +579,7 @@ pub fn cf_r2_object_list(
 ) -> Result<()> {
     let (client, acc) = cf_client(cfg, account)?;
     let account_id = cf_account_id(&acc)?;
-    let objects = client.list_r2_objects(&account_id, bucket, prefix)?;
+    let (objects, truncated) = client.list_r2_objects(&account_id, bucket, prefix)?;
     if output::json_output() {
         output::print_json(&serde_json::to_value(
             objects
@@ -608,6 +608,12 @@ pub fn cf_r2_object_list(
         })
         .collect();
     table(&["Key", "Size", "Modified"], rows);
+    if truncated {
+        println!(
+            "\nShowing the first {} object(s) — more exist. Narrow with --prefix <path/>.",
+            objects.len()
+        );
+    }
     Ok(())
 }
 

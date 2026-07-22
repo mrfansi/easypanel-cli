@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.85.1] — 2026-07-22
+
+### Fixed
+
+- **Browsing a large R2 bucket no longer hangs on "Loading objects…".** The object list
+  followed every pagination cursor before showing anything, so a bucket with tens of
+  thousands of objects never finished loading (in the TUI it sat on "Loading objects…"
+  forever; on the CLI it spun). It now loads the **first page** (up to 1000) and says so —
+  the TUI title reads "… · first page, more exist — narrow with /", the CLI prints
+  "Showing the first 1000 — narrow with --prefix". Use `/` (TUI) or `--prefix` (CLI) to
+  drill into a path.
+
 ## [0.85.0] — 2026-07-22
 
 ### Added

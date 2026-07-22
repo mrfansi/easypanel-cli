@@ -515,33 +515,27 @@ impl CloudflareClient {
     /// List a bucket's objects, following R2's CURSOR pagination. Unlike buckets, the
     /// objects `result` is a BARE array (not wrapped) — `is_truncated` says whether to
     /// loop, `cursor` is the next page. Same Bearer token as buckets; `prefix` narrows.
+    /// The FIRST page of a bucket's objects (up to 1000), plus whether more exist.
+    ///
+    /// A bucket can hold millions of objects, so paging the whole thing before showing
+    /// anything looked like a hang on a large bucket (the TUI stuck on "Loading objects…").
+    /// We fetch one page and report `truncated` so the caller can say "narrow with a
+    /// prefix" instead of walking every cursor page. `prefix` narrows server-side.
     pub fn list_r2_objects(
         &self,
         account_id: &str,
         bucket: &str,
         prefix: Option<&str>,
-    ) -> Result<Vec<R2Object>> {
+    ) -> Result<(Vec<R2Object>, bool)> {
         let path = format!("/accounts/{account_id}/r2/buckets/{bucket}/objects");
-        let mut all = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let mut q: Vec<(String, String)> = vec![("per_page".into(), "1000".into())];
-            if let Some(p) = prefix.filter(|p| !p.is_empty()) {
-                q.push(("prefix".into(), p.to_string()));
-            }
-            if let Some(c) = &cursor {
-                q.push(("cursor".into(), c.clone()));
-            }
-            let body = self.get(&path, &q).map_err(r2_hint)?;
-            let (mut objs, info): (Vec<R2Object>, ResultInfo) =
-                parse_envelope_paged(&body).map_err(r2_hint)?;
-            all.append(&mut objs);
-            match info.cursor.filter(|c| info.is_truncated && !c.is_empty()) {
-                Some(c) => cursor = Some(c),
-                None => break,
-            }
+        let mut q: Vec<(String, String)> = vec![("per_page".into(), "1000".into())];
+        if let Some(p) = prefix.filter(|p| !p.is_empty()) {
+            q.push(("prefix".into(), p.to_string()));
         }
-        Ok(all)
+        let body = self.get(&path, &q).map_err(r2_hint)?;
+        let (objs, info): (Vec<R2Object>, ResultInfo) =
+            parse_envelope_paged(&body).map_err(r2_hint)?;
+        Ok((objs, info.is_truncated))
     }
 }
 
