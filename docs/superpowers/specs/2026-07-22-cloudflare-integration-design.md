@@ -65,12 +65,19 @@ pub struct Record {
 
 Pure functions:
 
-- `parse_envelope::<T>(body) -> Result<T>` — Cloudflare wraps every response in
-  `{ success, errors:[{code,message}], messages, result, result_info }`. On
-  `success:false` surface `errors[0].message` (e.g. *"Record already exists."*), not
-  the HTTP status. One helper, used by every call.
-- `record_body(form) -> serde_json::Value` — build the create/update JSON from typed
-  fields; omit `priority` unless the type needs it; `proxied` only for proxyable types.
+- `parse_envelope::<T>(body) -> Result<T>` — Cloudflare wraps every v4 response in
+  `{ success, result, result_info{count,page,per_page,total_count,total_pages},
+  errors:[{code, message, documentation_url?, source?}], messages }`. On `success:false`
+  surface `errors[0].message` (e.g. *"Record already exists."*), not the HTTP status. One
+  helper, used by every call. (Note: Cloudflare's *edge* error pages use a different
+  RFC-9457 shape — that is NOT the v4 API envelope and must not be conflated with it.)
+- `record_body(form) -> serde_json::Value` — build the CREATE JSON from typed fields.
+  Required by CF: `name`, `type`, `ttl` (verified). `ttl = 1` means "automatic"; any other
+  value is seconds (60–86400). `proxied` only for A/AAAA/CNAME; `priority` only for MX/SRV.
+  **v1 record-type scope**: the flat-`content` types — A, AAAA, CNAME, TXT, NS — plus MX
+  (which adds `priority`). The `data`-object types (SRV, CAA, LOC, URI, …) need a
+  structured `data{}` body and are deferred to a follow-up; `valid_record_type` rejects
+  them with a clear "not supported yet" rather than sending a malformed body.
 - `resolve_zone(zones, needle) -> Option<Zone>` — accept a zone **name** (`example.com`)
   or an **id**; prefer an exact name match, fall back to id equality.
 - `valid_record_type(&str)`, `proxyable(type)` — small guards used by both CLI and TUI.
@@ -95,10 +102,16 @@ list_zones()                         GET  /zones            (paginated: per_page
 create_zone(name, account_id)        POST /zones
 delete_zone(zone_id)                 DELETE /zones/{id}
 list_records(zone_id, filter)        GET  /zones/{id}/dns_records   (paginated; server-side filter)
-create_record(zone_id, body)         POST /zones/{id}/dns_records
-update_record(zone_id, rec_id, body) PUT  /zones/{id}/dns_records/{rid}
+create_record(zone_id, body)         POST  /zones/{id}/dns_records
+patch_record(zone_id, rec_id, patch) PATCH /zones/{id}/dns_records/{rid}   (partial — send only changed fields)
 delete_record(zone_id, rec_id)       DELETE /zones/{id}/dns_records/{rid}
 ```
+
+**PATCH, not PUT, for edits** (verified against the official docs — see the API note at
+the end). Cloudflare exposes both: `PATCH .../dns_records/{id}` is "Update" (partial), and
+`PUT` is "Overwrite" (full, and omitted optional fields are not preserved). Since both the
+single edit and the bulk `apply_patch` change only the fields the user named, they use
+PATCH — a PUT would silently wipe every field the user didn't resend.
 
 Pagination matters: an account can hold hundreds of zones and **a single zone can hold
 thousands of records**. Both list calls follow `result_info.total_pages` (the same
@@ -249,7 +262,7 @@ the EasyPanel worker match is untouched in spirit:
 ```
 CfReq: Zones, CreateZone{name}, DeleteZone{id}, Records{zone_id, filter},   // filter: Option<RecordFilter>
        CreateRecord{zone_id, body}, UpdateRecord{zone_id, id, body}, DeleteRecord{zone_id, id},
-       BulkUpdateRecords{zone_id, ids, patch},   // apply one field-change to each id
+       BulkPatchRecords{zone_id, ids, patch},    // PATCH one field-change onto each id
        BulkDeleteRecords{zone_id, ids}
 CfResp: Zones(Vec<Zone>), Records{zone_id, Vec<Record>}, Done(msg),
         BulkDone{ok, failed},                    // per-record report, reuses the EasyPanel shape
@@ -283,8 +296,10 @@ seeded from the default account, changed by the `a` account picker.
   a shape with no errors array still fails cleanly.
 - `record_body`: A record omits `priority`; MX includes it; `proxied` dropped for TXT.
 - `resolve_zone`: name match, id match, no match; name preferred over a coincidental id.
-- `RecordFilter` → query params: `type`/`name`/`content` map to the documented CF query
-  keys (`name` uses the `contains` match mode); an empty filter sends no params.
+- `RecordFilter` → query params, using the EXACT CF operator-key syntax (verified): a
+  substring filter is `name.contains=<v>` / `content.contains=<v>` (siblings `.exact`,
+  `.startswith`, `.endswith`; case-insensitive), while `type=<v>` is a flat key. When more
+  than one filter is set, add `match=all` (AND). An empty filter sends no params.
 - `select_records`: ids-only; `where-content` matches exact content (the repoint case);
   combined `where-type` + `where-content` intersect; `where-name` substring; no match →
   empty (so the CLI says "0 matched" instead of writing nothing silently).
@@ -329,3 +344,36 @@ Internal order the implementation plan will follow:
   a file (BIND zone files, CSV) is out for v1.
 - No caching of zones/records to disk — always live from the API.
 - The Switch menu stays two-item; no plugin framework for "workspaces".
+
+## API grounding — verified against the official docs (2026-07-22)
+
+Endpoint shapes above were checked against `developers.cloudflare.com/api` (the current
+per-resource/per-method reference), not guessed. Confirmed directly: `Authorization:
+Bearer` + base `https://api.cloudflare.com/client/v4/`; the `success/result/result_info/
+errors/messages` envelope and error `{code,message,documentation_url?,source?}`;
+PATCH=partial "Update" vs PUT=full "Overwrite" for records; the `name.contains=` /
+`content.contains=` operator-key filter syntax with `match=all`; create requires
+`name`+`type`+`ttl` (`ttl=1`=automatic); the `"Edit zone DNS"` token template =
+`Zone>DNS>Edit` + `Zone>Zone>Read`.
+
+**Six details the docs did NOT pin down — resolve by a live probe with `CF_TEST_TOKEN`
+BEFORE trusting them in code (a measured 400 beats a doc guess):**
+
+1. **Max `per_page`** for both list endpoints — the docs show only an example `20`. Probe
+   `per_page=10000`, read the clamp/400; page defensively until then.
+2. Whether a **zone-scoped token can `GET /zones` without `account.id`** (may 403). If it
+   does, `zone list` may need the account id or a documented "use the token's account".
+3. Whether **`account.id` is truly optional at `POST /zones`** — schema says optional, but
+   for a token this is almost certainly required. The spec already treats `--account-id`
+   as required for `zone add`; the probe confirms the exact 400 if omitted.
+4. The exact **Zone-category permission-group names** (beyond the confirmed DNS-edit
+   template) — enumerate via the "List permission groups" API if needed.
+5. A directly-quoted **"PATCH sends only changed fields"** sentence — inferred from the
+   Update-vs-Overwrite naming; the probe (PATCH one field, re-GET, confirm the others
+   survived) makes it certain.
+6. The **zone `name` filter operator syntax** — probably the same `.contains` pattern as
+   DNS records, not directly confirmed for zones.
+
+These are exactly the kind of scoped-token edge cases the brief warns a mock can encode
+wrongly — so they are verified live on the throwaway zone during the CLI phase, not
+asserted from a doc page.
