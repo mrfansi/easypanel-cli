@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.4] — 2026-07-23
+
+### Fixed
+
+- **The Cloudflare account switch `a` now works on every screen, like EasyPanel's
+  `s`.** EasyPanel's server switcher `s` sits above the per-screen key dispatch, so it
+  works everywhere. The CF account picker `a` was bound only on the Zones and Buckets
+  home screens; on the Records and R2 Objects drill-ins it fell through to the table
+  navigation and did nothing — a silent dead key, right where you'd want to jump to
+  another account after inspecting a zone. `a` is now handled once in the CF dispatch
+  (alongside `:` and the product-tab keys), so it opens the account picker from any CF
+  screen and returns to the new account's home. Both the `?` help and the status-bar
+  hints for Records and Objects now list `a account`, matching Zones and Buckets.
+  Verified live: `a` on a zone's DNS records opened the account picker.
+
 ## [0.87.3] — 2026-07-23
 
 ### Fixed

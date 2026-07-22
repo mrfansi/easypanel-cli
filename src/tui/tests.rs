@@ -5950,6 +5950,38 @@ fn cf_filter_arrows_move_the_selection_while_typing() {
 }
 
 #[test]
+fn cf_account_switch_works_on_every_screen_not_just_the_home() {
+    // `a` is the CF mirror of EasyPanel's global `s` server switcher, which sits above
+    // the per-screen dispatch and works on every screen. It used to be bound only on the
+    // Zones/Buckets home handlers, so on the Records/Objects drill-ins `a` was a silent
+    // dead key. Now it opens the account picker from any CF screen.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+
+    // DNS Records drill-in.
+    app.cf.product = CfProduct::Dns;
+    app.cf.screen = CfScreen::Records;
+    app.on_key(KeyCode::Char('a'), &tx);
+    assert!(
+        app.cf_picker.is_some(),
+        "`a` opens the account picker on the Records drill-in"
+    );
+    app.cf_picker = None;
+
+    // R2 Objects drill-in.
+    app.cf.product = CfProduct::R2;
+    app.cf.screen = CfScreen::Objects;
+    app.on_key(KeyCode::Char('a'), &tx);
+    assert!(
+        app.cf_picker.is_some(),
+        "`a` opens the account picker on the R2 Objects drill-in"
+    );
+}
+
+#[test]
 fn cf_home_is_zones_and_the_account_picker_switches_accounts() {
     // Entering the workspace lands on the Zones home of the active (default)
     // account; `a` opens the account picker; Enter there activates the account.

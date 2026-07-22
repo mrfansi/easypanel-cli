@@ -410,6 +410,10 @@ pub(super) fn cf_screen_keys(screen: CfScreen) -> &'static [Key] {
             Key("Esc", "back to EasyPanel"),
         ],
         CfScreen::Records => &[
+            Key(
+                "a",
+                "switch Cloudflare account (a picker, like `s` switches servers)",
+            ),
             Key("n", "add a DNS record"),
             Key("e", "edit the selected record"),
             Key("x", "delete the selected record"),
@@ -447,6 +451,10 @@ pub(super) fn cf_buckets_keys() -> &'static [Key] {
 /// later slice, so only filter/refresh and Esc back to the buckets are listed.
 pub(super) fn cf_objects_keys() -> &'static [Key] {
     &[
+        Key(
+            "a",
+            "switch Cloudflare account (a picker, like `s` switches servers)",
+        ),
         Key("/", "filter the list"),
         Key("r", "refresh"),
         Key("Esc", "back to buckets"),
@@ -706,7 +714,7 @@ pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &m
 pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
     match screen {
         CfScreen::Records => {
-            "n add · e edit · x delete · v/V mark · Space bulk · / filter · r refresh · Esc zones"
+            "a account · n add · e edit · x delete · v/V mark · Space bulk · / filter · r refresh · Esc zones"
         }
         // The Zones home. R2's Objects drill-in never routes here (R2 uses the CF_*_HINTS
         // consts), so it shares this arm only to keep the match exhaustive.
@@ -723,7 +731,8 @@ pub(super) const CF_BUCKETS_HINTS: &str =
 
 /// The R2 Objects folder-browser status-bar hint. No add/delete yet — object mutation is
 /// a later slice. Esc goes up a folder inside the tree, or out to the buckets at the root.
-pub(super) const CF_OBJECTS_HINTS: &str = "Enter open · / filter · r refresh · Esc up/buckets";
+pub(super) const CF_OBJECTS_HINTS: &str =
+    "a account · Enter open · / filter · r refresh · Esc up/buckets";
 
 /// The orange workspace header: the bordered title + the PRODUCT tab bar (DNS
 /// today; D1/R2/KV/Workers/Connectors slot in later). Drawn exactly like the

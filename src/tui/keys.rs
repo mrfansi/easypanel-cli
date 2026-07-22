@@ -1276,6 +1276,16 @@ impl App {
             self.open_cf_palette();
             return;
         }
+        // `a` opens the account picker from ANY CF screen — the mirror of EasyPanel's
+        // `s` server switcher, which sits above the per-screen dispatch and so works on
+        // every screen. It used to be bound only on the Zones/Buckets home handlers, so
+        // on the Records/Objects drill-ins `a` was a silent dead key. Switching account
+        // returns to the new account's home (`cf_goto_home`), so it is safe from a
+        // drill-in.
+        if code == KeyCode::Char('a') {
+            self.open_cf_picker();
+            return;
+        }
         // Product tabs (DNS · R2; D1/KV/Workers/Connectors later): 1..=N jump,
         // Tab/→ cycle forward, ← cycles back — the CF mirror of the EasyPanel tab
         // keys. Overlays/forms/the filter are handled above this dispatch, so they
@@ -1321,7 +1331,6 @@ impl App {
             }
             KeyCode::Esc => self.set_workspace(Workspace::Easypanel),
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('a') => self.open_cf_picker(),
             KeyCode::Char('/') => {
                 self.cf.filter_input = true;
                 self.cf.filter.clear();
@@ -1386,7 +1395,6 @@ impl App {
             }
             KeyCode::Esc => self.set_workspace(Workspace::Easypanel),
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('a') => self.open_cf_picker(),
             KeyCode::Char('/') => {
                 self.cf.filter_input = true;
                 self.cf.filter.clear();
