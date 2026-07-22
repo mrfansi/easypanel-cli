@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.3] — 2026-07-23
+
+### Fixed
+
+- **Arrow keys now move the Cloudflare list while you type a filter — as they do in
+  EasyPanel.** In the EasyPanel workspace, pressing `/` and typing to narrow a list lets
+  you reach straight for ↑/↓ (or PageUp/PageDown/Home/End) to select the row you just
+  filtered to, without an intervening Enter — the filter box explicitly keeps the list
+  live. The Cloudflare filter did not: those keys were inert while typing, so after
+  narrowing zones/records/buckets/objects you had to press Enter to leave the filter
+  before the arrows did anything — the selection appeared stuck. `cf_filter_key` now
+  routes the movement keys to the active CF table (via the same
+  `active_table`/`visible_table_len` the mouse layer uses), so type-then-arrow works
+  identically in both workspaces. Verified live: filtering a zone's DNS records and
+  pressing ↓ moved the highlight within the narrowed list mid-type.
+
 ## [0.87.2] — 2026-07-23
 
 ### Fixed

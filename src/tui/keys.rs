@@ -1504,6 +1504,23 @@ impl App {
                 self.cf.filter.push(c);
                 self.cf_clamp_filtered();
             }
+            // The arrows move the CF list WHILE you type — the same as EasyPanel's
+            // filter (keys.rs `filter_key`). Typing narrows the zones/records/buckets/
+            // objects list in front of you, so reaching for ↓ to grab the row you just
+            // filtered to is the obvious next move; it used to be inert here, silently
+            // forcing an Enter first. `active_table`/`visible_table_len` already resolve
+            // to the correct CF row + filtered length. Not j/k: a filter is text.
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End => {
+                let len = self.visible_table_len();
+                if let Some(state) = self.active_table() {
+                    move_table(state, code, len);
+                }
+            }
             _ => {}
         }
     }

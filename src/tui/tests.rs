@@ -5906,6 +5906,50 @@ fn cf_confirm_dialog_shows_the_account_not_the_easypanel_host() {
 }
 
 #[test]
+fn cf_filter_arrows_move_the_selection_while_typing() {
+    // Mirror of EasyPanel's filter (keys.rs `filter_key`): ↑↓ move the CF list WHILE
+    // the filter is being typed, with no intervening Enter. This was inert in the CF
+    // filter, silently forcing an Enter before you could grab the row you just narrowed
+    // to — the exact papercut EasyPanel fixed.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.zones = vec![
+        cf_zone("z1", "aaa.com"),
+        cf_zone("z2", "abc.com"),
+        cf_zone("z3", "abd.com"),
+    ];
+    app.cf.zones_row.select(Some(0));
+
+    // Enter the filter input and narrow to the two "ab*" zones.
+    app.on_key(KeyCode::Char('/'), &tx);
+    assert!(app.cf.filter_input, "`/` starts the CF filter input");
+    for c in "ab".chars() {
+        app.on_key(KeyCode::Char(c), &tx);
+    }
+    assert_eq!(app.cf_zones_shown().len(), 2, "filter narrows to abc/abd");
+    assert!(app.cf.filter_input, "still typing — no Enter pressed");
+    assert_eq!(
+        app.selected_cf_zone().map(|z| z.name),
+        Some("abc.com".to_string()),
+        "selection sits on the first shown row"
+    );
+
+    // Down moves within the FILTERED list without leaving the filter input.
+    app.on_key(KeyCode::Down, &tx);
+    assert!(
+        app.cf.filter_input,
+        "an arrow while typing must NOT end the filter input"
+    );
+    assert_eq!(
+        app.selected_cf_zone().map(|z| z.name),
+        Some("abd.com".to_string()),
+        "Down moved to the second shown row while still typing the filter"
+    );
+}
+
+#[test]
 fn cf_home_is_zones_and_the_account_picker_switches_accounts() {
     // Entering the workspace lands on the Zones home of the active (default)
     // account; `a` opens the account picker; Enter there activates the account.
