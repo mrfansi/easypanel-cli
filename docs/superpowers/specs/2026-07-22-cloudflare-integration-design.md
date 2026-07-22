@@ -12,9 +12,10 @@ around anything EasyPanel exposes — it talks straight to the Cloudflare API.
 
 Three operator jobs, from the original request:
 
-1. **Set a Cloudflare account per server** — store a scoped API token alongside each
-   EasyPanel server.
-2. **Manage zones** — list, add, and delete zones on that account.
+1. **Manage Cloudflare accounts** — store one or more scoped API tokens, independent of
+   any EasyPanel server (an operator may hold several Cloudflare accounts). One is the
+   active/default.
+2. **Manage zones** — list, add, and delete zones on the active account.
 3. **Manage records within a zone** — full CRUD over DNS records.
 
 ## Decisions (locked with the owner)
@@ -26,22 +27,29 @@ Three operator jobs, from the original request:
 | Record ops | Full CRUD: list, add, edit, delete. |
 | Surface | CLI **and** TUI in the same release. |
 | TUI placement | **Isolated switch-mode**, NOT a 9th EasyPanel tab. |
-| CF account scope | **Per EasyPanel server** — follows the active server. |
+| CF account scope | **Standalone, isolated** — its own account store, *multiple* accounts, one active/default. NOT tied to any EasyPanel server. |
 | Verification | End-to-end CRUD against a **throwaway zone** whose token the owner supplies via `! export CF_TEST_TOKEN=…`, then cleaned up. |
 | Switch key | **`W`** (shift+w) opens the workspace switch menu. Verified free — `w` is taken, `W` is not. |
 
 ## Bounded context
 
 Cloudflare is a **separate bounded context** from EasyPanel. Nothing in the EasyPanel
-domain, client, or tab bar changes behaviour. Isolation is the point: the two share
-only the config file they both live in and the TUI event loop that hosts them.
+domain, client, config, or tab bar changes behaviour. Isolation is the point: the two
+share only the TUI event loop that hosts them and the config *directory* they keep
+separate files in. In particular the `Server` struct is **not** touched — Cloudflare
+accounts live in their own store because they are independent of EasyPanel servers.
 
 ### Domain model — `src/cloudflare.rs`
 
 Pure types + pure functions (all unit-testable, no I/O):
 
 ```rust
-pub struct CloudflareAccount { pub api_token: String, pub account_id: Option<String> }
+pub struct CloudflareAccount {
+    pub name: String,               // user-chosen label, e.g. "personal", "harisenin"
+    pub api_token: String,
+    pub account_id: Option<String>, // needed only for `zone add`
+    #[serde(default)] pub default: bool,
+}
 
 pub struct Zone   { pub id: String, pub name: String, pub status: String }
 pub struct Record {
@@ -89,52 +97,67 @@ Pagination matters: an account can hold hundreds of zones and a zone hundreds of
 records. Both list calls follow `result_info.total_pages` (the same discipline the
 EasyPanel 713-domain host forced on the rest of the tool).
 
-### Config — attached to `Server`
+### Config — a standalone `CloudflareConfig` store
 
-`servers.json` gains an optional per-server block, backward-compatible:
+Cloudflare accounts live in their **own** file, `~/.config/easypanel/cloudflare.json`
+(next to `servers.json` and `checks.json`, `0o600`). The `Server` struct is untouched.
 
-```rust
-pub struct Server {
-    pub name: String,
-    pub url: String,
-    pub token: String,
-    #[serde(default)] pub default: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cloudflare: Option<CloudflareAccount>,   // NEW
-}
+`CloudflareConfig` mirrors `ServerConfig` exactly — same shape, same hard-won
+corrupt-file guard:
+
+```
+list()                 -> Vec<CloudflareAccount>     // read path, empty on corrupt
+try_all()              -> Result<Vec<…>>             // write path, errors on corrupt
+add(account)                                         // add or replace by name
+remove(name)
+set_default(name)
+default() / by_name(name) -> Option<CloudflareAccount>
 ```
 
-`#[serde(default)]` means every existing `servers.json` still parses. The file is
-already `0o600`; the CF token rides the same protection as the EasyPanel token beside
-it. New write path on `ServerConfig`: `set_cloudflare(server_name, account)` — reads
-all (via `try_all`, never `all`, so a corrupt file can't wipe every server's tokens),
-replaces the one server's block, writes back.
+`try_all` (not `list`) on every write, for the identical reason `ServerConfig` does it:
+add/remove/set-default read-modify-write the whole file, so treating a corrupt file as
+empty would silently delete every stored CF token — unrecoverable. A *missing* file is
+empty; a *corrupt* file stops the write. Written `0o600`, same as the token files beside
+it. This is deliberately a copy of the `ServerConfig`/`Watchlist` pattern already proven
+in this codebase, not a new abstraction over both.
 
 ## CLI surface
 
+Cloudflare accounts are managed on their own, independent of `easypanel server …`:
+
 ```
-easypanel cf login  [--server S] [--account-id ID] [--token T]
-                        store/replace the CF token for a server. Without --token,
-                        prompt for it WITHOUT echo (dialoguer password). Never printed
-                        back. --account-id is needed only for `zone add`.
+easypanel cf account add <name> [--account-id ID] [--token T]
+                        add/replace a CF account by label. Without --token, prompt for
+                        it WITHOUT echo (dialoguer password). Never printed back.
+                        --account-id is needed only for `zone add`. First account added
+                        becomes the default.
+easypanel cf account list                  # labels, which is default, masked token
+easypanel cf account use    <name>         # set the default account
+easypanel cf account delete <name>
+```
 
-easypanel cf zone list
-easypanel cf zone add    <name>
-easypanel cf zone delete <zone>          # destructive; requires typed-name confirm
+Zone/record commands run against the default account, or `--account <name>` to pick one:
 
-easypanel cf record list   <zone>
+```
+easypanel cf zone list                   [--account NAME]
+easypanel cf zone add    <name>          [--account NAME]
+easypanel cf zone delete <zone>          [--account NAME]   # destructive; typed-name confirm
+
+easypanel cf record list   <zone>        [--account NAME]
 easypanel cf record add    <zone> --type A --name x --content 1.2.3.4
-                                   [--ttl N] [--proxied] [--priority N]
+                                   [--ttl N] [--proxied] [--priority N] [--account NAME]
 easypanel cf record edit   <zone> <record-id> [--content …] [--proxied true|false]
-                                   [--ttl N] [--name …] [--priority N]
-easypanel cf record delete <zone> <record-id>
+                                   [--ttl N] [--name …] [--priority N] [--account NAME]
+easypanel cf record delete <zone> <record-id>              [--account NAME]
 ```
 
 - `<zone>` is a domain name or a zone id (`resolve_zone`).
-- The global `--server` and `--json` flags apply. `--json` prints the raw Cloudflare
-  `result`, same contract as the EasyPanel read commands.
-- `cf` with no CF token configured for the target server errors with a one-line
-  "run `easypanel cf login --server S` first", not a bare 401.
+- `--account NAME` selects the CF account; default is the one marked default. This is a
+  `cf`-local flag, unrelated to the global `--server` (which stays EasyPanel-only).
+- The global `--json` flag applies to the read commands (prints the raw Cloudflare
+  `result`), same contract as the EasyPanel read commands.
+- Running a zone/record command with **no** accounts configured errors with a one-line
+  "run `easypanel cf account add <name>` first", not a bare 401.
 
 ## TUI surface — isolated switch-mode
 
@@ -148,17 +171,21 @@ enum Workspace { Easypanel, Cloudflare }
   workspace swaps the whole view. The menu is a normal picker (reuses the menu
   machinery); two entries today, extensible if another integration ever lands.
 - In **Cloudflare** workspace the EasyPanel tab bar is not drawn; instead a
-  Cloudflare-orange header shows the account's server + two internal screens:
+  Cloudflare-orange header shows the **active CF account label** + two internal screens:
   - `Zones` table → **Enter** → `Records` table for that zone.
   - Record add/edit/delete and zone add/delete reuse the existing **Form**, context
     **menu**, **viewer**, and confirmation-dialog machinery. No parallel widgets.
   - **Esc** in Records → Zones; **Esc** in Zones (the root) → back to EasyPanel.
+  - **`a`** in the Cloudflare workspace opens an **account picker** (list of stored CF
+    accounts) — the isolated analogue of `s` for EasyPanel servers. Switching account
+    re-lists zones. With a single account it just shows which one is active.
 - **Colour carries meaning**: the orange accent makes it unmistakable you've left
-  EasyPanel. No EasyPanel state (projects, services, the 1–8 keys) is reachable or
-  rendered while in the Cloudflare workspace, and vice-versa.
-- **No token → honest empty state**: entering the Cloudflare workspace on a server with
-  no `cloudflare` block shows *"No Cloudflare token for `<server>` — press `L` to add
-  one"* (opens the same login form), never a crash or a silent blank.
+  EasyPanel. No EasyPanel state (projects, services, servers, the 1–8 keys) is reachable
+  or rendered while in the Cloudflare workspace, and vice-versa. The active CF account is
+  independent of the active EasyPanel server.
+- **No accounts → honest empty state**: entering the Cloudflare workspace with no CF
+  accounts stored shows *"No Cloudflare account yet — press `n` to add one"* (opens the
+  same add-account form), never a crash or a silent blank.
 
 ### Worker messages (mirrors the EasyPanel Req/Resp pattern)
 
@@ -171,8 +198,9 @@ CfReq: Zones, CreateZone{name}, DeleteZone{id}, Records{zone_id},
 CfResp: Zones(Vec<Zone>), Records{zone_id, Vec<Record>}, Done(msg), Err(msg)
 ```
 
-The worker builds a `CloudflareClient` from the active server's stored token per
-request (same lifetime model as the EasyPanel client).
+The worker builds a `CloudflareClient` from the **active CF account's** stored token per
+request (same lifetime model as the EasyPanel client). The active account is TUI state,
+seeded from the default account, changed by the `a` account picker.
 
 ## Error handling
 
@@ -181,7 +209,7 @@ request (same lifetime model as the EasyPanel client).
 - Destructive actions (**zone delete**, **record delete**) always confirm and name the
   target. `zone delete` requires **typing the zone name** to proceed — deleting a zone
   removes every DNS record in it and cannot be undone.
-- A missing/expired token surfaces as a clear "token rejected — re-run `cf login`",
+- A missing/expired token surfaces as a clear "token rejected — re-add with `cf account add`",
   distinguished from an empty result (the empty-vs-failed lesson from the EasyPanel
   screens applies here too).
 
@@ -192,13 +220,15 @@ request (same lifetime model as the EasyPanel client).
   a shape with no errors array still fails cleanly.
 - `record_body`: A record omits `priority`; MX includes it; `proxied` dropped for TXT.
 - `resolve_zone`: name match, id match, no match; name preferred over a coincidental id.
-- Config: `set_cloudflare` round-trips; an existing tokenless `servers.json` still
-  parses; a corrupt file still refuses to write (existing guard, extended test).
+- Config: `CloudflareConfig` add/remove/set_default round-trip; first account added is
+  default; a missing `cloudflare.json` reads empty; a corrupt one refuses to write (the
+  same guard `ServerConfig` has). `servers.json` is untouched and still parses.
 - TUI: the Switch menu toggles `Workspace`; Esc from Zones root returns to EasyPanel;
-  the tokenless empty state renders the login prompt, not a blank.
+  the no-accounts empty state renders the add-account prompt, not a blank; the `a` picker
+  changes the active account.
 
 **Live (throwaway zone, `CF_TEST_TOKEN`):**
-- `cf login` stores the token; `zone list` returns the throwaway zone; add a record of
+- `cf account add` stores the token; `zone list` returns the throwaway zone; add a record of
   each proxyable + non-proxyable type; edit content + toggle proxied; delete; confirm
   each via a re-list. Then, if the token allows, `zone add`/`zone delete` on a genuinely
   disposable name. Clean up everything created.
@@ -209,8 +239,9 @@ Lands as a single minor release (**v0.83.0**) because clippy runs `-D warnings` 
 crate has no `#[allow(dead_code)]`: an orphan module with no caller fails the build.
 Internal order the implementation plan will follow:
 
-1. **Foundation** — `CloudflareAccount` on `Server` + `set_cloudflare` + `src/cloudflare.rs`
-   domain types and pure functions, all unit-tested. (Compiles because the tests use it.)
+1. **Foundation** — `CloudflareConfig` store (`cloudflare.json`) + `src/cloudflare.rs`
+   domain types (incl. `CloudflareAccount`) and pure functions, all unit-tested.
+   (Compiles because the tests use it.) `Server`/`servers.json` untouched.
 2. **Client** — `CloudflareClient` wired to the first real consumer.
 3. **CLI** — `easypanel cf …`, verified live against the throwaway zone.
 4. **TUI** — `Workspace` mode, Switch menu, Zones/Records screens, reusing forms/menus.
