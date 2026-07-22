@@ -324,6 +324,33 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### DONE v0.83.0 (2026-07-22): Cloudflare — zones + DNS records (CLI + isolated TUI), owner-requested
+
+A whole new bounded context OUTSIDE EasyPanel, owner-requested: manage one or more
+Cloudflare accounts' zones and DNS records. `src/cloudflare.rs` (domain types + pure
+fns + `CloudflareClient`), `CloudflareConfig` store (`cloudflare.json`, standalone,
+multi-account — NOT tied to a server), CLI `easypanel cf account/zone/record …`
+(incl. bulk `cf record set --where-content OLD --content NEW` to repoint many records
+in one command), and an ISOLATED TUI workspace (key `W`, orange): Zones home for the
+active account, `a` account picker (mirrors the server `s` picker — select/add/delete;
+adding the first account auto-activates it), Enter-on-zone → Records drill-in with
+add/edit/delete + bulk (v/V mark + Space menu) + `/` filter. Record edits use Cloudflare
+**PATCH** (partial), filter uses the `name.contains=`/`content.contains=` operator keys.
+Design + plan under `docs/superpowers/specs|plans/2026-07-22-cloudflare-*`.
+
+**NOT LIVE-VERIFIED (the one gap) — do this on first real use with a token:** the tool
+has no Cloudflare token in-session, so only the request/ERROR plumbing is proven live (an
+invalid token returns Cloudflare's real error envelope, surfaced in the TUI error state).
+The full create/read/update HAPPY-PATH and six scoped-token edge cases are unconfirmed —
+see the "API grounding" appendix in the spec for the exact list (max `per_page`; whether a
+zone-scoped token can `GET /zones` without `account.id`; whether `account.id` is truly
+optional at `POST /zones`; the PATCH "only changed fields" wording; the zone `name` filter
+operator syntax). When a token is available: add an account, list zones, add/edit(bulk)/
+delete a record on a THROWAWAY zone, and fix any shape that the docs got wrong. All pure
+logic is unit-tested (envelope, record_body, apply_patch, resolve_zone, select_records,
+filter_query); no wrong-shape HTTP mocks were written (per the "a wrong mock is worse than
+no test" rule).
+
 ### DONE v0.82.0 (2026-07-22): multi-DB dump hang FIXED + restore-from-R2 in the TUI
 
 **The big one — multi-database dumps hung.** An operator hit "Dump did not report
