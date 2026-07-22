@@ -94,15 +94,24 @@ Methods (each returns a domain type via `parse_envelope`):
 list_zones()                         GET  /zones            (paginated: per_page=50, follow result_info.total_pages)
 create_zone(name, account_id)        POST /zones
 delete_zone(zone_id)                 DELETE /zones/{id}
-list_records(zone_id)                GET  /zones/{id}/dns_records   (paginated)
+list_records(zone_id, filter)        GET  /zones/{id}/dns_records   (paginated; server-side filter)
 create_record(zone_id, body)         POST /zones/{id}/dns_records
 update_record(zone_id, rec_id, body) PUT  /zones/{id}/dns_records/{rid}
 delete_record(zone_id, rec_id)       DELETE /zones/{id}/dns_records/{rid}
 ```
 
-Pagination matters: an account can hold hundreds of zones and a zone hundreds of
-records. Both list calls follow `result_info.total_pages` (the same discipline the
-EasyPanel 713-domain host forced on the rest of the tool).
+Pagination matters: an account can hold hundreds of zones and **a single zone can hold
+thousands of records**. Both list calls follow `result_info.total_pages` (the same
+discipline the EasyPanel 713-domain host forced on the rest of the tool).
+
+**Filtering — pushed to the API when it can be.** Cloudflare's `dns_records` endpoint
+accepts `type`, `name` (with a `contains` match mode), and `content` query params, so
+`list_records` takes an optional `RecordFilter { type?, name?, content? }` and sends it
+as query params — the server returns only the matching page(s), which is what makes a
+thousand-record zone usable instead of fetching everything and scanning locally. The
+interactive TUI filter (below) narrows the already-loaded page client-side, the same
+`/`-filter every other TUI table uses; a "refine on the server" action re-issues
+`list_records` with the filter for zones too large to hold a full page comfortably.
 
 ### Config — a standalone `CloudflareConfig` store
 
@@ -150,7 +159,7 @@ easypanel cf zone list                   [--account NAME]
 easypanel cf zone add    <name>          [--account NAME]
 easypanel cf zone delete <zone>          [--account NAME]   # destructive; typed-name confirm
 
-easypanel cf record list   <zone>        [--account NAME]
+easypanel cf record list   <zone>        [--type A] [--name substr] [--content substr] [--account NAME]
 easypanel cf record add    <zone> --type A --name x --content 1.2.3.4
                                    [--ttl N] [--proxied] [--priority N] [--account NAME]
 easypanel cf record edit   <zone> <record-id> [--content …] [--proxied true|false]
@@ -204,7 +213,13 @@ enum Workspace { Easypanel, Cloudflare }
   machinery); two entries today, extensible if another integration ever lands.
 - In **Cloudflare** workspace the EasyPanel tab bar is not drawn; instead a
   Cloudflare-orange header shows the **active CF account label** + two internal screens:
-  - `Zones` table → **Enter** → `Records` table for that zone.
+  - `Zones` table → **Enter** → `Records` table for that zone. Both are **filterable**
+    with the existing `/` filter (essential — a zone can list thousands of records);
+    Zones and Records join `filterable()` exactly like the EasyPanel data tables, so the
+    filter, its title count, and Esc-to-clear all work with no new machinery. On the
+    Records screen the filter narrows the loaded page instantly; for a zone larger than
+    one page, the filter text also feeds a server-side `list_records` refine so nothing
+    off-page is missed.
   - Record add/edit/delete and zone add/delete reuse the existing **Form**, context
     **menu**, **viewer**, and confirmation-dialog machinery. No parallel widgets.
   - **Esc** in Records → Zones; **Esc** in Zones (the root) → back to EasyPanel.
@@ -232,7 +247,7 @@ enum Workspace { Easypanel, Cloudflare }
 the EasyPanel worker match is untouched in spirit:
 
 ```
-CfReq: Zones, CreateZone{name}, DeleteZone{id}, Records{zone_id},
+CfReq: Zones, CreateZone{name}, DeleteZone{id}, Records{zone_id, filter},   // filter: Option<RecordFilter>
        CreateRecord{zone_id, body}, UpdateRecord{zone_id, id, body}, DeleteRecord{zone_id, id},
        BulkUpdateRecords{zone_id, ids, patch},   // apply one field-change to each id
        BulkDeleteRecords{zone_id, ids}
@@ -268,6 +283,8 @@ seeded from the default account, changed by the `a` account picker.
   a shape with no errors array still fails cleanly.
 - `record_body`: A record omits `priority`; MX includes it; `proxied` dropped for TXT.
 - `resolve_zone`: name match, id match, no match; name preferred over a coincidental id.
+- `RecordFilter` → query params: `type`/`name`/`content` map to the documented CF query
+  keys (`name` uses the `contains` match mode); an empty filter sends no params.
 - `select_records`: ids-only; `where-content` matches exact content (the repoint case);
   combined `where-type` + `where-content` intersect; `where-name` substring; no match →
   empty (so the CLI says "0 matched" instead of writing nothing silently).
