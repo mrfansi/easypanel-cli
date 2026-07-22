@@ -156,6 +156,24 @@ pub(super) const MOUSE_KEYS: &[Key] = &[
     Key("Scroll", "scroll the table / viewer"),
 ];
 
+/// The "Anywhere" keys that actually act in the Cloudflare workspace. The EasyPanel
+/// globals (1-8/Tab/←→ tabs, `:` palette, `s` server list) are inert there, so listing
+/// them would be help that lies; the account switcher is `a` (a per-screen key).
+pub(super) const CF_GLOBAL_KEYS: &[Key] = &[
+    Key("W", "switch workspace (EasyPanel / Cloudflare)"),
+    Key("?", "this help"),
+    Key("r", "refresh"),
+    Key("Esc", "go back a step / close a filter or menu"),
+    Key("q / Ctrl-C", "quit"),
+];
+
+/// The mouse actions available in the Cloudflare workspace (no tab-click with one
+/// product tab, no per-row right-click menu yet).
+pub(super) const CF_MOUSE_KEYS: &[Key] = &[
+    Key("Click row", "select the row"),
+    Key("Scroll", "scroll the list"),
+];
+
 /// Keys inside the overlay; apply in any form and dropdown.
 pub(super) const OVERLAY_KEYS: &[Key] = &[
     Key("Tab / ↑↓", "move between fields"),
@@ -397,6 +415,10 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     } else {
         screen_keys(app.screen)
     };
+    // The "Anywhere" and "Mouse" sections are workspace-specific too: the CF workspace
+    // doesn't have the EasyPanel tabs/palette/server keys, or the tab-click / right-click.
+    let globals = if cf { CF_GLOBAL_KEYS } else { GLOBAL_KEYS };
+    let mouse = if cf { CF_MOUSE_KEYS } else { MOUSE_KEYS };
     let area = centered(72, 92, f.area());
     f.render_widget(Clear, area);
 
@@ -412,9 +434,9 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     // description never touches the key (e.g. "↑↓ / right click").
     let kw = rows
         .iter()
-        .chain(GLOBAL_KEYS)
+        .chain(globals)
         .chain(OVERLAY_KEYS)
-        .chain(MOUSE_KEYS)
+        .chain(mouse)
         .map(|Key(k, _)| k.chars().count())
         .max()
         .unwrap_or(12)
@@ -457,13 +479,13 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     lines.extend(rows.iter().flat_map(&row));
     lines.push(Line::from(""));
     lines.push(head("Anywhere"));
-    lines.extend(GLOBAL_KEYS.iter().flat_map(&row));
+    lines.extend(globals.iter().flat_map(&row));
     lines.push(Line::from(""));
     lines.push(head("Inside forms & dropdowns"));
     lines.extend(OVERLAY_KEYS.iter().flat_map(&row));
     lines.push(Line::from(""));
     lines.push(head("Mouse"));
-    lines.extend(MOUSE_KEYS.iter().flat_map(&row));
+    lines.extend(mouse.iter().flat_map(&row));
 
     // The help is taller than a short terminal. It used to simply stop at the
     // bottom border — the Anywhere, form and Mouse sections were invisible at 80x24

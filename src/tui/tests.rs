@@ -5497,6 +5497,31 @@ fn help_opens_in_the_cloudflare_workspace_and_documents_cf_keys() {
 }
 
 #[test]
+fn cf_help_anywhere_and_mouse_omit_keys_that_are_inert_in_the_workspace() {
+    // The CF workspace has no EasyPanel tabs / `:` palette / `s` server picker, and no
+    // tab-click or per-row right-click menu — so the help's "Anywhere" and "Mouse"
+    // sections must not advertise them (help that lies is worse than no help).
+    let g: Vec<&str> = CF_GLOBAL_KEYS.iter().map(|k| k.0).collect();
+    assert!(g.contains(&"W") && g.contains(&"?") && g.contains(&"r"));
+    for stale in ["1-8 / Tab / ←→", "s", ":"] {
+        assert!(
+            !g.contains(&stale),
+            "CF 'Anywhere' must not advertise `{stale}`"
+        );
+    }
+    let m: Vec<&str> = CF_MOUSE_KEYS.iter().map(|k| k.0).collect();
+    assert!(m.contains(&"Click row") && m.contains(&"Scroll"));
+    assert!(
+        !m.contains(&"Right click"),
+        "right-click is a no-op in the CF workspace"
+    );
+    assert!(
+        !m.contains(&"Click tab"),
+        "the one product tab isn't click-switchable yet"
+    );
+}
+
+#[test]
 fn the_cloudflare_screen_reports_the_empty_state() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.3] — 2026-07-22
+
+### Fixed
+
+- **The `?` help no longer lists keys that do nothing in the Cloudflare workspace.** Its
+  "Anywhere" and "Mouse" sections were the EasyPanel ones, so inside the CF workspace the
+  help advertised `1-8 / Tab / ←→` tab-switching, the `:` command palette, the `s` server
+  list, a "Click tab", and a right-click action menu — none of which act there. The CF
+  help now shows only what works in that workspace (`W`, `?`, `r`, `Esc`, `q`; click-to-
+  select and scroll), completing the workspace-accurate help.
+
 ## [0.83.2] — 2026-07-22
 
 ### Changed
