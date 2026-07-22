@@ -324,6 +324,32 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### FOCUS (owner, 2026-07-22): Cloudflare TUI — mirror EasyPanel behaviour
+
+Standing loop focus, owner-requested: **keep improving the Cloudflare TUI so it
+behaves exactly like the EasyPanel TUI.** The two workspaces (`W` toggles) must feel
+like one app. Concretely, replicate EasyPanel's patterns in the CF workspace:
+
+- **Header = "Cloudflare — <account>"** (like "EasyPanel — <server>"); the second line
+  is a **product tab bar** (DNS today; D1/R2/KV/Workers/Connectors later) styled like
+  EasyPanel's tab bar; per-screen **key hints live in the status bar**, not the header.
+- **Account switching is a PICKER (`a`), the analogue of the `s` server switcher — NOT a
+  tab.** Do not turn accounts into tabs (owner was explicit, twice).
+- **Records is a drill-in** from a zone (Enter), like EasyPanel's Logs/Terminal/Credentials
+  are drill-ins — not a tab.
+- Match EasyPanel's affordances inside the CF screens: `/` filter with the count in the
+  title, `v`/`V` mark + `Space` group menu for bulk, `r` refresh, confirmation dialogs
+  for destructive actions, the busy spinner, empty-vs-loading-vs-error states, mouse
+  clicks where EasyPanel has them. When something works one way in EasyPanel, make CF
+  work the same way.
+- **Verify by DRIVING it** (owner has 2 live CF accounts configured: `mrfansi-dev`,
+  `pt-karya-kaya-bahagia` — the latter's token has DNS perms and real zones/records, so
+  the read happy-path is verifiable live; `mrfansi-dev`'s token lacks the Zone:DNS perm,
+  which is a good error-path fixture, NOT a bug). LOOK at the screen before calling it done.
+- Known follow-up: when a DNS op returns Cloudflare's "Authentication error", add a hint
+  that the token likely lacks the **Zone : DNS** permission (use the "Edit zone DNS"
+  template) — a common pitfall, proven via curl this session.
+
 ### DONE v0.83.0 (2026-07-22): Cloudflare — zones + DNS records (CLI + isolated TUI), owner-requested
 
 A whole new bounded context OUTSIDE EasyPanel, owner-requested: manage one or more
