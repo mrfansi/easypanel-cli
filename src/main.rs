@@ -426,6 +426,101 @@ enum CfCmd {
     /// Manage stored Cloudflare accounts (independent of EasyPanel servers)
     #[command(subcommand)]
     Account(CfAccountCmd),
+    /// Manage zones on the active account
+    #[command(subcommand)]
+    Zone(CfZoneCmd),
+    /// Manage DNS records within a zone
+    #[command(subcommand)]
+    Record(CfRecordCmd),
+}
+
+#[derive(Subcommand)]
+enum CfZoneCmd {
+    /// List zones on the account
+    List {
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Add (create) a zone — needs the account's account-id
+    Add {
+        name: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Delete a zone and ALL its DNS records (asks you to type the zone name)
+    Delete {
+        zone: String,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CfRecordCmd {
+    /// List a zone's DNS records (filter with --type/--name/--content)
+    List {
+        zone: String,
+        #[arg(long = "type")]
+        kind: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        content: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Add a DNS record
+    Add {
+        zone: String,
+        #[arg(long = "type")]
+        kind: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        content: String,
+        /// TTL in seconds; 1 = automatic (default)
+        #[arg(long, default_value_t = 1)]
+        ttl: u32,
+        #[arg(long)]
+        proxied: bool,
+        #[arg(long)]
+        priority: Option<u16>,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Bulk-change a field on selected records (e.g. repoint every record off an old IP)
+    Set {
+        zone: String,
+        /// Explicit record ids to change
+        ids: Vec<String>,
+        #[arg(long)]
+        where_content: Option<String>,
+        #[arg(long = "where-type")]
+        where_type: Option<String>,
+        #[arg(long)]
+        where_name: Option<String>,
+        #[arg(long)]
+        content: Option<String>,
+        #[arg(long)]
+        proxied: Option<bool>,
+        #[arg(long)]
+        ttl: Option<u32>,
+        #[arg(long)]
+        priority: Option<u16>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete one or more records by id
+    Delete {
+        zone: String,
+        ids: Vec<String>,
+        #[arg(long)]
+        account: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -785,6 +880,86 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     CfAccountCmd::List => commands::cf_account_list(&cf),
                     CfAccountCmd::Use { name } => commands::cf_account_use(&cf, &name),
                     CfAccountCmd::Delete { name } => commands::cf_account_delete(&cf, &name),
+                },
+                CfCmd::Zone(z) => match z {
+                    CfZoneCmd::List { account } => commands::cf_zone_list(&cf, account.as_deref()),
+                    CfZoneCmd::Add { name, account } => {
+                        commands::cf_zone_add(&cf, account.as_deref(), &name)
+                    }
+                    CfZoneCmd::Delete { zone, account, yes } => {
+                        commands::cf_zone_delete(&cf, account.as_deref(), &zone, yes)
+                    }
+                },
+                CfCmd::Record(r) => match r {
+                    CfRecordCmd::List {
+                        zone,
+                        kind,
+                        name,
+                        content,
+                        account,
+                    } => commands::cf_record_list(
+                        &cf,
+                        account.as_deref(),
+                        &zone,
+                        cloudflare::RecordFilter {
+                            kind,
+                            name,
+                            content,
+                        },
+                    ),
+                    CfRecordCmd::Add {
+                        zone,
+                        kind,
+                        name,
+                        content,
+                        ttl,
+                        proxied,
+                        priority,
+                        account,
+                    } => commands::cf_record_add(
+                        &cf,
+                        account.as_deref(),
+                        &zone,
+                        &kind,
+                        &name,
+                        &content,
+                        ttl,
+                        proxied,
+                        priority,
+                    ),
+                    CfRecordCmd::Set {
+                        zone,
+                        ids,
+                        where_content,
+                        where_type,
+                        where_name,
+                        content,
+                        proxied,
+                        ttl,
+                        priority,
+                        account,
+                        yes,
+                    } => commands::cf_record_set(
+                        &cf,
+                        account.as_deref(),
+                        &zone,
+                        cloudflare::Selector {
+                            ids,
+                            where_content,
+                            where_type,
+                            where_name,
+                        },
+                        cloudflare::RecordPatch {
+                            content,
+                            proxied,
+                            ttl,
+                            priority,
+                        },
+                        yes,
+                    ),
+                    CfRecordCmd::Delete { zone, ids, account } => {
+                        commands::cf_record_delete(&cf, account.as_deref(), &zone, &ids)
+                    }
                 },
             }
         }

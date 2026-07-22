@@ -190,6 +190,294 @@ pub fn cf_account_delete(cfg: &CloudflareConfig, name: &str) -> Result<()> {
     Ok(())
 }
 
+// ---------- Cloudflare zones + records (network) ----------
+
+use crate::cloudflare::{
+    apply_patch, record_body, resolve_zone, select_records, valid_record_type, CloudflareClient,
+    RecordFilter, RecordPatch, Selector, Zone,
+};
+
+/// Resolve the account (named or default) and build a client, with a clear message when
+/// nothing is configured yet.
+fn cf_client(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+) -> Result<(CloudflareClient, CloudflareAccount)> {
+    let acc = match account {
+        Some(name) => cfg.by_name(name).ok_or_else(|| {
+            anyhow!(
+                "No Cloudflare account called '{name}'. Add it: easypanel cf account add {name}"
+            )
+        })?,
+        None => cfg.default().ok_or_else(|| {
+            anyhow!("No Cloudflare account configured. Add one: easypanel cf account add <name>")
+        })?,
+    };
+    Ok((CloudflareClient::new(&acc.api_token), acc))
+}
+
+/// Look up the zone id for a name-or-id needle, listing the account's zones first.
+fn cf_resolve_zone(
+    client: &CloudflareClient,
+    acc: &CloudflareAccount,
+    needle: &str,
+) -> Result<Zone> {
+    let zones = client.list_zones(acc.account_id.as_deref())?;
+    resolve_zone(&zones, needle)
+        .cloned()
+        .ok_or_else(|| anyhow!("No zone '{needle}' on this account"))
+}
+
+pub fn cf_zone_list(cfg: &CloudflareConfig, account: Option<&str>) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let zones = client.list_zones(acc.account_id.as_deref())?;
+    if output::json_output() {
+        output::print_json(&serde_json::to_value(
+            zones
+                .iter()
+                .map(|z| json!({ "id": z.id, "name": z.name, "status": z.status }))
+                .collect::<Vec<_>>(),
+        )?);
+        return Ok(());
+    }
+    if zones.is_empty() {
+        println!("No zones on this Cloudflare account.");
+        return Ok(());
+    }
+    let rows = zones
+        .iter()
+        .map(|z| vec![z.name.clone(), z.status.clone(), z.id.clone()])
+        .collect();
+    table(&["Name", "Status", "ID"], rows);
+    Ok(())
+}
+
+pub fn cf_zone_add(cfg: &CloudflareConfig, account: Option<&str>, name: &str) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = acc.account_id.clone().ok_or_else(|| {
+        anyhow!(
+            "This account has no account-id, which Cloudflare needs to create a zone. \
+             Re-add it: easypanel cf account add {} --account-id <ID>",
+            acc.name
+        )
+    })?;
+    let zone = client.create_zone(name, &account_id)?;
+    println!("Zone '{}' created ({}).", zone.name, zone.id);
+    Ok(())
+}
+
+pub fn cf_zone_delete(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    zone: &str,
+    yes: bool,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let zone = cf_resolve_zone(&client, &acc, zone)?;
+    // Deleting a zone removes every DNS record in it and cannot be undone: require the
+    // operator to type the zone name, not a bare y/n.
+    if !yes {
+        let typed: String = Input::new()
+            .with_prompt(format!(
+                "Delete zone '{}' and ALL its DNS records? Type the zone name to confirm",
+                zone.name
+            ))
+            .interact_text()?;
+        if typed != zone.name {
+            println!("Name did not match — nothing deleted.");
+            return Ok(());
+        }
+    }
+    client.delete_zone(&zone.id)?;
+    println!("Zone '{}' deleted.", zone.name);
+    Ok(())
+}
+
+pub fn cf_record_list(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    zone: &str,
+    filter: RecordFilter,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let zone = cf_resolve_zone(&client, &acc, zone)?;
+    let records = client.list_records(&zone.id, &filter)?;
+    if output::json_output() {
+        output::print_json(&serde_json::to_value(
+            records
+                .iter()
+                .map(|r| {
+                    json!({ "id": r.id, "type": r.kind, "name": r.name,
+                            "content": r.content, "ttl": r.ttl, "proxied": r.proxied,
+                            "priority": r.priority })
+                })
+                .collect::<Vec<_>>(),
+        )?);
+        return Ok(());
+    }
+    if records.is_empty() {
+        println!("No DNS records match.");
+        return Ok(());
+    }
+    let rows = records
+        .iter()
+        .map(|r| {
+            vec![
+                r.kind.clone(),
+                r.name.clone(),
+                r.content.clone(),
+                // Priority is meaningful for MX/SRV; blank for the rest.
+                r.priority.map(|p| p.to_string()).unwrap_or_default(),
+                if r.ttl == 1 {
+                    "auto".into()
+                } else {
+                    r.ttl.to_string()
+                },
+                if r.proxied { "yes".into() } else { "no".into() },
+                r.id.clone(),
+            ]
+        })
+        .collect();
+    table(
+        &[
+            "Type", "Name", "Content", "Priority", "TTL", "Proxied", "ID",
+        ],
+        rows,
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn cf_record_add(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    zone: &str,
+    kind: &str,
+    name: &str,
+    content: &str,
+    ttl: u32,
+    proxied: bool,
+    priority: Option<u16>,
+) -> Result<()> {
+    if !valid_record_type(kind) {
+        return Err(anyhow!(
+            "Record type '{kind}' is not supported yet (v1: A, AAAA, CNAME, TXT, NS, MX)"
+        ));
+    }
+    let (client, acc) = cf_client(cfg, account)?;
+    let zone = cf_resolve_zone(&client, &acc, zone)?;
+    let body = record_body(
+        &kind.to_ascii_uppercase(),
+        name,
+        content,
+        ttl,
+        proxied,
+        priority,
+    );
+    let rec = client.create_record(&zone.id, &body)?;
+    println!(
+        "Record {} {} → {} created ({}).",
+        rec.kind, rec.name, rec.content, rec.id
+    );
+    Ok(())
+}
+
+/// The per-record outcome of a bulk operation.
+struct BulkReport {
+    ok: Vec<String>,
+    failed: Vec<(String, String)>,
+}
+
+impl BulkReport {
+    fn print_and_status(&self, verb: &str) -> Result<()> {
+        for id in &self.ok {
+            println!("  {verb} {id}");
+        }
+        for (id, err) in &self.failed {
+            println!("  FAILED {id}: {err}");
+        }
+        println!("{} ok, {} failed.", self.ok.len(), self.failed.len());
+        if self.failed.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!("{} record(s) failed", self.failed.len()))
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn cf_record_set(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    zone: &str,
+    selector: Selector,
+    patch: RecordPatch,
+    yes: bool,
+) -> Result<()> {
+    if patch.is_empty() {
+        return Err(anyhow!(
+            "Nothing to change — pass at least one of --content/--proxied/--ttl/--priority"
+        ));
+    }
+    let (client, acc) = cf_client(cfg, account)?;
+    let zone = cf_resolve_zone(&client, &acc, zone)?;
+    let records = client.list_records(&zone.id, &RecordFilter::default())?;
+    let matched: Vec<_> = select_records(&records, &selector)
+        .into_iter()
+        .cloned()
+        .collect();
+    if matched.is_empty() {
+        println!("0 records matched — nothing changed.");
+        return Ok(());
+    }
+    println!("{} record(s) will change:", matched.len());
+    for r in &matched {
+        println!("  {} {} → {}", r.kind, r.name, r.content);
+    }
+    if !yes && !Confirm::new().with_prompt("Apply the change?").interact()? {
+        println!("Cancelled.");
+        return Ok(());
+    }
+    let body = apply_patch(&patch);
+    let mut report = BulkReport {
+        ok: vec![],
+        failed: vec![],
+    };
+    for r in &matched {
+        match client.patch_record(&zone.id, &r.id, &body) {
+            Ok(_) => report.ok.push(format!("{} {}", r.kind, r.name)),
+            Err(e) => report
+                .failed
+                .push((format!("{} {}", r.kind, r.name), e.to_string())),
+        }
+    }
+    report.print_and_status("changed")
+}
+
+pub fn cf_record_delete(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    zone: &str,
+    ids: &[String],
+) -> Result<()> {
+    if ids.is_empty() {
+        return Err(anyhow!("Name at least one record id to delete"));
+    }
+    let (client, acc) = cf_client(cfg, account)?;
+    let zone = cf_resolve_zone(&client, &acc, zone)?;
+    let mut report = BulkReport {
+        ok: vec![],
+        failed: vec![],
+    };
+    for id in ids {
+        match client.delete_record(&zone.id, id) {
+            Ok(()) => report.ok.push(id.clone()),
+            Err(e) => report.failed.push((id.clone(), e.to_string())),
+        }
+    }
+    report.print_and_status("deleted")
+}
+
 fn mask_token(token: &str) -> String {
     // Per CHARACTER, not byte: the token comes from a config file that can be
     // hand-edited. `&token[..6]` slices at a byte index, and a token with a
