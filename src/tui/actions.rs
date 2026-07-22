@@ -516,7 +516,7 @@ impl App {
     pub(super) fn open_workspace_menu(&mut self) {
         self.open_menu(vec![
             MenuItem::new("EasyPanel", |a, _| a.set_workspace(Workspace::Easypanel)),
-            MenuItem::new("Cloudflare", |a, _| a.set_workspace(Workspace::Cloudflare)),
+            MenuItem::new("Cloudflare", |a, req| a.enter_cloudflare(req)),
         ]);
     }
 

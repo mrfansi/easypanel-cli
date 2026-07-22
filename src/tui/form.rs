@@ -1125,6 +1125,32 @@ pub(super) enum FormKind {
         service: String,
         stype: String,
     },
+    /// Add a DNS record to the current Cloudflare zone (type/name/content/…).
+    CfRecordCreate,
+    /// Edit the selected DNS record. `kind` decides which fields are sent
+    /// (proxied only for A/AAAA/CNAME, priority only for MX).
+    CfRecordEdit {
+        id: String,
+        kind: String,
+    },
+    /// Create a zone under the active account.
+    CfZoneCreate,
+    /// Delete a zone behind a typed-name confirmation — deleting a zone destroys
+    /// all its DNS records, so a bare y/n is not enough.
+    CfZoneDelete {
+        zone_id: String,
+        name: String,
+    },
+    /// Set one attribute on every marked DNS record at once.
+    CfBulkSet(CfBulkAttr),
+}
+
+/// Which attribute a Cloudflare bulk edit sets on the marked records.
+#[derive(Clone, Copy)]
+pub(super) enum CfBulkAttr {
+    Content,
+    Proxied,
+    Ttl,
 }
 
 pub(super) struct Form {

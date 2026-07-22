@@ -209,6 +209,9 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
     if app.picker.is_some() {
         render_picker(f, app);
     }
+    if app.cf_picker.is_some() {
+        render_cf_picker(f, app);
+    }
     if let Some(form) = app.form.as_mut() {
         render_form(f, form);
     }
@@ -549,75 +552,277 @@ pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) {
 /// unmistakable you have left EasyPanel.
 const CF_ORANGE: Color = Color::Rgb(243, 128, 32);
 
-/// The Cloudflare account screen's empty-state copy. One source, so the render and
-/// its test cannot drift.
-pub(super) const CF_EMPTY_HINT: &str = "No Cloudflare account yet — press n to add one";
+/// The Cloudflare empty-state copy (no account configured). One source, so the
+/// render and its test cannot drift.
+pub(super) const CF_EMPTY_HINT: &str = "No Cloudflare account yet — press a to add one";
 
-/// The isolated Cloudflare workspace: an orange header + the stored accounts. Reads
-/// only from `app.cf` — no EasyPanel state appears here.
+/// The isolated Cloudflare workspace. Home is the Zones list; Records is a drill-in
+/// from a zone. Reads only from `app.cf` — no EasyPanel state appears here.
 pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    match app.cf.screen {
+        CfScreen::Zones => render_cf_zones(f, header, body, app),
+        CfScreen::Records => render_cf_records(f, header, body, app),
+    }
+}
+
+/// The orange workspace header: a bold title + a key-hint line. One helper so
+/// every CF screen advertises its keys the same way.
+fn cf_header(f: &mut Frame, header: Rect, title: &str, hints: &str) {
     let block = Block::bordered()
         .border_style(Style::default().fg(CF_ORANGE))
         .title(Span::styled(
-            " Cloudflare — accounts ",
+            format!(" {title} "),
             Style::default().fg(CF_ORANGE).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(header);
     f.render_widget(block, header);
     f.render_widget(
-        Paragraph::new(
-            " W switch workspace · n add · Enter/u set active · x delete · Esc EasyPanel",
-        )
-        .style(Style::default().fg(Color::Gray)),
+        Paragraph::new(format!(" {hints}")).style(Style::default().fg(Color::Gray)),
         inner,
     );
+}
 
+/// Draw the loading / error / empty placeholder for a CF list, or return false so
+/// the caller draws the table. Keeps the empty-vs-failed distinction in one place.
+fn cf_placeholder(f: &mut Frame, body: Rect, title: &str, state: &CfListState, err: Option<&str>) {
+    let (text, colour) = match state {
+        CfListState::Loading => (format!("  Loading {title}…"), Color::DarkGray),
+        CfListState::Error => (
+            format!("  ⚠ {}", err.unwrap_or("failed to load")),
+            Color::Indexed(210),
+        ),
+        CfListState::Empty => (format!("  No {title}"), Color::DarkGray),
+        CfListState::Ready => return,
+    };
+    f.render_widget(
+        Paragraph::new(text)
+            .style(Style::default().fg(colour))
+            .block(pane(title.to_string(), CF_ORANGE)),
+        body,
+    );
+}
+
+/// The account picker overlay — the mirror of the server `s` picker, in CF orange.
+/// Lists the stored accounts (active one marked) with masked tokens; add/delete
+/// live here too so accounts are fully managed without a standalone screen.
+pub(super) fn render_cf_picker(f: &mut Frame, app: &mut App) {
+    let full = f.area();
+    let w = 72.min(full.width.saturating_sub(4)).max(30);
+    let h = (app.cf.accounts.len() as u16 + 3).clamp(5, full.height.saturating_sub(2));
+    let area = centered_abs_w(w, h, full);
+    f.render_widget(Clear, area);
+
+    let active = app.cf.active.as_ref().map(|a| a.name.clone());
+    let items: Vec<ListItem> = if app.cf.accounts.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            format!("  {CF_EMPTY_HINT}"),
+            Style::default().fg(Color::DarkGray),
+        )))]
+    } else {
+        app.cf
+            .accounts
+            .iter()
+            .map(|a| {
+                let mark = if active.as_deref() == Some(a.name.as_str()) {
+                    " (active)"
+                } else {
+                    ""
+                };
+                ListItem::new(Line::from(vec![
+                    Span::raw(format!("{}{mark}  ", a.name)),
+                    // A FIXED run of bullets — the token's length must not leak.
+                    Span::styled("••••••••••••", Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect()
+    };
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .title(" Cloudflare accounts ")
+                .title_bottom(fit_hints(
+                    &[
+                        "Enter select".into(),
+                        "n new".into(),
+                        "x delete".into(),
+                        "Esc close".into(),
+                    ],
+                    w.saturating_sub(2),
+                ))
+                .border_style(Style::default().fg(CF_ORANGE)),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("› ");
+    if let Some(state) = app.cf_picker.as_mut() {
+        f.render_stateful_widget(list, area, state);
+    } else {
+        f.render_widget(list, area);
+    }
+}
+
+/// An orange breadcrumb: "Cloudflare" joined by " · " with each present segment,
+/// then " — <tail>". A missing account/zone is dropped rather than shown as "—",
+/// so an empty workspace reads "Cloudflare — zones", not "Cloudflare · — — zones".
+fn cf_breadcrumb(segments: &[&str], tail: &str) -> String {
+    let mut crumb = String::from("Cloudflare");
+    for s in segments {
+        crumb.push_str(" · ");
+        crumb.push_str(s);
+    }
+    format!("{crumb} — {tail}")
+}
+
+/// The Zones home: Name / Status / ID, filterable, with loading/empty/error. With
+/// no account configured it shows the empty state (press `a`), never a dead end.
+fn render_cf_zones(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    let acct = app.cf.active.as_ref().map(|a| a.name.clone());
+    let segs: Vec<&str> = acct.as_deref().into_iter().collect();
+    cf_header(
+        f,
+        header,
+        &cf_breadcrumb(&segs, "zones"),
+        "a account · Enter records · n add zone · x delete · / filter · r refresh · Esc EasyPanel",
+    );
+
+    // No account at all: nothing to load — invite adding one (the `a` picker).
     if app.cf_empty() {
         f.render_widget(
             Paragraph::new(format!("  {CF_EMPTY_HINT}"))
                 .style(Style::default().fg(Color::DarkGray))
-                .block(pane("Cloudflare accounts".to_string(), CF_ORANGE)),
+                .block(pane("Zones".to_string(), CF_ORANGE)),
             body,
         );
         return;
     }
 
-    let rows: Vec<Vec<String>> = app
-        .cf
-        .accounts
+    let state = cf_list_state(
+        app.busy() > 0,
+        app.cf.error.is_some(),
+        app.cf.zones.is_empty(),
+    );
+    if state != CfListState::Ready {
+        cf_placeholder(f, body, "zones", &state, app.cf.error.as_deref());
+        return;
+    }
+
+    let shown = app.cf_zones_shown();
+    let title = format!(
+        "Zones ({} of {}){}",
+        shown.len(),
+        app.cf.zones.len(),
+        if app.cf.filter.is_empty() {
+            String::new()
+        } else {
+            format!(" · /{}", app.cf.filter)
+        }
+    );
+    let rows: Vec<Vec<String>> = shown
         .iter()
-        .map(|a| {
-            vec![
-                a.name.clone(),
-                a.account_id.clone().unwrap_or_default(),
-                if a.default {
-                    "●".into()
-                } else {
-                    String::new()
-                },
-                // A FIXED run of bullets — the token's length must not leak.
-                "•".repeat(12),
-            ]
-        })
+        .map(|z| vec![z.name.clone(), z.status.clone(), z.id.clone()])
         .collect();
-    let headers = ["Name", "Account ID", "Default", "API token"];
+    let headers = ["Name", "Status", "ID"];
     let widths = [
-        Constraint::Length(20),
+        Constraint::Min(20),
+        Constraint::Length(12),
         Constraint::Length(34),
-        Constraint::Length(8),
-        Constraint::Min(14),
     ];
     render_table(
         f,
         body,
-        "Cloudflare accounts".to_string(),
+        title,
         &headers,
         &widths,
         rows,
-        &mut app.cf.row,
+        &mut app.cf.zones_row,
         CF_ORANGE,
-        // The token column is masked, so dim it — it reads as "hidden", not a value.
-        |col, _| (col == 3).then(|| Style::default().fg(Color::DarkGray)),
+        |_, _| None,
+    );
+}
+
+/// The Records screen: Type / Name / Content / Priority / TTL / Proxied / ID,
+/// filterable, marks shown with a leading ✓, with loading/empty/error.
+fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    let acct = app.cf.active.as_ref().map(|a| a.name.clone());
+    let zone = app.cf.current_zone.as_ref().map(|z| z.name.clone());
+    let segs: Vec<&str> = [acct.as_deref(), zone.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    cf_header(
+        f,
+        header,
+        &cf_breadcrumb(&segs, "records"),
+        "n add · e edit · x delete · v/V mark · Space bulk · / filter · r refresh · Esc zones",
+    );
+
+    let state = cf_list_state(
+        app.busy() > 0,
+        app.cf.error.is_some(),
+        app.cf.records.is_empty(),
+    );
+    if state != CfListState::Ready {
+        cf_placeholder(f, body, "DNS records", &state, app.cf.error.as_deref());
+        return;
+    }
+
+    let shown = app.cf_records_shown();
+    let marked = &app.cf.marked;
+    let title = format!(
+        "DNS records ({} of {}){}{}",
+        shown.len(),
+        app.cf.records.len(),
+        if marked.is_empty() {
+            String::new()
+        } else {
+            format!(" · {} marked", marked.len())
+        },
+        if app.cf.filter.is_empty() {
+            String::new()
+        } else {
+            format!(" · /{}", app.cf.filter)
+        }
+    );
+    let rows: Vec<Vec<String>> = shown
+        .iter()
+        .map(|r| {
+            let mark = if marked.contains(&r.id) { "✓ " } else { "" };
+            vec![
+                format!("{mark}{}", r.kind),
+                r.name.clone(),
+                r.content.clone(),
+                r.priority.map(|p| p.to_string()).unwrap_or_default(),
+                if r.ttl == 1 {
+                    "auto".into()
+                } else {
+                    r.ttl.to_string()
+                },
+                if r.proxied { "yes".into() } else { "no".into() },
+                r.id.clone(),
+            ]
+        })
+        .collect();
+    let headers = [
+        "Type", "Name", "Content", "Priority", "TTL", "Proxied", "ID",
+    ];
+    let widths = [
+        Constraint::Length(9),
+        Constraint::Length(24),
+        Constraint::Min(20),
+        Constraint::Length(8),
+        Constraint::Length(6),
+        Constraint::Length(7),
+        Constraint::Length(34),
+    ];
+    render_table(
+        f,
+        body,
+        title,
+        &headers,
+        &widths,
+        rows,
+        &mut app.cf.records_row,
+        CF_ORANGE,
+        |_, _| None,
     );
 }
 

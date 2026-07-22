@@ -6,15 +6,19 @@ use ratatui::layout::Rect;
 use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
 
+use crate::cloudflare::{
+    apply_patch, proxyable, record_body, valid_record_type, CloudflareAccount, Record,
+    RecordFilter, RecordPatch, Zone,
+};
 use crate::commands;
 use crate::output::field;
 
-use super::actions::{Menu, Palette};
+use super::actions::{Menu, MenuItem, Palette};
 use super::backup_ui::BackupUi;
 use super::form::*;
 use super::render::cap;
 use super::table::*;
-use super::worker::{Refresh, Req, Resp, View};
+use super::worker::{CfReq, CfResp, Refresh, Req, Resp, View};
 use super::LOG_BUFFER;
 
 // ---------- State ----------
@@ -170,13 +174,117 @@ pub(super) enum Workspace {
     Cloudflare,
 }
 
-/// The Cloudflare account screen's state: the stored accounts (seeded from
-/// CloudflareConfig by the event loop) and the selected row. Config-only — no
-/// token is ever used to reach the network here.
+/// Which Cloudflare screen is showing. The workspace opens on the Zones home of
+/// the active account; Records is a drill-in from a selected zone. Accounts are
+/// switched through a picker overlay (like the EasyPanel server picker), not a
+/// screen. Orthogonal to the EasyPanel `Screen`.
+#[derive(PartialEq, Debug, Clone, Copy, Default)]
+pub(super) enum CfScreen {
+    #[default]
+    Zones,
+    Records,
+}
+
+/// The Cloudflare workspace's state. Zones and Records reach the network through
+/// the worker, carrying the active account's token IN the request. Filter/marks
+/// are CF-local (never the EasyPanel ones), so the two workspaces stay isolated.
 #[derive(Default)]
 pub(super) struct CfUi {
-    pub(super) accounts: Vec<crate::cloudflare::CloudflareAccount>,
-    pub(super) row: TableState,
+    pub(super) screen: CfScreen,
+    pub(super) accounts: Vec<CloudflareAccount>,
+    /// The active account — the token for every zone/record request.
+    pub(super) active: Option<CloudflareAccount>,
+    pub(super) zones: Vec<Zone>,
+    pub(super) zones_row: TableState,
+    pub(super) records: Vec<Record>,
+    pub(super) records_row: TableState,
+    pub(super) current_zone: Option<Zone>,
+    /// A CF-local text filter, narrowing the loaded list client-side.
+    pub(super) filter: String,
+    pub(super) filter_input: bool,
+    /// The last fetch error, kept apart from an empty result so the screen can
+    /// tell "no records" from "the fetch failed".
+    pub(super) error: Option<String>,
+    /// Record ids marked for a bulk action.
+    pub(super) marked: HashSet<String>,
+}
+
+/// Loading / empty / error / ready — the state a CF list is in, chosen from the
+/// (busy, error, is_empty) triple so the render never draws "No records" over a
+/// fetch that actually failed, or an empty list while it is still loading.
+#[derive(PartialEq, Debug)]
+pub(super) enum CfListState {
+    Loading,
+    Error,
+    Empty,
+    Ready,
+}
+
+/// A list is Loading while a request is in flight and nothing has arrived yet;
+/// Error once a fetch has failed; Empty only on a successful empty result.
+pub(super) fn cf_list_state(busy: bool, error: bool, is_empty: bool) -> CfListState {
+    if !is_empty {
+        CfListState::Ready
+    } else if busy {
+        CfListState::Loading
+    } else if error {
+        CfListState::Error
+    } else {
+        CfListState::Empty
+    }
+}
+
+/// The zones whose name/status/id contains `needle` (case-insensitive). An empty
+/// needle keeps everything.
+pub(super) fn filter_zones<'a>(zones: &'a [Zone], needle: &str) -> Vec<&'a Zone> {
+    let n = needle.to_ascii_lowercase();
+    zones
+        .iter()
+        .filter(|z| {
+            n.is_empty()
+                || z.name.to_ascii_lowercase().contains(&n)
+                || z.status.to_ascii_lowercase().contains(&n)
+                || z.id.to_ascii_lowercase().contains(&n)
+        })
+        .collect()
+}
+
+/// The records whose type/name/content contains `needle` (case-insensitive). An
+/// empty needle keeps everything — a zone can hold thousands, so this narrows the
+/// already-loaded list rather than refetching.
+pub(super) fn filter_records<'a>(records: &'a [Record], needle: &str) -> Vec<&'a Record> {
+    let n = needle.to_ascii_lowercase();
+    records
+        .iter()
+        .filter(|r| {
+            n.is_empty()
+                || r.kind.to_ascii_lowercase().contains(&n)
+                || r.name.to_ascii_lowercase().contains(&n)
+                || r.content.to_ascii_lowercase().contains(&n)
+        })
+        .collect()
+}
+
+/// Build the patch an edit form describes. `content` is always sent (the field is
+/// prefilled from the record); `proxied` only for proxyable types, `priority` only
+/// for MX — the same gating `record_body` applies on create.
+pub(super) fn cf_record_patch(
+    kind: &str,
+    content: &str,
+    ttl: &str,
+    proxied: bool,
+    priority: &str,
+) -> RecordPatch {
+    RecordPatch {
+        content: (!content.is_empty()).then(|| content.to_string()),
+        ttl: ttl.trim().parse().ok(),
+        proxied: proxyable(kind).then_some(proxied),
+        priority: if kind.eq_ignore_ascii_case("MX") {
+            priority.trim().parse().ok()
+        } else {
+            None
+        },
+    }
 }
 
 /// A Cloudflare account-list change: executed in event_loop, which holds the
@@ -332,6 +440,8 @@ pub(super) struct App {
     pub(super) workspace: Workspace,
     /// The Cloudflare account screen's state (accounts + selection).
     pub(super) cf: CfUi,
+    /// The account picker overlay (mirrors the server `s` picker). Some = open.
+    pub(super) cf_picker: Option<ListState>,
     /// A pending Cloudflare account-list change, resolved by event_loop (which alone
     /// holds the CloudflareConfig file), then re-seeded into `cf.accounts`.
     pub(super) cf_action: Option<CfAction>,
@@ -481,6 +591,7 @@ impl App {
             screen: Screen::Dashboard,
             workspace: Workspace::default(),
             cf: CfUi::default(),
+            cf_picker: None,
             cf_action: None,
             should_quit: false,
             refresh_inflight: false,
@@ -734,14 +845,17 @@ impl App {
         matches!(self.screen, Screen::Viewer | Screen::Credentials)
     }
 
-    /// Switch the top-level workspace. Entering Cloudflare selects the first account
-    /// (so the row keys have a target); leaving it returns to the EasyPanel tabs.
+    /// Switch the top-level workspace. Entering Cloudflare lands on the Zones home
+    /// of the active account (defaulting to the config default); leaving it returns
+    /// to the EasyPanel tabs. The network load happens in `enter_cloudflare`, which
+    /// has the request channel — this only sets the state.
     pub(super) fn set_workspace(&mut self, ws: Workspace) {
         self.workspace = ws;
         match ws {
             Workspace::Cloudflare => {
-                if self.cf.row.selected().is_none() && !self.cf.accounts.is_empty() {
-                    self.cf.row.select(Some(0));
+                self.cf.screen = CfScreen::Zones;
+                if self.cf.active.is_none() {
+                    self.cf.active = self.cf_default_account();
                 }
                 self.status = "Cloudflare workspace".into();
             }
@@ -749,18 +863,9 @@ impl App {
         }
     }
 
-    /// The Cloudflare account screen has no stored accounts — the empty state.
+    /// No Cloudflare account is configured — the empty state.
     pub(super) fn cf_empty(&self) -> bool {
         self.cf.accounts.is_empty()
-    }
-
-    /// The name of the highlighted Cloudflare account, or None on the empty screen.
-    pub(super) fn selected_cf_account(&self) -> Option<String> {
-        self.cf
-            .row
-            .selected()
-            .and_then(|i| self.cf.accounts.get(i))
-            .map(|a| a.name.clone())
     }
 
     /// The add-account form. All local: on submit the account is written to
@@ -775,6 +880,369 @@ impl App {
             Form::new(FormKind::CfAccountAdd, " New Cloudflare account ", fields)
                 .with_note("Stored locally in cloudflare.json (0600). No network call."),
         );
+    }
+
+    // ---------- Cloudflare zones & records ----------
+
+    /// The active account's token, or None before an account was opened.
+    pub(super) fn cf_token(&self) -> Option<String> {
+        self.cf.active.as_ref().map(|a| a.api_token.clone())
+    }
+
+    /// The zones shown right now (after the CF-local filter).
+    pub(super) fn cf_zones_shown(&self) -> Vec<&Zone> {
+        filter_zones(&self.cf.zones, &self.cf.filter)
+    }
+
+    /// The records shown right now (after the CF-local filter).
+    pub(super) fn cf_records_shown(&self) -> Vec<&Record> {
+        filter_records(&self.cf.records, &self.cf.filter)
+    }
+
+    /// The highlighted zone, indexing into the FILTERED list (what's on screen).
+    pub(super) fn selected_cf_zone(&self) -> Option<Zone> {
+        let shown = self.cf_zones_shown();
+        self.cf
+            .zones_row
+            .selected()
+            .and_then(|i| shown.get(i))
+            .map(|z| (*z).clone())
+    }
+
+    /// The highlighted record, indexing into the FILTERED list.
+    pub(super) fn selected_cf_record(&self) -> Option<Record> {
+        let shown = self.cf_records_shown();
+        self.cf
+            .records_row
+            .selected()
+            .and_then(|i| shown.get(i))
+            .map(|r| (*r).clone())
+    }
+
+    /// The account to activate on first entering the workspace: the config default,
+    /// else the first stored account, else none (the empty state).
+    fn cf_default_account(&self) -> Option<CloudflareAccount> {
+        self.cf
+            .accounts
+            .iter()
+            .find(|a| a.default)
+            .or_else(|| self.cf.accounts.first())
+            .cloned()
+    }
+
+    /// Enter the Cloudflare workspace: land on the Zones home of the active account
+    /// (defaulting to the config default) and load its zones.
+    pub(super) fn enter_cloudflare(&mut self, req: &Sender<Req>) {
+        self.workspace = Workspace::Cloudflare;
+        if self.cf.active.is_none() {
+            self.cf.active = self.cf_default_account();
+        }
+        self.cf_goto_zones(req);
+    }
+
+    /// Show the Zones home for the active account, clearing the old list so the
+    /// loading state shows, then (re)load its zones. With no account configured
+    /// there is nothing to load — the empty state invites adding one.
+    pub(super) fn cf_goto_zones(&mut self, req: &Sender<Req>) {
+        self.cf.screen = CfScreen::Zones;
+        let Some(name) = self.cf.active.as_ref().map(|a| a.name.clone()) else {
+            self.status = "No Cloudflare account yet — press a to add one".into();
+            return;
+        };
+        self.cf_enter_list();
+        if let Some(token) = self.cf_token() {
+            let account_id = self.cf.active.as_ref().and_then(|a| a.account_id.clone());
+            let _ = req.send(Req::Cf(CfReq::Zones { token, account_id }));
+            self.status = format!("Loading zones for {name}…");
+        }
+    }
+
+    // ---------- Account picker (mirrors the server `s` picker) ----------
+
+    /// Open the account picker overlay. Opens even with no accounts so `n` (add) is
+    /// reachable; highlights the active account when there is one.
+    pub(super) fn open_cf_picker(&mut self) {
+        let mut state = ListState::default();
+        let idx = self
+            .cf
+            .active
+            .as_ref()
+            .and_then(|act| self.cf.accounts.iter().position(|a| a.name == act.name))
+            .unwrap_or(0);
+        state.select((!self.cf.accounts.is_empty()).then_some(idx));
+        self.cf_picker = Some(state);
+    }
+
+    /// The account highlighted in the picker.
+    pub(super) fn cf_picker_selected(&self) -> Option<CloudflareAccount> {
+        self.cf_picker
+            .as_ref()
+            .and_then(|s| s.selected())
+            .and_then(|i| self.cf.accounts.get(i).cloned())
+    }
+
+    /// Enter on a zone: open its DNS records.
+    pub(super) fn cf_open_records(&mut self, req: &Sender<Req>) {
+        let Some(zone) = self.selected_cf_zone() else {
+            self.status = "No zone selected".into();
+            return;
+        };
+        let (id, name) = (zone.id.clone(), zone.name.clone());
+        self.cf.current_zone = Some(zone);
+        self.cf.screen = CfScreen::Records;
+        self.cf_enter_list();
+        if let Some(token) = self.cf_token() {
+            let _ = req.send(Req::Cf(CfReq::Records {
+                token,
+                zone_id: id,
+                filter: RecordFilter::default(),
+            }));
+            self.status = format!("Loading records for {name}…");
+        }
+    }
+
+    /// Reset the per-list transient state when entering Zones or Records: clear the
+    /// old list so the loading state shows, drop the filter, marks and last error.
+    fn cf_enter_list(&mut self) {
+        self.cf.filter.clear();
+        self.cf.filter_input = false;
+        self.cf.marked.clear();
+        self.cf.error = None;
+        match self.cf.screen {
+            CfScreen::Zones => {
+                self.cf.zones.clear();
+                self.cf.zones_row.select(None);
+            }
+            CfScreen::Records => {
+                self.cf.records.clear();
+                self.cf.records_row.select(None);
+            }
+        }
+    }
+
+    /// Reload the current CF list (after a mutation, or on `r`).
+    pub(super) fn cf_reload(&self, req: &Sender<Req>) {
+        let Some(token) = self.cf_token() else {
+            return;
+        };
+        match self.cf.screen {
+            CfScreen::Zones => {
+                let account_id = self.cf.active.as_ref().and_then(|a| a.account_id.clone());
+                let _ = req.send(Req::Cf(CfReq::Zones { token, account_id }));
+            }
+            CfScreen::Records => {
+                if let Some(zone) = &self.cf.current_zone {
+                    let _ = req.send(Req::Cf(CfReq::Records {
+                        token,
+                        zone_id: zone.id.clone(),
+                        filter: RecordFilter::default(),
+                    }));
+                }
+            }
+        }
+    }
+
+    /// Keep the CF selection in range after the filter narrows the list.
+    pub(super) fn cf_clamp_filtered(&mut self) {
+        match self.cf.screen {
+            CfScreen::Zones => {
+                let len = self.cf_zones_shown().len();
+                *self.cf.zones_row.offset_mut() = 0;
+                self.cf.zones_row.select((len > 0).then_some(0));
+            }
+            CfScreen::Records => {
+                let len = self.cf_records_shown().len();
+                *self.cf.records_row.offset_mut() = 0;
+                self.cf.records_row.select((len > 0).then_some(0));
+            }
+        }
+    }
+
+    /// Toggle the mark on the highlighted record.
+    pub(super) fn cf_toggle_mark(&mut self) {
+        if let Some(r) = self.selected_cf_record() {
+            if !self.cf.marked.remove(&r.id) {
+                self.cf.marked.insert(r.id);
+            }
+        }
+    }
+
+    /// Mark every record currently shown; if all are already marked, clear them.
+    pub(super) fn cf_mark_all_shown(&mut self) {
+        let ids: Vec<String> = self
+            .cf_records_shown()
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        if !ids.is_empty() && ids.iter().all(|id| self.cf.marked.contains(id)) {
+            for id in &ids {
+                self.cf.marked.remove(id);
+            }
+        } else {
+            self.cf.marked.extend(ids);
+        }
+    }
+
+    /// The add-record form. Type is a fixed choice (only v1 types are supported).
+    pub(super) fn open_cf_record_form(&mut self) {
+        let fields = vec![
+            Field::choice("Type", &["A", "AAAA", "CNAME", "TXT", "NS", "MX"], "A"),
+            Field::text("Name", ""),
+            Field::text("Content", ""),
+            Field::text("TTL", "1"),
+            Field::boolean("Proxied", false),
+            Field::text("Priority", ""),
+        ];
+        self.form = Some(
+            Form::new(FormKind::CfRecordCreate, " New DNS record ", fields).with_note(
+                "TTL 1 = automatic · Proxied only for A/AAAA/CNAME · Priority only for MX",
+            ),
+        );
+    }
+
+    /// The edit-record form, prefilled from the selected record. Type and name are
+    /// fixed (a PATCH changes content/ttl/proxied/priority); which fields appear
+    /// follows the record's type.
+    pub(super) fn open_cf_record_edit(&mut self) {
+        let Some(rec) = self.selected_cf_record() else {
+            self.status = "No record selected".into();
+            return;
+        };
+        let mut fields = vec![
+            Field::text("Content", &rec.content),
+            Field::text("TTL", &rec.ttl.to_string()),
+        ];
+        if proxyable(&rec.kind) {
+            fields.push(Field::boolean("Proxied", rec.proxied));
+        }
+        if rec.kind.eq_ignore_ascii_case("MX") {
+            fields.push(Field::text(
+                "Priority",
+                &rec.priority.map(|p| p.to_string()).unwrap_or_default(),
+            ));
+        }
+        self.form = Some(
+            Form::new(
+                FormKind::CfRecordEdit {
+                    id: rec.id.clone(),
+                    kind: rec.kind.clone(),
+                },
+                format!(" Edit {} {} ", rec.kind, rec.name),
+                fields,
+            )
+            .with_note("TTL 1 = automatic. Only the shown fields change."),
+        );
+    }
+
+    /// Ask before deleting the selected record.
+    pub(super) fn ask_cf_record_delete(&mut self) {
+        let Some(rec) = self.selected_cf_record() else {
+            self.status = "No record selected".into();
+            return;
+        };
+        self.confirm = Some(Confirm {
+            action: "cf-record-delete".into(),
+            project: rec.id,
+            service: String::new(),
+            stype: String::new(),
+            label: format!("Delete {} record '{}'?", rec.kind, rec.name),
+        });
+    }
+
+    /// The add-zone form. Refuses to open without an account id — Cloudflare needs
+    /// one to create a zone, and a request without it can only fail.
+    pub(super) fn open_cf_zone_form(&mut self) {
+        let has_id = self
+            .cf
+            .active
+            .as_ref()
+            .and_then(|a| a.account_id.as_ref())
+            .is_some();
+        if !has_id {
+            self.status =
+                "This account has no account-id — re-add it with one to create zones".into();
+            return;
+        }
+        self.form = Some(Form::new(
+            FormKind::CfZoneCreate,
+            " New zone ",
+            vec![Field::text("Name", "")],
+        ));
+    }
+
+    /// The typed-name delete form for the selected zone. Deleting a zone destroys
+    /// every DNS record in it, so the operator must type the zone name — the same
+    /// safeguard the CLI `cf zone delete` uses.
+    pub(super) fn open_cf_zone_delete_form(&mut self) {
+        let Some(zone) = self.selected_cf_zone() else {
+            self.status = "No zone selected".into();
+            return;
+        };
+        self.form = Some(
+            Form::new(
+                FormKind::CfZoneDelete {
+                    zone_id: zone.id.clone(),
+                    name: zone.name.clone(),
+                },
+                " Delete zone ",
+                vec![Field::text("Type the zone name to confirm", "")],
+            )
+            .with_note(format!(
+                "Deletes '{}' and ALL its DNS records — this cannot be undone",
+                zone.name
+            )),
+        );
+    }
+
+    /// The bulk action menu for the marked records.
+    pub(super) fn open_cf_bulk_menu(&mut self) {
+        let n = self.cf.marked.len();
+        if n == 0 {
+            self.status = "No records marked — v marks one, V marks all shown".into();
+            return;
+        }
+        let items = vec![
+            MenuItem::new(format!("Set content on {n}"), |app, _| {
+                app.open_cf_bulk_form(CfBulkAttr::Content)
+            }),
+            MenuItem::new(format!("Set proxied on {n}"), |app, _| {
+                app.open_cf_bulk_form(CfBulkAttr::Proxied)
+            }),
+            MenuItem::new(format!("Set TTL on {n}"), |app, _| {
+                app.open_cf_bulk_form(CfBulkAttr::Ttl)
+            }),
+            MenuItem::new(format!("Delete {n} marked"), |app, _| {
+                app.ask_cf_bulk_delete()
+            }),
+        ];
+        self.open_menu(items);
+    }
+
+    /// The form for a bulk attribute set (content / proxied / ttl).
+    pub(super) fn open_cf_bulk_form(&mut self, attr: CfBulkAttr) {
+        let n = self.cf.marked.len();
+        let field = match attr {
+            CfBulkAttr::Content => Field::text("Content", ""),
+            CfBulkAttr::Proxied => Field::boolean("Proxied", false),
+            CfBulkAttr::Ttl => Field::text("TTL", "1"),
+        };
+        self.form = Some(Form::new(
+            FormKind::CfBulkSet(attr),
+            format!(" Set on {n} marked records "),
+            vec![field],
+        ));
+    }
+
+    /// Ask before deleting the marked records.
+    pub(super) fn ask_cf_bulk_delete(&mut self) {
+        let n = self.cf.marked.len();
+        self.confirm = Some(Confirm {
+            action: "cf-bulk-delete".into(),
+            project: String::new(),
+            service: String::new(),
+            stype: String::new(),
+            label: format!("Delete {n} marked DNS record(s)?"),
+        });
     }
 
     pub(super) fn handle(&mut self, resp: Resp, req: &Sender<Req>) {
@@ -1287,6 +1755,52 @@ impl App {
                 self.apply_refresh(what, req);
             }
             Resp::Err(e) => self.status = format!("Error: {e}"),
+            Resp::Cf(cf) => self.handle_cf_resp(cf, req),
+        }
+    }
+
+    /// Route a Cloudflare reply into `app.cf`. A successful list clears the last
+    /// error and re-seeds the selection; a Done/BulkDone re-lists the screen so a
+    /// change is visible at once (the "deleted row still showing" class of bug).
+    fn handle_cf_resp(&mut self, resp: CfResp, req: &Sender<Req>) {
+        match resp {
+            CfResp::Zones(zones) => {
+                self.cf.error = None;
+                self.cf.zones = zones;
+                let len = self.cf_zones_shown().len();
+                select_first(&mut self.cf.zones_row, len);
+            }
+            CfResp::Records { zone_id, records } => {
+                // Discard a stale reply for a zone the user has already left.
+                if self.cf.current_zone.as_ref().map(|z| z.id.as_str()) == Some(zone_id.as_str()) {
+                    self.cf.error = None;
+                    self.cf.records = records;
+                    let len = self.cf_records_shown().len();
+                    select_first(&mut self.cf.records_row, len);
+                }
+            }
+            CfResp::Done(msg) => {
+                self.status = msg;
+                self.cf_reload(req);
+            }
+            CfResp::BulkDone { ok, failed } => {
+                self.cf.marked.clear();
+                self.status = if failed.is_empty() {
+                    format!("{ok} record(s) done")
+                } else {
+                    let detail = failed
+                        .iter()
+                        .map(|(id, e)| format!("{id}: {e}"))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    format!("{ok} done · {} failed — {detail}", failed.len())
+                };
+                self.cf_reload(req);
+            }
+            CfResp::Err(e) => {
+                self.cf.error = Some(e.clone());
+                self.status = format!("Error: {e}");
+            }
         }
     }
 
@@ -3282,6 +3796,115 @@ impl App {
                     api_token: token,
                     account_id: (!account_id.is_empty()).then_some(account_id),
                     default: false,
+                }));
+            }
+            FormKind::CfRecordCreate => {
+                let kind = form.val(0);
+                if !valid_record_type(&kind) {
+                    self.status = format!("Unsupported record type '{kind}'");
+                    return;
+                }
+                let (name, content) = (form.val(1), form.val(2));
+                if name.is_empty() || content.is_empty() {
+                    self.status = "Name and content are required".into();
+                    return;
+                }
+                let ttl = form.val(3).trim().parse().unwrap_or(1);
+                let proxied = form.val(4) == "yes";
+                let priority = form.val(5).trim().parse().ok();
+                let body = record_body(&kind, &name, &content, ttl, proxied, priority);
+                let (Some(token), Some(zone)) = (self.cf_token(), self.cf.current_zone.clone())
+                else {
+                    self.status = "No active zone".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::CreateRecord {
+                    token,
+                    zone_id: zone.id,
+                    body,
+                }));
+            }
+            FormKind::CfRecordEdit { id, kind } => {
+                let (id, kind) = (id.clone(), kind.clone());
+                let patch = cf_record_patch(
+                    &kind,
+                    &form.by_label("Content"),
+                    &form.by_label("TTL"),
+                    form.by_label("Proxied") == "yes",
+                    &form.by_label("Priority"),
+                );
+                if patch.is_empty() {
+                    self.status = "Nothing to change".into();
+                    return;
+                }
+                let (Some(token), Some(zone)) = (self.cf_token(), self.cf.current_zone.clone())
+                else {
+                    self.status = "No active zone".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::PatchRecord {
+                    token,
+                    zone_id: zone.id,
+                    id,
+                    body: apply_patch(&patch),
+                }));
+            }
+            FormKind::CfZoneCreate => {
+                let name = form.val(0);
+                if name.is_empty() {
+                    self.status = "Zone name is required".into();
+                    return;
+                }
+                let (Some(token), Some(account_id)) = (
+                    self.cf_token(),
+                    self.cf.active.as_ref().and_then(|a| a.account_id.clone()),
+                ) else {
+                    self.status = "This account has no account-id — cannot create a zone".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::CreateZone {
+                    token,
+                    name,
+                    account_id,
+                }));
+            }
+            FormKind::CfZoneDelete { zone_id, name } => {
+                let (zone_id, name) = (zone_id.clone(), name.clone());
+                if form.val(0) != name {
+                    self.status = "Name did not match — nothing deleted".into();
+                    return;
+                }
+                let Some(token) = self.cf_token() else {
+                    self.status = "No active account".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::DeleteZone { token, zone_id }));
+            }
+            FormKind::CfBulkSet(attr) => {
+                let body = match attr {
+                    CfBulkAttr::Content => json!({ "content": form.by_label("Content") }),
+                    CfBulkAttr::Proxied => {
+                        json!({ "proxied": form.by_label("Proxied") == "yes" })
+                    }
+                    CfBulkAttr::Ttl => {
+                        json!({ "ttl": form.by_label("TTL").trim().parse::<u32>().unwrap_or(1) })
+                    }
+                };
+                let ids: Vec<String> = self.cf.marked.iter().cloned().collect();
+                if ids.is_empty() {
+                    self.status = "Nothing marked any more — cancelled".into();
+                    return;
+                }
+                let (Some(token), Some(zone)) = (self.cf_token(), self.cf.current_zone.clone())
+                else {
+                    self.status = "No active zone".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::BulkPatch {
+                    token,
+                    zone_id: zone.id,
+                    ids,
+                    body,
                 }));
             }
             FormKind::DomainCreate | FormKind::DomainEdit { .. } => match domain_body(form) {

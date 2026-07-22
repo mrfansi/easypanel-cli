@@ -282,16 +282,24 @@ fn event_loop(
         // A Cloudflare account-list change needs the config file, which only lives
         // here — same rule as the server list. Re-seed the App's copy afterwards.
         if let Some(action) = app.cf_action.take() {
+            let added = matches!(action, CfAction::Add(_));
             app.status = match apply_cf_action(cf_cfg, action) {
                 Ok(msg) => msg,
                 Err(e) => format!("Error: {e}"),
             };
             app.cf.accounts = cf_cfg.list();
-            // A delete can shorten the list past the selection; keep it in range.
-            if let Some(sel) = app.cf.row.selected() {
-                if sel >= app.cf.accounts.len() {
-                    app.cf.row.select(app.cf.accounts.len().checked_sub(1));
+            // A delete may have removed the ACTIVE account; drop the stale pointer
+            // (its token is gone) so the breadcrumb and next load don't use it.
+            if let Some(active) = &app.cf.active {
+                if !app.cf.accounts.iter().any(|a| a.name == active.name) {
+                    app.cf.active = None;
                 }
+            }
+            // Adding the FIRST account (none active yet) auto-activates it and loads
+            // its zones, so the user lands on it instead of a blank "— zones". An
+            // add with an account already active must not steal the selection.
+            if added && app.cf.active.is_none() {
+                app.enter_cloudflare(&w.user);
             }
         }
 

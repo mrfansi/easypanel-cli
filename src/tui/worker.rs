@@ -8,6 +8,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::client::EasypanelClient;
+use crate::cloudflare::{CloudflareClient, Record, RecordFilter, Zone};
 use crate::output::field;
 
 // ---------- Worker (networking on a separate thread so the UI doesn't freeze) ----------
@@ -428,6 +429,63 @@ pub(super) enum Req {
         stype: String,
         config: String,
     },
+    /// A Cloudflare request. Cloudflare is a bounded context outside EasyPanel, so
+    /// its work rides the SAME worker lanes but is dispatched apart: the worker
+    /// builds a `CloudflareClient` from the token carried IN the request (resolved
+    /// on the main thread from the active account), never from EasyPanel config.
+    Cf(CfReq),
+}
+
+/// A Cloudflare worker request. The token travels in every variant — the worker is
+/// stateless about CF config and builds a fresh client per request. Never logged.
+pub(super) enum CfReq {
+    Zones {
+        token: String,
+        account_id: Option<String>,
+    },
+    Records {
+        token: String,
+        zone_id: String,
+        filter: RecordFilter,
+    },
+    CreateZone {
+        token: String,
+        name: String,
+        account_id: String,
+    },
+    DeleteZone {
+        token: String,
+        zone_id: String,
+    },
+    CreateRecord {
+        token: String,
+        zone_id: String,
+        body: Value,
+    },
+    PatchRecord {
+        token: String,
+        zone_id: String,
+        id: String,
+        body: Value,
+    },
+    DeleteRecord {
+        token: String,
+        zone_id: String,
+        id: String,
+    },
+    /// Apply the same patch to many records, one call per id — a mid-list failure
+    /// never aborts the rest (the same fan-out shape as EasyPanel's Bulk).
+    BulkPatch {
+        token: String,
+        zone_id: String,
+        ids: Vec<String>,
+        body: Value,
+    },
+    BulkDelete {
+        token: String,
+        zone_id: String,
+        ids: Vec<String>,
+    },
 }
 
 pub(super) enum Resp {
@@ -595,6 +653,28 @@ pub(super) enum Resp {
     TermClosed,
     /// A mutation succeeded: a status message + which data needs reloading.
     Done(String, Refresh),
+    Err(String),
+    /// A Cloudflare reply. Kept apart from the EasyPanel variants so the two
+    /// contexts never share state — the app routes it to `app.cf`.
+    Cf(CfResp),
+}
+
+/// A Cloudflare worker reply.
+pub(super) enum CfResp {
+    Zones(Vec<Zone>),
+    /// The records for `zone_id` — the id is echoed back so a stale reply for a
+    /// zone the user already left is discarded rather than drawn.
+    Records {
+        zone_id: String,
+        records: Vec<Record>,
+    },
+    /// A create/edit/delete succeeded; the app re-lists the affected screen.
+    Done(String),
+    /// A bulk fan-out: how many succeeded and, per failed id, the reason.
+    BulkDone {
+        ok: usize,
+        failed: Vec<(String, String)>,
+    },
     Err(String),
 }
 
@@ -1800,6 +1880,97 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 ),
                 Err(e) => Resp::Err(e.to_string()),
             }
+        }
+        Req::Cf(cf) => Resp::Cf(handle_cf(cf)),
+    }
+}
+
+/// Dispatch a Cloudflare request. Builds a fresh client from the token in the
+/// request (never from EasyPanel state), so the worker stays stateless about CF
+/// config. The token is used only to authenticate the call and is never logged.
+fn handle_cf(req: CfReq) -> CfResp {
+    match req {
+        CfReq::Zones { token, account_id } => {
+            match CloudflareClient::new(&token).list_zones(account_id.as_deref()) {
+                Ok(zones) => CfResp::Zones(zones),
+                Err(e) => CfResp::Err(e.to_string()),
+            }
+        }
+        CfReq::Records {
+            token,
+            zone_id,
+            filter,
+        } => match CloudflareClient::new(&token).list_records(&zone_id, &filter) {
+            Ok(records) => CfResp::Records { zone_id, records },
+            Err(e) => CfResp::Err(e.to_string()),
+        },
+        CfReq::CreateZone {
+            token,
+            name,
+            account_id,
+        } => match CloudflareClient::new(&token).create_zone(&name, &account_id) {
+            Ok(z) => CfResp::Done(format!("Zone '{}' created", z.name)),
+            Err(e) => CfResp::Err(e.to_string()),
+        },
+        CfReq::DeleteZone { token, zone_id } => {
+            match CloudflareClient::new(&token).delete_zone(&zone_id) {
+                Ok(()) => CfResp::Done("Zone deleted".into()),
+                Err(e) => CfResp::Err(e.to_string()),
+            }
+        }
+        CfReq::CreateRecord {
+            token,
+            zone_id,
+            body,
+        } => match CloudflareClient::new(&token).create_record(&zone_id, &body) {
+            Ok(r) => CfResp::Done(format!("Record '{}' created", r.name)),
+            Err(e) => CfResp::Err(e.to_string()),
+        },
+        CfReq::PatchRecord {
+            token,
+            zone_id,
+            id,
+            body,
+        } => match CloudflareClient::new(&token).patch_record(&zone_id, &id, &body) {
+            Ok(r) => CfResp::Done(format!("Record '{}' updated", r.name)),
+            Err(e) => CfResp::Err(e.to_string()),
+        },
+        CfReq::DeleteRecord { token, zone_id, id } => {
+            match CloudflareClient::new(&token).delete_record(&zone_id, &id) {
+                Ok(()) => CfResp::Done("Record deleted".into()),
+                Err(e) => CfResp::Err(e.to_string()),
+            }
+        }
+        CfReq::BulkPatch {
+            token,
+            zone_id,
+            ids,
+            body,
+        } => {
+            let client = CloudflareClient::new(&token);
+            let (mut ok, mut failed) = (0usize, Vec::new());
+            for id in ids {
+                match client.patch_record(&zone_id, &id, &body) {
+                    Ok(_) => ok += 1,
+                    Err(e) => failed.push((id, e.to_string())),
+                }
+            }
+            CfResp::BulkDone { ok, failed }
+        }
+        CfReq::BulkDelete {
+            token,
+            zone_id,
+            ids,
+        } => {
+            let client = CloudflareClient::new(&token);
+            let (mut ok, mut failed) = (0usize, Vec::new());
+            for id in ids {
+                match client.delete_record(&zone_id, &id) {
+                    Ok(()) => ok += 1,
+                    Err(e) => failed.push((id, e.to_string())),
+                }
+            }
+            CfResp::BulkDone { ok, failed }
         }
     }
 }

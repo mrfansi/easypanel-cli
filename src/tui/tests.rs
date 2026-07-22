@@ -5487,13 +5487,16 @@ fn the_cloudflare_screen_reports_the_empty_state() {
         .join("\n");
     assert!(
         screen.contains(CF_EMPTY_HINT),
-        "the empty Cloudflare screen must invite adding an account:\n{screen}"
+        "the empty Cloudflare Zones home must invite adding an account:\n{screen}"
     );
-    // `n` must open the add form even from the empty state — never a dead key.
+    // `a` opens the account picker even when empty; `n` there opens the add form —
+    // never a dead end.
+    app.on_key(KeyCode::Char('a'), &tx);
+    assert!(app.cf_picker.is_some(), "a opens the account picker");
     app.on_key(KeyCode::Char('n'), &tx);
     assert!(
         app.form.is_some(),
-        "n opens the add-account form when empty"
+        "n opens the add-account form from the picker"
     );
 }
 
@@ -5507,7 +5510,8 @@ fn adding_a_cloudflare_account_via_the_app_path_updates_the_config() {
     app.set_workspace(Workspace::Cloudflare);
 
     // The add form is a LOCAL submit: it stages a CfAction rather than sending a
-    // network request.
+    // network request. Reached via the account picker (`a` then `n`).
+    app.on_key(KeyCode::Char('a'), &tx);
     app.on_key(KeyCode::Char('n'), &tx);
     {
         let f = app.form.as_mut().expect("the add form");
@@ -5548,4 +5552,222 @@ fn adding_a_cloudflare_account_via_the_app_path_updates_the_config() {
         account_id: None,
         default: false,
     };
+}
+
+#[test]
+fn adding_the_first_account_auto_activates_it() {
+    // After a CfAction::Add is resolved with no account active yet, the event loop
+    // auto-activates the just-added account and loads its zones — otherwise the
+    // Zones home would sit on "— zones" as if nothing happened. This exercises the
+    // reused entry path (enter_cloudflare) with the newly-seeded account.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.set_workspace(Workspace::Cloudflare);
+    assert!(app.cf.active.is_none(), "no account active yet");
+
+    // The event loop re-seeds accounts from the saved config after an Add; the
+    // first account is the default.
+    app.cf.accounts = vec![cf_account()];
+    app.enter_cloudflare(&tx);
+
+    assert!(
+        app.cf.active.is_some(),
+        "the just-added first account becomes active"
+    );
+    assert_eq!(app.cf.screen, CfScreen::Zones);
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Zones { .. }))),
+        "its zones are loaded so the user lands on them"
+    );
+}
+
+// ---------- Cloudflare zones & records ----------
+
+fn cf_account() -> crate::cloudflare::CloudflareAccount {
+    crate::cloudflare::CloudflareAccount {
+        name: "prod".into(),
+        api_token: "tok".into(),
+        account_id: Some("acc-1".into()),
+        default: true,
+    }
+}
+
+fn cf_zone(id: &str, name: &str) -> crate::cloudflare::Zone {
+    crate::cloudflare::Zone {
+        id: id.into(),
+        name: name.into(),
+        status: "active".into(),
+    }
+}
+
+fn cf_record(id: &str, kind: &str, name: &str, content: &str) -> crate::cloudflare::Record {
+    crate::cloudflare::Record {
+        id: id.into(),
+        kind: kind.into(),
+        name: name.into(),
+        content: content.into(),
+        ttl: 1,
+        proxied: false,
+        priority: None,
+    }
+}
+
+#[test]
+fn cf_home_is_zones_and_the_account_picker_switches_accounts() {
+    // Entering the workspace lands on the Zones home of the active (default)
+    // account; `a` opens the account picker; Enter there activates the account.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.set_workspace(Workspace::Cloudflare);
+    assert_eq!(app.cf.screen, CfScreen::Zones, "home is the Zones list");
+    assert!(
+        app.cf.active.is_some(),
+        "the default account is active on entry"
+    );
+
+    // `a` opens the picker (mirrors the server `s` picker); Enter activates.
+    app.on_key(KeyCode::Char('a'), &tx);
+    assert!(app.cf_picker.is_some(), "a opens the account picker");
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(app.cf_picker.is_none(), "Enter closes the picker");
+    assert!(app.cf_action.is_some(), "selecting stages 'make default'");
+    assert_eq!(app.cf.screen, CfScreen::Zones);
+}
+
+#[test]
+fn cf_navigation_drills_in_and_esc_walks_back() {
+    // Enter on a zone opens its Records; Esc walks back one level each time:
+    // Records → Zones home → EasyPanel. State transitions only — no network.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.set_workspace(Workspace::Cloudflare);
+    assert_eq!(app.cf.screen, CfScreen::Zones);
+
+    // Seed a zone (the worker would) and drill into its Records.
+    app.cf.zones = vec![cf_zone("z1", "example.com")];
+    app.cf.zones_row.select(Some(0));
+    app.on_key(KeyCode::Enter, &tx);
+    assert_eq!(app.cf.screen, CfScreen::Records);
+    assert_eq!(
+        app.cf.current_zone.as_ref().map(|z| z.name.as_str()),
+        Some("example.com")
+    );
+
+    // Esc: Records → Zones home → EasyPanel.
+    app.on_key(KeyCode::Esc, &tx);
+    assert_eq!(app.cf.screen, CfScreen::Zones);
+    app.on_key(KeyCode::Esc, &tx);
+    assert!(app.workspace == Workspace::Easypanel);
+}
+
+#[test]
+fn cf_filter_narrows_the_loaded_records() {
+    // The CF-local filter narrows the already-loaded list client-side (a zone can
+    // hold thousands), matching type/name/content, and never touches the EasyPanel
+    // filter.
+    let records = vec![
+        cf_record("r1", "A", "api.example.com", "1.1.1.1"),
+        cf_record("r2", "CNAME", "www.example.com", "example.com"),
+        cf_record("r3", "TXT", "example.com", "v=spf1"),
+    ];
+    assert_eq!(filter_records(&records, "").len(), 3, "empty keeps all");
+    assert_eq!(filter_records(&records, "api").len(), 1, "by name");
+    assert_eq!(filter_records(&records, "cname").len(), 1, "by type");
+    assert_eq!(filter_records(&records, "spf1").len(), 1, "by content");
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_zone = Some(cf_zone("z1", "example.com"));
+    // set_workspace lands on Zones; switch to the Records drill-in afterwards.
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.screen = CfScreen::Records;
+    app.cf.records = records;
+    app.cf.records_row.select(Some(0));
+
+    // Type "/api" into the CF filter; only the one record remains, and the
+    // EasyPanel filter is untouched.
+    app.on_key(KeyCode::Char('/'), &tx);
+    for c in "api".chars() {
+        app.on_key(KeyCode::Char(c), &tx);
+    }
+    assert_eq!(app.cf_records_shown().len(), 1);
+    assert!(app.filter.is_empty(), "EasyPanel filter stays isolated");
+}
+
+#[test]
+fn cf_list_state_tells_loading_from_empty_from_failed() {
+    // busy + nothing yet = Loading; a fetch error = Error; a clean empty result =
+    // Empty; anything present = Ready. The empty-vs-failed distinction the render
+    // depends on to never draw "No records" over a failed fetch.
+    assert_eq!(cf_list_state(true, false, true), CfListState::Loading);
+    assert_eq!(cf_list_state(false, true, true), CfListState::Error);
+    assert_eq!(cf_list_state(false, false, true), CfListState::Empty);
+    assert_eq!(cf_list_state(false, false, false), CfListState::Ready);
+    // A retry (busy again) reads as Loading even with a prior error still set.
+    assert_eq!(cf_list_state(true, true, true), CfListState::Loading);
+    // A non-empty list is Ready regardless of a stale error flag.
+    assert_eq!(cf_list_state(false, true, false), CfListState::Ready);
+}
+
+#[test]
+fn cf_record_patch_gates_proxied_and_priority_by_type() {
+    // An A record carries content/ttl/proxied but no priority; MX carries priority
+    // but never proxied; TXT carries neither.
+    let a = cf_record_patch("A", "5.6.7.8", "1", true, "");
+    assert_eq!(a.content.as_deref(), Some("5.6.7.8"));
+    assert_eq!(a.ttl, Some(1));
+    assert_eq!(a.proxied, Some(true));
+    assert_eq!(a.priority, None);
+
+    let mx = cf_record_patch("MX", "mail.example.com", "3600", false, "10");
+    assert_eq!(mx.priority, Some(10));
+    assert_eq!(mx.proxied, None, "MX is not proxyable");
+
+    let txt = cf_record_patch("TXT", "v=spf1", "1", true, "5");
+    assert_eq!(txt.proxied, None);
+    assert_eq!(txt.priority, None);
+}
+
+#[test]
+fn cf_record_loading_empty_and_error_states_render_without_panic() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let render = |app: &mut App| {
+        let mut term = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        term.draw(|f| super::render::ui(f, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_zone = Some(cf_zone("z1", "example.com"));
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.screen = CfScreen::Records;
+
+    // Error: a failed fetch shows the message, never the empty state.
+    app.cf.error = Some("Cloudflare: bad token".into());
+    let screen = render(&mut app);
+    assert!(screen.contains("bad token"), "error state:\n{screen}");
+
+    // Empty: a clean empty result says so.
+    app.cf.error = None;
+    let screen = render(&mut app);
+    assert!(screen.contains("No DNS records"), "empty state:\n{screen}");
+
+    // Ready: the record's columns render (TTL 1 → "auto").
+    app.cf.records = vec![cf_record("r1", "A", "api.example.com", "1.1.1.1")];
+    app.cf.records_row.select(Some(0));
+    let screen = render(&mut app);
+    assert!(screen.contains("api.example.com"), "ready state:\n{screen}");
+    assert!(screen.contains("auto"), "ttl 1 renders as auto:\n{screen}");
 }

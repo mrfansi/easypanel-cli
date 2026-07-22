@@ -14,11 +14,12 @@ use crate::output::field;
 
 use super::actions::Menu;
 use super::app::{
-    App, CfAction, Confirm, MonitorView, Screen, ServerAction, WatchAction, Workspace, TAB_SCREENS,
+    App, CfAction, CfScreen, Confirm, MonitorView, Screen, ServerAction, WatchAction, Workspace,
+    TAB_SCREENS,
 };
 use super::form::*;
 use super::table::*;
-use super::worker::{Req, View};
+use super::worker::{CfReq, Req, View};
 
 impl App {
     pub(super) fn on_key(&mut self, code: KeyCode, req: &Sender<Req>) {
@@ -71,6 +72,10 @@ impl App {
         }
         if self.picker.is_some() {
             self.picker_key(code, req);
+            return;
+        }
+        if self.cf_picker.is_some() {
+            self.cf_picker_key(code, req);
             return;
         }
 
@@ -232,6 +237,7 @@ impl App {
         if self.screen == Screen::Terminal
             || self.help
             || self.picker.is_some()
+            || self.cf_picker.is_some()
             || self.confirm.is_some()
         {
             return;
@@ -982,6 +988,32 @@ impl App {
                 self.status = "Removing Cloudflare account...".into();
                 return;
             }
+            // Delete one DNS record (its id was stashed in `project`). Needs the
+            // active token + current zone, resolved here on the main thread.
+            "cf-record-delete" => {
+                if let (Some(token), Some(zone)) = (self.cf_token(), self.cf.current_zone.clone()) {
+                    let _ = req.send(Req::Cf(CfReq::DeleteRecord {
+                        token,
+                        zone_id: zone.id,
+                        id: c.project,
+                    }));
+                    self.status = "Deleting record...".into();
+                }
+                return;
+            }
+            // Delete every marked record — one call per id on the worker.
+            "cf-bulk-delete" => {
+                let ids: Vec<String> = self.cf.marked.iter().cloned().collect();
+                if let (Some(token), Some(zone)) = (self.cf_token(), self.cf.current_zone.clone()) {
+                    let _ = req.send(Req::Cf(CfReq::BulkDelete {
+                        token,
+                        zone_id: zone.id,
+                        ids,
+                    }));
+                    self.status = "Deleting marked records...".into();
+                }
+                return;
+            }
             // The file was chosen in the picker, not typed, so its three parts
             // travel in `pending_restore` rather than being squeezed into Confirm.
             // One request per database: the endpoint takes a single name, and a
@@ -1198,37 +1230,152 @@ impl App {
         }
     }
 
-    /// The Cloudflare account screen (the Cloudflare workspace's only screen). Its
-    /// keys never touch EasyPanel state, and no EasyPanel key reaches here — the
-    /// isolation the workspace promises. `n` works even with no accounts (the empty
-    /// state), and `Esc` returns to the EasyPanel workspace.
-    pub(super) fn cloudflare_key(&mut self, code: KeyCode, _req: &Sender<Req>) {
+    /// The Cloudflare workspace. Its keys never touch EasyPanel state, and no
+    /// EasyPanel key reaches here — the isolation the workspace promises. The home
+    /// is the Zones list; Records is a drill-in from a zone; accounts are switched
+    /// through the `a` picker overlay. `W` (workspace switch) still works, handled
+    /// above this dispatch.
+    pub(super) fn cloudflare_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        // The CF-local filter input owns the keyboard while active (its own state,
+        // never the EasyPanel filter).
+        if self.cf.filter_input {
+            self.cf_filter_key(code);
+            return;
+        }
+        match self.cf.screen {
+            CfScreen::Zones => self.cf_zones_key(code, req),
+            CfScreen::Records => self.cf_records_key(code, req),
+        }
+    }
+
+    /// The Zones home. `a` switches account (picker), Enter drills into a zone's
+    /// records, Esc leaves the workspace (after clearing an active filter first).
+    fn cf_zones_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
+            KeyCode::Esc if !self.cf.filter.is_empty() => {
+                self.cf.filter.clear();
+                self.cf_clamp_filtered();
+            }
             KeyCode::Esc => self.set_workspace(Workspace::Easypanel),
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('n') => self.open_cf_account_form(),
-            // Enter/u make the selected account the active (default) one.
-            KeyCode::Enter | KeyCode::Char('u') => match self.selected_cf_account() {
-                Some(name) => {
-                    self.cf_action = Some(CfAction::SetDefault(name.clone()));
-                    self.status = format!("Making '{name}' the active Cloudflare account…");
-                }
-                None => self.status = "No Cloudflare account selected".into(),
-            },
-            // `x` deletes, behind the same confirmation dialog as every other delete.
-            KeyCode::Char('x') => match self.selected_cf_account() {
-                Some(name) => {
+            KeyCode::Char('a') => self.open_cf_picker(),
+            KeyCode::Char('/') => {
+                self.cf.filter_input = true;
+                self.cf.filter.clear();
+            }
+            KeyCode::Char('r') => self.cf_reload(req),
+            KeyCode::Char('n') => self.open_cf_zone_form(),
+            KeyCode::Char('x') => self.open_cf_zone_delete_form(),
+            KeyCode::Enter => self.cf_open_records(req),
+            _ => {
+                let len = self.cf_zones_shown().len();
+                move_table(&mut self.cf.zones_row, code, len);
+            }
+        }
+    }
+
+    /// The account picker overlay — the mirror of the server `s` picker, plus the
+    /// account's own add/delete. Enter activates the account and reloads its zones.
+    pub(super) fn cf_picker_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        let Some(state) = self.cf_picker.as_mut() else {
+            return;
+        };
+        match code {
+            KeyCode::Esc | KeyCode::Char('a') => self.cf_picker = None,
+            // `n` adds an account (the same local form as before); reachable even
+            // with no accounts, so the empty state is never a dead end.
+            KeyCode::Char('n') => {
+                self.cf_picker = None;
+                self.open_cf_account_form();
+            }
+            KeyCode::Char('x') => {
+                if let Some(acc) = self.cf_picker_selected() {
+                    self.cf_picker = None;
                     self.confirm = Some(Confirm {
                         action: "cf-account-delete".into(),
-                        project: name.clone(),
+                        project: acc.name.clone(),
                         service: String::new(),
                         stype: String::new(),
-                        label: format!("Delete Cloudflare account '{name}'? (local config only)"),
+                        label: format!(
+                            "Delete Cloudflare account '{}'? (local config only)",
+                            acc.name
+                        ),
                     });
                 }
-                None => self.status = "No Cloudflare account selected".into(),
-            },
-            _ => move_table(&mut self.cf.row, code, self.cf.accounts.len()),
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if !self.cf.accounts.is_empty() {
+                    let i = (state.selected().unwrap_or(0) + 1).min(self.cf.accounts.len() - 1);
+                    state.select(Some(i));
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let i = state.selected().unwrap_or(0).saturating_sub(1);
+                state.select(Some(i));
+            }
+            KeyCode::Enter => {
+                if let Some(acc) = self.cf_picker_selected() {
+                    self.cf_picker = None;
+                    self.cf_action = Some(CfAction::SetDefault(acc.name.clone()));
+                    self.cf.active = Some(acc);
+                    self.cf_goto_zones(req);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The Records screen. `v`/`V` mark, Space opens the bulk menu, Esc backs out
+    /// to Zones (after clearing an active filter or marks first).
+    fn cf_records_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        match code {
+            KeyCode::Esc if !self.cf.filter.is_empty() => {
+                self.cf.filter.clear();
+                self.cf_clamp_filtered();
+            }
+            KeyCode::Esc if !self.cf.marked.is_empty() => {
+                self.cf.marked.clear();
+                self.status = "Marks cleared".into();
+            }
+            KeyCode::Esc => self.cf.screen = CfScreen::Zones,
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('/') => {
+                self.cf.filter_input = true;
+                self.cf.filter.clear();
+            }
+            KeyCode::Char('r') => self.cf_reload(req),
+            KeyCode::Char('n') => self.open_cf_record_form(),
+            KeyCode::Char('e') => self.open_cf_record_edit(),
+            KeyCode::Char('x') => self.ask_cf_record_delete(),
+            KeyCode::Char('v') => self.cf_toggle_mark(),
+            KeyCode::Char('V') => self.cf_mark_all_shown(),
+            KeyCode::Char(' ') => self.open_cf_bulk_menu(),
+            _ => {
+                let len = self.cf_records_shown().len();
+                move_table(&mut self.cf.records_row, code, len);
+            }
+        }
+    }
+
+    /// Type into the CF-local filter. Esc cancels it, Enter keeps it and returns to
+    /// the list.
+    fn cf_filter_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.cf.filter.clear();
+                self.cf.filter_input = false;
+                self.cf_clamp_filtered();
+            }
+            KeyCode::Enter => self.cf.filter_input = false,
+            KeyCode::Backspace => {
+                self.cf.filter.pop();
+                self.cf_clamp_filtered();
+            }
+            KeyCode::Char(c) => {
+                self.cf.filter.push(c);
+                self.cf_clamp_filtered();
+            }
+            _ => {}
         }
     }
 
