@@ -15,7 +15,7 @@ use crate::output::field;
 use super::actions::Menu;
 use super::app::{
     App, CfAction, CfScreen, Confirm, MonitorView, Screen, ServerAction, WatchAction, Workspace,
-    TAB_SCREENS,
+    CF_PRODUCTS, TAB_SCREENS,
 };
 use super::form::*;
 use super::table::*;
@@ -1241,6 +1241,27 @@ impl App {
         if self.cf.filter_input {
             self.cf_filter_key(code);
             return;
+        }
+        // Product tabs (DNS today; D1/R2/KV/Workers/Connectors later): 1..=N jump,
+        // Tab/→ cycle forward, ← cycles back — the CF mirror of the EasyPanel tab
+        // keys. Overlays/forms/the filter are handled above this dispatch, so they
+        // can't be swallowed here. With one product these are effectively no-ops.
+        match code {
+            KeyCode::Char(d @ '1'..='9') => {
+                if let Some(&(_, p)) = CF_PRODUCTS.get(d as usize - '1' as usize) {
+                    self.cf.product = p;
+                }
+                return;
+            }
+            KeyCode::Tab | KeyCode::Right => {
+                self.cf.product = self.cf.product.next();
+                return;
+            }
+            KeyCode::Left => {
+                self.cf.product = self.cf.product.prev();
+                return;
+            }
+            _ => {}
         }
         match self.cf.screen {
             CfScreen::Zones => self.cf_zones_key(code, req),

@@ -5698,6 +5698,96 @@ fn cf_filter_narrows_the_loaded_records() {
 }
 
 #[test]
+fn the_cf_product_tab_bar_renders_with_dns_active() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.set_workspace(Workspace::Cloudflare);
+    assert_eq!(app.cf.screen, CfScreen::Zones);
+
+    let mut term = Terminal::new(TestBackend::new(90, 12)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let rows: Vec<String> = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(90)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect();
+
+    // The border title still names the active account; the header's SECOND line
+    // (inside the border) is the product tab bar, with the DNS tab present.
+    assert!(
+        rows[0].contains("Cloudflare — prod"),
+        "header title names the account:\n{}",
+        rows[0]
+    );
+    assert!(
+        rows[1].contains("DNS"),
+        "the product tab bar sits on the header's second line:\n{}",
+        rows[1]
+    );
+
+    // The per-screen key hints moved OUT of the header into the STATUS BAR (last
+    // row) — the header's second line is ONLY the tab bar now.
+    let status = rows.last().unwrap();
+    assert!(
+        status.contains("Enter records"),
+        "the Zones key hints render in the status bar:\n{status}"
+    );
+    assert!(
+        !rows[1].contains("Enter records"),
+        "the header no longer carries the key hints:\n{}",
+        rows[1]
+    );
+}
+
+#[test]
+fn cf_product_switch_keys_are_wired_and_the_list_is_extendable() {
+    // CF_PRODUCTS is the single source the tab bar and the switch keys share; DNS
+    // is the only product today, so it's tab 1 and the sole entry. A future product
+    // is one more row here (plus its enum variant).
+    assert_eq!(CF_PRODUCTS.len(), 1);
+    assert_eq!(CF_PRODUCTS[0].0, "DNS");
+    assert_eq!(CF_PRODUCTS[0].1, CfProduct::Dns);
+    assert_eq!(CfProduct::Dns.index(), 0);
+    // Cycling with one product is a well-defined no-op — it wraps to itself.
+    assert_eq!(CfProduct::Dns.next(), CfProduct::Dns);
+    assert_eq!(CfProduct::Dns.prev(), CfProduct::Dns);
+
+    // In the workspace the tab keys (1..=N / Tab / ←→) act on the product, never on
+    // the EasyPanel Screen, and never leave the workspace or the DNS screens.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.set_workspace(Workspace::Cloudflare);
+    for code in [
+        KeyCode::Char('1'),
+        KeyCode::Tab,
+        KeyCode::Right,
+        KeyCode::Left,
+        KeyCode::Char('9'),
+    ] {
+        app.on_key(code, &tx);
+        assert_eq!(app.cf.product, CfProduct::Dns);
+        assert!(app.workspace == Workspace::Cloudflare);
+        assert_eq!(app.cf.screen, CfScreen::Zones);
+    }
+}
+
+#[test]
+fn cf_status_hints_name_each_screens_keys() {
+    // The header carries the tab bar; the per-screen keys live in the status bar,
+    // one source so the render and this test can't drift.
+    assert!(cf_status_hints(CfScreen::Zones).contains("Enter records"));
+    assert!(cf_status_hints(CfScreen::Zones).contains("Esc EasyPanel"));
+    assert!(cf_status_hints(CfScreen::Records).contains("Space bulk"));
+    assert!(cf_status_hints(CfScreen::Records).contains("Esc zones"));
+}
+
+#[test]
 fn cf_list_state_tells_loading_from_empty_from_failed() {
     // busy + nothing yet = Loading; a fetch error = Error; a clean empty result =
     // Empty; anything present = Ready. The empty-vs-failed distinction the render

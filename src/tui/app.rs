@@ -185,12 +185,46 @@ pub(super) enum CfScreen {
     Records,
 }
 
+/// A Cloudflare product section, shown as a tab in the CF workspace. DNS (zones +
+/// records) is the only one today; D1/R2/KV/Workers/Connectors slot in later. The
+/// enum carries only the variants that exist — a speculative one would be dead
+/// code — so growing it is: add a variant here plus one row to `CF_PRODUCTS`.
+#[derive(PartialEq, Debug, Clone, Copy, Default)]
+pub(super) enum CfProduct {
+    #[default]
+    Dns,
+}
+
+/// The product tab bar, in label order. The single list the tab bar renders and
+/// the switch keys index into — adding a product is one row here.
+pub(super) const CF_PRODUCTS: &[(&str, CfProduct)] = &[("DNS", CfProduct::Dns)];
+
+impl CfProduct {
+    /// This product's position in `CF_PRODUCTS` — i.e. the active tab index.
+    pub(super) fn index(self) -> usize {
+        CF_PRODUCTS
+            .iter()
+            .position(|&(_, p)| p == self)
+            .unwrap_or(0)
+    }
+    /// The next product, wrapping — for `Tab` / `→`.
+    pub(super) fn next(self) -> Self {
+        CF_PRODUCTS[(self.index() + 1) % CF_PRODUCTS.len()].1
+    }
+    /// The previous product, wrapping — for `←`.
+    pub(super) fn prev(self) -> Self {
+        CF_PRODUCTS[(self.index() + CF_PRODUCTS.len() - 1) % CF_PRODUCTS.len()].1
+    }
+}
+
 /// The Cloudflare workspace's state. Zones and Records reach the network through
 /// the worker, carrying the active account's token IN the request. Filter/marks
 /// are CF-local (never the EasyPanel ones), so the two workspaces stay isolated.
 #[derive(Default)]
 pub(super) struct CfUi {
     pub(super) screen: CfScreen,
+    /// The active product tab. DNS today; the tab bar + switch keys read this.
+    pub(super) product: CfProduct,
     pub(super) accounts: Vec<CloudflareAccount>,
     /// The active account — the token for every zone/record request.
     pub(super) active: Option<CloudflareAccount>,
@@ -549,8 +583,11 @@ pub(super) struct App {
     pub(super) nav_at: Instant,
     /// When the tab last changed (tab flash).
     pub(super) tab_at: Instant,
+    /// When the CF product tab last changed (its own tab flash).
+    pub(super) cf_product_at: Instant,
     /// Comparators to detect a tab/selection change without hooking every handler.
     pub(super) last_screen: Screen,
+    pub(super) last_cf_product: CfProduct,
     pub(super) last_sel: Option<usize>,
     /// Per-tab click hitboxes (start,end column), filled in during render_tabs. Plus its row.
     pub(super) tab_spans: Vec<(u16, u16)>,
@@ -636,7 +673,9 @@ impl App {
             anim: Instant::now(),
             nav_at: Instant::now(),
             tab_at: Instant::now(),
+            cf_product_at: Instant::now(),
             last_screen: Screen::Dashboard,
+            last_cf_product: CfProduct::Dns,
             last_sel: None,
             tab_spans: Vec::new(),
             tab_row: 0,
@@ -754,6 +793,10 @@ impl App {
         if self.screen != self.last_screen {
             self.last_screen = self.screen;
             self.tab_at = Instant::now();
+        }
+        if self.cf.product != self.last_cf_product {
+            self.last_cf_product = self.cf.product;
+            self.cf_product_at = Instant::now();
         }
         let sel = self.services_table.selected();
         if sel != self.last_sel {

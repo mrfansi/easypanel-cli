@@ -565,9 +565,26 @@ pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &m
     }
 }
 
-/// The orange workspace header: a bold title + a key-hint line. One helper so
-/// every CF screen advertises its keys the same way.
-fn cf_header(f: &mut Frame, header: Rect, title: &str, hints: &str) {
+/// The per-screen Cloudflare key hints. They live in the STATUS BAR (the header
+/// now carries the product tab bar), mirroring how EasyPanel surfaces per-screen
+/// keys as a hint line. One source, so the render and its test cannot drift.
+pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
+    match screen {
+        CfScreen::Zones => {
+            "a account · Enter records · n add zone · x delete · / filter · r refresh · Esc EasyPanel"
+        }
+        CfScreen::Records => {
+            "n add · e edit · x delete · v/V mark · Space bulk · / filter · r refresh · Esc zones"
+        }
+    }
+}
+
+/// The orange workspace header: the bordered title + the PRODUCT tab bar (DNS
+/// today; D1/R2/KV/Workers/Connectors slot in later). Drawn exactly like the
+/// EasyPanel `render_tabs` — `│` gray separators, gray inactive tabs, the active
+/// tab bold with a brief "reversed flash" on change — but in CF orange. The
+/// per-screen key hints now live in the status bar, not here.
+fn cf_header(f: &mut Frame, header: Rect, title: &str, product: CfProduct, fresh: bool) {
     let block = Block::bordered()
         .border_style(Style::default().fg(CF_ORANGE))
         .title(Span::styled(
@@ -576,10 +593,26 @@ fn cf_header(f: &mut Frame, header: Rect, title: &str, hints: &str) {
         ));
     let inner = block.inner(header);
     f.render_widget(block, header);
-    f.render_widget(
-        Paragraph::new(format!(" {hints}")).style(Style::default().fg(Color::Gray)),
-        inner,
-    );
+
+    let active = product.index();
+    let mut spans = Vec::new();
+    for (i, (label, _)) in CF_PRODUCTS.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+        }
+        let style = if i == active {
+            let base = Style::default().fg(CF_ORANGE).add_modifier(Modifier::BOLD);
+            if fresh {
+                base.add_modifier(Modifier::REVERSED)
+            } else {
+                base
+            }
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        spans.push(Span::styled(format!(" {label} "), style));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), inner);
 }
 
 /// Draw the loading / error / empty placeholder for a CF list, or return false so
@@ -688,7 +721,8 @@ fn render_cf_zones(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         f,
         header,
         &title,
-        "a account · Enter records · n add zone · x delete · / filter · r refresh · Esc EasyPanel",
+        app.cf.product,
+        app.cf_product_at.elapsed().as_millis() < 300,
     );
 
     // No account at all: nothing to load — invite adding one (the `a` picker).
@@ -759,7 +793,8 @@ fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         f,
         header,
         &cf_breadcrumb(&segs, "records"),
-        "n add · e edit · x delete · v/V mark · Space bulk · / filter · r refresh · Esc zones",
+        app.cf.product,
+        app.cf_product_at.elapsed().as_millis() < 300,
     );
 
     let state = cf_list_state(
@@ -2413,6 +2448,22 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
                 ),
             ]))
             .style(bar),
+            area,
+        );
+        return;
+    }
+
+    // The Cloudflare workspace surfaces its per-screen keys HERE — the header now
+    // carries the product tab bar instead. While typing the CF-local filter, show
+    // how to apply/cancel it, matching the EasyPanel filter line above.
+    if app.workspace == Workspace::Cloudflare {
+        let text = if app.cf.filter_input {
+            format!(" filter: {}▏  Enter apply · Esc cancel", app.cf.filter)
+        } else {
+            format!(" {}", cf_status_hints(app.cf.screen))
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, bar.fg(Color::Indexed(244))))).style(bar),
             area,
         );
         return;
