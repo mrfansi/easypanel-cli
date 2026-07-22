@@ -156,12 +156,17 @@ pub(super) const MOUSE_KEYS: &[Key] = &[
     Key("Scroll", "scroll the table / viewer"),
 ];
 
-/// The "Anywhere" keys that actually act in the Cloudflare workspace. The EasyPanel
-/// globals (1-8/Tab/←→ tabs, `:` palette, `s` server list) are inert there, so listing
-/// them would be help that lies; the account switcher is `a` (a per-screen key).
+/// The "Anywhere" keys that actually act in the Cloudflare workspace. The product
+/// tab bar (DNS · R2 …) switches with 1..=N / Tab / ←→ — the CF mirror of the
+/// EasyPanel tab keys — so the help documents it (the header shows the tabs; nothing
+/// else told the reader how to reach them). The remaining EasyPanel globals (`:`
+/// palette, `s` server list) are still inert here, so listing them would be help that
+/// lies; the account switcher is `a` (a per-screen key). The `1-2` upper bound is
+/// pinned to CF_PRODUCTS by `the_cf_product_tab_hint_names_every_product`.
 pub(super) const CF_GLOBAL_KEYS: &[Key] = &[
     Key("W", "switch workspace (EasyPanel / Cloudflare)"),
     Key("?", "this help"),
+    Key("1-2 / Tab / ←→", "switch product tab"),
     Key("r", "refresh"),
     Key("Esc", "go back a step / close a filter or menu"),
     Key("q / Ctrl-C", "quit"),
@@ -455,7 +460,8 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
         screen_keys(app.screen)
     };
     // The "Anywhere" and "Mouse" sections are workspace-specific too: the CF workspace
-    // doesn't have the EasyPanel tabs/palette/server keys, or the tab-click / right-click.
+    // has its own product-tab switch keys, no `:` palette / `s` server keys, and no
+    // tab-click (its own right-click, added in CF_MOUSE_KEYS).
     let globals = if cf { CF_GLOBAL_KEYS } else { GLOBAL_KEYS };
     let mouse = if cf { CF_MOUSE_KEYS } else { MOUSE_KEYS };
     let area = centered(72, 92, f.area());

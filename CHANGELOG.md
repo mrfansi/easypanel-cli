@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.86.1] — 2026-07-22
+
+### Fixed
+
+- **Cloudflare workspace: the product tabs (DNS · R2) are now documented in the
+  help.** The header has shown a `DNS │ R2` tab bar since R2 landed, and `1`/`2`/`Tab`/
+  `←→` have switched between them — but the help overlay (`?`) never listed those keys,
+  so the second product was visible yet undiscoverable. A reader who opened `?` to learn
+  "how do I move around here" was told about `W`, `?`, `r` and the per-screen keys, but
+  nothing about reaching R2. The "Anywhere" section now carries **`1-2 / Tab / ←→
+  switch product tab`**, mirroring exactly how the EasyPanel help documents its own
+  `1-8 / Tab / ←→ switch tab`. The upper bound is pinned to the product list by a test,
+  so the next product (D1, KV, …) can't outrun the hint the way this one did. The stale
+  code comments that still claimed the CF tab keys were "inert" (true only when DNS was
+  the lone product) were corrected too.
+
 ## [0.86.0] — 2026-07-22
 
 ### Changed

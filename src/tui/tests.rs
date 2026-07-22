@@ -5498,18 +5498,24 @@ fn help_opens_in_the_cloudflare_workspace_and_documents_cf_keys() {
 
 #[test]
 fn cf_help_anywhere_and_mouse_omit_keys_that_are_inert_in_the_workspace() {
-    // The CF workspace has no EasyPanel tabs / `:` palette / `s` server picker and no
-    // tab-click — so the help's "Anywhere" and "Mouse" sections must not advertise
-    // them (help that lies is worse than no help). Right-click IS live now: it opens
-    // the Zones row menu, so the Mouse section documents it.
+    // The CF workspace has no `:` palette / `s` server picker and no tab-click — so the
+    // help's "Anywhere" and "Mouse" sections must not advertise them (help that lies is
+    // worse than no help). It DOES have product-tab switching and a Zones right-click,
+    // which the sections below assert are documented.
     let g: Vec<&str> = CF_GLOBAL_KEYS.iter().map(|k| k.0).collect();
     assert!(g.contains(&"W") && g.contains(&"?") && g.contains(&"r"));
+    // The EasyPanel-specific "1-8" tab hint and the palette/server keys stay out; the CF
+    // product switch is its own "1-N" hint, asserted by the drift-guard test below.
     for stale in ["1-8 / Tab / ←→", "s", ":"] {
         assert!(
             !g.contains(&stale),
             "CF 'Anywhere' must not advertise `{stale}`"
         );
     }
+    assert!(
+        CF_GLOBAL_KEYS.iter().any(|k| k.1 == "switch product tab"),
+        "CF 'Anywhere' documents the product-tab switch (the header shows the tabs)"
+    );
     let m: Vec<&str> = CF_MOUSE_KEYS.iter().map(|k| k.0).collect();
     assert!(m.contains(&"Click row") && m.contains(&"Scroll"));
     assert!(
@@ -5519,6 +5525,23 @@ fn cf_help_anywhere_and_mouse_omit_keys_that_are_inert_in_the_workspace() {
     assert!(
         !m.contains(&"Click tab"),
         "the one product tab isn't click-switchable yet"
+    );
+}
+
+#[test]
+fn the_cf_product_tab_hint_names_every_product() {
+    // 1..=N jump to a product tab (keys.rs maps '1'..'9' via CF_PRODUCTS). Like the
+    // EasyPanel "1-8" hint, the CF "1-N" upper bound is derived from the product list so
+    // a new product (D1, KV, …) can't outrun the help the way Uptime once outran "1-7".
+    let n = CF_PRODUCTS.len();
+    let hint = CF_GLOBAL_KEYS
+        .iter()
+        .find(|k| k.1 == "switch product tab")
+        .expect("the product-tab switch keybinding must exist")
+        .0;
+    assert!(
+        hint.contains(&format!("1-{n}")),
+        "product-tab hint {hint:?} must cover all {n} products"
     );
 }
 
