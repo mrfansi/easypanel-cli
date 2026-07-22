@@ -1150,9 +1150,13 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             service,
             path,
         } => match crate::commands::restore_from_r2(client, &project, &service, &path, None) {
+            // Refresh::None, like DumpR2: a restore imports rows INTO a database, it
+            // doesn't change the service table (names, status, metrics), so reloading
+            // every service on completion is a wasted round-trip — needless churn on a
+            // big host.
             Ok(()) => Resp::Done(
                 format!("Restored {path} into {project}/{service}"),
-                Refresh::Projects,
+                Refresh::None,
             ),
             Err(e) => Resp::Err(e.to_string()),
         },

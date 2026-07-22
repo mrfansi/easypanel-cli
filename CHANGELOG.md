@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Restoring a database from object storage no longer reloads every service.** The
+  TUI restore returned `Refresh::Projects`, refetching the whole service list on
+  completion — but a restore imports rows *into* a database and changes nothing in
+  that table (names, status, metrics are untouched). It now uses `Refresh::None`, the
+  same as the dump beside it: no wasted round-trip and no needless table churn on a
+  large host.
+
 ## [0.82.1] — 2026-07-22
 
 ### Fixed
