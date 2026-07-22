@@ -689,6 +689,15 @@ impl App {
     /// filtering). Used by clicks: the clicked index must be within the range
     /// actually on screen.
     pub(super) fn visible_table_len(&self) -> usize {
+        // In the Cloudflare workspace the active table is the CF list, not the
+        // (hidden) EasyPanel screen behind it — so the mouse layer measures the
+        // filtered CF list under the cursor.
+        if self.workspace == Workspace::Cloudflare {
+            return match self.cf.screen {
+                CfScreen::Zones => self.cf_zones_shown().len(),
+                CfScreen::Records => self.cf_records_shown().len(),
+            };
+        }
         match self.screen {
             Screen::Projects => self.visible_rows().len(),
             Screen::Actions => self.visible_actions().len(),
@@ -702,6 +711,15 @@ impl App {
     /// The active screen's table TableState (to select a row from a click). None =
     /// a screen with no selectable table.
     pub(super) fn active_table(&mut self) -> Option<&mut TableState> {
+        // In the Cloudflare workspace the mouse drives the CF list (zones/records)
+        // rather than the hidden EasyPanel screen, so scroll/hover/click land on the
+        // CF row state.
+        if self.workspace == Workspace::Cloudflare {
+            return Some(match self.cf.screen {
+                CfScreen::Zones => &mut self.cf.zones_row,
+                CfScreen::Records => &mut self.cf.records_row,
+            });
+        }
         match self.screen {
             Screen::Projects => Some(&mut self.services_table),
             Screen::Actions => Some(&mut self.actions_state),

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.2] — 2026-07-22
+
+### Changed
+
+- **The mouse now works in the Cloudflare TUI workspace, like it does everywhere else.**
+  The scroll wheel scrolls the CF zones/records list under the cursor, hovering selects
+  the row, and a left-click selects it — the CF tables were previously ignoring the mouse
+  entirely (the shared mouse layer only ever addressed the hidden EasyPanel screen behind
+  the workspace). EasyPanel's mouse behaviour is unchanged. (Right-click has no effect in
+  the CF workspace yet — those screens have no per-row context menu; a future parity item.)
+
 ## [0.83.1] — 2026-07-22
 
 ### Changed

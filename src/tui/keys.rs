@@ -271,7 +271,13 @@ impl App {
         // A collection is a table: the wheel moves the SELECTION, as it does on
         // every other table here. It used to change viewer.scroll, which this
         // view does not read — so the wheel did nothing at all, silently.
-        if self.screen == Screen::Viewer && self.viewer_is_collection() {
+        // The viewer branches are EasyPanel-only: `self.screen` is a stale EasyPanel
+        // screen while in the Cloudflare workspace, so the wheel must fall through to
+        // the CF table below instead of scrolling a hidden viewer.
+        if self.workspace == Workspace::Easypanel
+            && self.screen == Screen::Viewer
+            && self.viewer_is_collection()
+        {
             let len = self.viewer.lines.len();
             let key = if delta < 0 {
                 KeyCode::Up
@@ -283,7 +289,7 @@ impl App {
             }
             return;
         }
-        if self.screen == Screen::Viewer {
+        if self.workspace == Workspace::Easypanel && self.screen == Screen::Viewer {
             let step = delta.unsigned_abs() as u16;
             if delta < 0 {
                 self.viewer.follow = false;
@@ -417,8 +423,10 @@ impl App {
     }
 
     fn on_click(&mut self, col: u16, row: u16, req: &Sender<Req>) {
-        // Click a tab -> switch to it (same as pressing its number).
-        if row == self.tab_row {
+        // Click a tab -> switch to it (same as pressing its number). Only the
+        // EasyPanel workspace has this tab bar; in Cloudflare tab_row is stale, so a
+        // click there must fall through to row selection, not switch a hidden tab.
+        if self.workspace == Workspace::Easypanel && row == self.tab_row {
             if let Some(i) = self
                 .tab_spans
                 .iter()
@@ -436,6 +444,12 @@ impl App {
     /// Right-clicking a row selects it, then opens its action menu. With no action
     /// for that row/screen, no menu appears.
     fn on_right_click(&mut self, col: u16, row: u16) {
+        // The Cloudflare screens have no per-row context menu yet (Records has a
+        // Space bulk menu for marked rows; zones have none), so right-click is a
+        // no-op here rather than opening the hidden EasyPanel screen's menu.
+        if self.workspace == Workspace::Cloudflare {
+            return;
+        }
         if row == self.tab_row {
             return;
         }

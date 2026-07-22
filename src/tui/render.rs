@@ -812,6 +812,9 @@ fn render_cf_zones(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         Constraint::Length(12),
         Constraint::Length(34),
     ];
+    // Record the table's Rect so the shared mouse layer can map a click/hover to a
+    // row, exactly as the EasyPanel render paths do.
+    app.table_area = body;
     render_table(
         f,
         body,
@@ -900,6 +903,9 @@ fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         Constraint::Length(7),
         Constraint::Length(34),
     ];
+    // Record the table's Rect so the shared mouse layer can map a click/hover to a
+    // row, exactly as the EasyPanel render paths do.
+    app.table_area = body;
     render_table(
         f,
         body,

@@ -5694,6 +5694,104 @@ fn cf_navigation_drills_in_and_esc_walks_back() {
 }
 
 #[test]
+fn cf_wheel_scrolls_the_zones_list_not_the_hidden_easypanel_table() {
+    // In the CF workspace the mouse must drive the CF list under the cursor. The
+    // wheel used to move the hidden EasyPanel table (self.screen) while the zones
+    // list sat still. State transitions only — no paint, so seed table_area.
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    // A live EasyPanel table behind the workspace — it must NOT move.
+    app.screen = Screen::Projects;
+    app.services_table.select(Some(0));
+
+    app.workspace = Workspace::Cloudflare;
+    app.cf.screen = CfScreen::Zones;
+    app.cf.zones = (0..40)
+        .map(|i| cf_zone(&format!("z{i}"), &format!("d{i}.com")))
+        .collect();
+    app.cf.zones_row.select(Some(0));
+    // The pane the CF table paints into (set by render_cf_zones).
+    app.table_area = ratatui::layout::Rect::new(0, 0, 80, 20);
+
+    app.on_mouse(
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        },
+        &tx,
+    );
+
+    assert!(
+        app.cf.zones_row.offset() > 0,
+        "the wheel must move the CF zones viewport"
+    );
+    assert!(
+        app.cf.zones_row.selected().is_some_and(|i| i > 0),
+        "and carry the selection with it"
+    );
+    assert_eq!(
+        app.services_table.selected(),
+        Some(0),
+        "the hidden EasyPanel table must not move"
+    );
+    assert_eq!(app.services_table.offset(), 0);
+}
+
+#[test]
+fn cf_hover_and_click_select_the_row_under_the_cursor() {
+    // Hover (Moved) and left-click both select the CF row under the cursor, exactly
+    // as they do on the EasyPanel tables. Row math: table_area.y + 2 is the first
+    // data row (top border + header).
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.workspace = Workspace::Cloudflare;
+    app.cf.screen = CfScreen::Zones;
+    app.cf.zones = (0..10)
+        .map(|i| cf_zone(&format!("z{i}"), &format!("d{i}.com")))
+        .collect();
+    app.cf.zones_row.select(Some(0));
+    app.table_area = ratatui::layout::Rect::new(0, 0, 80, 20);
+
+    // Hover over the 3rd data row (idx 2).
+    app.on_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 5,
+            row: 4,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        },
+        &tx,
+    );
+    assert_eq!(
+        app.cf.zones_row.selected(),
+        Some(2),
+        "hover selects the CF row under the cursor"
+    );
+
+    // Left-click the 2nd data row (idx 1).
+    app.on_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 3,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        },
+        &tx,
+    );
+    assert_eq!(
+        app.cf.zones_row.selected(),
+        Some(1),
+        "left-click selects the CF row under the cursor"
+    );
+    // Click selects only — it must not drill into Records (that's Enter).
+    assert_eq!(app.cf.screen, CfScreen::Zones);
+}
+
+#[test]
 fn cf_filter_narrows_the_loaded_records() {
     // The CF-local filter narrows the already-loaded list client-side (a zone can
     // hold thousands), matching type/name/content, and never touches the EasyPanel
