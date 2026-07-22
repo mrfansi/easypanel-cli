@@ -160,6 +160,33 @@ impl Default for CredsUi {
     }
 }
 
+/// The top-level workspace: which product this session is managing. ORTHOGONAL to
+/// `Screen` (the EasyPanel tabs) — the Cloudflare workspace is a fully isolated
+/// view, not another tab. Switched with `W`.
+#[derive(PartialEq, Clone, Copy, Default)]
+pub(super) enum Workspace {
+    #[default]
+    Easypanel,
+    Cloudflare,
+}
+
+/// The Cloudflare account screen's state: the stored accounts (seeded from
+/// CloudflareConfig by the event loop) and the selected row. Config-only — no
+/// token is ever used to reach the network here.
+#[derive(Default)]
+pub(super) struct CfUi {
+    pub(super) accounts: Vec<crate::cloudflare::CloudflareAccount>,
+    pub(super) row: TableState,
+}
+
+/// A Cloudflare account-list change: executed in event_loop, which holds the
+/// CloudflareConfig. Same shape as ServerAction — the App never writes the file.
+pub(super) enum CfAction {
+    Add(crate::cloudflare::CloudflareAccount),
+    SetDefault(String),
+    Remove(String),
+}
+
 /// One row on the Hosts screen. A dead host must show as an error row, not fail
 /// the whole table.
 pub(super) struct HostRow {
@@ -300,6 +327,14 @@ pub(super) struct App {
     pub(super) term: super::terminal::TermUi,
 
     pub(super) screen: Screen,
+    /// The active workspace (EasyPanel tabs vs the isolated Cloudflare view).
+    /// Orthogonal to `screen`: switching it hides every EasyPanel key and pane.
+    pub(super) workspace: Workspace,
+    /// The Cloudflare account screen's state (accounts + selection).
+    pub(super) cf: CfUi,
+    /// A pending Cloudflare account-list change, resolved by event_loop (which alone
+    /// holds the CloudflareConfig file), then re-seeded into `cf.accounts`.
+    pub(super) cf_action: Option<CfAction>,
     pub(super) should_quit: bool,
     pub(super) refresh_inflight: bool,
     pub(super) status: String,
@@ -444,6 +479,9 @@ impl App {
             clipboard: None,
             term: super::terminal::TermUi::default(),
             screen: Screen::Dashboard,
+            workspace: Workspace::default(),
+            cf: CfUi::default(),
+            cf_action: None,
             should_quit: false,
             refresh_inflight: false,
             status: "Ready".into(),
@@ -694,6 +732,49 @@ impl App {
     /// never reach this dispatch.
     pub(super) fn screen_owns_esc(&self) -> bool {
         matches!(self.screen, Screen::Viewer | Screen::Credentials)
+    }
+
+    /// Switch the top-level workspace. Entering Cloudflare selects the first account
+    /// (so the row keys have a target); leaving it returns to the EasyPanel tabs.
+    pub(super) fn set_workspace(&mut self, ws: Workspace) {
+        self.workspace = ws;
+        match ws {
+            Workspace::Cloudflare => {
+                if self.cf.row.selected().is_none() && !self.cf.accounts.is_empty() {
+                    self.cf.row.select(Some(0));
+                }
+                self.status = "Cloudflare workspace".into();
+            }
+            Workspace::Easypanel => self.status = "EasyPanel workspace".into(),
+        }
+    }
+
+    /// The Cloudflare account screen has no stored accounts — the empty state.
+    pub(super) fn cf_empty(&self) -> bool {
+        self.cf.accounts.is_empty()
+    }
+
+    /// The name of the highlighted Cloudflare account, or None on the empty screen.
+    pub(super) fn selected_cf_account(&self) -> Option<String> {
+        self.cf
+            .row
+            .selected()
+            .and_then(|i| self.cf.accounts.get(i))
+            .map(|a| a.name.clone())
+    }
+
+    /// The add-account form. All local: on submit the account is written to
+    /// cloudflare.json by the event loop, never over the network.
+    pub(super) fn open_cf_account_form(&mut self) {
+        let fields = vec![
+            Field::text("Name", ""),
+            Field::secret("API token"),
+            Field::text("Account ID", ""),
+        ];
+        self.form = Some(
+            Form::new(FormKind::CfAccountAdd, " New Cloudflare account ", fields)
+                .with_note("Stored locally in cloudflare.json (0600). No network call."),
+        );
     }
 
     pub(super) fn handle(&mut self, resp: Resp, req: &Sender<Req>) {
@@ -3187,6 +3268,21 @@ impl App {
                 );
                 self.preview_domain_edits(&target, &find, &replace);
                 return;
+            }
+            FormKind::CfAccountAdd => {
+                let (name, token, account_id) = (form.val(0), form.val(1), form.val(2));
+                if name.is_empty() || token.is_empty() {
+                    self.status = "Name and API token are required".into();
+                    return;
+                }
+                // Resolved by event_loop, which alone holds the CloudflareConfig —
+                // same rule as a server-list change (see ServerAction).
+                self.cf_action = Some(CfAction::Add(crate::cloudflare::CloudflareAccount {
+                    name,
+                    api_token: token,
+                    account_id: (!account_id.is_empty()).then_some(account_id),
+                    default: false,
+                }));
             }
             FormKind::DomainCreate | FormKind::DomainEdit { .. } => match domain_body(form) {
                 Ok(body) => {

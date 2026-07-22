@@ -13,7 +13,9 @@ use serde_json::json;
 use crate::output::field;
 
 use super::actions::Menu;
-use super::app::{App, Confirm, MonitorView, Screen, ServerAction, WatchAction, TAB_SCREENS};
+use super::app::{
+    App, CfAction, Confirm, MonitorView, Screen, ServerAction, WatchAction, Workspace, TAB_SCREENS,
+};
 use super::form::*;
 use super::table::*;
 use super::worker::{Req, View};
@@ -69,6 +71,20 @@ impl App {
         }
         if self.picker.is_some() {
             self.picker_key(code, req);
+            return;
+        }
+
+        // `W` opens the workspace switch menu from EITHER workspace — it is the one
+        // key orthogonal to Screen, so it sits above the isolation gate below.
+        if code == KeyCode::Char('W') {
+            self.open_workspace_menu();
+            return;
+        }
+        // ISOLATION: while in the Cloudflare workspace, none of the EasyPanel keys
+        // below (tabs, digits 1-8, Tab, ←/→, the per-screen handlers) may act. The
+        // Cloudflare account screen has its own, separate handler.
+        if self.workspace == Workspace::Cloudflare {
+            self.cloudflare_key(code, req);
             return;
         }
 
@@ -959,6 +975,13 @@ impl App {
                 self.status = "Removing server...".into();
                 return;
             }
+            // Removing a Cloudflare account: local config only (see CfAction), the
+            // event loop holds the file.
+            "cf-account-delete" => {
+                self.cf_action = Some(CfAction::Remove(c.project));
+                self.status = "Removing Cloudflare account...".into();
+                return;
+            }
             // The file was chosen in the picker, not typed, so its three parts
             // travel in `pending_restore` rather than being squeezed into Confirm.
             // One request per database: the endpoint takes a single name, and a
@@ -1172,6 +1195,40 @@ impl App {
                 }
             }
             _ => move_table(&mut self.creds.row, code, self.creds.items.len()),
+        }
+    }
+
+    /// The Cloudflare account screen (the Cloudflare workspace's only screen). Its
+    /// keys never touch EasyPanel state, and no EasyPanel key reaches here — the
+    /// isolation the workspace promises. `n` works even with no accounts (the empty
+    /// state), and `Esc` returns to the EasyPanel workspace.
+    pub(super) fn cloudflare_key(&mut self, code: KeyCode, _req: &Sender<Req>) {
+        match code {
+            KeyCode::Esc => self.set_workspace(Workspace::Easypanel),
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('n') => self.open_cf_account_form(),
+            // Enter/u make the selected account the active (default) one.
+            KeyCode::Enter | KeyCode::Char('u') => match self.selected_cf_account() {
+                Some(name) => {
+                    self.cf_action = Some(CfAction::SetDefault(name.clone()));
+                    self.status = format!("Making '{name}' the active Cloudflare account…");
+                }
+                None => self.status = "No Cloudflare account selected".into(),
+            },
+            // `x` deletes, behind the same confirmation dialog as every other delete.
+            KeyCode::Char('x') => match self.selected_cf_account() {
+                Some(name) => {
+                    self.confirm = Some(Confirm {
+                        action: "cf-account-delete".into(),
+                        project: name.clone(),
+                        service: String::new(),
+                        stype: String::new(),
+                        label: format!("Delete Cloudflare account '{name}'? (local config only)"),
+                    });
+                }
+                None => self.status = "No Cloudflare account selected".into(),
+            },
+            _ => move_table(&mut self.cf.row, code, self.cf.accounts.len()),
         }
     }
 

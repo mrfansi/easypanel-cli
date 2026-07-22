@@ -92,8 +92,8 @@ pub fn dump_command(
 
 /// Wrap an in-container command so its temp files are removed WHATEVER happens —
 /// on a failed upload the gzip (~the dump's compressed size) would otherwise sit in
-/// the container's `/tmp` forever. The command's real exit status is preserved for
-/// [`crate::container::run_until_done`]'s marker: `(exit $ec)` sets `$?` without
+/// the container's `/tmp` forever. The command's real exit status is preserved so
+/// [`crate::container::run_until_done`] can record it: `(exit $ec)` sets `$?` without
 /// ending the shell, so `rm` between them can't mask a dump/curl failure.
 ///
 /// Safe to brace/subshell now that commands travel as WebSocket INPUT (v0.82.0), not

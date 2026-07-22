@@ -32,7 +32,7 @@ use ratatui::crossterm::event::{
 use serde_json::json;
 
 use crate::client::EasypanelClient;
-use crate::config::ServerConfig;
+use crate::config::{CloudflareConfig, ServerConfig};
 
 const REFRESH: Duration = Duration::from_secs(2);
 /// The cap on lines the viewer holds while a log tail is running.
@@ -46,7 +46,7 @@ pub(super) const TERM_SCROLLBACK: usize = 5_000;
 /// How far Shift+PageUp/PageDown move through that history.
 const TERM_PAGE: isize = 10;
 
-use app::{App, CredsUi, HostRow, HostState, Screen, ServerAction, WatchAction};
+use app::{App, CfAction, CredsUi, HostRow, HostState, Screen, ServerAction, WatchAction};
 use render::ui;
 use worker::{spawn_workers, Req, Resp, View};
 
@@ -63,10 +63,14 @@ pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> 
     // failure here is not fatal: the watchlist is a convenience, not credentials.
     app.watch = crate::config::Watchlist::new(crate::config::Watchlist::default_path())
         .all(&app.server_name);
+    // The Cloudflare workspace is config-only; its accounts are seeded once here
+    // (like the watchlist) and re-seeded by the event loop after a change.
+    let cf_cfg = CloudflareConfig::new(CloudflareConfig::default_path());
+    app.cf.accounts = cf_cfg.list();
 
     let mut terminal = ratatui::init();
     enable_mouse();
-    let result = event_loop(&mut terminal, &mut app, cfg, client);
+    let result = event_loop(&mut terminal, &mut app, cfg, &cf_cfg, client);
     disable_mouse();
     ratatui::restore();
     result
@@ -103,6 +107,7 @@ fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     cfg: &ServerConfig,
+    cf_cfg: &CloudflareConfig,
     client: EasypanelClient,
 ) -> Result<()> {
     let mut w = spawn_workers(client);
@@ -272,6 +277,22 @@ fn event_loop(
                 Err(e) => format!("Error: {e}"),
             };
             app.all_servers = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
+        }
+
+        // A Cloudflare account-list change needs the config file, which only lives
+        // here — same rule as the server list. Re-seed the App's copy afterwards.
+        if let Some(action) = app.cf_action.take() {
+            app.status = match apply_cf_action(cf_cfg, action) {
+                Ok(msg) => msg,
+                Err(e) => format!("Error: {e}"),
+            };
+            app.cf.accounts = cf_cfg.list();
+            // A delete can shorten the list past the selection; keep it in range.
+            if let Some(sel) = app.cf.row.selected() {
+                if sel >= app.cf.accounts.len() {
+                    app.cf.row.select(app.cf.accounts.len().checked_sub(1));
+                }
+            }
         }
 
         // Cross-host compare: same as migrate, the target token lives only in the
@@ -619,6 +640,27 @@ fn apply_server_action(cfg: &ServerConfig, action: ServerAction) -> Result<Strin
         ServerAction::Remove(name) => {
             cfg.remove(&name)?;
             Ok(format!("Server '{name}' deleted"))
+        }
+    }
+}
+
+/// Apply a Cloudflare account-list change to the local config. Config-only — the
+/// mirror of apply_server_action, kept a free function so a test can exercise it
+/// without the event loop.
+fn apply_cf_action(cfg: &CloudflareConfig, action: CfAction) -> Result<String> {
+    match action {
+        CfAction::Add(account) => {
+            let name = account.name.clone();
+            cfg.add(account)?;
+            Ok(format!("Cloudflare account '{name}' saved"))
+        }
+        CfAction::SetDefault(name) => {
+            cfg.set_default(&name)?;
+            Ok(format!("'{name}' is now the active Cloudflare account"))
+        }
+        CfAction::Remove(name) => {
+            cfg.remove(&name)?;
+            Ok(format!("Cloudflare account '{name}' deleted"))
         }
     }
 }

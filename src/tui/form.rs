@@ -1022,6 +1022,9 @@ impl Field {
 /// What the form does when submitted.
 pub(super) enum FormKind {
     ServerAdd,
+    /// Add a Cloudflare account (name, API token, optional account id) to the local
+    /// config. A LOCAL submit — resolved by the event loop, never the worker.
+    CfAccountAdd,
     ServerEdit {
         name: String,
     },

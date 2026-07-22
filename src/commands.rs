@@ -1711,7 +1711,7 @@ pub(crate) fn dump_to_r2(
         project,
         service,
         &cmd,
-        std::time::Duration::from_secs(600),
+        std::time::Duration::from_secs(3600),
     )?;
     let redact = |s: &str| {
         s.replace(&url, "<presigned-url>")
@@ -1728,8 +1728,8 @@ pub(crate) fn dump_to_r2(
         }),
         Some(n) => anyhow::bail!("Dump failed (exit {n}). {}", redact(&run.output)),
         None => anyhow::bail!(
-            "Dump did not report completion within 10 min. {}",
-            redact(&run.output)
+            "Dump still running after 60 min — it continues in the container. \
+             Check the service before re-running."
         ),
     }
 }
@@ -1795,7 +1795,7 @@ pub(crate) fn restore_from_r2(
         project,
         service,
         &cmd,
-        std::time::Duration::from_secs(600),
+        std::time::Duration::from_secs(3600),
     )?;
     let redact = |s: &str| {
         s.replace(&url, "<presigned-url>")
@@ -1807,8 +1807,8 @@ pub(crate) fn restore_from_r2(
         Some(0) => Ok(()),
         Some(n) => anyhow::bail!("Restore failed (exit {n}). {}", redact(&run.output)),
         None => anyhow::bail!(
-            "Restore did not report completion within 10 min. {}",
-            redact(&run.output)
+            "Restore still running after 60 min — it continues in the container. \
+             Check the service before re-running; a second restore may clash."
         ),
     }
 }

@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::output::field;
 
-use super::app::{App, Screen, TABS, TAB_SCREENS};
+use super::app::{App, Screen, Workspace, TABS, TAB_SCREENS};
 use super::table::Line2;
 use super::worker::{Req, View};
 use ratatui::crossterm::event::KeyCode;
@@ -509,6 +509,15 @@ impl App {
             return;
         }
         self.open_menu(items);
+    }
+
+    /// The `W` switch menu: pick the workspace. Reuses the action-menu machinery —
+    /// selecting an entry flips `workspace`, which the render and key layers isolate.
+    pub(super) fn open_workspace_menu(&mut self) {
+        self.open_menu(vec![
+            MenuItem::new("EasyPanel", |a, _| a.set_workspace(Workspace::Easypanel)),
+            MenuItem::new("Cloudflare", |a, _| a.set_workspace(Workspace::Cloudflare)),
+        ]);
     }
 
     pub(super) fn open_menu(&mut self, items: Vec<MenuItem>) {

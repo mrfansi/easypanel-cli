@@ -21,6 +21,7 @@ pub(super) struct Key(pub(super) &'static str, pub(super) &'static str);
 /// Keys that apply on any screen.
 pub(super) const GLOBAL_KEYS: &[Key] = &[
     Key("1-8 / Tab / ←→", "switch tab"),
+    Key("W", "switch workspace (EasyPanel / Cloudflare)"),
     Key("?", "this help"),
     Key(
         ":",
@@ -179,19 +180,26 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
     ])
     .split(f.area());
 
-    render_tabs(f, chunks[0], app);
-    match app.screen {
-        Screen::Dashboard => render_dashboard(f, chunks[1], app),
-        Screen::Hosts => render_hosts(f, chunks[1], app),
-        Screen::Maintenance => render_maintenance(f, chunks[1], app),
-        Screen::Actions => render_actions(f, chunks[1], app),
-        Screen::Monitor => render_monitor(f, chunks[1], app),
-        Screen::Domains => render_domains(f, chunks[1], app),
-        Screen::Projects => render_projects(f, chunks[1], app),
-        Screen::Uptime => render_uptime(f, chunks[1], app),
-        Screen::Viewer => render_viewer(f, chunks[1], app),
-        Screen::Terminal => render_terminal(f, chunks[1], app),
-        Screen::Credentials => render_credentials(f, chunks[1], app),
+    // ISOLATION: the Cloudflare workspace draws its OWN header and screen; no
+    // EasyPanel tab bar or pane renders behind it (and vice-versa).
+    match app.workspace {
+        Workspace::Cloudflare => render_cloudflare(f, chunks[0], chunks[1], app),
+        Workspace::Easypanel => {
+            render_tabs(f, chunks[0], app);
+            match app.screen {
+                Screen::Dashboard => render_dashboard(f, chunks[1], app),
+                Screen::Hosts => render_hosts(f, chunks[1], app),
+                Screen::Maintenance => render_maintenance(f, chunks[1], app),
+                Screen::Actions => render_actions(f, chunks[1], app),
+                Screen::Monitor => render_monitor(f, chunks[1], app),
+                Screen::Domains => render_domains(f, chunks[1], app),
+                Screen::Projects => render_projects(f, chunks[1], app),
+                Screen::Uptime => render_uptime(f, chunks[1], app),
+                Screen::Viewer => render_viewer(f, chunks[1], app),
+                Screen::Terminal => render_terminal(f, chunks[1], app),
+                Screen::Credentials => render_credentials(f, chunks[1], app),
+            }
+        }
     }
     render_status(f, chunks[2], app);
 
@@ -535,6 +543,82 @@ pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_widget(Paragraph::new(Line::from(spans)), inner);
     app.tab_spans = hits;
     app.tab_row = inner.y;
+}
+
+/// Cloudflare orange (#F38020) — a deliberately distinct accent so it is
+/// unmistakable you have left EasyPanel.
+const CF_ORANGE: Color = Color::Rgb(243, 128, 32);
+
+/// The Cloudflare account screen's empty-state copy. One source, so the render and
+/// its test cannot drift.
+pub(super) const CF_EMPTY_HINT: &str = "No Cloudflare account yet — press n to add one";
+
+/// The isolated Cloudflare workspace: an orange header + the stored accounts. Reads
+/// only from `app.cf` — no EasyPanel state appears here.
+pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    let block = Block::bordered()
+        .border_style(Style::default().fg(CF_ORANGE))
+        .title(Span::styled(
+            " Cloudflare — accounts ",
+            Style::default().fg(CF_ORANGE).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(header);
+    f.render_widget(block, header);
+    f.render_widget(
+        Paragraph::new(
+            " W switch workspace · n add · Enter/u set active · x delete · Esc EasyPanel",
+        )
+        .style(Style::default().fg(Color::Gray)),
+        inner,
+    );
+
+    if app.cf_empty() {
+        f.render_widget(
+            Paragraph::new(format!("  {CF_EMPTY_HINT}"))
+                .style(Style::default().fg(Color::DarkGray))
+                .block(pane("Cloudflare accounts".to_string(), CF_ORANGE)),
+            body,
+        );
+        return;
+    }
+
+    let rows: Vec<Vec<String>> = app
+        .cf
+        .accounts
+        .iter()
+        .map(|a| {
+            vec![
+                a.name.clone(),
+                a.account_id.clone().unwrap_or_default(),
+                if a.default {
+                    "●".into()
+                } else {
+                    String::new()
+                },
+                // A FIXED run of bullets — the token's length must not leak.
+                "•".repeat(12),
+            ]
+        })
+        .collect();
+    let headers = ["Name", "Account ID", "Default", "API token"];
+    let widths = [
+        Constraint::Length(20),
+        Constraint::Length(34),
+        Constraint::Length(8),
+        Constraint::Min(14),
+    ];
+    render_table(
+        f,
+        body,
+        "Cloudflare accounts".to_string(),
+        &headers,
+        &widths,
+        rows,
+        &mut app.cf.row,
+        CF_ORANGE,
+        // The token column is masked, so dim it — it reads as "hidden", not a value.
+        |col, _| (col == 3).then(|| Style::default().fg(Color::DarkGray)),
+    );
 }
 
 pub(super) fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {

@@ -5418,3 +5418,134 @@ fn comparing_a_whole_project_across_hosts_resolves_the_target_token() {
     assert!(app.diff_project_across_req.is_none());
     assert!(app.status.contains("Choose"), "{}", app.status);
 }
+
+// ---------- Cloudflare workspace ----------
+
+#[test]
+fn the_w_switch_moves_between_workspaces_and_esc_returns() {
+    // `W` opens a switch menu (the shared action-menu machinery); choosing
+    // Cloudflare enters that workspace, and Esc on its account screen returns to
+    // EasyPanel. The Screen underneath is untouched throughout.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Projects;
+    assert!(app.workspace == Workspace::Easypanel);
+
+    app.on_key(KeyCode::Char('W'), &tx);
+    let menu = app.menu.as_ref().expect("W opens the workspace menu");
+    assert_eq!(menu.items.len(), 2, "EasyPanel + Cloudflare");
+    // Highlight Cloudflare (second item) and run it.
+    app.on_key(KeyCode::Down, &tx);
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(app.workspace == Workspace::Cloudflare);
+    assert!(app.menu.is_none());
+
+    // Esc on the Cloudflare root returns to EasyPanel — the Screen is still Projects.
+    app.on_key(KeyCode::Esc, &tx);
+    assert!(app.workspace == Workspace::Easypanel);
+    assert!(app.screen == Screen::Projects);
+}
+
+#[test]
+fn a_digit_key_is_inert_in_the_cloudflare_workspace() {
+    // ISOLATION: while in the Cloudflare workspace, the EasyPanel digit tab-jumps
+    // (and Tab, and ←/→) must NOT act — they belong to the other workspace.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Projects;
+    app.set_workspace(Workspace::Cloudflare);
+
+    app.on_key(KeyCode::Char('3'), &tx); // Maintenance in EasyPanel
+    app.on_key(KeyCode::Tab, &tx);
+    app.on_key(KeyCode::Right, &tx);
+    assert!(
+        app.screen == Screen::Projects,
+        "EasyPanel tab keys must not act in the Cloudflare workspace"
+    );
+    assert!(app.workspace == Workspace::Cloudflare);
+}
+
+#[test]
+fn the_cloudflare_screen_reports_the_empty_state() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.set_workspace(Workspace::Cloudflare);
+    assert!(app.cf_empty(), "no accounts seeded");
+
+    let mut term = Terminal::new(TestBackend::new(90, 12)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let screen = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(90)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        screen.contains(CF_EMPTY_HINT),
+        "the empty Cloudflare screen must invite adding an account:\n{screen}"
+    );
+    // `n` must open the add form even from the empty state — never a dead key.
+    app.on_key(KeyCode::Char('n'), &tx);
+    assert!(
+        app.form.is_some(),
+        "n opens the add-account form when empty"
+    );
+}
+
+#[test]
+fn adding_a_cloudflare_account_via_the_app_path_updates_the_config() {
+    use crate::cloudflare::CloudflareAccount;
+    use crate::config::CloudflareConfig;
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.set_workspace(Workspace::Cloudflare);
+
+    // The add form is a LOCAL submit: it stages a CfAction rather than sending a
+    // network request.
+    app.on_key(KeyCode::Char('n'), &tx);
+    {
+        let f = app.form.as_mut().expect("the add form");
+        f.fields[0].value = "prod".into();
+        f.fields[1].value = "tok-secret".into();
+        f.fields[2].value = "acc-123".into();
+    }
+    app.submit_form(&tx);
+    assert!(app.form.is_none(), "submit closes the form");
+    assert!(
+        app.cf_action.is_some(),
+        "the submit stages a local account add, not a worker request"
+    );
+
+    // Resolve it against a throwaway config — the path the event loop takes.
+    let dir = std::env::temp_dir().join(format!("epcf-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let cfg = CloudflareConfig::new(dir.join("cloudflare.json"));
+    let msg = super::apply_cf_action(&cfg, app.cf_action.take().unwrap()).expect("saved");
+    assert!(msg.contains("prod"), "{msg}");
+
+    let stored = cfg.list();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].name, "prod");
+    assert_eq!(stored[0].api_token, "tok-secret");
+    assert_eq!(stored[0].account_id.as_deref(), Some("acc-123"));
+    assert!(stored[0].default, "the first account becomes the default");
+
+    // Re-seeding is what the event loop does next; the screen then shows it.
+    app.cf.accounts = stored;
+    assert!(!app.cf_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Guard the CloudflareAccount shape the form fills.
+    let _ = CloudflareAccount {
+        name: "x".into(),
+        api_token: "y".into(),
+        account_id: None,
+        default: false,
+    };
+}
