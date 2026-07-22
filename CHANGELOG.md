@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.1] — 2026-07-22
+
+### Changed
+
+- **The Cloudflare TUI workspace now mirrors the EasyPanel TUI more closely.** Three
+  parity fixes so switching between the two (with `W`) feels like one tool:
+  - The header reads **"Cloudflare — <account>"**, exactly like EasyPanel's
+    "EasyPanel — <server>", with the active account switched by the `a` picker the way
+    `s` switches servers.
+  - The header's second line is now a **product tab bar** (styled like EasyPanel's tab
+    bar) — **DNS** today, built to grow into the other Cloudflare products (D1, R2, KV,
+    Workers, …). The per-screen key hints moved from the header **into the status bar**,
+    matching EasyPanel.
+  - **`?` now opens the help overlay inside the Cloudflare workspace** (it used to do
+    nothing there), and its "this screen" section documents the Cloudflare screen's keys
+    instead of the stale EasyPanel one.
+
 ## [0.83.0] — 2026-07-22
 
 ### Added

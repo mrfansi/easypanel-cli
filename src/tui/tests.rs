@@ -5466,6 +5466,31 @@ fn a_digit_key_is_inert_in_the_cloudflare_workspace() {
 }
 
 #[test]
+fn help_opens_in_the_cloudflare_workspace_and_documents_cf_keys() {
+    // `?` was swallowed by the isolation gate — in the CF workspace it did nothing,
+    // unlike EasyPanel. It now opens the help there too, and the "this screen" section
+    // is sourced from cf_screen_keys (per CfScreen), not the stale EasyPanel Screen.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.set_workspace(Workspace::Cloudflare);
+    assert!(!app.help);
+
+    app.on_key(KeyCode::Char('?'), &tx);
+    assert!(app.help, "? opens help in the Cloudflare workspace");
+
+    let zones: Vec<&str> = cf_screen_keys(CfScreen::Zones).iter().map(|k| k.0).collect();
+    assert!(
+        zones.contains(&"a") && zones.contains(&"Enter"),
+        "zones help lists the account picker and records keys"
+    );
+    let records: Vec<&str> = cf_screen_keys(CfScreen::Records).iter().map(|k| k.0).collect();
+    assert!(
+        records.contains(&"e") && records.contains(&"Space"),
+        "records help lists the edit and bulk keys"
+    );
+}
+
+#[test]
 fn the_cloudflare_screen_reports_the_empty_state() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

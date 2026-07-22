@@ -358,8 +358,45 @@ pub(super) fn wrap_words(text: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// The keys the help overlay lists for a Cloudflare screen — the CF analogue of
+/// `screen_keys`, so `?` in the CF workspace documents the CF keys instead of the
+/// stale EasyPanel screen's. (Terse status-bar hints live in `cf_status_hints`.)
+pub(super) fn cf_screen_keys(screen: CfScreen) -> &'static [Key] {
+    match screen {
+        CfScreen::Zones => &[
+            Key(
+                "a",
+                "switch Cloudflare account (a picker, like `s` switches servers)",
+            ),
+            Key("Enter", "open the selected zone's DNS records"),
+            Key("n", "add a zone"),
+            Key("x", "delete a zone (type its name to confirm)"),
+            Key("/", "filter the list"),
+            Key("r", "refresh"),
+            Key("Esc", "back to EasyPanel"),
+        ],
+        CfScreen::Records => &[
+            Key("n", "add a DNS record"),
+            Key("e", "edit the selected record"),
+            Key("x", "delete the selected record"),
+            Key("v / V", "mark one / all shown"),
+            Key("Space", "bulk menu for the marked records"),
+            Key("/", "filter the list"),
+            Key("r", "refresh"),
+            Key("Esc", "back to zones"),
+        ],
+    }
+}
+
 pub(super) fn render_help(f: &mut Frame, app: &mut App) {
-    let rows = screen_keys(app.screen);
+    // In the Cloudflare workspace the "this screen" section documents the CF screen's
+    // keys, not the (stale) EasyPanel Screen's — the two workspaces are isolated.
+    let cf = app.workspace == Workspace::Cloudflare;
+    let rows = if cf {
+        cf_screen_keys(app.cf.screen)
+    } else {
+        screen_keys(app.screen)
+    };
     let area = centered(72, 92, f.area());
     f.render_widget(Clear, area);
 
@@ -405,7 +442,15 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
             .collect()
     };
 
-    let mut lines = vec![head(&format!("{} — this screen", TABS[app.screen.index()]))];
+    let screen_label = if cf {
+        match app.cf.screen {
+            CfScreen::Zones => "Cloudflare · DNS",
+            CfScreen::Records => "Cloudflare · DNS · records",
+        }
+    } else {
+        TABS[app.screen.index()]
+    };
+    let mut lines = vec![head(&format!("{screen_label} — this screen"))];
     if rows.is_empty() {
         lines.push(Line::from("   (no dedicated keys)"));
     }

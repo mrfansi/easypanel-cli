@@ -85,6 +85,14 @@ impl App {
             self.open_workspace_menu();
             return;
         }
+        // `?` opens the help overlay from EITHER workspace — like `W`, it is orthogonal
+        // to Screen, so the Cloudflare workspace gets the same help EasyPanel has instead
+        // of the key being swallowed by the isolation gate below.
+        if code == KeyCode::Char('?') {
+            self.help = true;
+            self.help_scroll = 0;
+            return;
+        }
         // ISOLATION: while in the Cloudflare workspace, none of the EasyPanel keys
         // below (tabs, digits 1-8, Tab, ←/→, the per-screen handlers) may act. The
         // Cloudflare account screen has its own, separate handler.
@@ -177,10 +185,6 @@ impl App {
             // without menus. A keyboard alternative for those who dislike browsing
             // menus.
             KeyCode::Char(':') => self.open_palette(),
-            KeyCode::Char('?') => {
-                self.help = true;
-                self.help_scroll = 0;
-            }
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('r') => self.refresh(req),
             KeyCode::Char('/') if self.filterable() => {
