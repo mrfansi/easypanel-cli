@@ -324,6 +324,18 @@ rendered byte-identical on the one screen you open to tell domains apart. Fixed 
   domains.rs returning ids + a conflicting count, marked `≡` amber on the source column) is
   in this session's history if a real duplicate is ever measured on a host.
 
+### IMPLEMENTATION RULE (owner, 2026-07-22): always DDD
+
+Standing rule for **every** change, features included — not just refactors. Follow
+Domain-Driven Design: a pure **domain model** (types + functions, no I/O) separate from
+the **application layer** (orchestration / `commands`) and **infrastructure** (client/HTTP,
+TUI worker/render/keys). Domain decisions and rules live in the domain module for their
+bounded context (`cloudflare.rs`, `backup.rs`, `dump.rs`, `uptime.rs`, `domains.rs`, …),
+NOT scattered across the worker/render/keys. When adding code, put the rule/decision in
+the domain layer and keep worker/render thin (a caller + presentation). New Cloudflare
+products (R2, D1, …) each get their domain types + pure functions in `cloudflare.rs` (or a
+sibling), with the client/TUI as thin consumers.
+
 ### FOCUS (owner, 2026-07-22): Cloudflare TUI — mirror EasyPanel behaviour
 
 Standing loop focus, owner-requested: **keep improving the Cloudflare TUI so it
