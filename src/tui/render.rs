@@ -20,7 +20,7 @@ pub(super) struct Key(pub(super) &'static str, pub(super) &'static str);
 
 /// Keys that apply on any screen.
 pub(super) const GLOBAL_KEYS: &[Key] = &[
-    Key("1-7 / Tab / ←→", "switch tab"),
+    Key("1-8 / Tab / ←→", "switch tab"),
     Key("?", "this help"),
     Key(
         ":",

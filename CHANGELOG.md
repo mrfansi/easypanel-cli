@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.82.2] — 2026-07-22
+
 ### Fixed
 
+- **The help/status hint now says the number keys go 1–8, not 1–7.** An eighth tab
+  (Uptime) had been added with its own `8` shortcut, but the on-screen hint still read
+  "1-7 / Tab / ←→", so anyone reading the help never learned they could jump straight
+  to Uptime with `8`. The hint now covers all eight numbered tabs, and a test derives
+  the range from the tab list so a future tab can't outrun it again.
 - **Restoring a database from object storage no longer reloads every service.** The
   TUI restore returned `Refresh::Projects`, refetching the whole service list on
   completion — but a restore imports rows *into* a database and changes nothing in

@@ -1222,6 +1222,24 @@ fn every_interactive_screen_documents_its_keys() {
 }
 
 #[test]
+fn the_tab_switch_hint_names_every_numbered_tab() {
+    // The number keys jump straight to a tab: 1..=N, one per TAB_SCREENS entry
+    // (keys.rs maps '1'..'8'). When Uptime was added as the 8th tab, this hint
+    // still read "1-7", hiding the '8' jump from anyone reading the help. Derive
+    // the upper bound from TAB_SCREENS so a future tab can't outrun the hint again.
+    let n = TAB_SCREENS.len();
+    let hint = GLOBAL_KEYS
+        .iter()
+        .find(|k| k.1 == "switch tab")
+        .expect("the tab-switch keybinding must exist")
+        .0;
+    assert!(
+        hint.contains(&format!("1-{n}")),
+        "tab-switch hint {hint:?} must cover all {n} numbered tabs"
+    );
+}
+
+#[test]
 fn help_lists_the_destructive_keys_that_exist() {
     // Destructive keys most need finding before they're pressed. Their actions now
     // live in group menus, so the opener must be documented AND its description must
