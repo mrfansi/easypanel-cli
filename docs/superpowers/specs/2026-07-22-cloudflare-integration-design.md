@@ -74,6 +74,13 @@ Pure functions:
 - `resolve_zone(zones, needle) -> Option<Zone>` — accept a zone **name** (`example.com`)
   or an **id**; prefer an exact name match, fall back to id equality.
 - `valid_record_type(&str)`, `proxyable(type)` — small guards used by both CLI and TUI.
+- `select_records(records, selector) -> Vec<&Record>` — resolve a bulk selector
+  (explicit ids and/or `where-content` / `where-type` / `where-name`) to the concrete
+  set of records it matches. Pure, so the CLI can print "these N will change" before any
+  write, and it is unit-tested independently of the network.
+- `RecordPatch { content?, proxied?, ttl?, priority? }` + `apply_patch(record, patch)` —
+  a partial field-change. `record_body` builds the full create body; `apply_patch` builds
+  the update body from only the fields the user set, for both single edit and bulk.
 
 ### Infrastructure — `CloudflareClient`
 
@@ -148,8 +155,33 @@ easypanel cf record add    <zone> --type A --name x --content 1.2.3.4
                                    [--ttl N] [--proxied] [--priority N] [--account NAME]
 easypanel cf record edit   <zone> <record-id> [--content …] [--proxied true|false]
                                    [--ttl N] [--name …] [--priority N] [--account NAME]
-easypanel cf record delete <zone> <record-id>              [--account NAME]
+easypanel cf record delete <zone> <record-id> [<record-id> …]   [--account NAME]
 ```
+
+**Bulk operations** (the point of the feature for a migration — repoint many records at
+once). One verb, `cf record set`, applies the same field change to a *selection*:
+
+```
+easypanel cf record set <zone> [SELECTOR] [FIELD-CHANGES] [--account NAME] [--yes]
+
+  SELECTOR (choose the records; combinable):
+    <record-id> [<record-id> …]     explicit ids
+    --where-content <value>         every record whose content == value  (the repoint case)
+    --where-type <A|CNAME|…>        narrow to a record type
+    --where-name <substr>           narrow to names containing substr
+
+  FIELD-CHANGES (what to set on each selected record):
+    --content <new>   --proxied <true|false>   --ttl <N>   --priority <N>
+```
+
+- Canonical migration: `cf record set example.com --where-content 203.0.113.10 --content 198.51.100.20`
+  repoints every record on the old IP to the new one in a single command.
+- `cf record set` always prints the matched records and asks to confirm before writing
+  (skip with `--yes` for scripts). It reports per-record success/failure and exits
+  non-zero if any failed — never a silent partial.
+- `cf record delete` accepts several ids for bulk delete; a bulk delete by selector is
+  `cf record set … ` territory only for edits, so destructive bulk stays explicit-ids
+  (you must name what you delete).
 
 - `<zone>` is a domain name or a zone id (`resolve_zone`).
 - `--account NAME` selects the CF account; default is the one marked default. This is a
@@ -179,6 +211,13 @@ enum Workspace { Easypanel, Cloudflare }
   - **`a`** in the Cloudflare workspace opens an **account picker** (list of stored CF
     accounts) — the isolated analogue of `s` for EasyPanel servers. Switching account
     re-lists zones. With a single account it just shows which one is active.
+  - **Bulk on the Records screen** — mark records with `v`/`V` (the same marking keys as
+    the EasyPanel tables), then the action menu offers *"Set content on N marked"*,
+    *"Set proxied on N marked"*, *"Set TTL on N marked"*, and *"Delete N marked"*. Each
+    opens one form (or a confirm), applies it to every marked record via its own API
+    call, and reports per-record pass/fail — the exact pattern EasyPanel's bulk resource
+    edit already uses (`bulk_targets()` → worker loop → `BulkDone`). This is the TUI face
+    of `cf record set`: mark the rows, change the field once.
 - **Colour carries meaning**: the orange accent makes it unmistakable you've left
   EasyPanel. No EasyPanel state (projects, services, servers, the 1–8 keys) is reachable
   or rendered while in the Cloudflare workspace, and vice-versa. The active CF account is
@@ -194,9 +233,18 @@ the EasyPanel worker match is untouched in spirit:
 
 ```
 CfReq: Zones, CreateZone{name}, DeleteZone{id}, Records{zone_id},
-       CreateRecord{zone_id, body}, UpdateRecord{zone_id, id, body}, DeleteRecord{zone_id, id}
-CfResp: Zones(Vec<Zone>), Records{zone_id, Vec<Record>}, Done(msg), Err(msg)
+       CreateRecord{zone_id, body}, UpdateRecord{zone_id, id, body}, DeleteRecord{zone_id, id},
+       BulkUpdateRecords{zone_id, ids, patch},   // apply one field-change to each id
+       BulkDeleteRecords{zone_id, ids}
+CfResp: Zones(Vec<Zone>), Records{zone_id, Vec<Record>}, Done(msg),
+        BulkDone{ok, failed},                    // per-record report, reuses the EasyPanel shape
+        Err(msg)
 ```
+
+The bulk arms loop over `ids` on the worker thread, one API call per record, collecting
+`(id, Result)` — a mid-list failure never aborts the rest, and the report names which
+records failed and why. `patch` is the same typed field-change the single edit uses, so
+there is one body-builder, not two.
 
 The worker builds a `CloudflareClient` from the **active CF account's** stored token per
 request (same lifetime model as the EasyPanel client). The active account is TUI state,
@@ -220,6 +268,12 @@ seeded from the default account, changed by the `a` account picker.
   a shape with no errors array still fails cleanly.
 - `record_body`: A record omits `priority`; MX includes it; `proxied` dropped for TXT.
 - `resolve_zone`: name match, id match, no match; name preferred over a coincidental id.
+- `select_records`: ids-only; `where-content` matches exact content (the repoint case);
+  combined `where-type` + `where-content` intersect; `where-name` substring; no match →
+  empty (so the CLI says "0 matched" instead of writing nothing silently).
+- `apply_patch`: only the set fields appear in the update body; an all-empty patch is a
+  no-op the CLI rejects ("nothing to change"); bulk and single edit produce identical
+  bodies for the same patch.
 - Config: `CloudflareConfig` add/remove/set_default round-trip; first account added is
   default; a missing `cloudflare.json` reads empty; a corrupt one refuses to write (the
   same guard `ServerConfig` has). `servers.json` is untouched and still parses.
@@ -232,6 +286,10 @@ seeded from the default account, changed by the `a` account picker.
   each proxyable + non-proxyable type; edit content + toggle proxied; delete; confirm
   each via a re-list. Then, if the token allows, `zone add`/`zone delete` on a genuinely
   disposable name. Clean up everything created.
+- **Bulk**: seed several A records on one IP, `cf record set --where-content OLD --content NEW`,
+  confirm every one moved via a re-list; bulk-delete several ids in one call and confirm
+  the report. Verify a partial failure (one bad id among good ones) reports per-record and
+  still applies the rest.
 
 ## Sequencing (one feature, phased plan)
 
@@ -250,6 +308,7 @@ Internal order the implementation plan will follow:
 
 - No Global API Key auth — token only.
 - No page rules, WAF, workers, analytics, SSL settings — zones + DNS records only.
-- No bulk record import/export in v1.
+- Bulk **edit** (`cf record set`) and bulk **delete** are IN. Bulk **import/export** from
+  a file (BIND zone files, CSV) is out for v1.
 - No caching of zones/records to disk — always live from the API.
 - The Switch menu stays two-item; no plugin framework for "workspaces".
