@@ -4,7 +4,8 @@ use serde_json::{json, Value};
 use std::io::Read;
 
 use crate::client::EasypanelClient;
-use crate::config::ServerConfig;
+use crate::cloudflare::CloudflareAccount;
+use crate::config::{CloudflareConfig, ServerConfig};
 use crate::logs;
 use crate::output::{
     self, age_of, duration_between, field, first_line, format_bytes, format_rate, num, series_last,
@@ -113,6 +114,79 @@ pub fn server_remove(cfg: &ServerConfig, name: &str) -> Result<()> {
     }
     cfg.remove(name)?;
     println!("Server '{name}' removed.");
+    Ok(())
+}
+
+// ---------- Cloudflare accounts (config-only; no network) ----------
+
+pub fn cf_account_add(
+    cfg: &CloudflareConfig,
+    name: String,
+    account_id: Option<String>,
+    token: Option<String>,
+) -> Result<()> {
+    if !valid_name(&name) {
+        return Err(anyhow!(
+            "Cloudflare account names may only contain a-z, 0-9, - and _"
+        ));
+    }
+    let token = match token {
+        Some(t) => t,
+        None => Password::new()
+            .with_prompt("Cloudflare API token")
+            .interact()?,
+    };
+    cfg.add(CloudflareAccount {
+        name: name.clone(),
+        api_token: token,
+        account_id,
+        default: false,
+    })?;
+    let is_default = cfg.default().map(|a| a.name == name).unwrap_or(false);
+    println!(
+        "Cloudflare account '{}' added.{}",
+        name,
+        if is_default { " (default)" } else { "" }
+    );
+    Ok(())
+}
+
+pub fn cf_account_list(cfg: &CloudflareConfig) -> Result<()> {
+    let accounts = cfg.list();
+    if accounts.is_empty() {
+        println!("No Cloudflare accounts yet. Run: easypanel cf account add <name>");
+        return Ok(());
+    }
+    let rows = accounts
+        .iter()
+        .map(|a| {
+            vec![
+                if a.default { "*".into() } else { String::new() },
+                a.name.clone(),
+                a.account_id.clone().unwrap_or_default(),
+                mask_token(&a.api_token),
+            ]
+        })
+        .collect();
+    table(&["Default", "Name", "Account ID", "Token"], rows);
+    Ok(())
+}
+
+pub fn cf_account_use(cfg: &CloudflareConfig, name: &str) -> Result<()> {
+    if cfg.by_name(name).is_none() {
+        return Err(anyhow!("Cloudflare account '{name}' not found."));
+    }
+    cfg.set_default(name)?;
+    println!("Default Cloudflare account is now: {name}");
+    Ok(())
+}
+
+pub fn cf_account_delete(cfg: &CloudflareConfig, name: &str) -> Result<()> {
+    if cfg.by_name(name).is_none() {
+        return Err(anyhow!("Cloudflare account '{name}' not found."));
+    }
+    cfg.remove(name)?;
+    println!("Cloudflare account '{name}' removed.");
     Ok(())
 }
 

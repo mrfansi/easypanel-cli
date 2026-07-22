@@ -1,3 +1,4 @@
+use crate::cloudflare::CloudflareAccount;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -232,6 +233,117 @@ impl ServerConfig {
             fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))?;
         }
 
+        Ok(())
+    }
+}
+
+/// Standalone store for Cloudflare accounts (cloudflare.json), independent of servers.
+///
+/// A deliberate copy of the `ServerConfig`/`Watchlist` shape rather than a new
+/// abstraction over both: same corrupt-file guard (a corrupt file must never be
+/// overwritten and silently delete every stored token), same `0o600`. Cloudflare
+/// accounts are NOT tied to any EasyPanel server — an operator may hold several.
+pub struct CloudflareConfig {
+    path: PathBuf,
+}
+
+impl CloudflareConfig {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn default_path() -> PathBuf {
+        ServerConfig::default_path().with_file_name("cloudflare.json")
+    }
+
+    #[cfg(test)]
+    pub fn path_for_test(&self) -> PathBuf {
+        self.path.clone()
+    }
+
+    /// Read path: empty on a missing OR corrupt file (worst case: an empty list).
+    pub fn list(&self) -> Vec<CloudflareAccount> {
+        self.try_all().unwrap_or_default()
+    }
+
+    /// Write path: errors if the file EXISTS but can't be read/parsed, so a corrupt
+    /// file can never be overwritten and silently delete every stored token.
+    pub fn try_all(&self) -> Result<Vec<CloudflareAccount>> {
+        let raw = match fs::read_to_string(&self.path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(anyhow::anyhow!("cannot read {}: {e}", self.path.display())),
+        };
+        if raw.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        serde_json::from_str(&raw).map_err(|e| {
+            anyhow::anyhow!(
+                "{} is corrupt: {e}. Fix or move that file; continuing would overwrite it \
+                 and delete every Cloudflare token.",
+                self.path.display()
+            )
+        })
+    }
+
+    pub fn by_name(&self, name: &str) -> Option<CloudflareAccount> {
+        self.list().into_iter().find(|a| a.name == name)
+    }
+
+    pub fn default(&self) -> Option<CloudflareAccount> {
+        self.list().into_iter().find(|a| a.default)
+    }
+
+    /// Add or replace an account by name. Default when it's the first, was already the
+    /// default (token rotation), or nothing else is marked default — mirrors ServerConfig.
+    pub fn add(&self, account: CloudflareAccount) -> Result<()> {
+        let existing = self.try_all()?;
+        let was_default = existing.iter().any(|a| a.name == account.name && a.default);
+        let mut accounts: Vec<CloudflareAccount> = existing
+            .into_iter()
+            .filter(|a| a.name != account.name)
+            .collect();
+        let is_first = accounts.is_empty();
+        let has_default = accounts.iter().any(|a| a.default);
+        let mut account = account;
+        account.default = is_first || was_default || !has_default;
+        accounts.push(account);
+        self.save(&accounts)
+    }
+
+    pub fn remove(&self, name: &str) -> Result<()> {
+        let mut accounts: Vec<CloudflareAccount> = self
+            .try_all()?
+            .into_iter()
+            .filter(|a| a.name != name)
+            .collect();
+        if !accounts.is_empty() && !accounts.iter().any(|a| a.default) {
+            accounts[0].default = true;
+        }
+        self.save(&accounts)
+    }
+
+    pub fn set_default(&self, name: &str) -> Result<()> {
+        let mut accounts = self.try_all()?;
+        if !accounts.iter().any(|a| a.name == name) {
+            anyhow::bail!("No Cloudflare account called '{name}'");
+        }
+        for a in &mut accounts {
+            a.default = a.name == name;
+        }
+        self.save(&accounts)
+    }
+
+    fn save(&self, accounts: &[CloudflareAccount]) -> Result<()> {
+        if let Some(dir) = self.path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        fs::write(&self.path, serde_json::to_string_pretty(accounts)?)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
 }
@@ -502,5 +614,65 @@ mod tests {
         let (_dir, cfg) = temp_config();
         assert!(cfg.all().is_empty());
         assert!(cfg.default().is_none());
+    }
+
+    // ---- Cloudflare account store ----
+
+    fn temp_cf() -> (tempfile::TempDir, CloudflareConfig) {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = CloudflareConfig::new(dir.path().join("cloudflare.json"));
+        (dir, cfg)
+    }
+
+    fn cf_account(name: &str, token: &str, account_id: Option<String>) -> CloudflareAccount {
+        CloudflareAccount {
+            name: name.into(),
+            api_token: token.into(),
+            account_id,
+            default: false,
+        }
+    }
+
+    #[test]
+    fn first_cloudflare_account_becomes_default() {
+        let (_d, cfg) = temp_cf();
+        cfg.add(cf_account("personal", "tok-a", None)).unwrap();
+        cfg.add(cf_account("work", "tok-b", Some("acc-1".into())))
+            .unwrap();
+        assert_eq!(cfg.default().unwrap().name, "personal");
+        assert_eq!(
+            cfg.by_name("work").unwrap().account_id.as_deref(),
+            Some("acc-1")
+        );
+    }
+
+    #[test]
+    fn set_default_and_remove_reassigns_default() {
+        let (_d, cfg) = temp_cf();
+        cfg.add(cf_account("a", "t", None)).unwrap();
+        cfg.add(cf_account("b", "t", None)).unwrap();
+        cfg.set_default("b").unwrap();
+        assert_eq!(cfg.default().unwrap().name, "b");
+        cfg.remove("b").unwrap();
+        // Removing the default promotes the remaining one, never leaves zero defaults.
+        assert_eq!(cfg.default().unwrap().name, "a");
+    }
+
+    #[test]
+    fn cloudflare_store_lives_beside_servers_json() {
+        // Its own file in the same config dir, not inside servers.json.
+        let p = CloudflareConfig::default_path();
+        assert!(p.ends_with("cloudflare.json"));
+        assert_eq!(p.parent(), ServerConfig::default_path().parent());
+    }
+
+    #[test]
+    fn missing_cloudflare_file_is_empty_but_corrupt_refuses_to_write() {
+        let (_d, cfg) = temp_cf();
+        assert!(cfg.list().is_empty(), "missing file reads empty");
+        fs::write(cfg.path_for_test(), "{ not json").unwrap();
+        // try_all (the write path) must error so add() can't wipe the file.
+        assert!(cfg.try_all().is_err());
+        assert!(cfg.add(cf_account("x", "t", None)).is_err());
     }
 }

@@ -1,5 +1,6 @@
 mod backup;
 mod client;
+mod cloudflare;
 mod commands;
 mod config;
 mod container;
@@ -74,6 +75,9 @@ enum Command {
     /// Non-locking database dump to object storage, and cross-server restore
     #[command(subcommand)]
     Db(DbCmd),
+    /// Cloudflare — manage accounts, zones, and DNS records (outside EasyPanel)
+    #[command(subcommand)]
+    Cf(CfCmd),
     /// Action history (deploy, destroy, login, ...)
     #[command(subcommand)]
     Action(ActionCmd),
@@ -415,6 +419,35 @@ enum DbCmd {
     },
 }
 
+/// Cloudflare — a bounded context outside EasyPanel. Accounts are managed here (config
+/// only); zones and DNS records arrive with the Cloudflare client.
+#[derive(Subcommand)]
+enum CfCmd {
+    /// Manage stored Cloudflare accounts (independent of EasyPanel servers)
+    #[command(subcommand)]
+    Account(CfAccountCmd),
+}
+
+#[derive(Subcommand)]
+enum CfAccountCmd {
+    /// Add or replace a Cloudflare account by label (prompts for the token if omitted)
+    Add {
+        name: String,
+        /// Cloudflare account id — needed only to create zones
+        #[arg(long)]
+        account_id: Option<String>,
+        /// The API token; omit to be prompted without echo
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// List stored accounts (token masked)
+    List,
+    /// Set the default account
+    Use { name: String },
+    /// Remove an account
+    Delete { name: String },
+}
+
 fn main() {
     let cli = Cli::parse();
     let cfg = ServerConfig::new(ServerConfig::default_path());
@@ -736,6 +769,23 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     provider.as_deref(),
                     yes,
                 ),
+            }
+        }
+
+        Some(Command::Cf(c)) => {
+            // Cloudflare accounts live in their own store, independent of servers.
+            let cf = config::CloudflareConfig::new(config::CloudflareConfig::default_path());
+            match c {
+                CfCmd::Account(a) => match a {
+                    CfAccountCmd::Add {
+                        name,
+                        account_id,
+                        token,
+                    } => commands::cf_account_add(&cf, name, account_id, token),
+                    CfAccountCmd::List => commands::cf_account_list(&cf),
+                    CfAccountCmd::Use { name } => commands::cf_account_use(&cf, &name),
+                    CfAccountCmd::Delete { name } => commands::cf_account_delete(&cf, &name),
+                },
             }
         }
 
