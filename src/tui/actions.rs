@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::output::field;
 
-use super::app::{App, Screen, Workspace, TABS, TAB_SCREENS};
+use super::app::{App, CfProduct, Screen, Workspace, CF_PRODUCTS, TABS, TAB_SCREENS};
 use super::table::Line2;
 use super::worker::{Req, View};
 use ratatui::crossterm::event::KeyCode;
@@ -90,6 +90,17 @@ pub(super) enum PaletteAction {
     Run(MenuRun),
     /// Switch to a tab.
     Tab(Screen),
+    /// Cloudflare: switch the product tab (DNS/R2) — the CF analogue of `Tab`.
+    CfProduct(CfProduct),
+    /// Cloudflare: open a zone's DNS records (switches to DNS first). Carries the
+    /// zone's own id so the jump is by identity, never a filtered-row index that a
+    /// live filter could have shifted out from under it.
+    CfZone { id: String },
+    /// Cloudflare: open a bucket's objects (switches to R2 first).
+    CfBucket { name: String },
+    /// Cloudflare: switch the active account (index into `cf.accounts`, a stable
+    /// list the palette rebuilds from each time it opens).
+    CfAccount(usize),
 }
 
 pub(super) struct PaletteItem {
@@ -670,6 +681,71 @@ impl App {
         });
     }
 
+    /// Open the Cloudflare command palette: the CF mirror of `open_palette`. A global
+    /// jump to any product tab / account / zone / bucket without browsing menus — the
+    /// same overlay widget, filtered and run by the same `matches`/`palette_run`/render
+    /// code, only its entries are CF navigation instead of EasyPanel services. Pure
+    /// navigation for now; contextual row actions (edit/delete a record) are a later
+    /// slice. Entries are rebuilt from the current CF state each open, so they always
+    /// reflect the loaded zones/buckets/accounts.
+    pub(super) fn open_cf_palette(&mut self) {
+        let mut items = Vec::new();
+        // Products (the tab bar), so `:` reaches DNS/R2 the way it reaches tabs in
+        // EasyPanel.
+        for (label, product) in CF_PRODUCTS {
+            items.push(PaletteItem {
+                label: format!("⇥  {label}"),
+                search: format!("product tab {label}"),
+                action: PaletteAction::CfProduct(*product),
+            });
+        }
+        // Accounts (the `a` picker's targets), with the active one flagged so the row
+        // that is a no-op is obvious rather than surprising.
+        for (i, acc) in self.cf.accounts.iter().enumerate() {
+            let active = self.cf.active.as_ref().is_some_and(|a| a.name == acc.name);
+            items.push(PaletteItem {
+                label: format!(
+                    "Account: {}{}",
+                    acc.name,
+                    if active { "  ·  active" } else { "" }
+                ),
+                search: format!("account {}", acc.name),
+                action: PaletteAction::CfAccount(i),
+            });
+        }
+        // Zones → their records (the DNS jump). Always loaded for the active account.
+        for z in &self.cf.zones {
+            items.push(PaletteItem {
+                label: format!("Zone: {}", z.name),
+                search: format!("zone records dns {}", z.name),
+                action: PaletteAction::CfZone { id: z.id.clone() },
+            });
+        }
+        // Buckets → their objects (the R2 jump). Only present once R2 has been opened
+        // and its buckets loaded — the palette lists what's navigable, like EasyPanel's
+        // service list.
+        for b in &self.cf.r2_buckets {
+            items.push(PaletteItem {
+                label: format!("Bucket: {}", b.name),
+                search: format!("bucket objects r2 {}", b.name),
+                action: PaletteAction::CfBucket {
+                    name: b.name.clone(),
+                },
+            });
+        }
+        let mut state = ListState::default();
+        state.select((!items.is_empty()).then_some(0));
+        self.palette = Some(Palette {
+            // No per-row actions here, so no "actions for X" context line — the title
+            // stays a plain search box.
+            context: None,
+            query: String::new(),
+            items,
+            state,
+            rect: Rect::default(),
+        });
+    }
+
     /// Run the selected palette entry (from the FILTERED list), then close.
     pub(super) fn palette_run(&mut self, req: &Sender<Req>) {
         let Some(pal) = self.palette.take() else {
@@ -689,6 +765,20 @@ impl App {
                 self.jump_to_service(&p, &s, req);
             }
             PaletteAction::Run(run) => run(self, req),
+            PaletteAction::CfProduct(p) => self.cf_set_product(*p, req),
+            PaletteAction::CfZone { id } => {
+                let id = id.clone();
+                self.cf_open_records_for_id(&id, req);
+            }
+            PaletteAction::CfBucket { name } => {
+                let name = name.clone();
+                self.cf_open_objects_for(name, req);
+            }
+            PaletteAction::CfAccount(i) => {
+                if let Some(acc) = self.cf.accounts.get(*i).cloned() {
+                    self.cf_activate_account(acc, req);
+                }
+            }
         }
     }
 

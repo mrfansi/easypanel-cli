@@ -1235,6 +1235,20 @@ impl App {
             self.status = "No zone selected".into();
             return;
         };
+        self.cf_open_records_for_id(&zone.id, req);
+    }
+
+    /// Open a specific zone's DNS records by id — shared by Enter on a zone and the
+    /// command palette's zone jump. Switches to the DNS product first (the palette can
+    /// fire this from the R2 tab; Enter is already on DNS, so there it's a no-op). The
+    /// zone is looked up in the loaded list, so a stale id yields an honest "not found"
+    /// status rather than opening the wrong zone.
+    pub(super) fn cf_open_records_for_id(&mut self, zone_id: &str, req: &Sender<Req>) {
+        let Some(zone) = self.cf.zones.iter().find(|z| z.id == zone_id).cloned() else {
+            self.status = "Zone not found".into();
+            return;
+        };
+        self.cf.product = CfProduct::Dns;
         let (id, name) = (zone.id.clone(), zone.name.clone());
         self.cf.current_zone = Some(zone);
         self.cf.screen = CfScreen::Records;
@@ -1258,11 +1272,28 @@ impl App {
             self.status = "No bucket selected".into();
             return;
         };
-        self.cf.current_bucket = Some(bucket.name.clone());
+        self.cf_open_objects_for(bucket.name.clone(), req);
+    }
+
+    /// Open a bucket's objects by name — shared by Enter on a bucket and the command
+    /// palette's bucket jump. Switches to R2 first (the palette can fire this from the
+    /// DNS tab; Enter is already on R2, so there it's a no-op).
+    pub(super) fn cf_open_objects_for(&mut self, name: String, req: &Sender<Req>) {
+        self.cf.product = CfProduct::R2;
+        self.cf.current_bucket = Some(name);
         self.cf.screen = CfScreen::Objects;
         self.cf.marked.clear();
         // Land at the bucket root; deeper levels come from Enter on a folder.
         self.cf_request_level(String::new(), req);
+    }
+
+    /// Make an account the active one — shared by Enter in the `a` picker and the
+    /// palette's account jump. Records the SetDefault side-effect (persisted by the
+    /// event loop) and returns to that account's home, exactly as the picker did inline.
+    pub(super) fn cf_activate_account(&mut self, acc: CloudflareAccount, req: &Sender<Req>) {
+        self.cf_action = Some(CfAction::SetDefault(acc.name.clone()));
+        self.cf.active = Some(acc);
+        self.cf_goto_home(req);
     }
 
     /// Load ONE folder level of `current_bucket` at `prefix` (delimiter=/): reset the

@@ -5498,15 +5498,15 @@ fn help_opens_in_the_cloudflare_workspace_and_documents_cf_keys() {
 
 #[test]
 fn cf_help_anywhere_and_mouse_omit_keys_that_are_inert_in_the_workspace() {
-    // The CF workspace has no `:` palette / `s` server picker and no tab-click — so the
-    // help's "Anywhere" and "Mouse" sections must not advertise them (help that lies is
-    // worse than no help). It DOES have product-tab switching and a Zones right-click,
-    // which the sections below assert are documented.
+    // The CF workspace has no `s` server picker and no tab-click — so the help's
+    // "Anywhere" and "Mouse" sections must not advertise them (help that lies is worse
+    // than no help). It DOES have product-tab switching, a `:` command palette, and a
+    // Zones right-click, which the sections below assert are documented.
     let g: Vec<&str> = CF_GLOBAL_KEYS.iter().map(|k| k.0).collect();
     assert!(g.contains(&"W") && g.contains(&"?") && g.contains(&"r"));
-    // The EasyPanel-specific "1-8" tab hint and the palette/server keys stay out; the CF
-    // product switch is its own "1-N" hint, asserted by the drift-guard test below.
-    for stale in ["1-8 / Tab / ←→", "s", ":"] {
+    // The EasyPanel-specific "1-8" tab hint and the `s` server key stay out; the CF
+    // product switch is its own "1-N" hint (drift-guarded below) and `:` is a CF key now.
+    for stale in ["1-8 / Tab / ←→", "s"] {
         assert!(
             !g.contains(&stale),
             "CF 'Anywhere' must not advertise `{stale}`"
@@ -5515,6 +5515,10 @@ fn cf_help_anywhere_and_mouse_omit_keys_that_are_inert_in_the_workspace() {
     assert!(
         CF_GLOBAL_KEYS.iter().any(|k| k.1 == "switch product tab"),
         "CF 'Anywhere' documents the product-tab switch (the header shows the tabs)"
+    );
+    assert!(
+        g.contains(&":"),
+        "CF 'Anywhere' documents the `:` command palette (the CF workspace has one now)"
     );
     let m: Vec<&str> = CF_MOUSE_KEYS.iter().map(|k| k.0).collect();
     assert!(m.contains(&"Click row") && m.contains(&"Scroll"));
@@ -5690,6 +5694,72 @@ fn cf_record(id: &str, kind: &str, name: &str, content: &str) -> crate::cloudfla
         proxied: false,
         priority: None,
     }
+}
+
+#[test]
+fn cf_palette_lists_products_accounts_zones_buckets_and_jumps_by_identity() {
+    // `:` in the Cloudflare workspace opens the command palette — the mirror of the
+    // EasyPanel `:`. It builds a global jump list from the loaded CF state (products,
+    // accounts, zones, buckets) and runs entries BY IDENTITY, so a live filter can't
+    // shift the target row out from under the jump.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.zones = vec![cf_zone("z1", "example.com"), cf_zone("z2", "other.com")];
+    app.cf.r2_buckets = vec![cf_bucket("assets"), cf_bucket("backups")];
+
+    app.on_key(KeyCode::Char(':'), &tx);
+    let labels: Vec<String> = app
+        .palette
+        .as_ref()
+        .expect("`:` opens the CF command palette")
+        .items
+        .iter()
+        .map(|it| it.label.clone())
+        .collect();
+    for want in [
+        "⇥  DNS",
+        "⇥  R2",
+        "Account: prod  ·  active",
+        "Zone: example.com",
+        "Zone: other.com",
+        "Bucket: assets",
+    ] {
+        assert!(
+            labels.iter().any(|l| l == want),
+            "palette lists {want:?}: {labels:?}"
+        );
+    }
+
+    // Type a zone's name → Enter drills into THAT zone's Records, not the first row.
+    for c in "other".chars() {
+        app.on_key(KeyCode::Char(c), &tx);
+    }
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(app.palette.is_none(), "running an entry closes the palette");
+    assert_eq!(app.cf.screen, CfScreen::Records);
+    assert_eq!(
+        app.cf.current_zone.as_ref().map(|z| z.name.as_str()),
+        Some("other.com"),
+        "the zone jump opens the typed zone, not the highlighted first row"
+    );
+
+    // A bucket entry jumps all the way to R2 Objects even when fired from the DNS tab.
+    app.cf.screen = CfScreen::Zones;
+    app.cf.product = CfProduct::Dns;
+    app.on_key(KeyCode::Char(':'), &tx);
+    for c in "assets".chars() {
+        app.on_key(KeyCode::Char(c), &tx);
+    }
+    app.on_key(KeyCode::Enter, &tx);
+    assert_eq!(
+        app.cf.product,
+        CfProduct::R2,
+        "a bucket jump switches to R2"
+    );
+    assert_eq!(app.cf.screen, CfScreen::Objects);
+    assert_eq!(app.cf.current_bucket.as_deref(), Some("assets"));
 }
 
 #[test]

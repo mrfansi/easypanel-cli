@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.0] — 2026-07-22
+
+### Added
+
+- **A `:` command palette in the Cloudflare workspace — the mirror of EasyPanel's.**
+  EasyPanel's `:` opens a global jump-anywhere search; the CF workspace's isolation gate
+  left `:` dead, so the two halves of the same app behaved differently. `:` now opens a
+  CF palette that lists — and jumps to — every **product tab** (DNS · R2), every
+  configured **account** (the active one flagged), every **zone** (→ its DNS records),
+  and every loaded **bucket** (→ its objects). Type to filter, ↑↓ to select, Enter to
+  jump, Esc to close — the same overlay, filter, and keys as the EasyPanel palette,
+  reusing the same widget rather than a parallel one. Jumping to a zone or bucket first
+  switches to the right product tab, so `:` reaches an R2 bucket even from the DNS
+  screen. Jumps run **by identity** (a zone's own id, a bucket's name), never a
+  filtered-row index a live filter could have shifted, so the palette always opens the
+  thing you picked. Verified live against a real account (9 zones): `:` → typed a zone
+  name → Enter drilled straight into that zone's 11 DNS records. Documented in the
+  workspace help (`?`). Contextual row actions (edit/delete a record from the palette)
+  are a later slice; this ships the navigation half.
+
 ## [0.86.1] — 2026-07-22
 
 ### Fixed

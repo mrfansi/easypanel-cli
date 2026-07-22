@@ -1268,6 +1268,14 @@ impl App {
             self.cf_filter_key(code);
             return;
         }
+        // `:` opens the CF command palette (jump to a product / account / zone /
+        // bucket) — the mirror of the EasyPanel `:` palette, which the isolation gate
+        // otherwise keeps out of this workspace. The palette overlay, once open, is
+        // handled above this dispatch, so it works the same in both workspaces.
+        if code == KeyCode::Char(':') {
+            self.open_cf_palette();
+            return;
+        }
         // Product tabs (DNS · R2; D1/KV/Workers/Connectors later): 1..=N jump,
         // Tab/→ cycle forward, ← cycles back — the CF mirror of the EasyPanel tab
         // keys. Overlays/forms/the filter are handled above this dispatch, so they
@@ -1439,9 +1447,7 @@ impl App {
             KeyCode::Enter => {
                 if let Some(acc) = self.cf_picker_selected() {
                     self.cf_picker = None;
-                    self.cf_action = Some(CfAction::SetDefault(acc.name.clone()));
-                    self.cf.active = Some(acc);
-                    self.cf_goto_home(req);
+                    self.cf_activate_account(acc, req);
                 }
             }
             _ => {}
