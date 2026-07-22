@@ -719,7 +719,7 @@ pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
         // The Zones home. R2's Objects drill-in never routes here (R2 uses the CF_*_HINTS
         // consts), so it shares this arm only to keep the match exhaustive.
         CfScreen::Zones | CfScreen::Objects => {
-            "a account · Enter records · n add zone · x delete · / filter · r refresh · Esc EasyPanel"
+            "a account · Enter records · n add zone · x delete · Space menu · / filter · r refresh · Esc EasyPanel"
         }
     }
 }

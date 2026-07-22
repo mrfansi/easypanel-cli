@@ -6610,6 +6610,9 @@ fn cf_status_hints_name_each_screens_keys() {
     // one source so the render and this test can't drift.
     assert!(cf_status_hints(CfScreen::Zones).contains("Enter records"));
     assert!(cf_status_hints(CfScreen::Zones).contains("Esc EasyPanel"));
+    // Space opens the zone row menu (cf_zones_key), so the hint must advertise it —
+    // as the Buckets/Records hints already advertise their Space menus.
+    assert!(cf_status_hints(CfScreen::Zones).contains("Space menu"));
     assert!(cf_status_hints(CfScreen::Records).contains("Space bulk"));
     assert!(cf_status_hints(CfScreen::Records).contains("Esc zones"));
 }

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.5] — 2026-07-23
+
+### Fixed
+
+- **The Cloudflare Zones status bar now advertises `Space menu`.** `Space` opens the
+  zone row action menu (Open DNS records / Delete zone) — but the Zones status-bar hint
+  was the only CF list that didn't say so, while its siblings did (`Space menu` on
+  Buckets, `Space bulk` on Records). The row menu was there but undiscoverable from the
+  one always-visible hint line. The Zones hint now reads `… · x delete · Space menu · /
+  filter · …`, matching the Buckets hint. A test pins every Space-bound CF screen to
+  advertising it, so the hint can't drift from the keybinding again.
+
 ## [0.87.4] — 2026-07-23
 
 ### Fixed
