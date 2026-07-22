@@ -1219,11 +1219,15 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         rows,
         &mut app.cf.r2_objects_row,
         CF_ORANGE,
-        // Paint the folder rows (the `▸ ` marker in the Name column) in bold CF orange so
-        // a folder reads as a folder, not a file.
+        // Set a folder apart with BOLD, not a colour. A full-width foreground tint on the
+        // Name column reverses to a full-width coloured BACKGROUND when the row is
+        // selected — a two-tone bar beside the empty Size/Modified cells. The `▸ ` marker
+        // and the trailing `/` already read as "folder"; bold adds weight without the
+        // tint, and CF orange stays where it belongs: the workspace chrome (borders,
+        // header, breadcrumb), not every row.
         |col, text| {
             (col == 0 && text.starts_with("▸ "))
-                .then(|| Style::default().fg(CF_ORANGE).add_modifier(Modifier::BOLD))
+                .then(|| Style::default().add_modifier(Modifier::BOLD))
         },
     );
 }

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.6] — 2026-07-23
+
+### Fixed
+
+- **The selected folder in the R2 object browser is no longer a two-tone bar, and the
+  rows are calmer.** Folders were painted in bold CF **orange** across the whole Name
+  column. The selected row is drawn reversed (fg↔bg swap), so that full-width orange
+  foreground became a full-width orange **background** — beside the reversed default of
+  the empty Size/Modified cells, the highlight came out as a jarring two-tone bar
+  (orange then lavender). It also meant every folder row was a block of saturated orange,
+  the same colour as the workspace chrome, so the screen read as orange-on-orange. Set a
+  folder apart with **bold** instead of a colour: the `▸ ` marker and trailing `/`
+  already say "folder", bold adds weight, and the selection now reverses to one uniform
+  bar. CF orange stays where it carries meaning — the borders, header, and breadcrumb —
+  rather than flooding every row. Verified live on a real bucket.
+
 ## [0.87.5] — 2026-07-23
 
 ### Fixed

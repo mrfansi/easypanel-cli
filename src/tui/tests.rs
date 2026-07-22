@@ -5982,6 +5982,85 @@ fn cf_account_switch_works_on_every_screen_not_just_the_home() {
 }
 
 #[test]
+fn cf_object_folders_use_bold_not_a_wide_colour_tint() {
+    // A folder is set apart by BOLD, not a foreground colour. A full-width colour tint on
+    // the Name column reverses to a full-width coloured BACKGROUND on the selected row —
+    // the two-tone highlight bar seen on the object browser (an orange folder cell beside
+    // the default-reversed Size/Modified cells). With bold-only, the selected row's
+    // REVERSED highlight is ONE uniform bar (every content cell keeps the default
+    // foreground), and CF orange is left to the chrome.
+    use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Modifier};
+    use ratatui::Terminal;
+
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::R2;
+    app.cf.screen = CfScreen::Objects;
+    app.cf.current_bucket = Some("assets".into());
+    app.cf.r2_folders = vec!["docs/".into()];
+    app.cf.r2_objects = vec![cf_object("readme.txt", 3)];
+    app.cf.r2_objects_row.select(Some(0)); // the folder (row 0) is selected
+
+    const W: u16 = 120;
+    const H: u16 = 20;
+    let mut term = Terminal::new(TestBackend::new(W, H)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let buf = term.backend().buffer();
+
+    let row_y = |needle: &str| -> u16 {
+        (0..H)
+            .find(|&y| {
+                (0..W)
+                    .map(|x| buf.cell((x, y)).map_or(" ", |c| c.symbol()).to_string())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .unwrap_or_else(|| panic!("no row for {needle}"))
+    };
+
+    // The selected folder row: NO content cell carries a foreground colour (so REVERSED
+    // can't turn one into a coloured background — no two-tone), and the name is bold.
+    let sel_y = row_y("docs");
+    let mut folder_letter_bold = false;
+    for x in 1..W - 1 {
+        let c = buf.cell((x, sel_y)).unwrap();
+        assert_eq!(
+            c.fg,
+            Color::Reset,
+            "no content cell on the selected folder row is colour-tinted (x={x}, {:?})",
+            c.symbol()
+        );
+        if c.symbol()
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_alphabetic())
+            && c.modifier.contains(Modifier::BOLD)
+        {
+            folder_letter_bold = true;
+        }
+    }
+    assert!(folder_letter_bold, "the folder name is set apart with bold");
+
+    // A file is NOT bold — the folder's weight is what distinguishes it.
+    let file_y = row_y("readme");
+    let file_letter = (1..W - 1)
+        .map(|x| buf.cell((x, file_y)).unwrap())
+        .find(|c| {
+            c.symbol()
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_alphabetic())
+        })
+        .unwrap();
+    assert!(
+        !file_letter.modifier.contains(Modifier::BOLD),
+        "a file is not bold, so bold reads as 'folder'"
+    );
+}
+
+#[test]
 fn cf_home_is_zones_and_the_account_picker_switches_accounts() {
     // Entering the workspace lands on the Zones home of the active (default)
     // account; `a` opens the account picker; Enter there activates the account.
