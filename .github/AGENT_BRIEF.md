@@ -353,9 +353,15 @@ list_r2_dumps`/`restore_from_r2` are shared with the CLI (`db list`, `db restore
 worker `Req::R2Dumps`/`RestoreR2`, picker via `BackupUi.r2_restore_into`. Verified
 live: the picker listed a dump and restored it. mysql/mariadb only.
 
-Minor nit noticed, not fixed: the TUI restore's success status is immediately
-overwritten by the `Refresh::Projects` reload (shows "Ready"); the dump keeps its
-message (Refresh::None). Consider carrying the message through the refresh.
+Minor nit — RESOLVED (2026-07-22, [Unreleased]). The note claimed the restore's
+success status was overwritten by the `Refresh::Projects` reload showing "Ready".
+That half was STALE: `Resp::AllServices` never touches `status`, so "Restored …"
+already survived. But the real half held — a restore imports rows INTO a database
+and changes nothing in the service table, so `Refresh::Projects` was a wasted full
+reload. Switched `RestoreR2` to `Refresh::None`, matching `DumpR2`. Too small to tag;
+recorded under [Unreleased], rides the next release. Lesson: a "shows Ready" symptom
+in a note is worth re-deriving from the code before trusting it — the overwrite path
+it named didn't exist.
 
 ### DONE v0.81.0 (2026-07-22): the non-locking dump is now in the TUI too
 
