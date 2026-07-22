@@ -2800,11 +2800,32 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // The Cloudflare workspace surfaces its per-screen keys HERE — the header now
-    // carries the product tab bar instead. While typing the CF-local filter, show
-    // how to apply/cancel it, matching the EasyPanel filter line above.
+    // carries the product tab bar instead. But the resting hints yield to live
+    // feedback, so CF matches EasyPanel's "working, not frozen" status bar:
+    //   - typing a filter → how to apply/cancel it;
+    //   - an operation in flight → the working message with a spinner (busy drives it,
+    //     the same counter EasyPanel uses), so a load/refresh/mutation never looks
+    //     frozen;
+    //   - an error → the message in pink, so an action failure is never silent (the
+    //     list body only reports a failed LOAD, not a failed action like "No zone
+    //     selected" or a create/delete that the API rejected);
+    //   - otherwise → the resting per-screen key hints.
     if app.workspace == Workspace::Cloudflare {
-        let text = if app.cf.filter_input {
-            format!(" filter: {}▏  Enter apply · Esc cancel", app.cf.filter)
+        let (text, style) = if app.cf.filter_input {
+            (
+                format!(" filter: {}▏  Enter apply · Esc cancel", app.cf.filter),
+                bar.fg(Color::Indexed(244)),
+            )
+        } else if let Some(c) = app.spinner() {
+            (
+                format!(" {c} {} ", app.status_line()),
+                bar.add_modifier(Modifier::BOLD),
+            )
+        } else if app.status_is_error() {
+            (
+                format!(" {} ", app.status_line()),
+                bar.fg(Color::Indexed(210)).add_modifier(Modifier::BOLD),
+            )
         } else {
             let hints = match app.cf.product {
                 CfProduct::R2 => match app.cf.screen {
@@ -2813,10 +2834,10 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
                 },
                 CfProduct::Dns => cf_status_hints(app.cf.screen),
             };
-            format!(" {hints}")
+            (format!(" {hints}"), bar.fg(Color::Indexed(244)))
         };
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(text, bar.fg(Color::Indexed(244))))).style(bar),
+            Paragraph::new(Line::from(Span::styled(text, style))).style(bar),
             area,
         );
         return;

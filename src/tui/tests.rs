@@ -5763,6 +5763,78 @@ fn cf_palette_lists_products_accounts_zones_buckets_and_jumps_by_identity() {
 }
 
 #[test]
+fn cf_status_bar_shows_a_spinner_while_busy_and_surfaces_errors() {
+    // The CF status bar mirrors EasyPanel's "working, not frozen" signal: the resting
+    // per-screen hints yield to a spinner + message while an operation runs, and to the
+    // error message when an action fails (the list body only reports a failed LOAD, not
+    // a failed action). State + a real paint — the branch lives in render.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::sync::atomic::Ordering;
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.zones = vec![cf_zone("z1", "example.com")];
+
+    let bottom = |app: &mut App| -> String {
+        let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        term.draw(|f| super::render::ui(f, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .chunks(120)
+            .last()
+            .unwrap()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    };
+
+    // Idle: the resting per-screen key hints.
+    app.status = "Ready".into();
+    app.busy.store(0, Ordering::Relaxed);
+    let idle = bottom(&mut app);
+    assert!(
+        idle.contains("Enter records"),
+        "idle shows the Zones hints: {idle:?}"
+    );
+
+    // Busy: a spinner frame + the working message, and NOT the hints — so a load /
+    // refresh / mutation never looks frozen.
+    app.busy.store(1, Ordering::Relaxed);
+    app.status = "Loading records for example.com…".into();
+    let busy = bottom(&mut app);
+    assert!(
+        busy.contains("Loading records for example.com"),
+        "busy shows the working message: {busy:?}"
+    );
+    let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    assert!(
+        frames.iter().any(|c| busy.contains(*c)),
+        "busy shows a spinner frame: {busy:?}"
+    );
+    assert!(
+        !busy.contains("Enter records"),
+        "busy replaces the hints while working: {busy:?}"
+    );
+
+    // Error while idle: the failure shows in place of the hints, so an action error is
+    // never silent.
+    app.busy.store(0, Ordering::Relaxed);
+    app.status = "Error deleting zone: token lacks permission".into();
+    assert!(app.status_is_error(), "the fixture is an error status");
+    let err = bottom(&mut app);
+    assert!(
+        err.contains("Error deleting zone"),
+        "the error surfaces in the status bar: {err:?}"
+    );
+    assert!(
+        !err.contains("Enter records"),
+        "the error replaces the hints: {err:?}"
+    );
+}
+
+#[test]
 fn cf_home_is_zones_and_the_account_picker_switches_accounts() {
     // Entering the workspace lands on the Zones home of the active (default)
     // account; `a` opens the account picker; Enter there activates the account.

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.1] — 2026-07-23
+
+### Fixed
+
+- **The Cloudflare status bar now signals "working" and never swallows an action
+  error.** EasyPanel's status bar shows a spinner + message while a request is in
+  flight ("working, not frozen") and keeps an error visible until you act on it. The CF
+  workspace's status bar rendered *only* the resting per-screen key hints — it returned
+  before ever consulting the spinner or the status message — so a load, a refresh, or a
+  mutation gave no busy feedback in the bar, and an action error (`No zone selected`, or
+  a create/delete the API rejected) vanished silently: the list body reports a failed
+  *load*, but not a failed *action*. The bar now yields the hints to live feedback,
+  exactly like EasyPanel: a spinner + the working message while `busy` is non-zero (the
+  same counter EasyPanel's spinner uses), the error message in pink when an action
+  fails, and the resting hints only when idle. Verified live: drilling into a zone's
+  records showed `⠧ Loading records for …` in the bar, then fell back to the Records
+  hints once the load settled.
+
 ## [0.87.0] — 2026-07-22
 
 ### Added
