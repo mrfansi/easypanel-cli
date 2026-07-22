@@ -478,6 +478,94 @@ pub fn cf_record_delete(
     report.print_and_status("deleted")
 }
 
+// ---------- R2 buckets (account-scoped) ----------
+
+/// The active account's account-id, which every R2 call needs (R2 is
+/// account-scoped, unlike DNS zones). A friendly error names how to add it.
+fn cf_account_id(acc: &CloudflareAccount) -> Result<String> {
+    acc.account_id.clone().ok_or_else(|| {
+        anyhow!(
+            "This account has no account-id, which R2 is scoped by. \
+             Re-add it: easypanel cf account add {} --account-id <ID>",
+            acc.name
+        )
+    })
+}
+
+pub fn cf_r2_bucket_list(cfg: &CloudflareConfig, account: Option<&str>) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let buckets = client.list_r2_buckets(&account_id)?;
+    if output::json_output() {
+        output::print_json(&serde_json::to_value(
+            buckets
+                .iter()
+                .map(|b| {
+                    json!({ "name": b.name, "creation_date": b.creation_date,
+                            "location": b.location, "storage_class": b.storage_class,
+                            "jurisdiction": b.jurisdiction })
+                })
+                .collect::<Vec<_>>(),
+        )?);
+        return Ok(());
+    }
+    if buckets.is_empty() {
+        println!("No R2 buckets on this Cloudflare account.");
+        return Ok(());
+    }
+    let rows = buckets
+        .iter()
+        .map(|b| {
+            vec![
+                b.name.clone(),
+                b.creation_date.clone(),
+                b.location.clone().unwrap_or_default(),
+                b.storage_class.clone(),
+            ]
+        })
+        .collect();
+    table(&["Name", "Created", "Location", "Class"], rows);
+    Ok(())
+}
+
+pub fn cf_r2_bucket_create(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    name: &str,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let bucket = client.create_r2_bucket(&account_id, name)?;
+    println!("Bucket '{}' created.", bucket.name);
+    Ok(())
+}
+
+pub fn cf_r2_bucket_delete(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    name: &str,
+    yes: bool,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    // Deleting a bucket is destructive (and Cloudflare requires it be empty): require
+    // the operator to type the bucket name, not a bare y/n — the same safeguard as zones.
+    if !yes {
+        let typed: String = Input::new()
+            .with_prompt(format!(
+                "Delete R2 bucket '{name}'? It must be empty. Type the bucket name to confirm"
+            ))
+            .interact_text()?;
+        if typed != name {
+            println!("Name did not match — nothing deleted.");
+            return Ok(());
+        }
+    }
+    client.delete_r2_bucket(&account_id, name)?;
+    println!("Bucket '{name}' deleted.");
+    Ok(())
+}
+
 fn mask_token(token: &str) -> String {
     // Per CHARACTER, not byte: the token comes from a config file that can be
     // hand-edited. `&token[..6]` slices at a byte index, and a token with a

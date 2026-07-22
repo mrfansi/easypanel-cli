@@ -14,8 +14,8 @@ use crate::output::field;
 
 use super::actions::Menu;
 use super::app::{
-    App, CfAction, CfScreen, Confirm, MonitorView, Screen, ServerAction, WatchAction, Workspace,
-    CF_PRODUCTS, TAB_SCREENS,
+    App, CfAction, CfProduct, CfScreen, Confirm, MonitorView, Screen, ServerAction, WatchAction,
+    Workspace, CF_PRODUCTS, TAB_SCREENS,
 };
 use super::form::*;
 use super::table::*;
@@ -449,8 +449,12 @@ impl App {
         // then open its action menu. Records uses Space for its bulk menu, so its
         // right-click stays a no-op for now.
         if self.workspace == Workspace::Cloudflare {
-            if self.cf.screen == CfScreen::Zones && self.select_row_at(col, row) {
-                self.open_cf_zone_menu();
+            if self.select_row_at(col, row) {
+                match self.cf.product {
+                    CfProduct::R2 => self.open_cf_bucket_menu(),
+                    CfProduct::Dns if self.cf.screen == CfScreen::Zones => self.open_cf_zone_menu(),
+                    CfProduct::Dns => {}
+                }
             }
             return;
         }
@@ -1264,30 +1268,64 @@ impl App {
             self.cf_filter_key(code);
             return;
         }
-        // Product tabs (DNS today; D1/R2/KV/Workers/Connectors later): 1..=N jump,
+        // Product tabs (DNS · R2; D1/KV/Workers/Connectors later): 1..=N jump,
         // Tab/→ cycle forward, ← cycles back — the CF mirror of the EasyPanel tab
         // keys. Overlays/forms/the filter are handled above this dispatch, so they
-        // can't be swallowed here. With one product these are effectively no-ops.
+        // can't be swallowed here. Switching to R2 loads its buckets.
         match code {
             KeyCode::Char(d @ '1'..='9') => {
                 if let Some(&(_, p)) = CF_PRODUCTS.get(d as usize - '1' as usize) {
-                    self.cf.product = p;
+                    self.cf_set_product(p, req);
                 }
                 return;
             }
             KeyCode::Tab | KeyCode::Right => {
-                self.cf.product = self.cf.product.next();
+                self.cf_set_product(self.cf.product.next(), req);
                 return;
             }
             KeyCode::Left => {
-                self.cf.product = self.cf.product.prev();
+                self.cf_set_product(self.cf.product.prev(), req);
                 return;
             }
             _ => {}
         }
-        match self.cf.screen {
-            CfScreen::Zones => self.cf_zones_key(code, req),
-            CfScreen::Records => self.cf_records_key(code, req),
+        match self.cf.product {
+            CfProduct::R2 => self.cf_buckets_key(code, req),
+            CfProduct::Dns => match self.cf.screen {
+                CfScreen::Zones => self.cf_zones_key(code, req),
+                CfScreen::Records => self.cf_records_key(code, req),
+            },
+        }
+    }
+
+    /// The R2 buckets home. Mirrors the Zones home: `a` switches account (picker),
+    /// `n` adds a bucket, `x` deletes (typed-name confirm), Space opens the row
+    /// menu, Esc leaves the workspace (after clearing an active filter first).
+    /// Enter is a no-op for now — object browsing is the next slice.
+    fn cf_buckets_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        match code {
+            KeyCode::Esc if !self.cf.filter.is_empty() => {
+                self.cf.filter.clear();
+                self.cf_clamp_filtered();
+            }
+            KeyCode::Esc => self.set_workspace(Workspace::Easypanel),
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('a') => self.open_cf_picker(),
+            KeyCode::Char('/') => {
+                self.cf.filter_input = true;
+                self.cf.filter.clear();
+            }
+            KeyCode::Char('r') => self.cf_reload(req),
+            KeyCode::Char('n') => self.open_cf_bucket_form(),
+            KeyCode::Char('x') => self.open_cf_bucket_delete_form(),
+            KeyCode::Char(' ') => self.open_cf_bucket_menu(),
+            KeyCode::Enter => {
+                self.status = "Object browsing is coming in a later release".into();
+            }
+            _ => {
+                let len = self.cf_buckets_shown().len();
+                move_table(&mut self.cf.r2_row, code, len);
+            }
         }
     }
 
@@ -1364,7 +1402,7 @@ impl App {
                     self.cf_picker = None;
                     self.cf_action = Some(CfAction::SetDefault(acc.name.clone()));
                     self.cf.active = Some(acc);
-                    self.cf_goto_zones(req);
+                    self.cf_goto_home(req);
                 }
             }
             _ => {}

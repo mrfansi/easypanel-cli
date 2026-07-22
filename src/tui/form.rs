@@ -1143,6 +1143,13 @@ pub(super) enum FormKind {
     },
     /// Set one attribute on every marked DNS record at once.
     CfBulkSet(CfBulkAttr),
+    /// Create an R2 bucket under the active account.
+    CfBucketCreate,
+    /// Delete an R2 bucket behind a typed-name confirmation — a destructive op, so
+    /// a bare y/n is not enough.
+    CfBucketDelete {
+        name: String,
+    },
 }
 
 /// Which attribute a Cloudflare bulk edit sets on the marked records.

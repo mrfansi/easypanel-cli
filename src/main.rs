@@ -432,6 +432,39 @@ enum CfCmd {
     /// Manage DNS records within a zone
     #[command(subcommand)]
     Record(CfRecordCmd),
+    /// Manage R2 (object storage) on the active account
+    #[command(subcommand)]
+    R2(CfR2Cmd),
+}
+
+#[derive(Subcommand)]
+enum CfR2Cmd {
+    /// Manage R2 buckets (object browsing is a separate future slice)
+    #[command(subcommand)]
+    Bucket(CfR2BucketCmd),
+}
+
+#[derive(Subcommand)]
+enum CfR2BucketCmd {
+    /// List R2 buckets on the account
+    List {
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Create an R2 bucket
+    Create {
+        name: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Delete an R2 bucket (must be empty; asks you to type the bucket name)
+    Delete {
+        name: String,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -960,6 +993,19 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     CfRecordCmd::Delete { zone, ids, account } => {
                         commands::cf_record_delete(&cf, account.as_deref(), &zone, &ids)
                     }
+                },
+                CfCmd::R2(r2) => match r2 {
+                    CfR2Cmd::Bucket(b) => match b {
+                        CfR2BucketCmd::List { account } => {
+                            commands::cf_r2_bucket_list(&cf, account.as_deref())
+                        }
+                        CfR2BucketCmd::Create { name, account } => {
+                            commands::cf_r2_bucket_create(&cf, account.as_deref(), &name)
+                        }
+                        CfR2BucketCmd::Delete { name, account, yes } => {
+                            commands::cf_r2_bucket_delete(&cf, account.as_deref(), &name, yes)
+                        }
+                    },
                 },
             }
         }

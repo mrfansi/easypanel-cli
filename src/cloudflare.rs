@@ -46,12 +46,41 @@ pub struct Record {
     pub priority: Option<u16>,
 }
 
-/// Cloudflare's pagination block. Only `total_pages` drives the client's page loop;
-/// serde ignores the other keys (page/per_page/count/total_count) the API also sends.
+/// An R2 bucket (Cloudflare's REST view, not the S3 API). Object browsing is a
+/// separate future slice — this slice manages buckets only.
+#[derive(Debug, Clone, Deserialize)]
+pub struct R2Bucket {
+    pub name: String,
+    #[serde(default)]
+    pub creation_date: String,
+    /// Optional — the list endpoint may omit it.
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub storage_class: String,
+    #[serde(default)]
+    pub jurisdiction: String,
+}
+
+/// The list-buckets `result` is NOT a bare array: it is an object wrapping a
+/// `buckets` array. Deserialize `result` into this, not `Vec<R2Bucket>`.
+#[derive(Debug, Deserialize)]
+struct BucketsResult {
+    #[serde(default)]
+    buckets: Vec<R2Bucket>,
+}
+
+/// Cloudflare's pagination block. `total_pages` drives the DNS page loop; `cursor`
+/// drives R2's cursor pagination (present only while more pages remain). serde
+/// ignores the other keys (page/per_page/count/total_count) the API also sends.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ResultInfo {
     #[serde(default)]
     pub total_pages: u32,
+    /// R2's next-page cursor: pass it back as the `cursor` query param; absent or
+    /// empty means the last page has been reached.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 // ---------- Envelope parsing ----------
@@ -78,6 +107,22 @@ fn envelope_error(errors: &[CfError]) -> String {
         .first()
         .map(|e| e.message.clone())
         .unwrap_or_else(|| "Cloudflare rejected the request".into())
+}
+
+/// R2 buckets are account-scoped: list needs the "Workers R2 Storage" Read
+/// permission, create/delete its Edit. A token scoped only to Zone:DNS gets
+/// Cloudflare's generic "Authentication error" here, which never says why — so
+/// append the specific permission that is missing. Mirrors how DNS surfaces
+/// Cloudflare's own message, but R2-specific.
+fn r2_hint(e: anyhow::Error) -> anyhow::Error {
+    let msg = e.to_string();
+    if msg.to_ascii_lowercase().contains("authentication error") {
+        anyhow::anyhow!(
+            "{msg} — the token may lack the Workers R2 Storage permission (add it at Account scope)"
+        )
+    } else {
+        e
+    }
 }
 
 /// Unwrap a Cloudflare v4 envelope, turning `success:false` into an error carrying the
@@ -388,6 +433,65 @@ impl CloudflareClient {
         )?)?;
         Ok(())
     }
+
+    // ---------- R2 buckets (account-scoped) ----------
+
+    /// List every R2 bucket under `account_id`, following R2's CURSOR pagination.
+    /// The list `result` wraps its array in a `buckets` object; the next cursor is
+    /// in `result_info.cursor` and loops back as the `cursor` query param until it
+    /// is absent/empty.
+    pub fn list_r2_buckets(&self, account_id: &str) -> Result<Vec<R2Bucket>> {
+        let mut all = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut q: Vec<(String, String)> = vec![("per_page".into(), "100".into())];
+            if let Some(c) = &cursor {
+                q.push(("cursor".into(), c.clone()));
+            }
+            let body = self
+                .get(&format!("/accounts/{account_id}/r2/buckets"), &q)
+                .map_err(r2_hint)?;
+            let (res, info): (BucketsResult, ResultInfo) =
+                parse_envelope_paged(&body).map_err(r2_hint)?;
+            all.extend(res.buckets);
+            match info.cursor.filter(|c| !c.is_empty()) {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        Ok(all)
+    }
+
+    /// Create an R2 bucket by name under `account_id`.
+    pub fn create_r2_bucket(&self, account_id: &str, name: &str) -> Result<R2Bucket> {
+        let body = json!({ "name": name });
+        parse_envelope(
+            &self
+                .send(
+                    reqwest::Method::POST,
+                    &format!("/accounts/{account_id}/r2/buckets"),
+                    Some(&body),
+                )
+                .map_err(r2_hint)?,
+        )
+        .map_err(r2_hint)
+    }
+
+    /// Delete an R2 bucket. Cloudflare requires the bucket be EMPTY — deleting a
+    /// non-empty one errors, and that message is surfaced as-is.
+    pub fn delete_r2_bucket(&self, account_id: &str, name: &str) -> Result<()> {
+        let _: Value = parse_envelope(
+            &self
+                .send(
+                    reqwest::Method::DELETE,
+                    &format!("/accounts/{account_id}/r2/buckets/{name}"),
+                    None,
+                )
+                .map_err(r2_hint)?,
+        )
+        .map_err(r2_hint)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -548,6 +652,43 @@ mod tests {
             select_records(&recs, &Selector::default()).is_empty(),
             "empty selector matches nothing"
         );
+    }
+
+    #[test]
+    fn r2_list_result_is_wrapped_in_a_buckets_object() {
+        // The list-buckets `result` is NOT a bare array — it wraps a `buckets` array,
+        // and `location` may be omitted. Feed a documented sample envelope and assert
+        // the wrapper yields the buckets. result_info.cursor drives the page loop.
+        let body = r#"{"success":true,"errors":[],"messages":[],
+            "result":{"buckets":[
+                {"name":"assets","creation_date":"2024-01-02T03:04:05.000Z",
+                 "storage_class":"Standard","jurisdiction":"default"},
+                {"name":"backups","creation_date":"2024-02-02T03:04:05.000Z",
+                 "location":"weur","storage_class":"InfrequentAccess","jurisdiction":"default"}]},
+            "result_info":{"cursor":""}}"#;
+        let (res, info): (BucketsResult, ResultInfo) = parse_envelope_paged(body).unwrap();
+        assert_eq!(res.buckets.len(), 2);
+        assert_eq!(res.buckets[0].name, "assets");
+        assert!(res.buckets[0].location.is_none(), "location may be omitted");
+        assert_eq!(res.buckets[1].location.as_deref(), Some("weur"));
+        assert_eq!(res.buckets[1].storage_class, "InfrequentAccess");
+        // An empty cursor means the last page — the loop stops.
+        assert!(info.cursor.filter(|c| !c.is_empty()).is_none());
+    }
+
+    #[test]
+    fn r2_auth_error_hints_at_the_workers_r2_storage_permission() {
+        let e = anyhow::anyhow!("Cloudflare: Authentication error");
+        let hinted = r2_hint(e).to_string();
+        assert!(
+            hinted.contains("Workers R2 Storage"),
+            "an R2 auth failure must name the missing permission: {hinted}"
+        );
+        // A non-auth error is passed through untouched.
+        let other = r2_hint(anyhow::anyhow!(
+            "Cloudflare: The bucket you tried to delete is not empty"
+        ));
+        assert!(!other.to_string().contains("Workers R2 Storage"));
     }
 
     fn rec(id: &str, kind: &str, name: &str, content: &str) -> Record {

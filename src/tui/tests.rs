@@ -6007,36 +6007,86 @@ fn the_cf_product_tab_bar_renders_with_dns_active() {
 }
 
 #[test]
-fn cf_product_switch_keys_are_wired_and_the_list_is_extendable() {
-    // CF_PRODUCTS is the single source the tab bar and the switch keys share; DNS
-    // is the only product today, so it's tab 1 and the sole entry. A future product
-    // is one more row here (plus its enum variant).
-    assert_eq!(CF_PRODUCTS.len(), 1);
-    assert_eq!(CF_PRODUCTS[0].0, "DNS");
-    assert_eq!(CF_PRODUCTS[0].1, CfProduct::Dns);
+fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
+    // CF_PRODUCTS is the single source the tab bar and the switch keys share: DNS is
+    // tab 1, R2 tab 2. A future product is one more row here (plus its enum variant).
+    assert_eq!(CF_PRODUCTS.len(), 2);
+    assert_eq!(CF_PRODUCTS[0], ("DNS", CfProduct::Dns));
+    assert_eq!(CF_PRODUCTS[1], ("R2", CfProduct::R2));
     assert_eq!(CfProduct::Dns.index(), 0);
-    // Cycling with one product is a well-defined no-op — it wraps to itself.
-    assert_eq!(CfProduct::Dns.next(), CfProduct::Dns);
-    assert_eq!(CfProduct::Dns.prev(), CfProduct::Dns);
+    assert_eq!(CfProduct::R2.index(), 1);
+    // Cycling wraps between the two products.
+    assert_eq!(CfProduct::Dns.next(), CfProduct::R2);
+    assert_eq!(CfProduct::R2.next(), CfProduct::Dns);
+    assert_eq!(CfProduct::Dns.prev(), CfProduct::R2);
 
-    // In the workspace the tab keys (1..=N / Tab / ←→) act on the product, never on
-    // the EasyPanel Screen, and never leave the workspace or the DNS screens.
+    // In the workspace the tab keys act on the product, never on the EasyPanel
+    // Screen or the workspace. Selecting R2 loads the active account's buckets.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.set_workspace(Workspace::Cloudflare);
+    assert_eq!(app.cf.product, CfProduct::Dns);
+
+    // Tab → R2: the product flips and a buckets request is sent (account-scoped).
+    app.on_key(KeyCode::Tab, &tx);
+    assert_eq!(app.cf.product, CfProduct::R2);
+    assert!(app.workspace == Workspace::Cloudflare);
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::R2Buckets { .. }))),
+        "switching to R2 loads the account's buckets"
+    );
+
+    // `1` jumps back to DNS; `2` selects R2 again.
+    app.on_key(KeyCode::Char('1'), &tx);
+    assert_eq!(app.cf.product, CfProduct::Dns);
+    app.on_key(KeyCode::Char('2'), &tx);
+    assert_eq!(app.cf.product, CfProduct::R2);
+}
+
+fn cf_bucket(name: &str) -> crate::cloudflare::R2Bucket {
+    crate::cloudflare::R2Bucket {
+        name: name.into(),
+        creation_date: "2024-01-02T03:04:05.000Z".into(),
+        location: Some("weur".into()),
+        storage_class: "Standard".into(),
+        jurisdiction: "default".into(),
+    }
+}
+
+#[test]
+fn cf_buckets_key_handles_add_delete_and_filter() {
+    // With R2 active and buckets loaded: `n` opens the add form, `x` opens the
+    // typed-name delete form for the selected bucket, `/` starts the filter input.
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.cf.accounts = vec![cf_account()];
     app.set_workspace(Workspace::Cloudflare);
-    for code in [
-        KeyCode::Char('1'),
-        KeyCode::Tab,
-        KeyCode::Right,
-        KeyCode::Left,
-        KeyCode::Char('9'),
-    ] {
-        app.on_key(code, &tx);
-        assert_eq!(app.cf.product, CfProduct::Dns);
-        assert!(app.workspace == Workspace::Cloudflare);
-        assert_eq!(app.cf.screen, CfScreen::Zones);
-    }
+    app.on_key(KeyCode::Tab, &tx); // → R2
+    assert_eq!(app.cf.product, CfProduct::R2);
+
+    app.cf.r2_buckets = vec![cf_bucket("assets"), cf_bucket("backups")];
+    app.cf.r2_row.select(Some(1));
+
+    // `/` opens the CF-local filter input.
+    app.on_key(KeyCode::Char('/'), &tx);
+    assert!(app.cf.filter_input, "/ starts the bucket filter");
+    app.on_key(KeyCode::Esc, &tx);
+    assert!(!app.cf.filter_input);
+
+    // `n` opens the add-bucket form (the account has an account-id).
+    app.on_key(KeyCode::Char('n'), &tx);
+    assert!(app.form.is_some(), "n opens the add-bucket form");
+    app.form = None;
+
+    // `x` opens the typed-name delete form naming the SELECTED bucket.
+    app.cf.r2_row.select(Some(1));
+    app.on_key(KeyCode::Char('x'), &tx);
+    let form = app.form.as_ref().expect("x opens the delete form");
+    assert!(
+        form.note.as_deref().unwrap_or("").contains("backups"),
+        "the delete confirm names the selected bucket"
+    );
 }
 
 #[test]

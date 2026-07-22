@@ -408,12 +408,32 @@ pub(super) fn cf_screen_keys(screen: CfScreen) -> &'static [Key] {
     }
 }
 
+/// The R2 Buckets screen's keys (product-selected in `render_help`, since R2 has
+/// no `CfScreen`). Enter is intentionally absent — object browsing is a later slice.
+pub(super) fn cf_buckets_keys() -> &'static [Key] {
+    &[
+        Key(
+            "a",
+            "switch Cloudflare account (a picker, like `s` switches servers)",
+        ),
+        Key("Space", "action menu for the selected bucket"),
+        Key("n", "add a bucket"),
+        Key("x", "delete a bucket (type its name to confirm)"),
+        Key("/", "filter the list"),
+        Key("r", "refresh"),
+        Key("Esc", "back to EasyPanel"),
+    ]
+}
+
 pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     // In the Cloudflare workspace the "this screen" section documents the CF screen's
     // keys, not the (stale) EasyPanel Screen's — the two workspaces are isolated.
     let cf = app.workspace == Workspace::Cloudflare;
     let rows = if cf {
-        cf_screen_keys(app.cf.screen)
+        match app.cf.product {
+            CfProduct::R2 => cf_buckets_keys(),
+            CfProduct::Dns => cf_screen_keys(app.cf.screen),
+        }
     } else {
         screen_keys(app.screen)
     };
@@ -467,9 +487,12 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     };
 
     let screen_label = if cf {
-        match app.cf.screen {
-            CfScreen::Zones => "Cloudflare · DNS",
-            CfScreen::Records => "Cloudflare · DNS · records",
+        match app.cf.product {
+            CfProduct::R2 => "Cloudflare · R2",
+            CfProduct::Dns => match app.cf.screen {
+                CfScreen::Zones => "Cloudflare · DNS",
+                CfScreen::Records => "Cloudflare · DNS · records",
+            },
         }
     } else {
         TABS[app.screen.index()]
@@ -628,9 +651,14 @@ pub(super) const CF_EMPTY_HINT: &str = "No Cloudflare account yet — press a to
 /// The isolated Cloudflare workspace. Home is the Zones list; Records is a drill-in
 /// from a zone. Reads only from `app.cf` — no EasyPanel state appears here.
 pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
-    match app.cf.screen {
-        CfScreen::Zones => render_cf_zones(f, header, body, app),
-        CfScreen::Records => render_cf_records(f, header, body, app),
+    // Dispatch on the PRODUCT first (DNS vs R2); DNS then splits on its screen
+    // (Zones home / Records drill-in). R2 has a single buckets screen for now.
+    match app.cf.product {
+        CfProduct::Dns => match app.cf.screen {
+            CfScreen::Zones => render_cf_zones(f, header, body, app),
+            CfScreen::Records => render_cf_records(f, header, body, app),
+        },
+        CfProduct::R2 => render_cf_buckets(f, header, body, app),
     }
 }
 
@@ -647,6 +675,11 @@ pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
         }
     }
 }
+
+/// The R2 Buckets status-bar hint. Product-selected in the status bar (the DNS
+/// hints come from `cf_status_hints`), so the two can't drift from the keys.
+pub(super) const CF_BUCKETS_HINTS: &str =
+    "a account · n add bucket · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
 
 /// The orange workspace header: the bordered title + the PRODUCT tab bar (DNS
 /// today; D1/R2/KV/Workers/Connectors slot in later). Drawn exactly like the
@@ -938,6 +971,94 @@ fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         &widths,
         rows,
         &mut app.cf.records_row,
+        CF_ORANGE,
+        |_, _| None,
+    );
+}
+
+/// The R2 Buckets home: Name / Created / Location / Class, filterable, with
+/// loading/empty/error. Mirrors `render_cf_zones` — the same header, placeholder,
+/// and table machinery, reading only `app.cf`. Object browsing is a later slice.
+fn render_cf_buckets(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    let acct = app.cf.active.as_ref().map(|a| a.name.clone());
+    let title = match &acct {
+        Some(name) => format!("Cloudflare — {name}"),
+        None => "Cloudflare".to_string(),
+    };
+    cf_header(
+        f,
+        header,
+        &title,
+        app.cf.product,
+        app.cf_product_at.elapsed().as_millis() < 300,
+    );
+
+    // No account at all: nothing to load — invite adding one (the `a` picker).
+    if app.cf_empty() {
+        f.render_widget(
+            Paragraph::new(format!("  {CF_EMPTY_HINT}"))
+                .style(Style::default().fg(Color::DarkGray))
+                .block(pane("Buckets".to_string(), CF_ORANGE)),
+            body,
+        );
+        return;
+    }
+
+    let state = cf_list_state(
+        app.busy() > 0,
+        app.cf.error.is_some(),
+        app.cf.r2_buckets.is_empty(),
+    );
+    if state != CfListState::Ready {
+        cf_placeholder(f, body, "buckets", &state, app.cf.error.as_deref());
+        return;
+    }
+
+    let shown = app.cf_buckets_shown();
+    let title = format!(
+        "Buckets ({} of {}){}",
+        shown.len(),
+        app.cf.r2_buckets.len(),
+        if app.cf.filter.is_empty() {
+            String::new()
+        } else {
+            format!(" · /{}", app.cf.filter)
+        }
+    );
+    let rows: Vec<Vec<String>> = shown
+        .iter()
+        .map(|b| {
+            vec![
+                b.name.clone(),
+                // The creation date is an ISO-8601 timestamp; show just the date part.
+                b.creation_date
+                    .split('T')
+                    .next()
+                    .unwrap_or(&b.creation_date)
+                    .to_string(),
+                b.location.clone().unwrap_or_default(),
+                b.storage_class.clone(),
+            ]
+        })
+        .collect();
+    let headers = ["Name", "Created", "Location", "Class"];
+    let widths = [
+        Constraint::Min(20),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(18),
+    ];
+    // Record the table's Rect so the shared mouse layer can map a click/hover to a
+    // row, exactly as the DNS render paths do.
+    app.table_area = body;
+    render_table(
+        f,
+        body,
+        title,
+        &headers,
+        &widths,
+        rows,
+        &mut app.cf.r2_row,
         CF_ORANGE,
         |_, _| None,
     );
@@ -2535,7 +2656,11 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
         let text = if app.cf.filter_input {
             format!(" filter: {}▏  Enter apply · Esc cancel", app.cf.filter)
         } else {
-            format!(" {}", cf_status_hints(app.cf.screen))
+            let hints = match app.cf.product {
+                CfProduct::R2 => CF_BUCKETS_HINTS,
+                CfProduct::Dns => cf_status_hints(app.cf.screen),
+            };
+            format!(" {hints}")
         };
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(text, bar.fg(Color::Indexed(244))))).style(bar),

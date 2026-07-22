@@ -7,7 +7,7 @@ use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
 
 use crate::cloudflare::{
-    apply_patch, proxyable, record_body, valid_record_type, CloudflareAccount, Record,
+    apply_patch, proxyable, record_body, valid_record_type, CloudflareAccount, R2Bucket, Record,
     RecordFilter, RecordPatch, Zone,
 };
 use crate::commands;
@@ -186,18 +186,20 @@ pub(super) enum CfScreen {
 }
 
 /// A Cloudflare product section, shown as a tab in the CF workspace. DNS (zones +
-/// records) is the only one today; D1/R2/KV/Workers/Connectors slot in later. The
+/// records) and R2 (buckets) today; D1/KV/Workers/Connectors slot in later. The
 /// enum carries only the variants that exist — a speculative one would be dead
 /// code — so growing it is: add a variant here plus one row to `CF_PRODUCTS`.
 #[derive(PartialEq, Debug, Clone, Copy, Default)]
 pub(super) enum CfProduct {
     #[default]
     Dns,
+    R2,
 }
 
 /// The product tab bar, in label order. The single list the tab bar renders and
 /// the switch keys index into — adding a product is one row here.
-pub(super) const CF_PRODUCTS: &[(&str, CfProduct)] = &[("DNS", CfProduct::Dns)];
+pub(super) const CF_PRODUCTS: &[(&str, CfProduct)] =
+    &[("DNS", CfProduct::Dns), ("R2", CfProduct::R2)];
 
 impl CfProduct {
     /// This product's position in `CF_PRODUCTS` — i.e. the active tab index.
@@ -233,6 +235,10 @@ pub(super) struct CfUi {
     pub(super) records: Vec<Record>,
     pub(super) records_row: TableState,
     pub(super) current_zone: Option<Zone>,
+    /// R2 product state — the account's buckets and the selected row. Account-scoped,
+    /// loaded when the R2 tab is selected; the shared `filter`/`error` cover it too.
+    pub(super) r2_buckets: Vec<R2Bucket>,
+    pub(super) r2_row: TableState,
     /// A CF-local text filter, narrowing the loaded list client-side.
     pub(super) filter: String,
     pub(super) filter_input: bool,
@@ -295,6 +301,26 @@ pub(super) fn filter_records<'a>(records: &'a [Record], needle: &str) -> Vec<&'a
                 || r.kind.to_ascii_lowercase().contains(&n)
                 || r.name.to_ascii_lowercase().contains(&n)
                 || r.content.to_ascii_lowercase().contains(&n)
+        })
+        .collect()
+}
+
+/// The R2 buckets whose name/class/location contains `needle` (case-insensitive).
+/// An empty needle keeps everything — narrows the already-loaded list client-side,
+/// exactly like `filter_zones`.
+pub(super) fn filter_buckets<'a>(buckets: &'a [R2Bucket], needle: &str) -> Vec<&'a R2Bucket> {
+    let n = needle.to_ascii_lowercase();
+    buckets
+        .iter()
+        .filter(|b| {
+            n.is_empty()
+                || b.name.to_ascii_lowercase().contains(&n)
+                || b.storage_class.to_ascii_lowercase().contains(&n)
+                || b.location
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains(&n)
         })
         .collect()
 }
@@ -693,9 +719,12 @@ impl App {
         // (hidden) EasyPanel screen behind it — so the mouse layer measures the
         // filtered CF list under the cursor.
         if self.workspace == Workspace::Cloudflare {
-            return match self.cf.screen {
-                CfScreen::Zones => self.cf_zones_shown().len(),
-                CfScreen::Records => self.cf_records_shown().len(),
+            return match self.cf.product {
+                CfProduct::R2 => self.cf_buckets_shown().len(),
+                CfProduct::Dns => match self.cf.screen {
+                    CfScreen::Zones => self.cf_zones_shown().len(),
+                    CfScreen::Records => self.cf_records_shown().len(),
+                },
             };
         }
         match self.screen {
@@ -715,9 +744,12 @@ impl App {
         // rather than the hidden EasyPanel screen, so scroll/hover/click land on the
         // CF row state.
         if self.workspace == Workspace::Cloudflare {
-            return Some(match self.cf.screen {
-                CfScreen::Zones => &mut self.cf.zones_row,
-                CfScreen::Records => &mut self.cf.records_row,
+            return Some(match self.cf.product {
+                CfProduct::R2 => &mut self.cf.r2_row,
+                CfProduct::Dns => match self.cf.screen {
+                    CfScreen::Zones => &mut self.cf.zones_row,
+                    CfScreen::Records => &mut self.cf.records_row,
+                },
             });
         }
         match self.screen {
@@ -980,6 +1012,27 @@ impl App {
             .map(|r| (*r).clone())
     }
 
+    /// The R2 buckets shown right now (after the CF-local filter).
+    pub(super) fn cf_buckets_shown(&self) -> Vec<&R2Bucket> {
+        filter_buckets(&self.cf.r2_buckets, &self.cf.filter)
+    }
+
+    /// The highlighted bucket, indexing into the FILTERED list (what's on screen).
+    pub(super) fn selected_cf_bucket(&self) -> Option<R2Bucket> {
+        let shown = self.cf_buckets_shown();
+        self.cf
+            .r2_row
+            .selected()
+            .and_then(|i| shown.get(i))
+            .map(|b| (*b).clone())
+    }
+
+    /// The active account's account-id, which every R2 call needs (R2 is
+    /// account-scoped — unlike DNS, which can list zones without one).
+    fn cf_account_id(&self) -> Option<String> {
+        self.cf.active.as_ref().and_then(|a| a.account_id.clone())
+    }
+
     /// The account to activate on first entering the workspace: the config default,
     /// else the first stored account, else none (the empty state).
     fn cf_default_account(&self) -> Option<CloudflareAccount> {
@@ -1015,6 +1068,52 @@ impl App {
             let account_id = self.cf.active.as_ref().and_then(|a| a.account_id.clone());
             let _ = req.send(Req::Cf(CfReq::Zones { token, account_id }));
             self.status = format!("Loading zones for {name}…");
+        }
+    }
+
+    /// Show the R2 buckets home for the active account, clearing the old list so the
+    /// loading state shows, then load. R2 is account-scoped, so an account with no
+    /// account-id cannot list buckets — say so rather than fire a call that 404s.
+    pub(super) fn cf_goto_buckets(&mut self, req: &Sender<Req>) {
+        let Some(name) = self.cf.active.as_ref().map(|a| a.name.clone()) else {
+            self.status = "No Cloudflare account yet — press a to add one".into();
+            return;
+        };
+        self.cf.filter.clear();
+        self.cf.filter_input = false;
+        self.cf.error = None;
+        self.cf.r2_buckets.clear();
+        self.cf.r2_row.select(None);
+        let Some(account_id) = self.cf_account_id() else {
+            self.status =
+                "This account has no account-id — R2 is account-scoped; re-add it with one".into();
+            return;
+        };
+        if let Some(token) = self.cf_token() {
+            let _ = req.send(Req::Cf(CfReq::R2Buckets { token, account_id }));
+            self.status = format!("Loading R2 buckets for {name}…");
+        }
+    }
+
+    /// The home for the active product: Zones for DNS, Buckets for R2. Used after an
+    /// account switch so the picker lands on the right product's list.
+    pub(super) fn cf_goto_home(&mut self, req: &Sender<Req>) {
+        match self.cf.product {
+            CfProduct::Dns => self.cf_goto_zones(req),
+            CfProduct::R2 => self.cf_goto_buckets(req),
+        }
+    }
+
+    /// Switch the active product tab, loading its list on entry. DNS zones are
+    /// already loaded on entering the workspace; R2 buckets load the first time the
+    /// tab is selected (and on every `r`).
+    pub(super) fn cf_set_product(&mut self, product: CfProduct, req: &Sender<Req>) {
+        if self.cf.product == product {
+            return;
+        }
+        self.cf.product = product;
+        if product == CfProduct::R2 {
+            self.cf_goto_buckets(req);
         }
     }
 
@@ -1086,6 +1185,12 @@ impl App {
         let Some(token) = self.cf_token() else {
             return;
         };
+        if self.cf.product == CfProduct::R2 {
+            if let Some(account_id) = self.cf_account_id() {
+                let _ = req.send(Req::Cf(CfReq::R2Buckets { token, account_id }));
+            }
+            return;
+        }
         match self.cf.screen {
             CfScreen::Zones => {
                 let account_id = self.cf.active.as_ref().and_then(|a| a.account_id.clone());
@@ -1105,6 +1210,12 @@ impl App {
 
     /// Keep the CF selection in range after the filter narrows the list.
     pub(super) fn cf_clamp_filtered(&mut self) {
+        if self.cf.product == CfProduct::R2 {
+            let len = self.cf_buckets_shown().len();
+            *self.cf.r2_row.offset_mut() = 0;
+            self.cf.r2_row.select((len > 0).then_some(0));
+            return;
+        }
         match self.cf.screen {
             CfScreen::Zones => {
                 let len = self.cf_zones_shown().len();
@@ -1269,6 +1380,60 @@ impl App {
             MenuItem::new("Open DNS records", |a, r| a.cf_open_records(r)),
             MenuItem::new("Delete zone…", |a, _| a.open_cf_zone_delete_form()),
         ]);
+    }
+
+    /// The add-bucket form. Requires an account-id (R2 is account-scoped); on submit
+    /// it sends a CreateR2Bucket request.
+    pub(super) fn open_cf_bucket_form(&mut self) {
+        if self.cf_account_id().is_none() {
+            self.status =
+                "This account has no account-id — R2 is account-scoped; re-add it with one".into();
+            return;
+        }
+        self.form = Some(
+            Form::new(
+                FormKind::CfBucketCreate,
+                " New R2 bucket ",
+                vec![Field::text("Bucket name", "")],
+            )
+            .with_note("Lowercase letters, digits and hyphens; unique within the account."),
+        );
+    }
+
+    /// The typed-name delete form for the selected bucket. Deleting a bucket is
+    /// destructive (and Cloudflare requires it be empty), so the operator must type
+    /// the bucket name — the same safeguard the zone delete uses.
+    pub(super) fn open_cf_bucket_delete_form(&mut self) {
+        let Some(bucket) = self.selected_cf_bucket() else {
+            self.status = "No bucket selected".into();
+            return;
+        };
+        self.form = Some(
+            Form::new(
+                FormKind::CfBucketDelete {
+                    name: bucket.name.clone(),
+                },
+                " Delete R2 bucket ",
+                vec![Field::text("Type the bucket name to confirm", "")],
+            )
+            .with_note(format!(
+                "Deletes '{}' — the bucket must be EMPTY, and this cannot be undone",
+                bucket.name
+            )),
+        );
+    }
+
+    /// The row action menu for the selected bucket (Space / right-click) — the R2
+    /// mirror of the Zones row menu. Presentation only: routes to the typed-name
+    /// delete form the `x` key already opens.
+    pub(super) fn open_cf_bucket_menu(&mut self) {
+        if self.selected_cf_bucket().is_none() {
+            self.status = "No bucket selected".into();
+            return;
+        }
+        self.open_menu(vec![MenuItem::new("Delete bucket…", |a, _| {
+            a.open_cf_bucket_delete_form()
+        })]);
     }
 
     /// The bulk action menu for the marked records.
@@ -1855,6 +2020,12 @@ impl App {
                     let len = self.cf_records_shown().len();
                     select_first(&mut self.cf.records_row, len);
                 }
+            }
+            CfResp::R2Buckets(buckets) => {
+                self.cf.error = None;
+                self.cf.r2_buckets = buckets;
+                let len = self.cf_buckets_shown().len();
+                select_first(&mut self.cf.r2_row, len);
             }
             CfResp::Done(msg) => {
                 self.status = msg;
@@ -3982,6 +4153,40 @@ impl App {
                     zone_id: zone.id,
                     ids,
                     body,
+                }));
+            }
+            FormKind::CfBucketCreate => {
+                let name = form.val(0);
+                if name.is_empty() {
+                    self.status = "Bucket name is required".into();
+                    return;
+                }
+                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
+                else {
+                    self.status = "This account has no account-id — R2 is account-scoped".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::CreateR2Bucket {
+                    token,
+                    account_id,
+                    name,
+                }));
+            }
+            FormKind::CfBucketDelete { name } => {
+                let name = name.clone();
+                if form.val(0) != name {
+                    self.status = "Name did not match — nothing deleted".into();
+                    return;
+                }
+                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
+                else {
+                    self.status = "No active account".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::DeleteR2Bucket {
+                    token,
+                    account_id,
+                    name,
                 }));
             }
             FormKind::DomainCreate | FormKind::DomainEdit { .. } => match domain_body(form) {

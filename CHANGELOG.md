@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.0] — 2026-07-22
+
+### Added
+
+- **Cloudflare R2 — manage buckets.** The Cloudflare workspace's product tab bar grew a
+  second tab: **R2** beside DNS (switch with `1`/`2`/`Tab`/`←→`). It lists the active
+  account's R2 buckets (name, created, location, storage class), and `n` creates a bucket
+  while `x` (or the `Space`/right-click row menu) deletes one — the same shape as the DNS
+  Zones screen. On the CLI: `easypanel cf r2 bucket list|create|delete`. Uses the account's
+  API token (needs the account-scoped **Workers R2 Storage** permission — the tool hints
+  at that if the token lacks it, the same way it does for Zone:DNS). Verified live against
+  a real account's buckets. (Browsing the *objects* inside a bucket comes next — that goes
+  through R2's separate S3 credentials.)
+
 ## [0.83.4] — 2026-07-22
 
 ### Added

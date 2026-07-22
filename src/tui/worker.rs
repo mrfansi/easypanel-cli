@@ -8,7 +8,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::client::EasypanelClient;
-use crate::cloudflare::{CloudflareClient, Record, RecordFilter, Zone};
+use crate::cloudflare::{CloudflareClient, R2Bucket, Record, RecordFilter, Zone};
 use crate::output::field;
 
 // ---------- Worker (networking on a separate thread so the UI doesn't freeze) ----------
@@ -486,6 +486,22 @@ pub(super) enum CfReq {
         zone_id: String,
         ids: Vec<String>,
     },
+    /// R2 buckets are account-scoped, so the account_id travels alongside the token
+    /// (the main thread resolves both from the active account).
+    R2Buckets {
+        token: String,
+        account_id: String,
+    },
+    CreateR2Bucket {
+        token: String,
+        account_id: String,
+        name: String,
+    },
+    DeleteR2Bucket {
+        token: String,
+        account_id: String,
+        name: String,
+    },
 }
 
 pub(super) enum Resp {
@@ -668,6 +684,8 @@ pub(super) enum CfResp {
         zone_id: String,
         records: Vec<Record>,
     },
+    /// The R2 buckets for the active account.
+    R2Buckets(Vec<R2Bucket>),
     /// A create/edit/delete succeeded; the app re-lists the affected screen.
     Done(String),
     /// A bulk fan-out: how many succeeded and, per failed id, the reason.
@@ -1972,6 +1990,28 @@ fn handle_cf(req: CfReq) -> CfResp {
             }
             CfResp::BulkDone { ok, failed }
         }
+        CfReq::R2Buckets { token, account_id } => {
+            match CloudflareClient::new(&token).list_r2_buckets(&account_id) {
+                Ok(buckets) => CfResp::R2Buckets(buckets),
+                Err(e) => CfResp::Err(e.to_string()),
+            }
+        }
+        CfReq::CreateR2Bucket {
+            token,
+            account_id,
+            name,
+        } => match CloudflareClient::new(&token).create_r2_bucket(&account_id, &name) {
+            Ok(b) => CfResp::Done(format!("Bucket '{}' created", b.name)),
+            Err(e) => CfResp::Err(e.to_string()),
+        },
+        CfReq::DeleteR2Bucket {
+            token,
+            account_id,
+            name,
+        } => match CloudflareClient::new(&token).delete_r2_bucket(&account_id, &name) {
+            Ok(()) => CfResp::Done(format!("Bucket '{name}' deleted")),
+            Err(e) => CfResp::Err(e.to_string()),
+        },
     }
 }
 
