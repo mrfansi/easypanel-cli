@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.2] — 2026-07-23
+
+### Fixed
+
+- **A Cloudflare delete confirmation no longer claims it "Affects the ENTIRE host" or
+  names the wrong machine.** The confirm dialog is shared with EasyPanel, and it
+  hard-coded EasyPanel semantics: it always printed `on <easypanel-server>` and derived
+  a target line from the project/service fields. A CF confirm carries neither, so
+  deleting DNS records showed the unrelated EasyPanel host name (`on harisenin-angelia`)
+  and — because the empty-project case is read as a host-wide "maintenance" action —
+  the alarming, false warning **"Affects the ENTIRE host."** Deleting a DNS record
+  touches no EasyPanel host at all. A `cf-*` confirm now renders its own body: the
+  active Cloudflare **account** in CF orange (the analogue of "which machine", shown for
+  the record/bulk deletes that act within it; omitted for account-removal, whose target
+  account is already named in the label and may not be the active one) and a scope line
+  that is actually true — "Affects only the selected DNS record(s)." or, for account
+  removal, "Local config only — your Cloudflare account is untouched." Verified live: a
+  bulk record delete now reads `on pt-aku-bisa-ibadah` / "Affects only the selected DNS
+  record(s)."
+
 ## [0.87.1] — 2026-07-23
 
 ### Fixed

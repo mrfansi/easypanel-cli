@@ -5835,6 +5835,77 @@ fn cf_status_bar_shows_a_spinner_while_busy_and_surfaces_errors() {
 }
 
 #[test]
+fn cf_confirm_dialog_shows_the_account_not_the_easypanel_host() {
+    // A Cloudflare confirm is not an EasyPanel host operation: the shared confirm
+    // dialog must NOT name the EasyPanel server or warn "Affects the ENTIRE host"
+    // (deleting DNS records touches no host). It names the active CF account instead,
+    // with a scope line that is actually true.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = App::new("easypanel-host".into(), vec![]);
+    app.cf.active = Some(cf_account()); // name: "prod"
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.zones = vec![cf_zone("z1", "example.com")];
+
+    let render = |app: &mut App| -> String {
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        term.draw(|f| super::render::ui(f, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    };
+
+    // A bulk DNS-record delete: the old code read the empty project as "maintenance"
+    // and warned it affected the whole host.
+    app.confirm = Some(super::app::Confirm {
+        action: "cf-bulk-delete".into(),
+        project: String::new(),
+        service: String::new(),
+        stype: String::new(),
+        label: "Delete 2 marked DNS record(s)?".into(),
+    });
+    let screen = render(&mut app);
+    assert!(
+        screen.contains("Delete 2 marked DNS record(s)?"),
+        "the question shows"
+    );
+    assert!(
+        screen.contains("on prod"),
+        "the dialog names the active Cloudflare account: {screen:?}"
+    );
+    assert!(
+        !screen.contains("ENTIRE host"),
+        "a DNS delete must NOT warn about the EasyPanel host: {screen:?}"
+    );
+    assert!(
+        !screen.contains("on easypanel-host"),
+        "the dialog must NOT name the EasyPanel server: {screen:?}"
+    );
+
+    // Account delete is local-config only — no account line (the label names the target
+    // account, which need not be the active one) and a local-only scope.
+    app.confirm = Some(super::app::Confirm {
+        action: "cf-account-delete".into(),
+        project: "some-account".into(),
+        service: String::new(),
+        stype: String::new(),
+        label: "Delete Cloudflare account 'some-account'? (local config only)".into(),
+    });
+    let screen = render(&mut app);
+    assert!(
+        screen.contains("Local config only"),
+        "account delete states it is local-only: {screen:?}"
+    );
+    assert!(
+        !screen.contains("ENTIRE host") && !screen.contains("on easypanel-host"),
+        "account delete leaks no EasyPanel host context: {screen:?}"
+    );
+}
+
+#[test]
 fn cf_home_is_zones_and_the_account_picker_switches_accounts() {
     // Entering the workspace lands on the Zones home of the active (default)
     // account; `a` opens the account picker; Enter there activates the account.

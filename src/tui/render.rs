@@ -232,7 +232,12 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
     render_status(f, chunks[2], app);
 
     if let Some(c) = &app.confirm {
-        render_confirm(f, c, &app.server_name);
+        render_confirm(
+            f,
+            c,
+            &app.server_name,
+            app.cf.active.as_ref().map(|a| a.name.as_str()),
+        );
     }
     if app.picker.is_some() {
         render_picker(f, app);
@@ -3043,7 +3048,7 @@ pub(super) fn render_chooser(f: &mut Frame, ch: &mut Chooser) {
     f.render_stateful_widget(list, area, &mut ch.state);
 }
 
-pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str) {
+pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_account: Option<&str>) {
     // Sized from the content, not from a percentage of the screen. At 80x24 the old
     // 52%x22% box was 41x5 for six lines of text: the question was cut mid-word and
     // the "[y] Yes [n] Cancel" line fell off the bottom entirely — the operator was
@@ -3063,36 +3068,66 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str) {
     // fall out of the bottom — on the dialog for irreversible actions.
     let area = centered_abs_w(w, h, full);
     f.render_widget(Clear, area);
-    // Name the actual target. The line "Affects a real service" used to be shown on
-    // every confirmation — wrong for a maintenance action, which affects the whole
-    // host, not a single service.
-    // A bulk run names its services in the label and has no single target, so it
-    // must be matched BEFORE the empty-project case — which reads an empty
-    // project as "maintenance" and would otherwise warn that restarting three
-    // marked services affects the whole host.
-    let target = match (c.project.as_str(), c.service.as_str()) {
-        _ if c.action.starts_with("bulk-") => "Affects only the marked services.".to_string(),
-        ("", _) => "Affects the ENTIRE host.".to_string(),
-        (p, "") => format!("Target: {p}"),
-        (p, s) => format!("Target: {p}/{s}"),
+    // A Cloudflare confirm (its action is `cf-*`) is NOT an EasyPanel host operation:
+    // "on {server}" names the wrong machine, and the host/service target semantics below
+    // are meaningless — a DNS record delete touches no EasyPanel host at all, yet the
+    // empty-project heuristic read `cf-bulk-delete` as "maintenance" and warned it
+    // "Affects the ENTIRE host." So CF confirms get their own body: the active account
+    // (the CF analogue of "which machine", in CF orange) for the record/bulk ops that
+    // act within it — skipped for account-delete, whose target account is named in the
+    // label and may not be the active one — plus a scope line that is actually true.
+    let lines = if c.action.starts_with("cf-") {
+        let mut v = vec![Line::from(""), Line::from(c.label.clone()), Line::from("")];
+        if c.action != "cf-account-delete" {
+            if let Some(acc) = cf_account {
+                v.push(Line::from(Span::styled(
+                    format!("on {acc}"),
+                    Style::default().fg(CF_ORANGE).add_modifier(Modifier::BOLD),
+                )));
+            }
+        }
+        let scope = if c.action == "cf-account-delete" {
+            "Local config only — your Cloudflare account is untouched."
+        } else {
+            "Affects only the selected DNS record(s)."
+        };
+        v.push(Line::from(scope));
+        v.push(Line::from(""));
+        v.push(Line::from("[y] Yes      [n] Cancel"));
+        v
+    } else {
+        // Name the actual target. The line "Affects a real service" used to be shown on
+        // every confirmation — wrong for a maintenance action, which affects the whole
+        // host, not a single service.
+        // A bulk run names its services in the label and has no single target, so it
+        // must be matched BEFORE the empty-project case — which reads an empty
+        // project as "maintenance" and would otherwise warn that restarting three
+        // marked services affects the whole host.
+        let target = match (c.project.as_str(), c.service.as_str()) {
+            _ if c.action.starts_with("bulk-") => "Affects only the marked services.".to_string(),
+            ("", _) => "Affects the ENTIRE host.".to_string(),
+            (p, "") => format!("Target: {p}"),
+            (p, s) => format!("Target: {p}/{s}"),
+        };
+        // WHICH MACHINE. With several hosts configured, the answer to "am I about to
+        // change the right one?" was only in the frame's title behind this very
+        // dialog. It is the last thing read before pressing y, so it is on its own
+        // line, in that server's colour, above the target it applies to.
+        let tint = server_colour(server);
+        vec![
+            Line::from(""),
+            Line::from(c.label.clone()),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("on {server}"),
+                Style::default().fg(tint).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(target),
+            Line::from(""),
+            Line::from("[y] Yes      [n] Cancel"),
+        ]
     };
-    // WHICH MACHINE. With several hosts configured, the answer to "am I about to
-    // change the right one?" was only in the frame's title behind this very
-    // dialog. It is the last thing read before pressing y, so it is on its own
-    // line, in that server's colour, above the target it applies to.
-    let tint = server_colour(server);
-    let body = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(c.label.clone()),
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("on {server}"),
-            Style::default().fg(tint).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(target),
-        Line::from(""),
-        Line::from("[y] Yes      [n] Cancel"),
-    ]);
+    let body = Paragraph::new(lines);
     f.render_widget(
         body.alignment(Alignment::Center)
             // Wrap, never truncate: a half-read question about deleting things is
