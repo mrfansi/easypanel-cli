@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.0] — 2026-07-22
+
+### Added
+
+- **Cloudflare — manage zones and DNS records, right beside your servers.** A whole
+  capability that is deliberately OUTSIDE EasyPanel's scope: point the tool at one (or
+  several) Cloudflare accounts and manage their zones and DNS records without leaving
+  the terminal. It exists because migrating a service between hosts means repointing
+  DNS, and doing that in a browser, one record at a time, is the slow part.
+  - **Accounts are standalone and multiple.** Stored in their own `~/.config/easypanel/
+    cloudflare.json` (0600, same corrupt-file guard as `servers.json`), independent of
+    any EasyPanel server — an operator may hold several Cloudflare accounts. A scoped
+    **API Token** (not the global key); the token is masked in every listing and never
+    printed.
+  - **CLI:** `easypanel cf account add/list/use/delete`; `cf zone list/add/delete`
+    (deleting a zone asks you to type its name — it destroys every record in it);
+    `cf record list` (filter with `--type/--name/--content`, pushed to Cloudflare's
+    server-side filter so a zone with thousands of records returns only the matches),
+    `cf record add`, `cf record delete`, and the headline **`cf record set`** — a bulk
+    edit that changes one field on a *selection*: `cf record set example.com
+    --where-content 203.0.113.10 --content 198.51.100.20` repoints every record off an
+    old IP in a single command, with a per-record pass/fail report.
+  - **TUI:** press **`W`** to switch into an isolated, Cloudflare-orange workspace
+    (the EasyPanel tabs and the 1–8 keys are inert inside it, and vice-versa). Its home
+    is the active account's **Zones**; `a` opens an account picker that mirrors the
+    server switcher (select / add / delete); **Enter** on a zone drills into its
+    **Records**, which support add, edit, delete, a `/` filter, and bulk change by
+    marking rows with `v`/`V` then a `Space` menu. Empty, loading, and failed states are
+    always distinguished — it never shows "no records" over a failed fetch.
+  - Record edits use Cloudflare's **PATCH** (partial update) so changing one field never
+    wipes the others; every endpoint shape was checked against the official Cloudflare
+    API reference. v1 covers the common record types (A, AAAA, CNAME, TXT, NS, MX).
+
+  **Verification note:** the request/response plumbing and error handling are proven
+  against the live Cloudflare API (an invalid token surfaces Cloudflare's real error
+  envelope), and all the request-building, filtering, and bulk-selection logic is
+  unit-tested against the documented shapes. The full create/read/update happy-path
+  should be confirmed against your own account the first time you use it — the tool
+  cannot reach Cloudflare without your token, so a handful of scoped-token edge cases
+  (e.g. exact zone-create requirements) are validated on first real use.
+
 ## [0.82.2] — 2026-07-22
 
 ### Fixed

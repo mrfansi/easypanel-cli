@@ -533,6 +533,55 @@ Works on `project list`/`inspect`, `stats`, `node list`, `monitor services`/`sto
 `domain list`, `service ports`/`mounts`/`domains`/`databases`/`backups`/`volume-backups`,
 `action list`, `certificate list`, and `notification list`. Mutating commands ignore it.
 
+## Cloudflare
+
+Deliberately **outside EasyPanel's scope**: manage one or more Cloudflare accounts' zones
+and DNS records from the same terminal. It's here because moving a service between hosts
+means repointing DNS, and doing that in a browser one record at a time is the slow part.
+
+Accounts are standalone (not tied to any EasyPanel server — you may have several) and live
+in their own `~/.config/easypanel/cloudflare.json` (`0600`). Use a **scoped API Token**
+(Cloudflare's "Edit zone DNS" template = `Zone:DNS:Edit` + `Zone:Read`); the token is
+masked in every listing and never printed.
+
+```bash
+# accounts
+easypanel cf account add personal            # prompts for the token (no echo)
+easypanel cf account add work --account-id <ID> --token <TOKEN>
+easypanel cf account list                    # token masked
+easypanel cf account use work                # set the active account
+
+# zones
+easypanel cf zone list
+easypanel cf zone add example.com            # needs the account's --account-id
+easypanel cf zone delete example.com         # asks you to type the zone name
+
+# records
+easypanel cf record list example.com --type A --name api   # server-side filter
+easypanel cf record add example.com --type A --name www --content 1.2.3.4 --proxied
+easypanel cf record delete example.com <record-id> [<record-id> …]
+
+# the headline: bulk-repoint every record off an old IP in one command
+easypanel cf record set example.com --where-content 203.0.113.10 --content 198.51.100.20
+```
+
+`cf record set` prints the matched records, asks to confirm (skip with `--yes`), applies
+the change to each with **PATCH** (so it never wipes fields you didn't name), and reports
+per-record pass/fail. Pass `--account <name>` on any zone/record command to target a
+non-default account.
+
+**In the TUI:** press **`W`** to switch into an isolated, Cloudflare-orange workspace. Its
+home is the active account's zones; **`a`** opens an account picker (select / add / delete,
+just like the server switcher), **Enter** on a zone drills into its records, and records
+support add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a
+`Space` menu. The EasyPanel tabs and 1–8 keys are inert inside the Cloudflare workspace,
+and vice-versa.
+
+v1 covers the common record types (A, AAAA, CNAME, TXT, NS, MX). Every endpoint shape was
+checked against Cloudflare's official API reference; the request/error plumbing is verified
+against the live API, and the full create/update happy-path is confirmed against your own
+account on first use (the tool can't reach Cloudflare without your token).
+
 ## Known limits
 
 Stated plainly, because a README that promises what the code doesn't do is a bug.
