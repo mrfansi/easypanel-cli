@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::output::field;
 
-use super::app::{App, CfProduct, Screen, Workspace, CF_PRODUCTS, TABS, TAB_SCREENS};
+use super::app::{App, CfProduct, CfScreen, Screen, Workspace, CF_PRODUCTS, TABS, TAB_SCREENS};
 use super::table::Line2;
 use super::worker::{Req, View};
 use ratatui::crossterm::event::KeyCode;
@@ -681,15 +681,125 @@ impl App {
         });
     }
 
-    /// Open the Cloudflare command palette: the CF mirror of `open_palette`. A global
-    /// jump to any product tab / account / zone / bucket without browsing menus — the
-    /// same overlay widget, filtered and run by the same `matches`/`palette_run`/render
-    /// code, only its entries are CF navigation instead of EasyPanel services. Pure
-    /// navigation for now; contextual row actions (edit/delete a record) are a later
-    /// slice. Entries are rebuilt from the current CF state each open, so they always
-    /// reflect the loaded zones/buckets/accounts.
+    fn cf_palette_context_label(&self) -> Option<String> {
+        match (self.cf.product, self.cf.screen) {
+            (CfProduct::Dns, CfScreen::Zones) => {
+                self.selected_cf_zone().map(|z| format!("Zone: {}", z.name))
+            }
+            (CfProduct::Dns, CfScreen::Records | CfScreen::Objects) => self
+                .selected_cf_record()
+                .map(|r| format!("Record: {} {}", r.kind, r.name)),
+            (CfProduct::R2, CfScreen::Objects) => self
+                .cf_selected_object()
+                .map(|o| format!("Object: {}", o.key))
+                .or_else(|| {
+                    self.cf
+                        .current_bucket
+                        .as_ref()
+                        .map(|b| format!("Bucket: {b}"))
+                }),
+            (CfProduct::R2, _) => self
+                .selected_cf_bucket()
+                .map(|b| format!("Bucket: {}", b.name)),
+        }
+    }
+
+    fn cf_palette_context_actions(&self) -> Vec<(String, String, MenuRun)> {
+        let mut items = Vec::new();
+        match (self.cf.product, self.cf.screen) {
+            (CfProduct::Dns, CfScreen::Zones) => {
+                if let Some(zone) = self.selected_cf_zone() {
+                    let ctx = format!("zone {}", zone.name);
+                    items.push((
+                        "Open DNS records".into(),
+                        format!("open dns records {ctx}"),
+                        App::cf_open_records as MenuRun,
+                    ));
+                    items.push((
+                        "Delete zone…".into(),
+                        format!("delete remove {ctx}"),
+                        |a, _| a.open_cf_zone_delete_form(),
+                    ));
+                }
+            }
+            (CfProduct::Dns, CfScreen::Records | CfScreen::Objects) => {
+                if let Some(record) = self.selected_cf_record() {
+                    let ctx = format!("record {} {}", record.kind, record.name);
+                    items.push(("Edit record".into(), format!("edit {ctx}"), |a, _| {
+                        a.open_cf_record_edit()
+                    }));
+                    items.push((
+                        "Delete record…".into(),
+                        format!("delete remove {ctx}"),
+                        |a, _| a.ask_cf_record_delete(),
+                    ));
+                }
+            }
+            (CfProduct::R2, CfScreen::Objects) => {
+                if let Some(bucket) = &self.cf.current_bucket {
+                    let location = if self.cf.current_prefix.is_empty() {
+                        bucket.clone()
+                    } else {
+                        format!("{bucket}/{}", self.cf.current_prefix)
+                    };
+                    items.push((
+                        "Upload here".into(),
+                        format!("upload put object file {location}"),
+                        |a, _| a.open_cf_upload_form(),
+                    ));
+                }
+                if let Some(object) = self.cf_selected_object() {
+                    let ctx = format!("object {}", object.key);
+                    items.push(("Download".into(), format!("download get {ctx}"), |a, _| {
+                        a.open_cf_object_download()
+                    }));
+                    items.push((
+                        "Delete object…".into(),
+                        format!("delete remove {ctx}"),
+                        |a, _| a.ask_cf_object_delete(),
+                    ));
+                }
+            }
+            (CfProduct::R2, _) => {
+                if let Some(bucket) = self.selected_cf_bucket() {
+                    let ctx = format!("bucket {}", bucket.name);
+                    items.push((
+                        "Browse objects".into(),
+                        format!("browse open objects {ctx}"),
+                        App::cf_open_objects as MenuRun,
+                    ));
+                    items.push((
+                        "Delete bucket…".into(),
+                        format!("delete remove {ctx}"),
+                        |a, _| a.open_cf_bucket_delete_form(),
+                    ));
+                }
+            }
+        }
+        if self.cf.active.is_some() {
+            items.push((
+                "Refresh".into(),
+                "reload refresh current cloudflare list".into(),
+                |a, r| a.cf_reload(r),
+            ));
+        }
+        items
+    }
+
+    /// Open the Cloudflare command palette: the CF mirror of `open_palette`. It
+    /// starts with actions for the selected CF row (the same functions as the row
+    /// menus/keys), then adds global jumps to products, accounts, zones and
+    /// buckets. Entries are rebuilt from the current CF state each open, so they
+    /// always reflect the loaded zones/buckets/accounts.
     pub(super) fn open_cf_palette(&mut self) {
         let mut items = Vec::new();
+        for (label, search, run) in self.cf_palette_context_actions() {
+            items.push(PaletteItem {
+                label,
+                search,
+                action: PaletteAction::Run(run),
+            });
+        }
         // Products (the tab bar), so `:` reaches DNS/R2 the way it reaches tabs in
         // EasyPanel.
         for (label, product) in CF_PRODUCTS {
@@ -736,9 +846,7 @@ impl App {
         let mut state = ListState::default();
         state.select((!items.is_empty()).then_some(0));
         self.palette = Some(Palette {
-            // No per-row actions here, so no "actions for X" context line — the title
-            // stays a plain search box.
-            context: None,
+            context: self.cf_palette_context_label(),
             query: String::new(),
             items,
             state,

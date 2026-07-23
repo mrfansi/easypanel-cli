@@ -5763,6 +5763,114 @@ fn cf_palette_lists_products_accounts_zones_buckets_and_jumps_by_identity() {
 }
 
 #[test]
+fn cf_palette_starts_with_context_actions_for_the_selected_row() {
+    // This is the big Easypanel-feel bit: `:` is not just navigation in Cloudflare.
+    // It starts with actions for the row under the cursor, using the same flows as
+    // Space/right-click/leaf keys, then falls through to product/account/zone jumps.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.zones = vec![cf_zone("z1", "example.com")];
+    app.cf.zones_row.select(Some(0));
+
+    app.on_key(KeyCode::Char(':'), &tx);
+    let pal = app.palette.as_ref().expect("palette opens");
+    assert_eq!(pal.context.as_deref(), Some("Zone: example.com"));
+    let labels: Vec<String> = pal.items.iter().map(|it| it.label.clone()).collect();
+    assert_eq!(labels[0], "Open DNS records");
+    assert_eq!(labels[1], "Delete zone…");
+    assert!(
+        labels.iter().any(|l| l == "⇥  DNS"),
+        "navigation entries still follow the contextual actions: {labels:?}"
+    );
+
+    app.palette.as_mut().unwrap().query = "delete zone".into();
+    app.palette.as_mut().unwrap().state.select(Some(0));
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(
+        matches!(
+            app.form.as_ref().map(|f| &f.kind),
+            Some(FormKind::CfZoneDelete { .. })
+        ),
+        "running the palette action opens the same typed-name delete form"
+    );
+}
+
+#[test]
+fn cf_palette_runs_record_and_r2_object_actions() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+
+    app.cf.product = CfProduct::Dns;
+    app.cf.screen = CfScreen::Records;
+    app.cf.current_zone = Some(cf_zone("z1", "example.com"));
+    app.cf.records = vec![cf_record("r1", "A", "www.example.com", "1.2.3.4")];
+    app.cf.records_row.select(Some(0));
+    app.on_key(KeyCode::Char(':'), &tx);
+    let labels: Vec<String> = app
+        .palette
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|it| it.label.clone())
+        .collect();
+    assert!(
+        labels.starts_with(&["Edit record".into(), "Delete record…".into()]),
+        "record actions lead the palette: {labels:?}"
+    );
+    app.palette.as_mut().unwrap().query = "edit record".into();
+    app.palette.as_mut().unwrap().state.select(Some(0));
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(
+        matches!(
+            app.form.as_ref().map(|f| &f.kind),
+            Some(FormKind::CfRecordEdit { .. })
+        ),
+        "record palette action opens the edit form"
+    );
+
+    app.form = None;
+    app.cf.product = CfProduct::R2;
+    app.cf.screen = CfScreen::Objects;
+    app.cf.current_bucket = Some("assets".into());
+    app.cf.r2_objects = vec![cf_object("dump.sql.gz", 42)];
+    app.cf.r2_objects_row.select(Some(0));
+    app.on_key(KeyCode::Char(':'), &tx);
+    let labels: Vec<String> = app
+        .palette
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|it| it.label.clone())
+        .collect();
+    assert!(
+        labels.starts_with(&[
+            "Upload here".into(),
+            "Download".into(),
+            "Delete object…".into()
+        ]),
+        "object actions lead the palette: {labels:?}"
+    );
+    app.palette.as_mut().unwrap().query = "download".into();
+    app.palette.as_mut().unwrap().state.select(Some(0));
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(
+        matches!(
+            app.form.as_ref().map(|f| &f.kind),
+            Some(FormKind::R2Download { .. })
+        ),
+        "object palette action opens the download form"
+    );
+}
+
+#[test]
 fn cf_status_bar_shows_a_spinner_while_busy_and_surfaces_errors() {
     // The CF status bar mirrors EasyPanel's "working, not frozen" signal: the resting
     // per-screen hints yield to a spinner + message while an operation runs, and to the
@@ -5772,6 +5880,7 @@ fn cf_status_bar_shows_a_spinner_while_busy_and_surfaces_errors() {
     use ratatui::Terminal;
     use std::sync::atomic::Ordering;
     let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
     app.cf.active = Some(cf_account());
     app.set_workspace(Workspace::Cloudflare);
     app.cf.zones = vec![cf_zone("z1", "example.com")];
@@ -5831,6 +5940,34 @@ fn cf_status_bar_shows_a_spinner_while_busy_and_surfaces_errors() {
     assert!(
         !err.contains("Enter records"),
         "the error replaces the hints: {err:?}"
+    );
+}
+
+#[test]
+fn cf_status_bar_keeps_non_error_action_feedback_visible() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.zones = vec![cf_zone("z1", "example.com")];
+    app.status = "No record selected".into();
+
+    let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let bottom: String = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(120)
+        .last()
+        .unwrap()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        bottom.contains("No record selected"),
+        "CF action feedback must not be hidden behind resting hints: {bottom:?}"
     );
 }
 
@@ -6666,6 +6803,48 @@ fn cf_records_have_a_right_click_action_menu_like_easypanel() {
 }
 
 #[test]
+fn cf_records_space_opens_row_menu_until_records_are_marked() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_zone = Some(cf_zone("z1", "example.com"));
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.screen = CfScreen::Records;
+    app.cf.records = vec![cf_record("r1", "A", "www.example.com", "1.2.3.4")];
+    app.cf.records_row.select(Some(0));
+
+    app.on_key(KeyCode::Char(' '), &tx);
+    let labels: Vec<String> = app
+        .menu
+        .as_ref()
+        .expect("Space opens the single-record menu")
+        .items
+        .iter()
+        .map(|it| it.label.clone())
+        .collect();
+    assert!(
+        labels.iter().any(|l| l == "Edit record") && labels.iter().any(|l| l == "Delete record…"),
+        "without marks Space acts like Easypanel's row menu: {labels:?}"
+    );
+
+    app.menu = None;
+    app.cf.marked.insert("r1".into());
+    app.on_key(KeyCode::Char(' '), &tx);
+    let labels: Vec<String> = app
+        .menu
+        .as_ref()
+        .expect("Space opens the bulk menu when marks exist")
+        .items
+        .iter()
+        .map(|it| it.label.clone())
+        .collect();
+    assert!(
+        labels.iter().any(|l| l.contains("marked")),
+        "with marks Space keeps the bulk path: {labels:?}"
+    );
+}
+
+#[test]
 fn the_cf_product_tab_bar_renders_with_dns_active() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -6713,6 +6892,67 @@ fn the_cf_product_tab_bar_renders_with_dns_active() {
 }
 
 #[test]
+fn cloudflare_accounts_get_distinct_visual_tints_like_servers() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let border_colour = |name: &str| {
+        let mut app = App::new("s".into(), vec![]);
+        let mut acc = cf_account();
+        acc.name = name.into();
+        app.cf.accounts = vec![acc.clone()];
+        app.cf.active = Some(acc);
+        app.set_workspace(Workspace::Cloudflare);
+        let mut term = Terminal::new(TestBackend::new(90, 12)).unwrap();
+        term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+        term.backend().buffer().cell((0, 0)).unwrap().fg
+    };
+
+    let candidates = ["prod", "staging", "personal", "work", "ops"];
+    let pair = candidates
+        .iter()
+        .flat_map(|a| candidates.iter().map(move |b| (*a, *b)))
+        .find(|(a, b)| a != b && border_colour(a) != border_colour(b))
+        .expect("candidate account names include two different tints");
+
+    assert_ne!(
+        border_colour(pair.0),
+        border_colour(pair.1),
+        "the workspace chrome should change when the active CF account changes"
+    );
+}
+
+#[test]
+fn clicking_cf_product_tabs_switches_products_like_easypanel_tabs() {
+    use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::Terminal;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+
+    let mut term = Terminal::new(TestBackend::new(90, 12)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let (start, end) = app.cf_product_spans[1];
+    app.on_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: (start + end) / 2,
+            row: app.cf_product_row,
+            modifiers: KeyModifiers::NONE,
+        },
+        &tx,
+    );
+    assert_eq!(app.cf.product, CfProduct::R2);
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::R2Buckets { .. }))),
+        "clicking the R2 tab loads buckets"
+    );
+}
+
+#[test]
 fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
     // CF_PRODUCTS is the single source the tab bar and the switch keys share: DNS is
     // tab 1, R2 tab 2. A future product is one more row here (plus its enum variant).
@@ -6748,6 +6988,72 @@ fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
     assert_eq!(app.cf.product, CfProduct::Dns);
     app.on_key(KeyCode::Char('2'), &tx);
     assert_eq!(app.cf.product, CfProduct::R2);
+}
+
+#[test]
+fn switching_back_to_dns_reloads_zones_for_the_active_account() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::R2;
+    app.cf.r2_buckets = vec![cf_bucket("assets")];
+    app.cf.zones = vec![cf_zone("old", "old.example")];
+
+    app.cf_set_product(CfProduct::Dns, &tx);
+    assert!(app.cf.zones.is_empty(), "old account zones are cleared");
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Zones { .. }))),
+        "DNS reloads when returning from another product"
+    );
+}
+
+#[test]
+fn editing_a_cloudflare_account_uses_the_picker_selection_and_saves() {
+    use crate::config::CloudflareConfig;
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![
+        cf_account(),
+        crate::cloudflare::CloudflareAccount {
+            name: "staging".into(),
+            api_token: "old".into(),
+            account_id: None,
+            default: false,
+        },
+    ];
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.on_key(KeyCode::Char('a'), &tx);
+    app.cf_picker.as_mut().unwrap().select(Some(1));
+    app.on_key(KeyCode::Char('e'), &tx);
+    {
+        let f = app.form.as_mut().expect("edit form");
+        assert_eq!(f.by_label("Name"), "staging");
+        f.fields[0].value = "stage".into();
+        f.fields[1].value = "new-token".into();
+        f.fields[2].value = "acc-2".into();
+    }
+    app.submit_form(&tx);
+    let dir = std::env::temp_dir().join(format!("epcf-edit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = CloudflareConfig::new(dir.join("cloudflare.json"));
+    cfg.add(cf_account()).unwrap();
+    cfg.add(crate::cloudflare::CloudflareAccount {
+        name: "staging".into(),
+        api_token: "old".into(),
+        account_id: None,
+        default: false,
+    })
+    .unwrap();
+    let msg = super::apply_cf_action(&cfg, app.cf_action.take().unwrap()).unwrap();
+    assert!(msg.contains("renamed"), "{msg}");
+    assert!(cfg.by_name("staging").is_none());
+    let saved = cfg.by_name("stage").unwrap();
+    assert_eq!(saved.api_token, "new-token");
+    assert_eq!(saved.account_id.as_deref(), Some("acc-2"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn cf_bucket(name: &str) -> crate::cloudflare::R2Bucket {
@@ -7120,7 +7426,8 @@ fn cf_status_hints_name_each_screens_keys() {
     // Space opens the zone row menu (cf_zones_key), so the hint must advertise it —
     // as the Buckets/Records hints already advertise their Space menus.
     assert!(cf_status_hints(CfScreen::Zones).contains("Space menu"));
-    assert!(cf_status_hints(CfScreen::Records).contains("Space bulk"));
+    assert!(cf_status_hints(CfScreen::Records).contains("Space menu/bulk"));
+    assert!(cf_status_hints(CfScreen::Records).contains(": palette"));
     assert!(cf_status_hints(CfScreen::Records).contains("Esc zones"));
 }
 
@@ -7140,6 +7447,33 @@ fn cf_list_state_tells_loading_from_empty_from_failed() {
 }
 
 #[test]
+fn cf_empty_lists_do_not_show_loading_for_unrelated_easypanel_work() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::sync::atomic::Ordering;
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.status = "Ready".into();
+    app.busy.store(1, Ordering::Relaxed);
+
+    let mut term = Terminal::new(TestBackend::new(100, 12)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        screen.contains("No zones"),
+        "an unrelated busy worker must not make the CF list look like it is loading: {screen:?}"
+    );
+}
+
+#[test]
 fn cf_record_patch_gates_proxied_and_priority_by_type() {
     // An A record carries content/ttl/proxied but no priority; MX carries priority
     // but never proxied; TXT carries neither.
@@ -7156,6 +7490,71 @@ fn cf_record_patch_gates_proxied_and_priority_by_type() {
     let txt = cf_record_patch("TXT", "v=spf1", "1", true, "5");
     assert_eq!(txt.proxied, None);
     assert_eq!(txt.priority, None);
+}
+
+#[test]
+fn cf_record_forms_reject_invalid_numbers_instead_of_guessing_auto() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_zone = Some(cf_zone("z1", "example.com"));
+    app.set_workspace(Workspace::Cloudflare);
+    app.open_cf_record_form();
+    {
+        let f = app.form.as_mut().unwrap();
+        f.fields[1].value = "www.example.com".into();
+        f.fields[2].value = "1.2.3.4".into();
+        f.fields[3].value = "soon".into();
+    }
+    app.submit_form(&tx);
+    assert_eq!(app.status, "TTL must be a number (use 1 for automatic)");
+    assert!(rx.try_recv().is_err(), "invalid TTL sends no request");
+
+    app.form.as_mut().unwrap().fields[3].value = "1".into();
+    app.form.as_mut().unwrap().fields[5].value = "high".into();
+    app.submit_form(&tx);
+    assert_eq!(app.status, "Priority must be a number");
+    assert!(rx.try_recv().is_err(), "invalid priority sends no request");
+}
+
+#[test]
+fn cf_bulk_failures_open_a_viewer_instead_of_cramming_status() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_zone = Some(cf_zone("z1", "example.com"));
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.screen = CfScreen::Records;
+    app.cf.records = vec![cf_record("r1", "A", "www.example.com", "1.2.3.4")];
+    app.cf.marked.insert("r1".into());
+
+    app.handle(
+        Resp::Cf(CfResp::BulkDone {
+            ok: 1,
+            failed: vec![("r2".into(), "permission denied".into())],
+        }),
+        &tx,
+    );
+    assert!(matches!(app.screen, Screen::Viewer));
+    assert!(app.workspace == Workspace::Cloudflare);
+    assert!(app.viewer.title.contains("Cloudflare bulk"));
+    assert!(
+        app.viewer
+            .lines
+            .iter()
+            .any(|l| l.contains("permission denied")),
+        "failure details are readable in the viewer"
+    );
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Records { .. }))),
+        "bulk completion still reloads the records list"
+    );
+
+    app.on_key(KeyCode::Esc, &tx);
+    assert!(
+        !matches!(app.screen, Screen::Viewer),
+        "Esc leaves the CF report viewer"
+    );
 }
 
 #[test]

@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.92.0] — 2026-07-23
+
+### Added
+
+- Cloudflare: the command palette now starts with actions for the selected row
+  before the navigation entries. Zones can open records or delete, DNS records
+  can edit/delete, R2 buckets can browse/delete, and R2 object levels can upload,
+  download, or delete from the same `:` flow Easypanel users already reach for.
+- Cloudflare: account picker now supports editing an existing account (`e`) so a
+  token or account-id can be fixed without deleting and recreating the entry.
+- Cloudflare: DNS/R2 product tabs are clickable, matching the mouse behaviour of
+  the Easypanel tab bar.
+
+### Changed
+
+- Cloudflare: the workspace chrome now gets a stable tint per active account,
+  while keeping Cloudflare orange for Cloudflare-specific state such as proxied
+  DNS records. This makes switching Cloudflare accounts feel closer to switching
+  Easypanel hosts: the context changes in colour as well as text.
+- Cloudflare: DNS Records now uses `Space` for the selected row's action menu
+  until records are marked, then switches to the bulk menu. That removes the old
+  dead-feeling path where pressing `Space` on an unmarked record only complained
+  about missing marks.
+- Cloudflare: status hints now advertise the `:` palette and call out
+  `Space menu/bulk`, so the richer interaction model is discoverable without
+  opening help.
+
+### Fixed
+
+- Cloudflare: non-error feedback such as "No record selected" or "Name did not
+  match — nothing deleted" now stays visible in the status bar instead of being
+  hidden behind resting key hints.
+- Cloudflare: switching accounts while on R2 no longer leaves stale DNS zones
+  visible when returning to DNS; product switches reload the active account's
+  home data.
+- Cloudflare: CF lists no longer show a fake loading state just because an
+  unrelated Easypanel request is busy.
+- Cloudflare: DNS record and bulk forms now reject invalid TTL/priority values
+  instead of silently treating them as automatic/default values.
+- Cloudflare: bulk DNS failures now open a readable report viewer with per-record
+  details instead of cramming the whole failure list into one status line.
+
 ## [0.91.0] — 2026-07-23
 
 ### Changed
@@ -3434,7 +3476,24 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.92.0...HEAD
+[0.92.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.92.0
+[0.91.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.91.0
+[0.90.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.90.0
+[0.89.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.89.1
+[0.89.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.89.0
+[0.88.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.88.0
+[0.87.7]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.87.7
+[0.87.6]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.87.6
+[0.87.5]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.87.5
+[0.87.4]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.87.4
+[0.87.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.87.3
+[0.87.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.87.2
+[0.87.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.87.1
+[0.87.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.87.0
+[0.86.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.86.1
+[0.86.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.86.0
+[0.85.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.85.0
 [0.8.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.8.1
 [0.8.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.8.0
 [0.7.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.7.0

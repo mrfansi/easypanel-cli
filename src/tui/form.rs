@@ -1025,6 +1025,10 @@ pub(super) enum FormKind {
     /// Add a Cloudflare account (name, API token, optional account id) to the local
     /// config. A LOCAL submit — resolved by the event loop, never the worker.
     CfAccountAdd,
+    /// Edit a stored Cloudflare account (name, API token, optional account id).
+    CfAccountEdit {
+        name: String,
+    },
     ServerEdit {
         name: String,
     },

@@ -693,13 +693,36 @@ pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) {
 /// unmistakable you have left EasyPanel.
 const CF_ORANGE: Color = Color::Rgb(243, 128, 32);
 
+fn cf_tint(app: &App) -> Color {
+    app.cf
+        .active
+        .as_ref()
+        .map(|a| server_colour(&format!("cloudflare:{}", a.name)))
+        .unwrap_or(CF_ORANGE)
+}
+
 /// The Cloudflare empty-state copy (no account configured). One source, so the
 /// render and its test cannot drift.
 pub(super) const CF_EMPTY_HINT: &str = "No Cloudflare account yet — press a to add one";
 
+fn cf_loading(app: &App, noun: &str) -> bool {
+    app.status.starts_with(&format!("Loading {noun}"))
+}
+
 /// The isolated Cloudflare workspace. Home is the Zones list; Records is a drill-in
 /// from a zone. Reads only from `app.cf` — no EasyPanel state appears here.
 pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    if app.screen == Screen::Viewer {
+        cf_header(
+            f,
+            header,
+            "Cloudflare — report",
+            app,
+            app.cf_product_at.elapsed().as_millis() < 300,
+        );
+        render_viewer(f, body, app);
+        return;
+    }
     // Dispatch on the PRODUCT first (DNS vs R2); DNS then splits on its screen
     // (Zones home / Records drill-in). R2 has a single buckets screen for now.
     match app.cf.product {
@@ -720,12 +743,12 @@ pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &m
 pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
     match screen {
         CfScreen::Records => {
-            "a account · n add · e edit · x delete · v/V mark · Space bulk · / filter · r refresh · Esc zones"
+            "a account · : palette · n add · e edit · x delete · v/V mark · Space menu/bulk · / filter · r refresh · Esc zones"
         }
         // The Zones home. R2's Objects drill-in never routes here (R2 uses the CF_*_HINTS
         // consts), so it shares this arm only to keep the match exhaustive.
         CfScreen::Zones | CfScreen::Objects => {
-            "a account · Enter records · n add zone · x delete · Space menu · / filter · r refresh · Esc EasyPanel"
+            "a account · : palette · Enter records · n add zone · x delete · Space menu · / filter · r refresh · Esc EasyPanel"
         }
     }
 }
@@ -733,35 +756,41 @@ pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
 /// The R2 Buckets status-bar hint. Product-selected in the status bar (the DNS
 /// hints come from `cf_status_hints`), so the two can't drift from the keys.
 pub(super) const CF_BUCKETS_HINTS: &str =
-    "a account · Enter objects · n add bucket · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
+    "a account · : palette · Enter objects · n add bucket · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
 
 /// The R2 Objects folder-browser status-bar hint. Enter descends a folder or downloads a
 /// file; `u` uploads, `x` deletes, `v`/`V` mark files, Space is the object/bulk menu. Esc
 /// goes up a folder inside the tree, or out to the buckets at the root.
 pub(super) const CF_OBJECTS_HINTS: &str =
-    "a account · u upload · Enter download · x delete · v/V mark · Space bulk · / filter · r refresh · Esc up/buckets";
+    "a account · : palette · u upload · Enter download · x delete · v/V mark · Space menu/bulk · / filter · r refresh · Esc up/buckets";
 
 /// The orange workspace header: the bordered title + the PRODUCT tab bar (DNS
 /// today; D1/R2/KV/Workers/Connectors slot in later). Drawn exactly like the
 /// EasyPanel `render_tabs` — `│` gray separators, gray inactive tabs, the active
 /// tab bold with a brief "reversed flash" on change — but in CF orange. The
 /// per-screen key hints now live in the status bar, not here.
-fn cf_header(f: &mut Frame, header: Rect, title: &str, product: CfProduct, fresh: bool) {
+fn cf_header(f: &mut Frame, header: Rect, title: &str, app: &mut App, fresh: bool) {
+    let tint = cf_tint(app);
     let block = Block::bordered()
-        .border_style(Style::default().fg(CF_ORANGE))
+        .border_style(Style::default().fg(tint))
         .title(Span::styled(
             format!(" {title} "),
-            Style::default().fg(CF_ORANGE).add_modifier(Modifier::BOLD),
+            Style::default().fg(tint).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(header);
     f.render_widget(block, header);
 
-    let active = product.index();
+    let active = app.cf.product.index();
     let mut spans = Vec::new();
+    let mut hits = Vec::new();
+    let mut x = inner.x;
     for (i, (label, _)) in CF_PRODUCTS.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+            x += 1;
         }
+        let text = format!(" {label} ");
+        let w = text.chars().count() as u16;
         let style = if i == active {
             let base = Style::default().fg(CF_ORANGE).add_modifier(Modifier::BOLD);
             if fresh {
@@ -772,14 +801,25 @@ fn cf_header(f: &mut Frame, header: Rect, title: &str, product: CfProduct, fresh
         } else {
             Style::default().fg(Color::Gray)
         };
-        spans.push(Span::styled(format!(" {label} "), style));
+        spans.push(Span::styled(text, style));
+        hits.push((x, x + w));
+        x += w;
     }
     f.render_widget(Paragraph::new(Line::from(spans)), inner);
+    app.cf_product_spans = hits;
+    app.cf_product_row = inner.y;
 }
 
 /// Draw the loading / error / empty placeholder for a CF list, or return false so
 /// the caller draws the table. Keeps the empty-vs-failed distinction in one place.
-fn cf_placeholder(f: &mut Frame, body: Rect, title: &str, state: &CfListState, err: Option<&str>) {
+fn cf_placeholder(
+    f: &mut Frame,
+    body: Rect,
+    title: &str,
+    state: &CfListState,
+    err: Option<&str>,
+    tint: Color,
+) {
     let (text, colour) = match state {
         CfListState::Loading => (format!("  Loading {title}…"), Color::DarkGray),
         CfListState::Error => (
@@ -792,7 +832,7 @@ fn cf_placeholder(f: &mut Frame, body: Rect, title: &str, state: &CfListState, e
     f.render_widget(
         Paragraph::new(text)
             .style(Style::default().fg(colour))
-            .block(pane(title.to_string(), CF_ORANGE)),
+            .block(pane(title.to_string(), tint)),
         body,
     );
 }
@@ -839,6 +879,7 @@ pub(super) fn render_cf_picker(f: &mut Frame, app: &mut App) {
                     &[
                         "Enter select".into(),
                         "n new".into(),
+                        "e edit".into(),
                         "x delete".into(),
                         "Esc close".into(),
                     ],
@@ -883,7 +924,7 @@ fn render_cf_zones(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         f,
         header,
         &title,
-        app.cf.product,
+        app,
         app.cf_product_at.elapsed().as_millis() < 300,
     );
 
@@ -892,19 +933,26 @@ fn render_cf_zones(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         f.render_widget(
             Paragraph::new(format!("  {CF_EMPTY_HINT}"))
                 .style(Style::default().fg(Color::DarkGray))
-                .block(pane("Zones".to_string(), CF_ORANGE)),
+                .block(pane("Zones".to_string(), cf_tint(app))),
             body,
         );
         return;
     }
 
     let state = cf_list_state(
-        app.busy() > 0,
+        cf_loading(app, "zones"),
         app.cf.error.is_some(),
         app.cf.zones.is_empty(),
     );
     if state != CfListState::Ready {
-        cf_placeholder(f, body, "zones", &state, app.cf.error.as_deref());
+        cf_placeholder(
+            f,
+            body,
+            "zones",
+            &state,
+            app.cf.error.as_deref(),
+            cf_tint(app),
+        );
         return;
     }
 
@@ -929,6 +977,7 @@ fn render_cf_zones(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     // Record the table's Rect so the shared mouse layer can map a click/hover to a
     // row, exactly as the EasyPanel render paths do.
     app.table_area = body;
+    let tint = cf_tint(app);
     render_table(
         f,
         body,
@@ -937,7 +986,7 @@ fn render_cf_zones(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         &widths,
         rows,
         &mut app.cf.zones_row,
-        CF_ORANGE,
+        tint,
         // Colour the Status like EasyPanel colours its Status column: green = serving
         // through Cloudflare, yellow = not live yet (move your nameservers), red = no
         // longer serving. The health classification is a domain decision (cloudflare.rs).
@@ -974,17 +1023,24 @@ fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         f,
         header,
         &cf_breadcrumb(&segs, "records"),
-        app.cf.product,
+        app,
         app.cf_product_at.elapsed().as_millis() < 300,
     );
 
     let state = cf_list_state(
-        app.busy() > 0,
+        cf_loading(app, "records"),
         app.cf.error.is_some(),
         app.cf.records.is_empty(),
     );
     if state != CfListState::Ready {
-        cf_placeholder(f, body, "DNS records", &state, app.cf.error.as_deref());
+        cf_placeholder(
+            f,
+            body,
+            "DNS records",
+            &state,
+            app.cf.error.as_deref(),
+            cf_tint(app),
+        );
         return;
     }
 
@@ -1036,6 +1092,7 @@ fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     // Record the table's Rect so the shared mouse layer can map a click/hover to a
     // row, exactly as the EasyPanel render paths do.
     app.table_area = body;
+    let tint = cf_tint(app);
     render_table(
         f,
         body,
@@ -1044,7 +1101,7 @@ fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         &widths,
         rows,
         &mut app.cf.records_row,
-        CF_ORANGE,
+        tint,
         // Colour the Proxied flag the way Cloudflare's own dashboard does — it is the
         // load-bearing per-record state: orange cloud = proxied (origin hidden, WAF/CDN
         // on), grey = DNS-only (origin IP exposed). The analogue of EasyPanel's Auto
@@ -1070,7 +1127,7 @@ fn render_cf_buckets(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         f,
         header,
         &title,
-        app.cf.product,
+        app,
         app.cf_product_at.elapsed().as_millis() < 300,
     );
 
@@ -1079,19 +1136,26 @@ fn render_cf_buckets(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         f.render_widget(
             Paragraph::new(format!("  {CF_EMPTY_HINT}"))
                 .style(Style::default().fg(Color::DarkGray))
-                .block(pane("Buckets".to_string(), CF_ORANGE)),
+                .block(pane("Buckets".to_string(), cf_tint(app))),
             body,
         );
         return;
     }
 
     let state = cf_list_state(
-        app.busy() > 0,
+        cf_loading(app, "R2 buckets"),
         app.cf.error.is_some(),
         app.cf.r2_buckets.is_empty(),
     );
     if state != CfListState::Ready {
-        cf_placeholder(f, body, "buckets", &state, app.cf.error.as_deref());
+        cf_placeholder(
+            f,
+            body,
+            "buckets",
+            &state,
+            app.cf.error.as_deref(),
+            cf_tint(app),
+        );
         return;
     }
 
@@ -1129,6 +1193,7 @@ fn render_cf_buckets(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     // Record the table's Rect so the shared mouse layer can map a click/hover to a
     // row, exactly as the DNS render paths do.
     app.table_area = body;
+    let tint = cf_tint(app);
     render_table(
         f,
         body,
@@ -1137,7 +1202,7 @@ fn render_cf_buckets(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         &widths,
         rows,
         &mut app.cf.r2_row,
-        CF_ORANGE,
+        tint,
         |_, _| None,
     );
 }
@@ -1165,18 +1230,25 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         f,
         header,
         &cf_breadcrumb(&segs, "objects"),
-        app.cf.product,
+        app,
         app.cf_product_at.elapsed().as_millis() < 300,
     );
 
     // Empty means no subfolders AND no files at this level.
     let state = cf_list_state(
-        app.busy() > 0,
+        app.status.starts_with("Loading "),
         app.cf.error.is_some(),
         app.cf.r2_folders.is_empty() && app.cf.r2_objects.is_empty(),
     );
     if state != CfListState::Ready {
-        cf_placeholder(f, body, "objects", &state, app.cf.error.as_deref());
+        cf_placeholder(
+            f,
+            body,
+            "objects",
+            &state,
+            app.cf.error.as_deref(),
+            cf_tint(app),
+        );
         return;
     }
 
@@ -1236,6 +1308,7 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     ];
     // Record the table's Rect so the shared mouse layer can map a click/hover to a row.
     app.table_area = body;
+    let tint = cf_tint(app);
     render_table(
         f,
         body,
@@ -1244,7 +1317,7 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         &widths,
         rows,
         &mut app.cf.r2_objects_row,
-        CF_ORANGE,
+        tint,
         // Set a folder apart with BOLD, not a colour. A full-width foreground tint on the
         // Name column reverses to a full-width coloured BACKGROUND when the row is
         // selected — a two-tone bar beside the empty Size/Modified cells. The `▸ ` marker
@@ -2731,7 +2804,12 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
         app.viewer.scroll.min(max_scroll)
     };
     let block = |app: &App| {
-        pane(String::new(), server_colour(&app.server_name))
+        let tint = if app.workspace == Workspace::Cloudflare {
+            cf_tint(app)
+        } else {
+            server_colour(&app.server_name)
+        };
+        pane(String::new(), tint)
             .title(format!(
                 " {}{} ",
                 app.viewer.title,
@@ -2874,7 +2952,8 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     //     selected" or a create/delete that the API rejected);
     //   - otherwise → the resting per-screen key hints.
     if app.workspace == Workspace::Cloudflare {
-        let (text, style) = if let Some(c) = app.spinner() {
+        let cf_resting_status = matches!(app.status.as_str(), "Ready" | "Cloudflare workspace");
+        let (text, style) = if let Some(c) = (!cf_resting_status).then(|| app.spinner()).flatten() {
             (
                 format!(" {c} {} ", app.status_line()),
                 bar.add_modifier(Modifier::BOLD),
@@ -2883,6 +2962,11 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
             (
                 format!(" {} ", app.status_line()),
                 bar.fg(Color::Indexed(210)).add_modifier(Modifier::BOLD),
+            )
+        } else if !cf_resting_status {
+            (
+                format!(" {} ", app.status_line()),
+                bar.add_modifier(Modifier::BOLD),
             )
         } else if let Some(msg) = app.cf_marks_status() {
             // Marks pending an action outrank the resting hints — EasyPanel keeps

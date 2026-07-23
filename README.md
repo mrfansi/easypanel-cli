@@ -89,6 +89,10 @@ searchable table, and every domain on the box — without clicking through a hie
   run any action on the selected row from the same box (`deploy karir`, `logs api`). It
   knows every service from the moment the app starts, so it works before you have opened
   anything.
+- **Cloudflare beside EasyPanel** (`W`) — switch into DNS and R2 without leaving the
+  terminal. The Cloudflare workspace has clickable product tabs, an account picker you
+  can edit in place, row actions in the `:` palette, visible status feedback, and the
+  same mark-then-`Space` bulk flow used by EasyPanel tables.
 - **Mouse and keyboard** — click tabs and rows, right-click for a context menu, scroll,
   hover to highlight; every action also has a key.
 
@@ -570,36 +574,44 @@ the change to each with **PATCH** (so it never wipes fields you didn't name), an
 per-record pass/fail. Pass `--account <name>` on any zone/record command to target a
 non-default account.
 
-**R2 (object storage) — buckets:**
+**R2 (object storage) — buckets and objects:**
 
 ```bash
 easypanel cf r2 bucket list
 easypanel cf r2 bucket create my-bucket
 easypanel cf r2 bucket delete my-bucket        # must be empty; asks to type the name
 easypanel cf r2 object list my-bucket [--prefix path/]   # browse a bucket as a folder tree
+easypanel cf r2 object put my-bucket path/file.txt --file ./file.txt
+easypanel cf r2 object get my-bucket path/file.txt --out ./file.txt
+easypanel cf r2 object rm my-bucket path/file.txt [path/other.txt …]
 ```
 
 R2 needs the account-scoped **Workers R2 Storage** token permission (the tool hints at
 that if it's missing) — the same API token lists buckets AND their objects, so there are
 **no separate R2 S3 credentials to set up**. Objects browse as a **folder tree** (subfolders
 then files, newest first) rather than one flat list; in the TUI, **Enter** descends into a
-folder and **Esc** goes back up. Uploading/downloading/deleting objects lands in a later
-release.
+folder, **Enter** on a file downloads it, **u** uploads into the current folder, **x**
+deletes the selected file, and `v`/`V` + **Space** bulk-downloads or bulk-deletes marked
+files. Uploads are capped at Cloudflare's 300 MB REST object limit; larger objects still
+need a multipart S3-compatible flow outside this command.
 
 **In the TUI:** press **`W`** to switch into an isolated, Cloudflare-orange workspace with
-its own product tab bar (**DNS │ R2**, switched with `1`/`2`/`Tab`/`←→`). On **DNS**, the
-home is the active account's zones; **`a`** opens an account picker (select / add / delete,
-just like the server switcher), **Enter** on a zone drills into its records, and records
-support add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a
-`Space` menu (`Space`/right-click also opens a per-zone action menu). On **R2**, the same
-shape lists buckets with `n` create / `x` delete, and **Enter** drills into a bucket's
-objects. The EasyPanel tabs and 1–8 keys are inert inside the Cloudflare workspace, and
-vice-versa.
+its own product tab bar (**DNS │ R2**, switched with `1`/`2`/`Tab`/`←→` or mouse click).
+On **DNS**, the home is the active account's zones; **`a`** opens an account picker
+(select / add / edit / delete, just like the server switcher), **Enter** on a zone drills
+into its records, and records support add/edit/delete, a `/` filter, and bulk change by
+marking rows with `v`/`V` then a `Space` menu (`Space`/right-click also opens a per-zone
+or per-record action menu). On **R2**, the same shape lists buckets with `n` create /
+`x` delete, and **Enter** drills into a bucket's objects. `:` opens the Cloudflare command
+palette: it jumps to products/accounts/zones/buckets and starts with the selected row's
+own actions, so "edit this record" or "download this object" is reachable from the same
+muscle memory as EasyPanel. The EasyPanel tabs and 1–8 keys are inert inside the
+Cloudflare workspace, and vice-versa.
 
-v1 covers the common record types (A, AAAA, CNAME, TXT, NS, MX). Every endpoint shape was
-checked against Cloudflare's official API reference; the request/error plumbing is verified
-against the live API, and the full create/update happy-path is confirmed against your own
-account on first use (the tool can't reach Cloudflare without your token).
+v1 covers the common record types (A, AAAA, CNAME, TXT, NS, MX). Endpoint shapes are kept
+close to Cloudflare's official API reference, pure request builders are unit-tested, and
+the UI surfaces Cloudflare error envelopes with permission hints. Any real mutation should
+still be tried first on a throwaway zone/bucket with a scoped token.
 
 ## Known limits
 

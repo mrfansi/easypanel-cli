@@ -282,23 +282,44 @@ fn event_loop(
         // A Cloudflare account-list change needs the config file, which only lives
         // here — same rule as the server list. Re-seed the App's copy afterwards.
         if let Some(action) = app.cf_action.take() {
-            let added = matches!(action, CfAction::Add(_));
+            let saved = matches!(action, CfAction::Add(_) | CfAction::Save { .. });
+            let active_after_save = match &action {
+                CfAction::Save {
+                    rename_from,
+                    account,
+                } => {
+                    let old = rename_from.as_deref().unwrap_or(account.name.as_str());
+                    app.cf
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| active.name == old)
+                        .then(|| account.name.clone())
+                }
+                _ => None,
+            };
             app.status = match apply_cf_action(cf_cfg, action) {
                 Ok(msg) => msg,
                 Err(e) => format!("Error: {e}"),
             };
             app.cf.accounts = cf_cfg.list();
-            // A delete may have removed the ACTIVE account; drop the stale pointer
-            // (its token is gone) so the breadcrumb and next load don't use it.
+            // A delete/rename/edit may have changed the ACTIVE account. Refresh the
+            // in-memory copy from config (token/account-id included), or drop it if it
+            // no longer exists so the breadcrumb and next load don't use stale data.
             if let Some(active) = &app.cf.active {
-                if !app.cf.accounts.iter().any(|a| a.name == active.name) {
-                    app.cf.active = None;
-                }
+                app.cf.active = app
+                    .cf
+                    .accounts
+                    .iter()
+                    .find(|a| a.name == active.name)
+                    .cloned();
+            }
+            if let Some(name) = active_after_save {
+                app.cf.active = app.cf.accounts.iter().find(|a| a.name == name).cloned();
             }
             // Adding the FIRST account (none active yet) auto-activates it and loads
             // its zones, so the user lands on it instead of a blank "— zones". An
             // add with an account already active must not steal the selection.
-            if added && app.cf.active.is_none() {
+            if saved && app.cf.active.is_none() {
                 app.enter_cloudflare(&w.user);
             }
         }
@@ -661,6 +682,30 @@ fn apply_cf_action(cfg: &CloudflareConfig, action: CfAction) -> Result<String> {
             let name = account.name.clone();
             cfg.add(account)?;
             Ok(format!("Cloudflare account '{name}' saved"))
+        }
+        CfAction::Save {
+            rename_from,
+            mut account,
+        } => {
+            let old = rename_from.unwrap_or_else(|| account.name.clone());
+            if old != account.name && cfg.by_name(&account.name).is_some() {
+                anyhow::bail!("Cloudflare account '{}' already exists", account.name);
+            }
+            let was_default = cfg.by_name(&old).is_some_and(|a| a.default);
+            if old != account.name {
+                cfg.remove(&old)?;
+            }
+            account.default = was_default;
+            let name = account.name.clone();
+            cfg.add(account)?;
+            if was_default {
+                cfg.set_default(&name)?;
+            }
+            Ok(if old == name {
+                format!("Cloudflare account '{name}' saved")
+            } else {
+                format!("Cloudflare account '{old}' renamed to '{name}'")
+            })
         }
         CfAction::SetDefault(name) => {
             cfg.set_default(&name)?;

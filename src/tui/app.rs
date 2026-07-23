@@ -362,6 +362,10 @@ pub(super) fn cf_record_patch(
 /// CloudflareConfig. Same shape as ServerAction — the App never writes the file.
 pub(super) enum CfAction {
     Add(crate::cloudflare::CloudflareAccount),
+    Save {
+        rename_from: Option<String>,
+        account: crate::cloudflare::CloudflareAccount,
+    },
     SetDefault(String),
     Remove(String),
 }
@@ -629,6 +633,9 @@ pub(super) struct App {
     /// Per-tab click hitboxes (start,end column), filled in during render_tabs. Plus its row.
     pub(super) tab_spans: Vec<(u16, u16)>,
     pub(super) tab_row: u16,
+    /// Cloudflare product-tab click hitboxes, filled in during cf_header.
+    pub(super) cf_product_spans: Vec<(u16, u16)>,
+    pub(super) cf_product_row: u16,
     /// The active screen's table area, filled in during render — maps a click to a
     /// row. Only one screen renders per frame, so one field covers every table.
     pub(super) table_area: Rect,
@@ -716,6 +723,8 @@ impl App {
             last_sel: None,
             tab_spans: Vec::new(),
             tab_row: 0,
+            cf_product_spans: Vec::new(),
+            cf_product_row: 0,
             table_area: Rect::default(),
             menu: None,
             palette: None,
@@ -992,6 +1001,30 @@ impl App {
         );
     }
 
+    /// Edit a stored Cloudflare account from the account picker. This mirrors the server
+    /// picker: fixing a token or adding an account-id should not require delete + add.
+    pub(super) fn open_cf_account_edit_form(&mut self) {
+        let Some(acc) = self.cf_picker_selected().or_else(|| self.cf.active.clone()) else {
+            self.status = "No Cloudflare account selected".into();
+            return;
+        };
+        let fields = vec![
+            Field::text("Name", &acc.name),
+            Field::secret_val("API token", &acc.api_token),
+            Field::text("Account ID", acc.account_id.as_deref().unwrap_or("")),
+        ];
+        self.form = Some(
+            Form::new(
+                FormKind::CfAccountEdit {
+                    name: acc.name.clone(),
+                },
+                format!(" Edit Cloudflare account {} ", acc.name),
+                fields,
+            )
+            .with_note("Updates local cloudflare.json. The token stays masked on screen."),
+        );
+    }
+
     // ---------- Cloudflare zones & records ----------
 
     /// The active account's token, or None before an account was opened.
@@ -1169,9 +1202,7 @@ impl App {
         // whose Esc does something else entirely.
         self.cf.marked.clear();
         self.cf.product = product;
-        if product == CfProduct::R2 {
-            self.cf_goto_buckets(req);
-        }
+        self.cf_goto_home(req);
     }
 
     // ---------- Account picker (mirrors the server `s` picker) ----------
@@ -2423,17 +2454,20 @@ impl App {
             }
             CfResp::BulkDone { ok, failed } => {
                 self.cf.marked.clear();
-                self.status = if failed.is_empty() {
-                    format!("{ok} record(s) done")
-                } else {
-                    let detail = failed
-                        .iter()
-                        .map(|(id, e)| format!("{id}: {e}"))
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    format!("{ok} done · {} failed — {detail}", failed.len())
-                };
                 self.cf_reload(req);
+                if failed.is_empty() {
+                    self.status = format!("{ok} record(s) done");
+                    return;
+                }
+                let mut lines = vec![
+                    format!("{ok} succeeded, {} FAILED", failed.len()),
+                    String::new(),
+                ];
+                lines.extend(failed.iter().map(|(id, why)| format!("✗ {id} — {why}")));
+                self.viewer.from = self.screen;
+                self.show_viewer(format!("Cloudflare bulk — {} failed", failed.len()), lines);
+                self.viewer.ctx = None;
+                self.status = format!("⚠ {} of {} failed", failed.len(), failed.len() + ok);
             }
             CfResp::Err(e) => {
                 self.cf.error = Some(e.clone());
@@ -4421,35 +4455,72 @@ impl App {
                 self.preview_domain_edits(&target, &find, &replace);
                 return;
             }
-            FormKind::CfAccountAdd => {
-                let (name, token, account_id) = (form.val(0), form.val(1), form.val(2));
+            FormKind::CfAccountAdd | FormKind::CfAccountEdit { .. } => {
+                let (name, token, account_id) = (
+                    form.val(0).trim().to_string(),
+                    form.val(1).trim().to_string(),
+                    form.val(2).trim().to_string(),
+                );
                 if name.is_empty() || token.is_empty() {
                     self.status = "Name and API token are required".into();
                     return;
                 }
+                if !commands::valid_name(&name) {
+                    self.status =
+                        "Cloudflare account names may only contain a-z, 0-9, - and _".into();
+                    return;
+                }
                 // Resolved by event_loop, which alone holds the CloudflareConfig —
                 // same rule as a server-list change (see ServerAction).
-                self.cf_action = Some(CfAction::Add(crate::cloudflare::CloudflareAccount {
+                let account = crate::cloudflare::CloudflareAccount {
                     name,
                     api_token: token,
                     account_id: (!account_id.is_empty()).then_some(account_id),
                     default: false,
-                }));
+                };
+                self.cf_action = Some(match &form.kind {
+                    FormKind::CfAccountEdit { name } => CfAction::Save {
+                        rename_from: Some(name.clone()),
+                        account,
+                    },
+                    _ => CfAction::Add(account),
+                });
             }
             FormKind::CfRecordCreate => {
-                let kind = form.val(0);
+                let kind = form.val(0).trim().to_string();
                 if !valid_record_type(&kind) {
                     self.status = format!("Unsupported record type '{kind}'");
                     return;
                 }
-                let (name, content) = (form.val(1), form.val(2));
+                let (name, content) = (
+                    form.val(1).trim().to_string(),
+                    form.val(2).trim().to_string(),
+                );
                 if name.is_empty() || content.is_empty() {
                     self.status = "Name and content are required".into();
                     return;
                 }
-                let ttl = form.val(3).trim().parse().unwrap_or(1);
+                let ttl_text = form.val(3);
+                let ttl = match ttl_text.trim().parse() {
+                    Ok(ttl) => ttl,
+                    Err(_) => {
+                        self.status = "TTL must be a number (use 1 for automatic)".into();
+                        return;
+                    }
+                };
                 let proxied = form.val(4) == "yes";
-                let priority = form.val(5).trim().parse().ok();
+                let priority_text = form.val(5);
+                let priority = if priority_text.trim().is_empty() {
+                    None
+                } else {
+                    match priority_text.trim().parse() {
+                        Ok(p) => Some(p),
+                        Err(_) => {
+                            self.status = "Priority must be a number".into();
+                            return;
+                        }
+                    }
+                };
                 let body = record_body(&kind, &name, &content, ttl, proxied, priority);
                 let (Some(token), Some(zone)) = (self.cf_token(), self.cf.current_zone.clone())
                 else {
@@ -4464,6 +4535,20 @@ impl App {
             }
             FormKind::CfRecordEdit { id, kind } => {
                 let (id, kind) = (id.clone(), kind.clone());
+                if form.by_label("Content").trim().is_empty() {
+                    self.status = "Content is required".into();
+                    return;
+                }
+                if form.by_label("TTL").trim().parse::<u32>().is_err() {
+                    self.status = "TTL must be a number (use 1 for automatic)".into();
+                    return;
+                }
+                let priority_text = form.by_label("Priority");
+                if !priority_text.trim().is_empty() && priority_text.trim().parse::<u16>().is_err()
+                {
+                    self.status = "Priority must be a number".into();
+                    return;
+                }
                 let patch = cf_record_patch(
                     &kind,
                     &form.by_label("Content"),
@@ -4488,7 +4573,7 @@ impl App {
                 }));
             }
             FormKind::CfZoneCreate => {
-                let name = form.val(0);
+                let name = form.val(0).trim().to_string();
                 if name.is_empty() {
                     self.status = "Zone name is required".into();
                     return;
@@ -4520,13 +4605,24 @@ impl App {
             }
             FormKind::CfBulkSet(attr) => {
                 let body = match attr {
-                    CfBulkAttr::Content => json!({ "content": form.by_label("Content") }),
+                    CfBulkAttr::Content => {
+                        let content = form.by_label("Content").trim().to_string();
+                        if content.is_empty() {
+                            self.status = "Content is required".into();
+                            return;
+                        }
+                        json!({ "content": content })
+                    }
                     CfBulkAttr::Proxied => {
                         json!({ "proxied": form.by_label("Proxied") == "yes" })
                     }
-                    CfBulkAttr::Ttl => {
-                        json!({ "ttl": form.by_label("TTL").trim().parse::<u32>().unwrap_or(1) })
-                    }
+                    CfBulkAttr::Ttl => match form.by_label("TTL").trim().parse::<u32>() {
+                        Ok(ttl) => json!({ "ttl": ttl }),
+                        Err(_) => {
+                            self.status = "TTL must be a number (use 1 for automatic)".into();
+                            return;
+                        }
+                    },
                 };
                 let ids: Vec<String> = self.cf.marked.iter().cloned().collect();
                 if ids.is_empty() {
@@ -4546,7 +4642,7 @@ impl App {
                 }));
             }
             FormKind::CfBucketCreate => {
-                let name = form.val(0);
+                let name = form.val(0).trim().to_string();
                 if name.is_empty() {
                     self.status = "Bucket name is required".into();
                     return;

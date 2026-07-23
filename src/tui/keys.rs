@@ -93,6 +93,19 @@ impl App {
             self.help_scroll = 0;
             return;
         }
+        if self.workspace == Workspace::Cloudflare && self.screen == Screen::Viewer {
+            if matches!(code, KeyCode::Left | KeyCode::Right) {
+                const STEP: u16 = 8;
+                self.viewer.hscroll = if code == KeyCode::Right {
+                    self.viewer.hscroll.saturating_add(STEP)
+                } else {
+                    self.viewer.hscroll.saturating_sub(STEP)
+                };
+            } else {
+                self.viewer_key(code, req);
+            }
+            return;
+        }
         // ISOLATION: while in the Cloudflare workspace, none of the EasyPanel keys
         // below (tabs, digits 1-8, Tab, ←/→, the per-screen handlers) may act. The
         // Cloudflare account screen has its own, separate handler.
@@ -423,6 +436,18 @@ impl App {
     }
 
     fn on_click(&mut self, col: u16, row: u16, req: &Sender<Req>) {
+        if self.workspace == Workspace::Cloudflare && row == self.cf_product_row {
+            if let Some(i) = self
+                .cf_product_spans
+                .iter()
+                .position(|&(a, b)| col >= a && col < b)
+            {
+                if let Some(&(_, product)) = CF_PRODUCTS.get(i) {
+                    self.cf_set_product(product, req);
+                }
+            }
+            return;
+        }
         // Click a tab -> switch to it (same as pressing its number). Only the
         // EasyPanel workspace has this tab bar; in Cloudflare tab_row is stale, so a
         // click there must fall through to row selection, not switch a hidden tab.
@@ -1483,6 +1508,10 @@ impl App {
                 self.cf_picker = None;
                 self.open_cf_account_form();
             }
+            KeyCode::Char('e') => {
+                self.open_cf_account_edit_form();
+                self.cf_picker = None;
+            }
             KeyCode::Char('x') => {
                 if let Some(acc) = self.cf_picker_selected() {
                     self.cf_picker = None;
@@ -1542,7 +1571,8 @@ impl App {
             KeyCode::Char('x') => self.ask_cf_record_delete(),
             KeyCode::Char('v') => self.cf_toggle_mark(),
             KeyCode::Char('V') => self.cf_mark_all_shown(),
-            KeyCode::Char(' ') => self.open_cf_bulk_menu(),
+            KeyCode::Char(' ') if !self.cf.marked.is_empty() => self.open_cf_bulk_menu(),
+            KeyCode::Char(' ') => self.open_cf_record_menu(),
             _ => {
                 let len = self.cf_records_shown().len();
                 move_table(&mut self.cf.records_row, code, len);
