@@ -7,8 +7,9 @@ use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
 
 use crate::cloudflare::{
-    apply_patch, proxyable, record_body, valid_record_type, CloudflareAccount, R2Bucket, R2Object,
-    Record, RecordFilter, RecordPatch, Zone,
+    apply_patch, filter_buckets, filter_records, filter_zones, proxyable, record_body,
+    valid_record_type, CloudflareAccount, R2Bucket, R2Object, Record, RecordFilter, RecordPatch,
+    Zone,
 };
 use crate::commands;
 use crate::output::field;
@@ -291,57 +292,6 @@ pub(super) fn cf_list_state(busy: bool, error: bool, is_empty: bool) -> CfListSt
     } else {
         CfListState::Empty
     }
-}
-
-/// The zones whose name/status/id contains `needle` (case-insensitive). An empty
-/// needle keeps everything.
-pub(super) fn filter_zones<'a>(zones: &'a [Zone], needle: &str) -> Vec<&'a Zone> {
-    let n = needle.to_ascii_lowercase();
-    zones
-        .iter()
-        .filter(|z| {
-            n.is_empty()
-                || z.name.to_ascii_lowercase().contains(&n)
-                || z.status.to_ascii_lowercase().contains(&n)
-                || z.id.to_ascii_lowercase().contains(&n)
-        })
-        .collect()
-}
-
-/// The records whose type/name/content contains `needle` (case-insensitive). An
-/// empty needle keeps everything — a zone can hold thousands, so this narrows the
-/// already-loaded list rather than refetching.
-pub(super) fn filter_records<'a>(records: &'a [Record], needle: &str) -> Vec<&'a Record> {
-    let n = needle.to_ascii_lowercase();
-    records
-        .iter()
-        .filter(|r| {
-            n.is_empty()
-                || r.kind.to_ascii_lowercase().contains(&n)
-                || r.name.to_ascii_lowercase().contains(&n)
-                || r.content.to_ascii_lowercase().contains(&n)
-        })
-        .collect()
-}
-
-/// The R2 buckets whose name/class/location contains `needle` (case-insensitive).
-/// An empty needle keeps everything — narrows the already-loaded list client-side,
-/// exactly like `filter_zones`.
-pub(super) fn filter_buckets<'a>(buckets: &'a [R2Bucket], needle: &str) -> Vec<&'a R2Bucket> {
-    let n = needle.to_ascii_lowercase();
-    buckets
-        .iter()
-        .filter(|b| {
-            n.is_empty()
-                || b.name.to_ascii_lowercase().contains(&n)
-                || b.storage_class.to_ascii_lowercase().contains(&n)
-                || b.location
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_ascii_lowercase()
-                    .contains(&n)
-        })
-        .collect()
 }
 
 /// The R2 objects whose key contains `needle` (case-insensitive). An empty needle

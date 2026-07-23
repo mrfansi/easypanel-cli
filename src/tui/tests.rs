@@ -6477,6 +6477,7 @@ fn cf_filter_narrows_the_loaded_records() {
     // The CF-local filter narrows the already-loaded list client-side (a zone can
     // hold thousands), matching type/name/content, and never touches the EasyPanel
     // filter.
+    use crate::cloudflare::filter_records;
     let records = vec![
         cf_record("r1", "A", "api.example.com", "1.1.1.1"),
         cf_record("r2", "CNAME", "www.example.com", "example.com"),

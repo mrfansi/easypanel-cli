@@ -329,6 +329,61 @@ pub fn resolve_zone<'a>(zones: &'a [Zone], needle: &str) -> Option<&'a Zone> {
         .or_else(|| zones.iter().find(|z| z.id == needle))
 }
 
+// ---------- Client-side list filters (narrow an already-loaded list) ----------
+//
+// The CF-local `/` filter narrows the list already in hand rather than refetching
+// (a zone can hold thousands of records). Which fields a needle matches is a domain
+// rule, so it lives here; the TUI's `cf_*_shown` selectors are thin callers.
+
+/// The zones whose name/status/id contains `needle` (case-insensitive). An empty
+/// needle keeps everything.
+pub fn filter_zones<'a>(zones: &'a [Zone], needle: &str) -> Vec<&'a Zone> {
+    let n = needle.to_ascii_lowercase();
+    zones
+        .iter()
+        .filter(|z| {
+            n.is_empty()
+                || z.name.to_ascii_lowercase().contains(&n)
+                || z.status.to_ascii_lowercase().contains(&n)
+                || z.id.to_ascii_lowercase().contains(&n)
+        })
+        .collect()
+}
+
+/// The records whose type/name/content contains `needle` (case-insensitive). An
+/// empty needle keeps everything.
+pub fn filter_records<'a>(records: &'a [Record], needle: &str) -> Vec<&'a Record> {
+    let n = needle.to_ascii_lowercase();
+    records
+        .iter()
+        .filter(|r| {
+            n.is_empty()
+                || r.kind.to_ascii_lowercase().contains(&n)
+                || r.name.to_ascii_lowercase().contains(&n)
+                || r.content.to_ascii_lowercase().contains(&n)
+        })
+        .collect()
+}
+
+/// The R2 buckets whose name/class/location contains `needle` (case-insensitive).
+/// An empty needle keeps everything.
+pub fn filter_buckets<'a>(buckets: &'a [R2Bucket], needle: &str) -> Vec<&'a R2Bucket> {
+    let n = needle.to_ascii_lowercase();
+    buckets
+        .iter()
+        .filter(|b| {
+            n.is_empty()
+                || b.name.to_ascii_lowercase().contains(&n)
+                || b.storage_class.to_ascii_lowercase().contains(&n)
+                || b.location
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains(&n)
+        })
+        .collect()
+}
+
 /// A bulk selection over records: explicit ids and/or where-clauses.
 #[derive(Debug, Clone, Default)]
 pub struct Selector {
