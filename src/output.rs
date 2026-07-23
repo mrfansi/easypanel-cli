@@ -233,8 +233,37 @@ pub fn yes_no(value: &Value, pointer: &str) -> String {
     }
 }
 
+/// Expand a leading `~` (or `~/`) to the home directory. A shell expands `~` before a
+/// path ever reaches the program, but a path TYPED into a TUI form is a raw string — so
+/// `~/dump.gz` would otherwise look for a directory literally named `~`. `home` is passed
+/// in (the caller reads `$HOME`) so the rule stays pure and testable. Only a bare `~` /
+/// `~/…` is expanded — `~user` is left alone. With no home known, the path is unchanged.
+pub fn expand_tilde(path: &str, home: Option<&str>) -> String {
+    match (path, home) {
+        ("~", Some(h)) => h.to_string(),
+        (p, Some(h)) if p.starts_with("~/") => format!("{h}/{}", &p[2..]),
+        _ => path.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::expand_tilde;
+
+    #[test]
+    fn expand_tilde_only_touches_a_leading_tilde() {
+        assert_eq!(
+            expand_tilde("~/a/b.gz", Some("/home/me")),
+            "/home/me/a/b.gz"
+        );
+        assert_eq!(expand_tilde("~", Some("/home/me")), "/home/me");
+        // Not a leading `~/`: left exactly as typed.
+        assert_eq!(expand_tilde("/abs/x", Some("/home/me")), "/abs/x");
+        assert_eq!(expand_tilde("rel/x", Some("/home/me")), "rel/x");
+        assert_eq!(expand_tilde("~user/x", Some("/home/me")), "~user/x");
+        // No home known → unchanged rather than guessing.
+        assert_eq!(expand_tilde("~/x", None), "~/x");
+    }
 
     #[test]
     fn one_of_anything_is_singular() {

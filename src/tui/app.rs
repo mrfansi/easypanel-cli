@@ -4561,8 +4561,13 @@ impl App {
                 }));
             }
             FormKind::R2Upload => {
-                let path = form.val(0);
-                if path.trim().is_empty() {
+                // A path typed into the form is raw text — expand a leading `~` the way a
+                // shell would, so `~/dump.gz` finds the home directory, not a `~` folder.
+                let path = crate::output::expand_tilde(
+                    form.val(0).trim(),
+                    std::env::var("HOME").ok().as_deref(),
+                );
+                if path.is_empty() {
                     self.status = "Give a local file path".into();
                     return;
                 }
@@ -4584,8 +4589,12 @@ impl App {
             }
             FormKind::R2Download { key } => {
                 let key = key.clone();
-                let dest = form.val(0);
-                if dest.trim().is_empty() {
+                // Same `~` expansion as the upload path — a raw form string, not a shell arg.
+                let dest = crate::output::expand_tilde(
+                    form.val(0).trim(),
+                    std::env::var("HOME").ok().as_deref(),
+                );
+                if dest.is_empty() {
                     self.status = "Give a path to save to".into();
                     return;
                 }

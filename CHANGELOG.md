@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.89.1] — 2026-07-23
+
+### Fixed
+
+- **`~` in an R2 upload/download path now means your home directory.** The path typed
+  into the TUI upload ("Local file path") and download ("Save to") forms is a raw string
+  — a shell isn't there to expand it — so `~/dump.sql.gz` was taken literally and failed
+  with a confusing "Can't read ~/dump.sql.gz: No such file", even though the file was
+  sitting in your home directory. A leading `~`/`~/` is now expanded to `$HOME` before the
+  transfer (a pure `output::expand_tilde`, unit-tested; `~user` is left alone, and an
+  unknown `$HOME` leaves the path untouched rather than guessing). Verified live: uploading
+  `~/file` from the form now resolves and succeeds. The CLI was already fine (the shell
+  expands `~` there).
+
 ## [0.89.0] — 2026-07-23
 
 ### Added
