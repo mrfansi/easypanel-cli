@@ -6240,6 +6240,33 @@ fn cf_account_switch_works_on_every_screen_not_just_the_home() {
 }
 
 #[test]
+fn cf_web_analytics_error_does_not_poison_the_domains_table() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.product = CfProduct::Dns;
+    app.cf.screen = CfScreen::Zones;
+    app.cf.zones = vec![cf_zone("z1", "example.com")];
+    app.handle(
+        Resp::Cf(CfResp::WebAnalyticsErr(
+            "Cloudflare: Authentication error".into(),
+        )),
+        &tx,
+    );
+
+    assert!(
+        app.cf.error.is_none(),
+        "optional Web Analytics metadata must not mark the zones list as failed"
+    );
+    assert!(
+        !status_is_error(&app.status),
+        "permission hint should not render like a fatal Domains error: {}",
+        app.status
+    );
+    assert!(app.status.contains("Account Settings Read"));
+    assert_eq!(app.cf.zones.len(), 1, "zones stay visible");
+}
+
+#[test]
 fn cf_object_folders_use_bold_not_a_wide_colour_tint() {
     // A folder is set apart by BOLD, not a foreground colour. A full-width colour tint on
     // the Name column reverses to a full-width coloured BACKGROUND on the selected row —

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.93.4] — 2026-07-23
+
+### Fixed
+
+- Cloudflare Domains no longer treats a Web Analytics metadata permission failure
+  as a fatal Domains error. Zones remain visible, Web Analytics columns stay `-`,
+  and the status line now hints that `Account Settings Read` is needed.
+
 ## [0.93.3] — 2026-07-23
 
 ### Added
@@ -3517,7 +3525,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.93.3...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.93.4...HEAD
+[0.93.4]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.4
 [0.93.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.3
 [0.93.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.2
 [0.93.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.1

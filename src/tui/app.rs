@@ -2502,6 +2502,12 @@ impl App {
                 self.cf.error = None;
                 self.cf.web_analytics_sites = sites;
             }
+            CfResp::WebAnalyticsErr(e) => {
+                self.cf.web_analytics_sites.clear();
+                self.status = format!(
+                    "Web Analytics unavailable: {e} — add Account Settings Read to show metadata"
+                );
+            }
             CfResp::R2Buckets(buckets) => {
                 self.cf.error = None;
                 self.cf.r2_buckets = buckets;

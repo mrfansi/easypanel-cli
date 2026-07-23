@@ -743,6 +743,9 @@ pub(super) enum CfResp {
         records: Vec<Record>,
     },
     WebAnalyticsSites(Vec<WebAnalyticsSite>),
+    /// Web Analytics metadata is an optional enrichment for the Domains table. A
+    /// token without Account Settings Read must not make the zones list look failed.
+    WebAnalyticsErr(String),
     /// The R2 buckets for the active account.
     R2Buckets(Vec<R2Bucket>),
     /// One folder level of `bucket` at `prefix` — the subfolders (`folders`, full key
@@ -2008,7 +2011,7 @@ fn handle_cf(req: CfReq) -> CfResp {
         CfReq::WebAnalyticsSites { token, account_id } => {
             match CloudflareClient::new(&token).list_web_analytics_sites(&account_id) {
                 Ok(sites) => CfResp::WebAnalyticsSites(sites),
-                Err(e) => CfResp::Err(e.to_string()),
+                Err(e) => CfResp::WebAnalyticsErr(e.to_string()),
             }
         }
         CfReq::CreateZone {

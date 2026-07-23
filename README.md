@@ -603,6 +603,8 @@ its own product tab bar (**Analytics │ Domains │ R2**). `1` opens Analytics,
 requests, bandwidth, visits, top countries, and SSL/cache/status/protocol breakdowns
 from Cloudflare GraphQL. On **Domains**, the home is the active account's zones,
 enriched with Web Analytics status/setup/date columns from Cloudflare's RUM Site Info API;
+if the token lacks **Account Settings Read**, Domains still loads and those columns stay
+blank with a permission hint in the status bar.
 **`a`** opens an account picker (select / add / edit / delete, just like the server
 switcher), **Enter** on a domain drills into its DNS records, and records support
 add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a
