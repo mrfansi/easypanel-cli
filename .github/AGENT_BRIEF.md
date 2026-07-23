@@ -367,6 +367,10 @@ like one app. Concretely, replicate EasyPanel's patterns in the CF workspace:
   `pt-karya-kaya-bahagia` — the latter's token has DNS perms and real zones/records, so
   the read happy-path is verifiable live; `mrfansi-dev`'s token lacks the Zone:DNS perm,
   which is a good error-path fixture, NOT a bug). LOOK at the screen before calling it done.
+- **Web Analytics belongs inline on Domains** (DONE v0.93.3): Cloudflare's
+  `GET /accounts/{account_id}/rum/site_info/list` data enriches the Domains/zones table
+  with Web Analytics status/setup/date columns. Keep this as listing metadata, not a
+  separate product tab or drill-in screen.
 - Known follow-up: when a DNS op returns Cloudflare's "Authentication error", add a hint
   that the token likely lacks the **Zone : DNS** permission (use the "Edit zone DNS"
   template) — a common pitfall, proven via curl this session.

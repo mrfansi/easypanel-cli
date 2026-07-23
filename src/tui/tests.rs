@@ -5659,10 +5659,7 @@ fn adding_the_first_account_auto_activates_it() {
         "the just-added first account becomes active"
     );
     assert_eq!(app.cf.screen, CfScreen::Zones);
-    assert!(
-        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Zones { .. }))),
-        "its zones are loaded so the user lands on them"
-    );
+    expect_zones_and_web_analytics(&rx);
 }
 
 // ---------- Cloudflare zones & records ----------
@@ -5682,6 +5679,17 @@ fn cf_zone(id: &str, name: &str) -> crate::cloudflare::Zone {
         name: name.into(),
         status: "active".into(),
     }
+}
+
+fn expect_zones_and_web_analytics(rx: &std::sync::mpsc::Receiver<Req>) {
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Zones { .. }))),
+        "Domains loads zones first"
+    );
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::WebAnalyticsSites { .. }))),
+        "Domains also loads Web Analytics metadata for the listing table"
+    );
 }
 
 fn cf_record(id: &str, kind: &str, name: &str, content: &str) -> crate::cloudflare::Record {
@@ -7000,7 +7008,7 @@ fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
     ));
     app.on_key(KeyCode::Char('2'), &tx);
     assert_eq!(app.cf.product, CfProduct::Dns);
-    assert!(matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Zones { .. }))));
+    expect_zones_and_web_analytics(&rx);
     app.on_key(KeyCode::Char('3'), &tx);
     assert_eq!(app.cf.product, CfProduct::R2);
     assert!(
@@ -7021,10 +7029,7 @@ fn switching_back_to_dns_reloads_zones_for_the_active_account() {
 
     app.cf_set_product(CfProduct::Dns, &tx);
     assert!(app.cf.zones.is_empty(), "old account zones are cleared");
-    assert!(
-        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Zones { .. }))),
-        "DNS reloads when returning from another product"
-    );
+    expect_zones_and_web_analytics(&rx);
 }
 
 #[test]

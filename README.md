@@ -545,7 +545,8 @@ means repointing DNS, and doing that in a browser one record at a time is the sl
 
 Accounts are standalone (not tied to any EasyPanel server — you may have several) and live
 in their own `~/.config/easypanel/cloudflare.json` (`0600`). Use a **scoped API Token**:
-`Zone:DNS:Edit` + `Zone:Read` for DNS, account-scoped **Workers R2 Storage** for R2, and
+`Zone:DNS:Edit` + `Zone:Read` for DNS, **Account Settings Read** for the Web Analytics
+metadata shown on Domains, account-scoped **Workers R2 Storage** for R2, and
 **Account Analytics: Read** for the account analytics tab. The token is masked in every
 listing and never printed.
 
@@ -600,7 +601,8 @@ need a multipart S3-compatible flow outside this command.
 its own product tab bar (**Analytics │ Domains │ R2**). `1` opens Analytics, `2` Domains, `3` R2;
 `Tab`/`←→` cycle and mouse clicks work too. On **Analytics**, the tab shows account-level
 requests, bandwidth, visits, top countries, and SSL/cache/status/protocol breakdowns
-from Cloudflare GraphQL. On **Domains**, the home is the active account's zones;
+from Cloudflare GraphQL. On **Domains**, the home is the active account's zones,
+enriched with Web Analytics status/setup/date columns from Cloudflare's RUM Site Info API;
 **`a`** opens an account picker (select / add / edit / delete, just like the server
 switcher), **Enter** on a domain drills into its DNS records, and records support
 add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a

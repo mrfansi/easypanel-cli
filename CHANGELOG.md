@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.93.3] — 2026-07-23
+
+### Added
+
+- Cloudflare Domains now enriches the zones listing with Web Analytics metadata
+  from Cloudflare's RUM Site Info API, showing whether each domain has Web
+  Analytics enabled, its setup mode, created date, and optional 24-hour
+  page-view/visit columns when Cloudflare returns those totals.
+
 ## [0.93.2] — 2026-07-23
 
 ### Fixed
@@ -3508,7 +3517,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.93.2...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.93.3...HEAD
+[0.93.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.3
 [0.93.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.2
 [0.93.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.1
 [0.93.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.0

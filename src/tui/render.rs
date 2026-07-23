@@ -867,6 +867,34 @@ fn compact_count(n: u64) -> String {
     }
 }
 
+fn compact_optional_count(n: Option<u64>) -> String {
+    n.map(compact_count).unwrap_or_else(|| "-".into())
+}
+
+fn web_analytics_setup(site: Option<&crate::cloudflare::WebAnalyticsSite>) -> String {
+    match site {
+        Some(s) if s.auto_install => "Automatic".into(),
+        Some(s) if s.enabled => "Manual".into(),
+        Some(_) => "Paused".into(),
+        None => "-".into(),
+    }
+}
+
+fn web_analytics_status(site: Option<&crate::cloudflare::WebAnalyticsSite>) -> String {
+    match site {
+        Some(s) if s.enabled => "Enabled".into(),
+        Some(_) => "Paused".into(),
+        None => "-".into(),
+    }
+}
+
+fn short_cf_date(raw: &str) -> String {
+    raw.get(..10)
+        .filter(|s| s.chars().all(|c| c.is_ascii_digit() || c == '-'))
+        .unwrap_or("-")
+        .to_string()
+}
+
 fn metric_bar(value: u64, max: u64) -> String {
     let width = 10usize;
     let filled = if max == 0 {
@@ -1162,12 +1190,39 @@ fn render_cf_zones(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     );
     let rows: Vec<Vec<String>> = shown
         .iter()
-        .map(|z| vec![z.name.clone(), z.status.clone(), z.id.clone()])
+        .map(|z| {
+            let site = app.cf_web_analytics_for_zone(z);
+            vec![
+                z.name.clone(),
+                z.status.clone(),
+                web_analytics_status(site),
+                compact_optional_count(site.and_then(|s| s.page_views_24h)),
+                compact_optional_count(site.and_then(|s| s.visits_24h)),
+                web_analytics_setup(site),
+                site.map(|s| short_cf_date(&s.created))
+                    .unwrap_or_else(|| "-".into()),
+                z.id.clone(),
+            ]
+        })
         .collect();
-    let headers = ["Name", "Status", "ID"];
+    let headers = [
+        "Name",
+        "Status",
+        "Web analytics",
+        "Page views 24h",
+        "Visits 24h",
+        "Setup",
+        "Created",
+        "ID",
+    ];
     let widths = [
         Constraint::Min(20),
         Constraint::Length(12),
+        Constraint::Length(14),
+        Constraint::Length(14),
+        Constraint::Length(12),
+        Constraint::Length(11),
+        Constraint::Length(10),
         Constraint::Length(34),
     ];
     // Record the table's Rect so the shared mouse layer can map a click/hover to a

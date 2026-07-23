@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use crate::client::EasypanelClient;
 use crate::cloudflare::{
     object_basename, upload_key, AnalyticsSummary, CloudflareClient, R2Bucket, R2Object, Record,
-    RecordFilter, Zone, MAX_REST_OBJECT_BYTES,
+    RecordFilter, WebAnalyticsSite, Zone, MAX_REST_OBJECT_BYTES,
 };
 use crate::output::field;
 
@@ -456,6 +456,10 @@ pub(super) enum CfReq {
         zone_id: String,
         filter: RecordFilter,
     },
+    WebAnalyticsSites {
+        token: String,
+        account_id: String,
+    },
     CreateZone {
         token: String,
         name: String,
@@ -738,6 +742,7 @@ pub(super) enum CfResp {
         zone_id: String,
         records: Vec<Record>,
     },
+    WebAnalyticsSites(Vec<WebAnalyticsSite>),
     /// The R2 buckets for the active account.
     R2Buckets(Vec<R2Bucket>),
     /// One folder level of `bucket` at `prefix` — the subfolders (`folders`, full key
@@ -2000,6 +2005,12 @@ fn handle_cf(req: CfReq) -> CfResp {
             Ok(records) => CfResp::Records { zone_id, records },
             Err(e) => CfResp::Err(e.to_string()),
         },
+        CfReq::WebAnalyticsSites { token, account_id } => {
+            match CloudflareClient::new(&token).list_web_analytics_sites(&account_id) {
+                Ok(sites) => CfResp::WebAnalyticsSites(sites),
+                Err(e) => CfResp::Err(e.to_string()),
+            }
+        }
         CfReq::CreateZone {
             token,
             name,

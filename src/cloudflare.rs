@@ -202,6 +202,83 @@ pub struct AnalyticsSummary {
     pub content_types: Vec<AnalyticsMetric>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WebAnalyticsSite {
+    pub site_tag: String,
+    pub site_token: String,
+    pub host: String,
+    pub created: String,
+    pub auto_install: bool,
+    pub enabled: bool,
+    pub zone_name: String,
+    pub zone_tag: String,
+    pub page_views_24h: Option<u64>,
+    pub visits_24h: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct WebAnalyticsRule {
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    is_paused: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct WebAnalyticsRuleset {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    zone_name: String,
+    #[serde(default)]
+    zone_tag: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct WebAnalyticsSiteRaw {
+    #[serde(default)]
+    auto_install: bool,
+    #[serde(default)]
+    created: String,
+    #[serde(default)]
+    rules: Vec<WebAnalyticsRule>,
+    #[serde(default)]
+    ruleset: Option<WebAnalyticsRuleset>,
+    #[serde(default)]
+    site_tag: String,
+    #[serde(default)]
+    site_token: String,
+    #[serde(default)]
+    page_views_24h: Option<u64>,
+    #[serde(default)]
+    visits_24h: Option<u64>,
+}
+
+impl From<WebAnalyticsSiteRaw> for WebAnalyticsSite {
+    fn from(raw: WebAnalyticsSiteRaw) -> Self {
+        let ruleset = raw.ruleset.unwrap_or_default();
+        let first_rule = raw.rules.iter().find(|r| !r.host.is_empty());
+        let host = if !ruleset.zone_name.is_empty() {
+            ruleset.zone_name.clone()
+        } else {
+            first_rule.map(|r| r.host.clone()).unwrap_or_default()
+        };
+        let enabled = ruleset.enabled || raw.rules.iter().any(|r| !r.is_paused);
+        Self {
+            site_tag: raw.site_tag,
+            site_token: raw.site_token,
+            host,
+            created: raw.created,
+            auto_install: raw.auto_install,
+            enabled,
+            zone_name: ruleset.zone_name,
+            zone_tag: ruleset.zone_tag,
+            page_views_24h: raw.page_views_24h,
+            visits_24h: raw.visits_24h,
+        }
+    }
+}
+
 fn graphql_error(body: &str) -> Option<String> {
     let v: Value = serde_json::from_str(body).ok()?;
     v.get("errors")
@@ -804,6 +881,30 @@ impl CloudflareClient {
         Ok(all)
     }
 
+    /// List all account-level Web Analytics sites. Cloudflare exposes this under the
+    /// RUM Site Info REST API; the endpoint returns site metadata, not RUM traffic
+    /// totals, so page-view/visit fields stay optional.
+    pub fn list_web_analytics_sites(&self, account_id: &str) -> Result<Vec<WebAnalyticsSite>> {
+        let mut all = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let q: Vec<(String, String)> = vec![
+                ("page".into(), page.to_string()),
+                ("per_page".into(), "50".into()),
+                ("order_by".into(), "host".into()),
+            ];
+            let body = self.get(&format!("/accounts/{account_id}/rum/site_info/list"), &q)?;
+            let (mut sites, info): (Vec<WebAnalyticsSiteRaw>, ResultInfo) =
+                parse_envelope_paged(&body)?;
+            all.extend(sites.drain(..).map(WebAnalyticsSite::from));
+            if info.total_pages <= page || info.total_pages == 0 {
+                break;
+            }
+            page += 1;
+        }
+        Ok(all)
+    }
+
     fn send(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<String> {
         let mut req = self
             .http
@@ -1395,6 +1496,50 @@ mod tests {
         assert_eq!(res.buckets[1].storage_class, "InfrequentAccess");
         // An empty cursor means the last page — the loop stops.
         assert!(info.cursor.filter(|c| !c.is_empty()).is_none());
+    }
+
+    #[test]
+    fn web_analytics_sites_parse_documented_site_info_shape() {
+        let body = r#"{"success":true,"errors":[],"messages":[],
+            "result":[{
+                "auto_install":true,
+                "created":"2014-01-01T05:20:00.12345Z",
+                "rules":[{
+                    "id":"rule-1",
+                    "created":"2014-01-01T05:20:00.12345Z",
+                    "host":"example.com",
+                    "inclusive":true,
+                    "is_paused":false,
+                    "paths":["*"],
+                    "priority":1000
+                }],
+                "ruleset":{
+                    "id":"ruleset-1",
+                    "enabled":true,
+                    "zone_name":"example.com",
+                    "zone_tag":"zone-1"
+                },
+                "site_tag":"site-1",
+                "site_token":"token-1",
+                "snippet":"<script></script>"
+            }],
+            "result_info":{"page":1,"per_page":10,"count":1,"total_count":1,"total_pages":1}}"#;
+
+        let (raw, info): (Vec<WebAnalyticsSiteRaw>, ResultInfo) =
+            parse_envelope_paged(body).unwrap();
+        let sites: Vec<WebAnalyticsSite> = raw.into_iter().map(WebAnalyticsSite::from).collect();
+
+        assert_eq!(info.total_pages, 1);
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].host, "example.com");
+        assert_eq!(sites[0].zone_name, "example.com");
+        assert_eq!(sites[0].zone_tag, "zone-1");
+        assert_eq!(sites[0].site_tag, "site-1");
+        assert_eq!(sites[0].site_token, "token-1");
+        assert!(sites[0].auto_install);
+        assert!(sites[0].enabled);
+        assert_eq!(sites[0].page_views_24h, None);
+        assert_eq!(sites[0].visits_24h, None);
     }
 
     #[test]

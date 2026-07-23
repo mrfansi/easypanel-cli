@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use crate::cloudflare::{
     apply_patch, filter_buckets, filter_records, filter_zones, proxyable, record_body,
     valid_record_type, AnalyticsSummary, CloudflareAccount, R2Bucket, R2Object, Record,
-    RecordFilter, RecordPatch, Zone,
+    RecordFilter, RecordPatch, WebAnalyticsSite, Zone,
 };
 use crate::commands;
 use crate::output::field;
@@ -244,6 +244,7 @@ pub(super) struct CfUi {
     pub(super) records: Vec<Record>,
     pub(super) records_row: TableState,
     pub(super) current_zone: Option<Zone>,
+    pub(super) web_analytics_sites: Vec<WebAnalyticsSite>,
     /// R2 product state — the account's buckets and the selected row. Account-scoped,
     /// loaded when the R2 tab is selected; the shared `filter`/`error` cover it too.
     pub(super) r2_buckets: Vec<R2Bucket>,
@@ -1073,6 +1074,15 @@ impl App {
             .map(|r| (*r).clone())
     }
 
+    /// The Web Analytics site associated with a zone, matching Cloudflare's ruleset
+    /// zone_name first and falling back to the rule host. Used by the Domains table.
+    pub(super) fn cf_web_analytics_for_zone(&self, zone: &Zone) -> Option<&WebAnalyticsSite> {
+        self.cf
+            .web_analytics_sites
+            .iter()
+            .find(|s| s.zone_name == zone.name || s.host == zone.name)
+    }
+
     /// The R2 buckets shown right now (after the CF-local filter).
     pub(super) fn cf_buckets_shown(&self) -> Vec<&R2Bucket> {
         filter_buckets(&self.cf.r2_buckets, &self.cf.filter)
@@ -1163,7 +1173,13 @@ impl App {
         self.cf_enter_list();
         if let Some(token) = self.cf_token() {
             let account_id = self.cf.active.as_ref().and_then(|a| a.account_id.clone());
-            let _ = req.send(Req::Cf(CfReq::Zones { token, account_id }));
+            let _ = req.send(Req::Cf(CfReq::Zones {
+                token: token.clone(),
+                account_id: account_id.clone(),
+            }));
+            if let Some(account_id) = account_id {
+                let _ = req.send(Req::Cf(CfReq::WebAnalyticsSites { token, account_id }));
+            }
             self.status = format!("Loading zones for {name}…");
         }
     }
@@ -1397,6 +1413,7 @@ impl App {
         match self.cf.screen {
             CfScreen::Zones => {
                 self.cf.zones.clear();
+                self.cf.web_analytics_sites.clear();
                 self.cf.zones_row.select(None);
             }
             CfScreen::Records => {
@@ -1450,7 +1467,13 @@ impl App {
         match self.cf.screen {
             CfScreen::Zones => {
                 let account_id = self.cf.active.as_ref().and_then(|a| a.account_id.clone());
-                let _ = req.send(Req::Cf(CfReq::Zones { token, account_id }));
+                let _ = req.send(Req::Cf(CfReq::Zones {
+                    token: token.clone(),
+                    account_id: account_id.clone(),
+                }));
+                if let Some(account_id) = account_id {
+                    let _ = req.send(Req::Cf(CfReq::WebAnalyticsSites { token, account_id }));
+                }
             }
             CfScreen::Records => {
                 if let Some(zone) = &self.cf.current_zone {
@@ -2474,6 +2497,10 @@ impl App {
                     let len = self.cf_records_shown().len();
                     select_first(&mut self.cf.records_row, len);
                 }
+            }
+            CfResp::WebAnalyticsSites(sites) => {
+                self.cf.error = None;
+                self.cf.web_analytics_sites = sites;
             }
             CfResp::R2Buckets(buckets) => {
                 self.cf.error = None;
