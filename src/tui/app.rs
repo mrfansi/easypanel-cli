@@ -1164,6 +1164,10 @@ impl App {
         if self.cf.product == product {
             return;
         }
+        // Marks belong to the screen they were made on; carrying them across a
+        // product switch would show a stale "[Esc] to clear" message on a screen
+        // whose Esc does something else entirely.
+        self.cf.marked.clear();
         self.cf.product = product;
         if product == CfProduct::R2 {
             self.cf_goto_buckets(req);
@@ -1431,6 +1435,21 @@ impl App {
         } else {
             self.cf.marked.extend(ids);
         }
+    }
+
+    /// The status-bar line for CF marks, or None when nothing is marked. The
+    /// EasyPanel wording comes from the domain (`cloudflare::marks_status`);
+    /// this only picks the noun the current screen marks (records vs files).
+    pub(super) fn cf_marks_status(&self) -> Option<String> {
+        if self.cf.marked.is_empty() {
+            return None;
+        }
+        let noun = if self.cf.screen == CfScreen::Objects {
+            "file"
+        } else {
+            "record"
+        };
+        Some(crate::cloudflare::marks_status(noun, self.cf.marked.len()))
     }
 
     /// The add-record form. Type is a fixed choice (only v1 types are supported).

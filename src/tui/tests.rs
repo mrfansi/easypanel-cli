@@ -5835,6 +5835,67 @@ fn cf_status_bar_shows_a_spinner_while_busy_and_surfaces_errors() {
 }
 
 #[test]
+fn cf_marks_report_like_easypanel_in_the_title_and_status_bar() {
+    // EasyPanel parity: a marked count carries the ✓ in the table title (like the
+    // Services title), and while marks exist the status bar shows the same
+    // "[Space] to act on them, [Esc] to clear" message `report_marks` gives
+    // EasyPanel — not the resting hints.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.zones = vec![cf_zone("z1", "example.com")];
+    app.cf.screen = CfScreen::Records;
+    app.cf.records = vec![
+        cf_record("r1", "A", "a.example.com", "1.2.3.4"),
+        cf_record("r2", "A", "b.example.com", "1.2.3.5"),
+    ];
+    app.cf.marked.insert("r1".into());
+
+    let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        screen.contains("· ✓ 1 marked"),
+        "the title carries EasyPanel's ✓ marked suffix: {screen:?}"
+    );
+    assert!(
+        screen.contains("1 record(s) marked — [Space] to act on them, [Esc] to clear"),
+        "the status bar reports the marks like EasyPanel: {screen:?}"
+    );
+
+    // Marks must NOT survive a product-tab switch: the R2 screens' Esc/Space do
+    // different things, so a carried-over message would promise actions the new
+    // screen can't deliver.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.cf_set_product(CfProduct::R2, &tx);
+    assert!(
+        app.cf.marked.is_empty(),
+        "switching product tabs clears the marks"
+    );
+    let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let after: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        !after.contains("marked"),
+        "no stale marks message on the R2 screen: {after:?}"
+    );
+}
+
+#[test]
 fn cf_confirm_dialog_shows_the_account_not_the_easypanel_host() {
     // A Cloudflare confirm is not an EasyPanel host operation: the shared confirm
     // dialog must NOT name the EasyPanel server or warn "Affects the ENTIRE host"

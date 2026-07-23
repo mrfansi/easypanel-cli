@@ -129,6 +129,13 @@ pub fn sort_r2_level(level: &mut R2Level) {
         .sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
 }
 
+/// The status-bar feedback for marked rows — EasyPanel's exact wording
+/// (`report_marks`), with the noun swapped per screen ("record" on DNS records,
+/// "file" on R2 objects). Pure, so the wording parity is unit-tested.
+pub fn marks_status(noun: &str, n: usize) -> String {
+    format!("{n} {noun}(s) marked — [Space] to act on them, [Esc] to clear")
+}
+
 /// The Cloudflare REST object endpoints (`PUT`/`GET`/`DELETE …/objects/{key}`) cap a
 /// single request at 300 MB. Larger objects need the S3 API (which this tool uses only
 /// for DB dumps), so an oversized upload is rejected up front rather than attempted.
@@ -1116,6 +1123,18 @@ mod tests {
     #[test]
     fn max_rest_object_bytes_is_300_mib() {
         assert_eq!(MAX_REST_OBJECT_BYTES, 300 * 1024 * 1024);
+    }
+
+    #[test]
+    fn marks_status_uses_easypanels_exact_wording() {
+        assert_eq!(
+            marks_status("record", 7),
+            "7 record(s) marked — [Space] to act on them, [Esc] to clear"
+        );
+        assert_eq!(
+            marks_status("file", 1),
+            "1 file(s) marked — [Space] to act on them, [Esc] to clear"
+        );
     }
 
     fn rec(id: &str, kind: &str, name: &str, content: &str) -> Record {

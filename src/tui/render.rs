@@ -1000,7 +1000,8 @@ fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         if marked.is_empty() {
             String::new()
         } else {
-            format!(" · {} marked", marked.len())
+            // EasyPanel's exact marked-count suffix (see the Services title), ✓ included.
+            format!(" · ✓ {} marked", marked.len())
         },
         if app.cf.filter.is_empty() {
             String::new()
@@ -1235,7 +1236,7 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         },
         match app.cf.marked.len() {
             0 => String::new(),
-            n => format!(" · {n} marked"),
+            n => format!(" · ✓ {n} marked"),
         },
         if app.cf.filter.is_empty() {
             String::new()
@@ -2885,6 +2886,10 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
                 format!(" {} ", app.status_line()),
                 bar.fg(Color::Indexed(210)).add_modifier(Modifier::BOLD),
             )
+        } else if let Some(msg) = app.cf_marks_status() {
+            // Marks pending an action outrank the resting hints — EasyPanel keeps
+            // its marked-count message on the status bar until the marks are gone.
+            (format!(" {msg}"), bar.add_modifier(Modifier::BOLD))
         } else {
             let hints = match app.cf.product {
                 CfProduct::R2 => match app.cf.screen {

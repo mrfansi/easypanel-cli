@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.90.0] — 2026-07-23
+
+### Added
+
+- Cloudflare: marking rows now gives the same feedback EasyPanel does. The
+  table title carries the `· ✓ N marked` suffix, and while marks exist the
+  status bar shows `N record(s)/file(s) marked — [Space] to act on them,
+  [Esc] to clear` instead of the resting key hints — so after marking you can
+  see, without scrolling, how many rows a bulk action will hit and how to back
+  out. Before this, marks on the DNS Records and R2 Objects screens were only
+  visible as small ✓ glyphs far from the cursor.
+
+### Fixed
+
+- Cloudflare: switching product tabs (DNS ↔ R2) now clears pending marks.
+  They used to survive the switch invisibly, which would have shown a stale
+  "marked" message on a screen whose `Space`/`Esc` do something else entirely.
+
 ## [0.89.1] — 2026-07-23
 
 ### Fixed

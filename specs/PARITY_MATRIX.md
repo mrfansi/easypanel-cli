@@ -14,7 +14,7 @@ Evidence dir: `docs/evidence/2026-07-23-bootstrap/`.
 | 3 | Picker akun `a` (≙ `s` server) | Popup `┌ Servers ┐`, bekerja dari semua layar | Popup `┌ Cloudflare accounts ┐`, token ter-mask, `(active)`, dari semua layar | ✓ | ep-picker, cf-picker | Selaras (v0.87.4) |
 | 4 | Records drill-in via Enter | Drill-in EP (Logs/Terminal) belum di-capture | Enter zona → Records, Esc kembali ke zones | ✓ | cf-records | Perilaku hidup penuh; baseline EP drill-in menyusul bila perlu |
 | 5 | Filter `/` dengan count | Judul `Services (20/108)  /web▏`; status `filter: web▏  ↑↓ select · Enter apply · Esc cancel` | Judul `Zones (4 of 9) · /ed`; status `filter: ed▏  Enter apply · Esc cancel` | ✗ | ep-filter, cf-filter | Format count beda (`20/108` vs `4 of 9`); hint `↑↓ select` hilang di CF |
-| 6 | Mark `v`/`V` + `Space` bulk | Judul `· ✓ 1 marked`; status bar berubah: `1 service(s) marked — [Space] to act on them, [Esc] to clear`; menu grup multi-aksi | Judul `· 7 marked` (tanpa ✓); status bar TIDAK berubah; menu `Set proxied / Set TTL / Delete` | ✗ | ep-marks-menu, cf-marks-menu | Dua gap: ✓ di judul, pesan marks di status bar |
+| 6 | Mark `v`/`V` + `Space` bulk | Judul `· ✓ 1 marked`; status bar berubah: `1 service(s) marked — [Space] to act on them, [Esc] to clear`; menu grup multi-aksi | Judul `· ✓ N marked`; status bar `N record(s)/file(s) marked — [Space] to act on them, [Esc] to clear`; Esc bersih, hints kembali; marks dibersihkan saat pindah tab produk | ✓ (v0.90.0) | 2026-07-23-marks/ (ep-before, cf-before, cf-after, cf-after-error-account, cf-after-80x24) | Sengaja-beda kecil: pesan CF bertahan selama marks ada (EP: last-message, hilang tertimpa status lain) — lebih jujur, tetap wording EP |
 | 7 | `r` refresh | Status ` Refreshing...` | Reload berjalan; spinner `⠙` di status | ✓ | ep-refresh-spinner, cf-refresh-spinner | Wording transien beda tipis; perilaku sama |
 | 8 | Konfirmasi aksi destruktif | belum di-capture | belum di-capture | ? | — | EP: dilarang buka dialog destruktif di produksi; capture di host aman + zzz-*. CF: dialog delete ada (kode) tapi butuh bukti layar tanpa mutasi |
 | 9 | Spinner saat busy | Capture hanya menangkap teks `Refreshing...` (glyph tidak terlihat) | `⠙` terlihat | ? | ep-refresh-spinner, cf-refresh-spinner | Perlu capture EP saat spinner aktif untuk perbandingan adil |
@@ -25,5 +25,5 @@ Evidence dir: `docs/evidence/2026-07-23-bootstrap/`.
 
 ## Ringkasan
 
-- ✓ 4 · ✗ 3 · ? 6 (dari 13)
-- Prioritas run berikutnya (skor §Fase 1): butir 6 (marks: sering dipakai, dua gap kecil, ukuran kecil) → butir 5 (filter wording) → butir 2 (butuh keputusan sengaja-beda dulu).
+- ✓ 5 · ✗ 2 · ? 6 (dari 13) — run #2: butir 6 ✗→✓ (v0.90.0)
+- Prioritas run berikutnya (skor §Fase 1): butir 5 (filter: format count `(20/108)` vs `(4 of 9)` + hint `↑↓ select` hilang; skor 4×2÷1=8) → butir 2 (hint permanen CF adalah keputusan sadar berkomentar di render.rs:2861-2871 — run-nya memutuskan sengaja-beda + alasan di matriks, atau menyelaraskan).
