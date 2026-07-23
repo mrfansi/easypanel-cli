@@ -7,13 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.93.1] — 2026-07-23
+
+### Fixed
+
+- Cloudflare Analytics no longer asks GraphQL for the account-level
+  `edgeResponseContentTypeName` dimension. Some real accounts reject that field,
+  which made the whole Analytics tab fail before any stable metrics could render.
+
 ## [0.93.0] — 2026-07-23
 
 ### Added
 
 - Cloudflare: account-level Analytics is now product tab `1`, before Domains. It
   renders a terminal dashboard for requests, bandwidth, visits, top countries,
-  SSL/cache/status/protocol/content-type breakdowns, using Cloudflare's GraphQL
+  SSL/cache/status/protocol breakdowns, using Cloudflare's GraphQL
   analytics API and the active account's `account_id`.
 
 ### Changed
@@ -3491,7 +3499,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.93.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.93.1...HEAD
+[0.93.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.1
 [0.93.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.0
 [0.92.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.92.0
 [0.91.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.91.0

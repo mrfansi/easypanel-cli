@@ -719,10 +719,6 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
         count
         dimensions { clientRequestHTTPProtocol }
       }
-      contentTypes: httpRequestsAdaptiveGroups(limit: 6, orderBy: [count_DESC], filter: $filter) {
-        count
-        dimensions { edgeResponseContentTypeName }
-      }
     }
   }
 }
@@ -1327,8 +1323,7 @@ mod tests {
             "ssl": [{"count": 39960000, "dimensions": {"clientSSLProtocol": "TLSv1.3"}}],
             "cache": [{"count": 623820, "dimensions": {"cacheStatus": "hit"}}],
             "status": [{"count": 12780000, "dimensions": {"edgeResponseStatus": "404"}}],
-            "protocols": [{"count": 17200000, "dimensions": {"clientRequestHTTPProtocol": "HTTP/1.1"}}],
-            "contentTypes": [{"count": 16780000, "dimensions": {"edgeResponseContentTypeName": "html"}}]
+            "protocols": [{"count": 17200000, "dimensions": {"clientRequestHTTPProtocol": "HTTP/1.1"}}]
           }]}}
         }"#;
         let s = parse_account_analytics(body, 7).unwrap();
@@ -1342,7 +1337,7 @@ mod tests {
         assert_eq!(s.cache[0].label, "hit");
         assert_eq!(s.status[0].label, "404");
         assert_eq!(s.protocols[0].label, "HTTP/1.1");
-        assert_eq!(s.content_types[0].label, "html");
+        assert!(s.content_types.is_empty());
     }
 
     #[test]

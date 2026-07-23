@@ -599,8 +599,8 @@ need a multipart S3-compatible flow outside this command.
 **In the TUI:** press **`W`** to switch into an isolated, Cloudflare-orange workspace with
 its own product tab bar (**Analytics │ Domains │ R2**). `1` opens Analytics, `2` Domains, `3` R2;
 `Tab`/`←→` cycle and mouse clicks work too. On **Analytics**, the tab shows account-level
-requests, bandwidth, visits, top countries, SSL/cache/status/protocol/content-type
-breakdowns from Cloudflare GraphQL. On **Domains**, the home is the active account's zones;
+requests, bandwidth, visits, top countries, and SSL/cache/status/protocol breakdowns
+from Cloudflare GraphQL. On **Domains**, the home is the active account's zones;
 **`a`** opens an account picker (select / add / edit / delete, just like the server
 switcher), **Enter** on a domain drills into its DNS records, and records support
 add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a

@@ -957,7 +957,6 @@ pub(super) fn render_cf_analytics(f: &mut Frame, header: Rect, body: Rect, app: 
         Constraint::Length(5),
         Constraint::Min(12),
         Constraint::Length(9),
-        Constraint::Length(9),
     ])
     .split(body);
     let kpis = Layout::horizontal([
@@ -1031,11 +1030,6 @@ pub(super) fn render_cf_analytics(f: &mut Frame, header: Rect, body: Rect, app: 
     f.render_widget(
         analytics_breakdown_table("Client HTTP version", &summary.protocols, tint),
         lower_a[1],
-    );
-
-    f.render_widget(
-        analytics_breakdown_table("Top content types", &summary.content_types, tint),
-        outer[3],
     );
 }
 
