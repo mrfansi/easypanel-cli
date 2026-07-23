@@ -6061,11 +6061,11 @@ fn cf_object_folders_use_bold_not_a_wide_colour_tint() {
 }
 
 #[test]
-fn right_click_on_an_r2_object_opens_no_bucket_menu() {
-    // The Objects drill-in is browse-only (no per-object actions yet). Right-clicking a
-    // file there must NOT open the BUCKET action menu ("Browse objects / Delete bucket…")
-    // — that offered to delete the very bucket you were inside. The bucket menu belongs
-    // only on the Buckets home (R2 + the non-Objects screen).
+fn right_click_on_an_r2_object_opens_the_object_menu_not_the_bucket_menu() {
+    // Right-clicking a FILE in the Objects drill-in opens the per-object menu (Download /
+    // Delete…), NOT the BUCKET menu ("Browse objects / Delete bucket…") — that offered to
+    // delete the very bucket you were inside. A FOLDER row has no actions, so it opens no
+    // menu. The bucket menu belongs only on the Buckets home (R2 + the non-Objects screen).
     use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -6087,14 +6087,34 @@ fn right_click_on_an_r2_object_opens_no_bucket_menu() {
         );
     };
 
-    // Inside a bucket, browsing objects: right-click opens NO menu.
+    // Inside a bucket, right-clicking a FILE opens the per-object menu.
     app.cf.screen = CfScreen::Objects;
     app.cf.current_bucket = Some("assets".into());
     app.cf.r2_objects = vec![cf_object("dump.sql.gz", 42)];
     right_click(&mut app, &tx);
     assert!(
+        app.menu
+            .as_ref()
+            .is_some_and(|m| m.items.iter().any(|it| it.label == "Download")
+                && m.items.iter().any(|it| it.label == "Delete…")),
+        "right-click on a file opens the object menu (Download / Delete…)"
+    );
+    assert!(
+        app.menu
+            .as_ref()
+            .is_some_and(|m| m.items.iter().all(|it| it.label != "Delete bucket…")),
+        "and NOT the bucket menu"
+    );
+    app.menu = None;
+
+    // A FOLDER row has no actions: right-click opens no menu.
+    app.cf.r2_folders = vec!["docs/".into()];
+    app.cf.r2_objects.clear();
+    app.cf.r2_objects_row.select(Some(0)); // row 0 is the folder
+    right_click(&mut app, &tx);
+    assert!(
         app.menu.is_none(),
-        "right-click on an object opens no menu (browse-only, and NOT the bucket menu)"
+        "right-click on a folder opens no menu (folders have no actions)"
     );
 
     // On the Buckets home the same right-click DOES open the bucket menu.
@@ -6810,7 +6830,7 @@ fn cf_objects_folder_tree_enter_descends_and_esc_goes_up() {
         "a reply for a prefix the user already left is discarded"
     );
 
-    // Enter on a FILE is a no-op (no request, stays on the level).
+    // Enter on a FILE opens the download form (no request, stays on the level).
     app.handle(
         Resp::Cf(CfResp::R2Objects {
             bucket: "assets".into(),
@@ -6824,7 +6844,15 @@ fn cf_objects_folder_tree_enter_descends_and_esc_goes_up() {
     app.cf.r2_objects_row.select(Some(1)); // the file row (folder is index 0)
     app.on_key(KeyCode::Enter, &tx);
     assert!(rx.try_recv().is_err(), "Enter on a file fires no request");
+    assert!(
+        matches!(
+            app.form.as_ref().map(|f| &f.kind),
+            Some(FormKind::R2Download { .. })
+        ),
+        "Enter on a file opens the download form, not the old 'later slice' status"
+    );
     assert_eq!(app.cf.current_prefix, "admin-front-end/", "and stays put");
+    app.form = None; // clear it so the Esc navigation below tests folder-up, not form-close
 
     // Esc inside the tree goes UP one folder, not out to the buckets.
     app.on_key(KeyCode::Esc, &tx);
@@ -6839,6 +6867,135 @@ fn cf_objects_folder_tree_enter_descends_and_esc_goes_up() {
     app.on_key(KeyCode::Esc, &tx);
     assert_ne!(app.cf.screen, CfScreen::Objects);
     assert_eq!(app.cf.current_bucket, None);
+}
+
+/// An Objects screen with one file selected, ready for a per-object key press.
+fn cf_objects_app_with_a_file() -> App {
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::R2;
+    app.cf.screen = CfScreen::Objects;
+    app.cf.current_bucket = Some("assets".into());
+    app.cf.r2_objects = vec![cf_object("dump.sql.gz", 42)];
+    app.cf.r2_objects_row.select(Some(0)); // the file (no folders above it)
+    app
+}
+
+#[test]
+fn cf_objects_u_opens_the_upload_form() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = cf_objects_app_with_a_file();
+    app.on_key(KeyCode::Char('u'), &tx);
+    assert!(
+        matches!(app.form.as_ref().map(|f| &f.kind), Some(FormKind::R2Upload)),
+        "u opens the R2 upload form"
+    );
+}
+
+#[test]
+fn cf_objects_x_on_a_file_opens_the_object_delete_confirm() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = cf_objects_app_with_a_file();
+    app.on_key(KeyCode::Char('x'), &tx);
+    let c = app.confirm.as_ref().expect("x on a file opens a confirm");
+    assert_eq!(c.action, "cf-object-delete");
+    assert_eq!(
+        c.project, "dump.sql.gz",
+        "the object key travels in project"
+    );
+}
+
+#[test]
+fn cf_objects_enter_on_a_file_opens_the_download_form() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = cf_objects_app_with_a_file();
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(
+        matches!(
+            app.form.as_ref().map(|f| &f.kind),
+            Some(FormKind::R2Download { key }) if key == "dump.sql.gz"
+        ),
+        "Enter on a file opens the download form for its key"
+    );
+}
+
+#[test]
+fn cf_objects_v_marks_a_file_and_space_opens_the_bulk_menu() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = cf_objects_app_with_a_file();
+
+    // Space with nothing marked opens the single-object menu.
+    app.on_key(KeyCode::Char(' '), &tx);
+    assert!(
+        app.menu
+            .as_ref()
+            .is_some_and(|m| m.items.iter().any(|it| it.label == "Download")),
+        "Space with nothing marked opens the single-object menu"
+    );
+    app.menu = None;
+
+    // v marks the selected file by its key.
+    app.on_key(KeyCode::Char('v'), &tx);
+    assert!(
+        app.cf.marked.contains("dump.sql.gz"),
+        "v marks the selected file by key"
+    );
+
+    // Space now opens the BULK menu listing the marked count.
+    app.on_key(KeyCode::Char(' '), &tx);
+    assert!(
+        app.menu.as_ref().is_some_and(|m| {
+            m.items.iter().any(|it| it.label == "Delete 1 marked")
+                && m.items.iter().any(|it| it.label == "Download 1 marked")
+        }),
+        "Space with a mark opens the bulk menu (Download / Delete N marked)"
+    );
+}
+
+#[test]
+fn cf_objects_marks_skip_folder_rows() {
+    // Folders are not markable — v on a folder row marks nothing.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = cf_objects_app_with_a_file();
+    app.cf.r2_folders = vec!["docs/".into()];
+    app.cf.r2_objects_row.select(Some(0)); // row 0 is now the folder
+    app.on_key(KeyCode::Char('v'), &tx);
+    assert!(
+        app.cf.marked.is_empty(),
+        "v on a folder marks nothing (folders have no actions)"
+    );
+}
+
+#[test]
+fn cf_object_delete_confirm_names_the_account_not_a_host() {
+    // A cf-object confirm must render the CF branch (the active account, in orange), never
+    // the EasyPanel host/service target semantics — the object delete touches no host.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = cf_objects_app_with_a_file();
+    app.on_key(KeyCode::Char('x'), &tx);
+
+    let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let buf = term.backend().buffer();
+    let screen: String = (0..20)
+        .map(|y| {
+            (0..120)
+                .map(|x| buf.cell((x, y)).map_or(" ", |c| c.symbol()).to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        screen.contains("Affects only the selected object(s)."),
+        "the object-delete confirm scopes to the object, not a host"
+    );
+    assert!(
+        screen.contains(&format!("on {}", cf_account().name)),
+        "and names the active Cloudflare account"
+    );
 }
 
 #[test]

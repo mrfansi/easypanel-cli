@@ -447,17 +447,23 @@ pub(super) fn cf_buckets_keys() -> &'static [Key] {
     ]
 }
 
-/// The R2 Objects drill-in keys. Browse-only for now — add/delete of objects is a
-/// later slice, so only filter/refresh and Esc back to the buckets are listed.
+/// The R2 Objects drill-in keys: browse folders, plus upload / download / delete and
+/// mark + bulk on the files at this level.
 pub(super) fn cf_objects_keys() -> &'static [Key] {
     &[
         Key(
             "a",
             "switch Cloudflare account (a picker, like `s` switches servers)",
         ),
+        Key("Enter", "open the folder, or download the selected file"),
+        Key("u", "upload a local file into this folder"),
+        Key("x", "delete the selected file"),
+        Key("v", "mark / unmark the selected file"),
+        Key("V", "mark / unmark all files shown"),
+        Key("Space", "object menu (or bulk menu when files are marked)"),
         Key("/", "filter the list"),
         Key("r", "refresh"),
-        Key("Esc", "back to buckets"),
+        Key("Esc", "up one folder, or back to buckets at the root"),
     ]
 }
 
@@ -729,10 +735,11 @@ pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
 pub(super) const CF_BUCKETS_HINTS: &str =
     "a account · Enter objects · n add bucket · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
 
-/// The R2 Objects folder-browser status-bar hint. No add/delete yet — object mutation is
-/// a later slice. Esc goes up a folder inside the tree, or out to the buckets at the root.
+/// The R2 Objects folder-browser status-bar hint. Enter descends a folder or downloads a
+/// file; `u` uploads, `x` deletes, `v`/`V` mark files, Space is the object/bulk menu. Esc
+/// goes up a folder inside the tree, or out to the buckets at the root.
 pub(super) const CF_OBJECTS_HINTS: &str =
-    "a account · Enter open · / filter · r refresh · Esc up/buckets";
+    "a account · u upload · Enter download · x delete · v/V mark · Space bulk · / filter · r refresh · Esc up/buckets";
 
 /// The orange workspace header: the bordered title + the PRODUCT tab bar (DNS
 /// today; D1/R2/KV/Workers/Connectors slot in later). Drawn exactly like the
@@ -1186,6 +1193,7 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     // Build the combined row list (folders first, then files) as owned data so the
     // immutable borrows of `app` end before the mutable `render_table` borrow below.
     let (rows, shown_count) = {
+        let marked = &app.cf.marked;
         let folders = app.cf_folders_shown();
         let files = app.cf_objects_shown();
         let mut rows: Vec<Vec<String>> = folders
@@ -1200,8 +1208,10 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         rows.extend(files.iter().map(|o| {
             // Strip the current prefix so the file reads as its basename at this level.
             let name = o.key.strip_prefix(&prefix).unwrap_or(&o.key);
+            // A marked file gets a leading ✓, like a marked record.
+            let mark = if marked.contains(&o.key) { "✓ " } else { "" };
             vec![
-                name.to_string(),
+                format!("{mark}{name}"),
                 format_bytes(o.size as f64),
                 // LastModified is an ISO-8601 timestamp; drop the sub-second tail.
                 o.last_modified
@@ -1214,7 +1224,7 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         (rows, folders.len() + files.len())
     };
     let title = format!(
-        "Objects ({} of {}){}{}",
+        "Objects ({} of {}){}{}{}",
         shown_count,
         app.cf.r2_folders.len() + app.cf.r2_objects.len(),
         // A big level loads only its first page; say so rather than implying it's whole.
@@ -1222,6 +1232,10 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
             " · first page, more exist — narrow with /"
         } else {
             ""
+        },
+        match app.cf.marked.len() {
+            0 => String::new(),
+            n => format!(" · {n} marked"),
         },
         if app.cf.filter.is_empty() {
             String::new()
@@ -3128,6 +3142,8 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
         }
         let scope = if c.action == "cf-account-delete" {
             "Local config only — your Cloudflare account is untouched."
+        } else if c.action.starts_with("cf-object") {
+            "Affects only the selected object(s)."
         } else {
             "Affects only the selected DNS record(s)."
         };

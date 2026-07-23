@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use dialoguer::{Confirm, Input, Password};
 use serde_json::{json, Value};
 use std::io::Read;
@@ -193,8 +193,8 @@ pub fn cf_account_delete(cfg: &CloudflareConfig, name: &str) -> Result<()> {
 // ---------- Cloudflare zones + records (network) ----------
 
 use crate::cloudflare::{
-    apply_patch, record_body, resolve_zone, select_records, valid_record_type, CloudflareClient,
-    RecordFilter, RecordPatch, Selector, Zone,
+    apply_patch, object_basename, record_body, resolve_zone, select_records, valid_record_type,
+    CloudflareClient, RecordFilter, RecordPatch, Selector, Zone, MAX_REST_OBJECT_BYTES,
 };
 
 /// Resolve the account (named or default) and build a client, with a clear message when
@@ -618,6 +618,85 @@ pub fn cf_r2_object_list(
         );
     }
     Ok(())
+}
+
+/// Upload a local file to an object key. Rejects files over the 300 MB REST limit up front
+/// (those need the S3 API). Reads the file, PUTs the bytes, prints a one-line receipt.
+pub fn cf_r2_object_put(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    bucket: &str,
+    key: &str,
+    file: &str,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let meta = std::fs::metadata(file).with_context(|| format!("cannot read '{file}'"))?;
+    if meta.len() > MAX_REST_OBJECT_BYTES {
+        anyhow::bail!(
+            "'{file}' is {} — over the 300 MB REST upload limit. Larger objects need the \
+             S3 API, which this tool uses only for DB dumps.",
+            format_bytes(meta.len() as f64)
+        );
+    }
+    let bytes = std::fs::read(file).with_context(|| format!("cannot read '{file}'"))?;
+    let size = bytes.len() as f64;
+    client.put_object(&account_id, bucket, key, bytes, None)?;
+    println!("Uploaded {file} → {bucket}/{key} ({})", format_bytes(size));
+    Ok(())
+}
+
+/// Download an object to a local file (streamed, never buffered). Destination is `--out`
+/// if given, else the key's basename in the CWD. Refuses to overwrite an existing file.
+pub fn cf_r2_object_get(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    bucket: &str,
+    key: &str,
+    out: Option<&str>,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let dest = out.unwrap_or_else(|| object_basename(key));
+    if std::path::Path::new(dest).exists() {
+        anyhow::bail!("refusing to overwrite {dest} (pass --out to choose)");
+    }
+    let mut file =
+        std::fs::File::create(dest).with_context(|| format!("cannot create '{dest}'"))?;
+    let n = client.download_object(&account_id, bucket, key, &mut file)?;
+    println!(
+        "Downloaded {bucket}/{key} → {dest} ({})",
+        format_bytes(n as f64)
+    );
+    Ok(())
+}
+
+/// Delete one or more object keys (bulk). Reports each success, collects failures, and
+/// returns an error summarizing them so the process exits nonzero when any key failed.
+pub fn cf_r2_object_rm(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    bucket: &str,
+    keys: &[String],
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let mut failures = Vec::new();
+    for key in keys {
+        match client.delete_object(&account_id, bucket, key) {
+            Ok(()) => println!("Deleted {bucket}/{key}"),
+            Err(e) => failures.push(format!("{key}: {e}")),
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "failed to delete {} object(s):\n{}",
+            failures.len(),
+            failures.join("\n")
+        )
+    }
 }
 
 fn mask_token(token: &str) -> String {

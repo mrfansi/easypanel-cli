@@ -1046,7 +1046,7 @@ impl App {
 
     /// The active account's account-id, which every R2 call needs (R2 is
     /// account-scoped — unlike DNS, which can list zones without one).
-    fn cf_account_id(&self) -> Option<String> {
+    pub(super) fn cf_account_id(&self) -> Option<String> {
         self.cf.active.as_ref().and_then(|a| a.account_id.clone())
     }
 
@@ -1063,6 +1063,21 @@ impl App {
     /// The files shown right now (after the CF-local filter).
     pub(super) fn cf_objects_shown(&self) -> Vec<&R2Object> {
         filter_objects(&self.cf.r2_objects, &self.cf.filter)
+    }
+
+    /// The FILE under the cursor, or None when the selected row is a FOLDER (or nothing
+    /// is selected). Folders render first, so a row index below `cf_folders_shown().len()`
+    /// is a folder — folders have no per-object actions (download/delete/mark all skip
+    /// them). The clone keeps the caller free of the immutable borrow while it mutates.
+    pub(super) fn cf_selected_object(&self) -> Option<R2Object> {
+        let n_folders = self.cf_folders_shown().len();
+        let i = self.cf.r2_objects_row.selected()?;
+        if i < n_folders {
+            return None;
+        }
+        self.cf_objects_shown()
+            .get(i - n_folders)
+            .map(|o| (*o).clone())
     }
 
     /// The total rows in the objects table: subfolders + files, after the filter. The
@@ -1287,9 +1302,9 @@ impl App {
                 let folder = self.cf_folders_shown()[i].clone();
                 self.cf_request_level(folder, req);
             }
-            Some(_) => {
-                self.status = "Object actions are a later slice — [Esc] up".into();
-            }
+            // A FILE row: Enter downloads it (the folders above still descend). The form
+            // reads the selected object itself, so no argument travels here.
+            Some(_) => self.open_cf_object_download(),
             None => {}
         }
     }
@@ -1612,6 +1627,159 @@ impl App {
             MenuItem::new("Browse objects", |a, r| a.cf_open_objects(r)),
             MenuItem::new("Delete bucket…", |a, _| a.open_cf_bucket_delete_form()),
         ]);
+    }
+
+    /// The upload form for the currently-browsed level. One text field (a local path);
+    /// the worker reads the file and computes the destination key from the prefix + the
+    /// local basename, so the form carries nothing but the path.
+    pub(super) fn open_cf_upload_form(&mut self) {
+        let Some(bucket) = self.cf.current_bucket.clone() else {
+            self.status = "No bucket open".into();
+            return;
+        };
+        let dest = if self.cf.current_prefix.is_empty() {
+            bucket
+        } else {
+            format!("{bucket}/{}", self.cf.current_prefix)
+        };
+        self.form = Some(
+            Form::new(
+                FormKind::R2Upload,
+                format!(" Upload to {dest} "),
+                vec![Field::text("Local file path", "")],
+            )
+            .with_note("Max 300 MB (the REST API limit); larger objects need the S3 API."),
+        );
+    }
+
+    /// The download form for the selected FILE. `Save to` defaults to the object's
+    /// basename (saved in the CWD); the worker refuses to overwrite an existing file. A
+    /// no-op on a folder row (folders have no actions).
+    pub(super) fn open_cf_object_download(&mut self) {
+        let Some(o) = self.cf_selected_object() else {
+            self.status = "Select a file — folders have no actions".into();
+            return;
+        };
+        let base = crate::cloudflare::object_basename(&o.key).to_string();
+        self.form = Some(
+            Form::new(
+                FormKind::R2Download { key: o.key },
+                format!(" Download {base} "),
+                vec![Field::text("Save to", &base)],
+            )
+            .with_note("Saved in the current directory unless you give a path; won't overwrite."),
+        );
+    }
+
+    /// Ask before deleting the selected FILE (its key stashed in `project`, like a record
+    /// delete). A no-op on a folder row.
+    pub(super) fn ask_cf_object_delete(&mut self) {
+        let Some(o) = self.cf_selected_object() else {
+            self.status = "Select a file — folders have no actions".into();
+            return;
+        };
+        self.confirm = Some(Confirm {
+            action: "cf-object-delete".into(),
+            project: o.key.clone(),
+            service: String::new(),
+            stype: String::new(),
+            label: format!("Delete object '{}'?", o.key),
+        });
+    }
+
+    /// Toggle the mark on the selected FILE (by object key). Folders are not markable —
+    /// a folder row is skipped.
+    pub(super) fn cf_toggle_object_mark(&mut self) {
+        if let Some(o) = self.cf_selected_object() {
+            if !self.cf.marked.remove(&o.key) {
+                self.cf.marked.insert(o.key);
+            }
+        }
+    }
+
+    /// Mark every FILE shown at this level (folders excluded); if all are already marked,
+    /// clear them. Mirrors `cf_mark_all_shown` for records.
+    pub(super) fn cf_mark_all_objects(&mut self) {
+        let keys: Vec<String> = self
+            .cf_objects_shown()
+            .iter()
+            .map(|o| o.key.clone())
+            .collect();
+        if !keys.is_empty() && keys.iter().all(|k| self.cf.marked.contains(k)) {
+            for k in &keys {
+                self.cf.marked.remove(k);
+            }
+        } else {
+            self.cf.marked.extend(keys);
+        }
+    }
+
+    /// The per-object action menu (right-click a FILE, or Space with nothing marked):
+    /// Download / Delete…. Both items read the selected object themselves, so a plain
+    /// fn-pointer item works. A no-op on a folder row (folders have no actions).
+    pub(super) fn open_cf_object_menu(&mut self) {
+        if self.cf_selected_object().is_none() {
+            self.status = "Select a file — folders have no actions".into();
+            return;
+        }
+        self.open_menu(vec![
+            MenuItem::new("Download", |a, _| a.open_cf_object_download()),
+            MenuItem::new("Delete…", |a, _| a.ask_cf_object_delete()),
+        ]);
+    }
+
+    /// The bulk action menu for the marked objects: Download / Delete. Opened by Space
+    /// when ≥1 is marked.
+    pub(super) fn open_cf_object_bulk_menu(&mut self) {
+        let n = self.cf.marked.len();
+        if n == 0 {
+            self.status = "No objects marked — v marks one, V marks all shown".into();
+            return;
+        }
+        self.open_menu(vec![
+            MenuItem::new(format!("Download {n} marked"), |a, r| a.cf_bulk_download(r)),
+            MenuItem::new(format!("Delete {n} marked"), |a, _| {
+                a.ask_cf_object_bulk_delete()
+            }),
+        ]);
+    }
+
+    /// Ask before deleting the marked objects.
+    pub(super) fn ask_cf_object_bulk_delete(&mut self) {
+        let n = self.cf.marked.len();
+        self.confirm = Some(Confirm {
+            action: "cf-object-bulk-delete".into(),
+            project: String::new(),
+            service: String::new(),
+            stype: String::new(),
+            label: format!("Delete {n} marked object(s)?"),
+        });
+    }
+
+    /// Download every marked object into the CWD under its basename (one worker job).
+    /// Marks are cleared once dispatched — they have served their purpose.
+    pub(super) fn cf_bulk_download(&mut self, req: &Sender<Req>) {
+        let keys: Vec<String> = self.cf.marked.iter().cloned().collect();
+        if keys.is_empty() {
+            self.status = "No objects marked".into();
+            return;
+        }
+        let (Some(token), Some(account_id), Some(bucket)) = (
+            self.cf_token(),
+            self.cf_account_id(),
+            self.cf.current_bucket.clone(),
+        ) else {
+            return;
+        };
+        let _ = req.send(Req::Cf(CfReq::R2GetMany {
+            token,
+            account_id,
+            bucket,
+            keys,
+            dir: ".".into(),
+        }));
+        self.cf.marked.clear();
+        self.status = "Downloading marked objects…".into();
     }
 
     /// The bulk action menu for the marked records.
@@ -2228,6 +2396,11 @@ impl App {
             CfResp::Done(msg) => {
                 self.status = msg;
                 self.cf_reload(req);
+            }
+            // A download wrote a local file — the current level is unchanged, so set the
+            // status but do NOT reload (a reload would flash the loading state for nothing).
+            CfResp::Status(msg) => {
+                self.status = msg;
             }
             CfResp::BulkDone { ok, failed } => {
                 self.cf.marked.clear();
@@ -4385,6 +4558,51 @@ impl App {
                     token,
                     account_id,
                     name,
+                }));
+            }
+            FormKind::R2Upload => {
+                let path = form.val(0);
+                if path.trim().is_empty() {
+                    self.status = "Give a local file path".into();
+                    return;
+                }
+                let (Some(token), Some(account_id), Some(bucket)) = (
+                    self.cf_token(),
+                    self.cf_account_id(),
+                    self.cf.current_bucket.clone(),
+                ) else {
+                    self.status = "No bucket open".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::R2Put {
+                    token,
+                    account_id,
+                    bucket,
+                    prefix: self.cf.current_prefix.clone(),
+                    path,
+                }));
+            }
+            FormKind::R2Download { key } => {
+                let key = key.clone();
+                let dest = form.val(0);
+                if dest.trim().is_empty() {
+                    self.status = "Give a path to save to".into();
+                    return;
+                }
+                let (Some(token), Some(account_id), Some(bucket)) = (
+                    self.cf_token(),
+                    self.cf_account_id(),
+                    self.cf.current_bucket.clone(),
+                ) else {
+                    self.status = "No bucket open".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::R2Get {
+                    token,
+                    account_id,
+                    bucket,
+                    key,
+                    dest,
                 }));
             }
             FormKind::DomainCreate | FormKind::DomainEdit { .. } => match domain_body(form) {

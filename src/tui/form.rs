@@ -1150,6 +1150,14 @@ pub(super) enum FormKind {
     CfBucketDelete {
         name: String,
     },
+    /// Upload a local file into the currently-browsed bucket/prefix. The worker reads
+    /// the file and computes the key; the form carries only the local path.
+    R2Upload,
+    /// Download the selected object to a local path. `key` is the object being fetched;
+    /// the field defaults to its basename (saved in the CWD).
+    R2Download {
+        key: String,
+    },
 }
 
 /// Which attribute a Cloudflare bulk edit sets on the marked records.

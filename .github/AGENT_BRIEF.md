@@ -395,9 +395,15 @@ hint on the auth error, same pitfall as Zone:DNS).
   no separate R2 S3 credentials at all. `s3.rs` stays DB-dump-only. The needed token
   permission is account-scoped **Workers R2 Storage** (Read for list, Edit for
   create/delete); the `r2_hint` surfaces that on an auth error.
-  **NEXT R2 slice:** object **upload / download / delete** — also REST
-  (`PUT/GET/DELETE /accounts/{account_id}/r2/buckets/{bucket}/objects/{key}`, Bearer),
-  NOT S3. Guard delete behind a confirm; upload/download stream a file via reqwest.
+  **object upload / download / delete + bulk — DONE v0.89.0.** REST
+  (`PUT/GET/DELETE /accounts/{account_id}/r2/buckets/{bucket}/objects/{key}`, Bearer,
+  NOT S3). Domain in `cloudflare.rs` (`encode_object_key`/`object_basename`/`upload_key`/
+  `MAX_REST_OBJECT_BYTES=300MB` + `put_object`/`download_object`/`delete_object`); CLI
+  `cf r2 object put/get/rm`; TUI `u` upload, `Enter`/menu download, `x` delete (confirm),
+  `v`/`V` mark + `Space` bulk (Download/Delete N). 300 MB single-PUT cap enforced (bigger
+  needs S3 multipart, out of scope); downloads stream; keys percent-encoded (slashes
+  literal). Verified live end-to-end on a throwaway bucket (upload→download byte-identical
+  →bulk-delete→cleanup). Token needs account-level Workers R2 Storage **Edit** for writes.
 - **D1 (serverless SQL database).** New `CfProduct::D1` tab. Databases via
   `/accounts/{account_id}/d1/database` (list/create/delete); run SQL via
   `POST /accounts/{account_id}/d1/database/{database_id}/query` (or `/raw`), which returns

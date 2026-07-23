@@ -459,6 +459,40 @@ enum CfR2ObjectCmd {
         #[arg(long)]
         account: Option<String>,
     },
+    /// Upload a local file to an object key (REST limit: 300 MB)
+    Put {
+        /// The bucket to upload into
+        bucket: String,
+        /// The destination object key
+        key: String,
+        /// The local file to upload
+        #[arg(long)]
+        file: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Download an object to a local file
+    Get {
+        /// The bucket to download from
+        bucket: String,
+        /// The object key to download
+        key: String,
+        /// Where to write it (default: the key's basename in the current directory)
+        #[arg(long)]
+        out: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Delete one or more object keys (bulk delete: pass several keys)
+    Rm {
+        /// The bucket to delete from
+        bucket: String,
+        /// The object key(s) to delete
+        #[arg(required = true)]
+        keys: Vec<String>,
+        #[arg(long)]
+        account: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1034,6 +1068,35 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                             &bucket,
                             prefix.as_deref(),
                         ),
+                        CfR2ObjectCmd::Put {
+                            bucket,
+                            key,
+                            file,
+                            account,
+                        } => commands::cf_r2_object_put(
+                            &cf,
+                            account.as_deref(),
+                            &bucket,
+                            &key,
+                            &file,
+                        ),
+                        CfR2ObjectCmd::Get {
+                            bucket,
+                            key,
+                            out,
+                            account,
+                        } => commands::cf_r2_object_get(
+                            &cf,
+                            account.as_deref(),
+                            &bucket,
+                            &key,
+                            out.as_deref(),
+                        ),
+                        CfR2ObjectCmd::Rm {
+                            bucket,
+                            keys,
+                            account,
+                        } => commands::cf_r2_object_rm(&cf, account.as_deref(), &bucket, &keys),
                     },
                 },
             }

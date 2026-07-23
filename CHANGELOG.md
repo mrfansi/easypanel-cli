@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.89.0] — 2026-07-23
+
+### Added
+
+- **R2 objects: upload, download, delete, and bulk delete/download.** The object browser
+  was read-only; now you can manage a bucket's contents end to end, over the same
+  Cloudflare REST API (Bearer token, no S3 credentials).
+  - **TUI** (R2 → a bucket → objects): `u` uploads a local file to the current folder;
+    `Enter` (or the row menu) downloads the selected file, choosing where to save it; `x`
+    deletes it behind a typed-nothing confirm that names the **account** and scopes the
+    action to the selected object(s); `v`/`V` mark files and `Space` opens a bulk menu —
+    **Download N marked** / **Delete N marked** — the same mark-and-bulk flow as DNS
+    records. Uploads and deletes reload the folder; the confirm dialog and folder
+    rendering keep their recent fixes.
+  - **CLI**: `easypanel cf r2 object put <bucket> <key> --file <path>`,
+    `get <bucket> <key> [--out <path>]` (refuses to overwrite), and
+    `rm <bucket> <key>…` (one or many — the bulk form).
+  - **Limits, honestly enforced**: this REST endpoint caps a single upload at **300 MB**
+    (larger objects need the S3 multipart API, which this tool uses only for DB dumps) —
+    oversize uploads are refused with that reason rather than failing obscurely.
+    Downloads stream to disk (no buffering), object keys are correctly percent-encoded
+    (slashes kept literal), and the needed token permission is the account-level *Workers
+    R2 Storage* (Edit for write). All verified live end to end against a throwaway bucket:
+    upload → list → download (byte-identical) → bulk-delete → cleanup.
+  - Domain rules (key encoding, the 300 MB guard, key/basename building) live in
+    `cloudflare.rs` (pure, unit-tested); the client, CLI, worker and TUI are thin callers.
+
 ## [0.88.0] — 2026-07-23
 
 ### Changed

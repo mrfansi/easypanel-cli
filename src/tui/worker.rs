@@ -8,7 +8,10 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::client::EasypanelClient;
-use crate::cloudflare::{CloudflareClient, R2Bucket, R2Object, Record, RecordFilter, Zone};
+use crate::cloudflare::{
+    object_basename, upload_key, CloudflareClient, R2Bucket, R2Object, Record, RecordFilter, Zone,
+    MAX_REST_OBJECT_BYTES,
+};
 use crate::output::field;
 
 // ---------- Worker (networking on a separate thread so the UI doesn't freeze) ----------
@@ -511,6 +514,42 @@ pub(super) enum CfReq {
         bucket: String,
         prefix: String,
     },
+    /// Upload a LOCAL file into `bucket` at `prefix`. The worker reads the file (so the
+    /// UI never blocks), enforces the 300 MB REST cap, and computes the key with
+    /// `upload_key(prefix, path)`. Account-scoped, so the account_id travels along.
+    R2Put {
+        token: String,
+        account_id: String,
+        bucket: String,
+        prefix: String,
+        path: String,
+    },
+    /// Download ONE object to a local `dest`, refusing to overwrite an existing file.
+    R2Get {
+        token: String,
+        account_id: String,
+        bucket: String,
+        key: String,
+        dest: String,
+    },
+    /// Download MANY marked objects into `dir`, each under its basename (skips a name
+    /// already present rather than clobbering). Reports per-key pass/fail.
+    R2GetMany {
+        token: String,
+        account_id: String,
+        bucket: String,
+        keys: Vec<String>,
+        dir: String,
+    },
+    /// Delete one or many object keys (single = a one-element vec), one call per key —
+    /// a mid-list failure never aborts the rest. Reports per-key pass/fail; the app
+    /// re-lists the level afterwards.
+    R2Delete {
+        token: String,
+        account_id: String,
+        bucket: String,
+        keys: Vec<String>,
+    },
 }
 
 pub(super) enum Resp {
@@ -709,6 +748,10 @@ pub(super) enum CfResp {
     },
     /// A create/edit/delete succeeded; the app re-lists the affected screen.
     Done(String),
+    /// An operation that set a status line but did NOT change the current level, so
+    /// the app must NOT reload (a download writes a local file — the object list is
+    /// unchanged, and a reload would flash the loading state for nothing).
+    Status(String),
     /// A bulk fan-out: how many succeeded and, per failed id, the reason.
     BulkDone {
         ok: usize,
@@ -2048,6 +2091,148 @@ fn handle_cf(req: CfReq) -> CfResp {
             },
             Err(e) => CfResp::Err(e.to_string()),
         },
+        // Read the file HERE (not on the UI thread), enforce the 300 MB REST cap BEFORE
+        // reading its bytes into memory, then PUT. The key is the browsed prefix + the
+        // local basename.
+        CfReq::R2Put {
+            token,
+            account_id,
+            bucket,
+            prefix,
+            path,
+        } => match std::fs::metadata(&path) {
+            Ok(m) if m.len() > MAX_REST_OBJECT_BYTES => CfResp::Err(format!(
+                "{path} is {} — over the 300 MB REST upload limit; larger objects need the S3 API",
+                crate::output::format_bytes(m.len() as f64)
+            )),
+            Ok(_) => match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let key = upload_key(&prefix, &path);
+                    match CloudflareClient::new(&token).put_object(
+                        &account_id,
+                        &bucket,
+                        &key,
+                        bytes,
+                        None,
+                    ) {
+                        Ok(()) => {
+                            let where_ = if prefix.is_empty() {
+                                bucket.clone()
+                            } else {
+                                format!("{bucket}/{prefix}")
+                            };
+                            CfResp::Done(format!("Uploaded {} → {where_}", object_basename(&key)))
+                        }
+                        Err(e) => CfResp::Err(e.to_string()),
+                    }
+                }
+                Err(e) => CfResp::Err(format!("Can't read {path}: {e}")),
+            },
+            Err(e) => CfResp::Err(format!("Can't read {path}: {e}")),
+        },
+        // Refuse to overwrite an existing dest; stream the body into the file. A failed
+        // download removes the partial file it created rather than leaving a stub.
+        CfReq::R2Get {
+            token,
+            account_id,
+            bucket,
+            key,
+            dest,
+        } => {
+            if std::path::Path::new(&dest).exists() {
+                CfResp::Err(format!("{dest} already exists — refusing to overwrite"))
+            } else {
+                match std::fs::File::create(&dest) {
+                    Ok(mut f) => {
+                        match CloudflareClient::new(&token).download_object(
+                            &account_id,
+                            &bucket,
+                            &key,
+                            &mut f,
+                        ) {
+                            Ok(n) => CfResp::Status(format!(
+                                "Downloaded {bucket}/{key} → {dest} ({})",
+                                crate::output::format_bytes(n as f64)
+                            )),
+                            Err(e) => {
+                                let _ = std::fs::remove_file(&dest);
+                                CfResp::Err(e.to_string())
+                            }
+                        }
+                    }
+                    Err(e) => CfResp::Err(format!("Can't create {dest}: {e}")),
+                }
+            }
+        }
+        // Download each marked key into `dir` under its basename, one at a time. A name
+        // already present is a per-key failure (never a clobber); a failed download drops
+        // its partial file. Reports how many landed.
+        CfReq::R2GetMany {
+            token,
+            account_id,
+            bucket,
+            keys,
+            dir,
+        } => {
+            let client = CloudflareClient::new(&token);
+            let (mut ok, mut failed) = (0usize, Vec::new());
+            for key in keys {
+                let dest = std::path::Path::new(&dir).join(object_basename(&key));
+                if dest.exists() {
+                    failed.push((key, "a file of that name already exists".to_string()));
+                    continue;
+                }
+                match std::fs::File::create(&dest) {
+                    Ok(mut f) => match client.download_object(&account_id, &bucket, &key, &mut f) {
+                        Ok(_) => ok += 1,
+                        Err(e) => {
+                            let _ = std::fs::remove_file(&dest);
+                            failed.push((key, e.to_string()));
+                        }
+                    },
+                    Err(e) => failed.push((key, e.to_string())),
+                }
+            }
+            let msg = if failed.is_empty() {
+                format!("Downloaded {ok} object(s) to the current directory")
+            } else {
+                let detail = failed
+                    .iter()
+                    .map(|(k, e)| format!("{k}: {e}"))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("{ok} downloaded · {} failed — {detail}", failed.len())
+            };
+            CfResp::Status(msg)
+        }
+        // Delete each key, one call per key — a mid-list failure never aborts the rest.
+        // Reports pass/fail; Done re-lists the level.
+        CfReq::R2Delete {
+            token,
+            account_id,
+            bucket,
+            keys,
+        } => {
+            let client = CloudflareClient::new(&token);
+            let (mut ok, mut failed) = (0usize, Vec::new());
+            for key in keys {
+                match client.delete_object(&account_id, &bucket, &key) {
+                    Ok(()) => ok += 1,
+                    Err(e) => failed.push((key, e.to_string())),
+                }
+            }
+            let msg = if failed.is_empty() {
+                format!("Deleted {ok} object(s)")
+            } else {
+                let detail = failed
+                    .iter()
+                    .map(|(k, e)| format!("{k}: {e}"))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("{ok} deleted · {} failed — {detail}", failed.len())
+            };
+            CfResp::Done(msg)
+        }
     }
 }
 

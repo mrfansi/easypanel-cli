@@ -129,6 +129,44 @@ pub fn sort_r2_level(level: &mut R2Level) {
         .sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
 }
 
+/// The Cloudflare REST object endpoints (`PUT`/`GET`/`DELETE …/objects/{key}`) cap a
+/// single request at 300 MB. Larger objects need the S3 API (which this tool uses only
+/// for DB dumps), so an oversized upload is rejected up front rather than attempted.
+pub const MAX_REST_OBJECT_BYTES: u64 = 300 * 1024 * 1024;
+
+/// Percent-encode an object key for the REST path. Slashes stay LITERAL so the key still
+/// browses as a folder tree (`dir/a.gz`, not `dir%2Fa.gz`); every byte outside the
+/// unreserved set `A-Za-z0-9-._~` becomes `%XX` (uppercase hex). Pure.
+pub fn encode_object_key(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    for &b in key.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// The last path segment of an object key (the whole key when it has no `/`) — used as the
+/// default local filename on download. Pure.
+pub fn object_basename(key: &str) -> &str {
+    key.rsplit('/').next().unwrap_or(key)
+}
+
+/// The destination object key for an upload: `prefix` (already `""` or ending in `/`) plus
+/// the OS basename of `local_path` (any directory stripped). Pure. Used by the TUI (Phase
+/// B) to upload into the currently-browsed folder; the CLI `put` takes an explicit key.
+pub fn upload_key(prefix: &str, local_path: &str) -> String {
+    let base = std::path::Path::new(local_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| local_path.to_string());
+    format!("{prefix}{base}")
+}
+
 // ---------- Envelope parsing ----------
 
 #[derive(Debug, Deserialize)]
@@ -641,6 +679,86 @@ impl CloudflareClient {
         let body = self.get(&path, &q).map_err(r2_hint)?;
         parse_r2_level(&body).map_err(r2_hint)
     }
+
+    /// Upload raw bytes to an object key. `PUT …/objects/{key}` with the raw body and a
+    /// `Content-Type` (default `application/octet-stream`); success is the standard
+    /// envelope. The caller must enforce [`MAX_REST_OBJECT_BYTES`] before calling.
+    pub fn put_object(
+        &self,
+        account_id: &str,
+        bucket: &str,
+        key: &str,
+        bytes: Vec<u8>,
+        content_type: Option<&str>,
+    ) -> Result<()> {
+        let url = format!(
+            "{BASE}/accounts/{account_id}/r2/buckets/{bucket}/objects/{}",
+            encode_object_key(key)
+        );
+        let body = self
+            .http
+            .put(url)
+            .bearer_auth(&self.token)
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                content_type.unwrap_or("application/octet-stream"),
+            )
+            .body(bytes)
+            .send()
+            .and_then(|r| r.text())
+            .map_err(|e| r2_hint(e.into()))?;
+        let _: Value = parse_envelope(&body).map_err(r2_hint)?;
+        Ok(())
+    }
+
+    /// Download an object, streaming its body into `out` (never buffering the whole file in
+    /// memory). On success the body IS the raw object bytes; on error it is a JSON error
+    /// envelope, which is parsed so "object not found" / auth errors surface properly.
+    /// Returns the byte count written.
+    pub fn download_object(
+        &self,
+        account_id: &str,
+        bucket: &str,
+        key: &str,
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64> {
+        let url = format!(
+            "{BASE}/accounts/{account_id}/r2/buckets/{bucket}/objects/{}",
+            encode_object_key(key)
+        );
+        let mut resp = self
+            .http
+            .get(url)
+            .bearer_auth(&self.token)
+            .send()
+            .map_err(|e| r2_hint(e.into()))?;
+        if resp.status().is_success() {
+            Ok(resp.copy_to(out)?)
+        } else {
+            let body = resp.text().map_err(|e| r2_hint(e.into()))?;
+            // A non-2xx body is the JSON error envelope; parse_envelope turns it into the
+            // Cloudflare message. It never returns Ok on an error body.
+            let _: Value = parse_envelope(&body).map_err(r2_hint)?;
+            anyhow::bail!("Cloudflare returned an error status but no error message")
+        }
+    }
+
+    /// Delete one object key. `DELETE …/objects/{key}`; success is the standard envelope.
+    pub fn delete_object(&self, account_id: &str, bucket: &str, key: &str) -> Result<()> {
+        let url = format!(
+            "{BASE}/accounts/{account_id}/r2/buckets/{bucket}/objects/{}",
+            encode_object_key(key)
+        );
+        let body = self
+            .http
+            .delete(url)
+            .bearer_auth(&self.token)
+            .send()
+            .and_then(|r| r.text())
+            .map_err(|e| r2_hint(e.into()))?;
+        let _: Value = parse_envelope(&body).map_err(r2_hint)?;
+        Ok(())
+    }
 }
 
 /// Parse a delimiter-mode objects response into one browse level: the files at this
@@ -973,6 +1091,31 @@ mod tests {
             "Cloudflare: The bucket you tried to delete is not empty"
         ));
         assert!(!other.to_string().contains("Workers R2 Storage"));
+    }
+
+    #[test]
+    fn encode_object_key_percent_encodes_everything_but_slash_and_unreserved() {
+        // Space → %20, colon → %3A; the slash and the unreserved bytes stay literal.
+        assert_eq!(encode_object_key("a/b c:d.gz"), "a/b%20c%3Ad.gz");
+        // A plain nested key is unchanged.
+        assert_eq!(encode_object_key("dir/sub/x.sql.gz"), "dir/sub/x.sql.gz");
+    }
+
+    #[test]
+    fn object_basename_takes_the_segment_after_the_last_slash() {
+        assert_eq!(object_basename("a/b/c.gz"), "c.gz");
+        assert_eq!(object_basename("x"), "x");
+    }
+
+    #[test]
+    fn upload_key_joins_prefix_and_the_local_basename() {
+        assert_eq!(upload_key("dir/", "/tmp/dump.sql.gz"), "dir/dump.sql.gz");
+        assert_eq!(upload_key("", "x.gz"), "x.gz");
+    }
+
+    #[test]
+    fn max_rest_object_bytes_is_300_mib() {
+        assert_eq!(MAX_REST_OBJECT_BYTES, 300 * 1024 * 1024);
     }
 
     fn rec(id: &str, kind: &str, name: &str, content: &str) -> Record {

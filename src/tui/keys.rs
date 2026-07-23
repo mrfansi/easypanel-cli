@@ -451,12 +451,11 @@ impl App {
         if self.workspace == Workspace::Cloudflare {
             if self.select_row_at(col, row) {
                 match (self.cf.product, self.cf.screen) {
-                    // R2 Buckets: the bucket row menu. But the Objects drill-in has NO
-                    // per-object actions yet (browse-only), so right-clicking a file must
-                    // NOT open the bucket's menu ("Browse objects / Delete bucket") — that
-                    // would offer to delete the very bucket you are inside. No menu there,
-                    // matching "no action for that row, no menu".
-                    (CfProduct::R2, CfScreen::Objects) => {}
+                    // R2 Objects: a FILE row gets the per-object menu (Download / Delete);
+                    // a FOLDER row has no actions, so `open_cf_object_menu` no-ops on it.
+                    // NOT the bucket menu — that would offer to delete the very bucket you
+                    // are inside.
+                    (CfProduct::R2, CfScreen::Objects) => self.open_cf_object_menu(),
                     (CfProduct::R2, _) => self.open_cf_bucket_menu(),
                     (CfProduct::Dns, CfScreen::Zones) => self.open_cf_zone_menu(),
                     (CfProduct::Dns, _) => self.open_cf_record_menu(),
@@ -1046,6 +1045,44 @@ impl App {
                 }
                 return;
             }
+            // Delete one object (its key was stashed in `project`). The worker reports the
+            // result and Done re-lists the level.
+            "cf-object-delete" => {
+                if let (Some(token), Some(account_id), Some(bucket)) = (
+                    self.cf_token(),
+                    self.cf_account_id(),
+                    self.cf.current_bucket.clone(),
+                ) {
+                    let _ = req.send(Req::Cf(CfReq::R2Delete {
+                        token,
+                        account_id,
+                        bucket,
+                        keys: vec![c.project],
+                    }));
+                    self.status = "Deleting object...".into();
+                }
+                return;
+            }
+            // Delete every marked object — one call per key on the worker. Marks are
+            // cleared once dispatched (their job is done).
+            "cf-object-bulk-delete" => {
+                let keys: Vec<String> = self.cf.marked.iter().cloned().collect();
+                if let (Some(token), Some(account_id), Some(bucket)) = (
+                    self.cf_token(),
+                    self.cf_account_id(),
+                    self.cf.current_bucket.clone(),
+                ) {
+                    let _ = req.send(Req::Cf(CfReq::R2Delete {
+                        token,
+                        account_id,
+                        bucket,
+                        keys,
+                    }));
+                    self.cf.marked.clear();
+                    self.status = "Deleting marked objects...".into();
+                }
+                return;
+            }
             // The file was chosen in the picker, not typed, so its three parts
             // travel in `pending_restore` rather than being squeezed into Confirm.
             // One request per database: the endpoint takes a single name, and a
@@ -1354,15 +1391,20 @@ impl App {
     }
 
     /// The R2 objects FOLDER browser (the mirror of the DNS Records screen): Enter
-    /// descends into a folder (files are a no-op for now), `/` filters this level, `r`
-    /// refreshes it. Esc goes UP one folder while inside the tree, and only backs out to
-    /// the buckets home at the root. An active filter is cleared first. No add/delete yet
-    /// — object mutation is a later slice.
+    /// descends into a folder or downloads a file, `u` uploads into this level, `x`
+    /// deletes the selected file, `v`/`V` mark files, Space is the object/bulk menu, `/`
+    /// filters this level, `r` refreshes it. Esc clears an active filter, then marks, then
+    /// goes UP one folder while inside the tree, and only backs out to the buckets home at
+    /// the root.
     fn cf_objects_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
             KeyCode::Esc if !self.cf.filter.is_empty() => {
                 self.cf.filter.clear();
                 self.cf_clamp_filtered();
+            }
+            KeyCode::Esc if !self.cf.marked.is_empty() => {
+                self.cf.marked.clear();
+                self.status = "Marks cleared".into();
             }
             KeyCode::Esc if !self.cf.current_prefix.is_empty() => {
                 // Inside a folder: go UP one level (reload the parent), not out of objects.
@@ -1375,6 +1417,7 @@ impl App {
                 self.cf.screen = CfScreen::Zones;
                 self.cf.current_bucket = None;
                 self.cf.current_prefix.clear();
+                self.cf.marked.clear();
                 self.cf.error = None;
             }
             KeyCode::Char('q') => self.should_quit = true,
@@ -1383,6 +1426,13 @@ impl App {
                 self.cf.filter.clear();
             }
             KeyCode::Char('r') => self.cf_reload(req),
+            KeyCode::Char('u') => self.open_cf_upload_form(),
+            KeyCode::Char('x') => self.ask_cf_object_delete(),
+            KeyCode::Char('v') => self.cf_toggle_object_mark(),
+            KeyCode::Char('V') => self.cf_mark_all_objects(),
+            // Space: the bulk menu when something is marked, else the single-object menu.
+            KeyCode::Char(' ') if !self.cf.marked.is_empty() => self.open_cf_object_bulk_menu(),
+            KeyCode::Char(' ') => self.open_cf_object_menu(),
             KeyCode::Enter => self.cf_object_enter(req),
             _ => {
                 let len = self.cf_level_len();
