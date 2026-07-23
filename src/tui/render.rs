@@ -4,6 +4,7 @@ use ratatui::widgets::{
 };
 use serde_json::Value;
 
+use crate::cloudflare::AnalyticsMetric;
 use crate::commands;
 use crate::output::{
     field, format_bytes, format_rate, num, series_last, series_percent, series_spark,
@@ -157,16 +158,16 @@ pub(super) const MOUSE_KEYS: &[Key] = &[
 ];
 
 /// The "Anywhere" keys that actually act in the Cloudflare workspace. The product
-/// tab bar (DNS · R2 …) switches with 1..=N / Tab / ←→ — the CF mirror of the
+/// tab bar (Analytics · Domains · R2 …) switches with 1..=N / Tab / ←→ — the CF mirror of the
 /// EasyPanel tab keys — so the help documents it (the header shows the tabs; nothing
 /// else told the reader how to reach them). `:` opens the CF command palette (the
 /// mirror of EasyPanel's `:`). The `s` server list stays inert here (the CF analogue
-/// is `a`, a per-screen key), so listing it would be help that lies. The `1-2` upper
+/// is `a`, a per-screen key), so listing it would be help that lies. The `1-3` upper
 /// bound is pinned to CF_PRODUCTS by `the_cf_product_tab_hint_names_every_product`.
 pub(super) const CF_GLOBAL_KEYS: &[Key] = &[
     Key("W", "switch workspace (EasyPanel / Cloudflare)"),
     Key("?", "this help"),
-    Key("1-2 / Tab / ←→", "switch product tab"),
+    Key("1-3 / Tab / ←→", "switch product tab"),
     Key(
         ":",
         "command palette (jump to a product / account / zone / bucket)",
@@ -467,12 +468,24 @@ pub(super) fn cf_objects_keys() -> &'static [Key] {
     ]
 }
 
+pub(super) fn cf_analytics_keys() -> &'static [Key] {
+    &[
+        Key(
+            "a",
+            "switch Cloudflare account (a picker, like `s` switches servers)",
+        ),
+        Key("r", "refresh account analytics"),
+        Key("Esc", "back to EasyPanel"),
+    ]
+}
+
 pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     // In the Cloudflare workspace the "this screen" section documents the CF screen's
     // keys, not the (stale) EasyPanel Screen's — the two workspaces are isolated.
     let cf = app.workspace == Workspace::Cloudflare;
     let rows = if cf {
         match app.cf.product {
+            CfProduct::Analytics => cf_analytics_keys(),
             CfProduct::R2 => match app.cf.screen {
                 CfScreen::Objects => cf_objects_keys(),
                 _ => cf_buckets_keys(),
@@ -534,13 +547,14 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
 
     let screen_label = if cf {
         match app.cf.product {
+            CfProduct::Analytics => "Cloudflare · Analytics",
             CfProduct::R2 => match app.cf.screen {
                 CfScreen::Objects => "Cloudflare · R2 · objects",
                 _ => "Cloudflare · R2",
             },
             CfProduct::Dns => match app.cf.screen {
-                CfScreen::Zones => "Cloudflare · DNS",
-                CfScreen::Records | CfScreen::Objects => "Cloudflare · DNS · records",
+                CfScreen::Zones => "Cloudflare · Domains",
+                CfScreen::Records | CfScreen::Objects => "Cloudflare · Domains · records",
             },
         }
     } else {
@@ -723,9 +737,10 @@ pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &m
         render_viewer(f, body, app);
         return;
     }
-    // Dispatch on the PRODUCT first (DNS vs R2); DNS then splits on its screen
+    // Dispatch on the PRODUCT first (Domains/DNS vs R2); Domains then splits on its screen
     // (Zones home / Records drill-in). R2 has a single buckets screen for now.
     match app.cf.product {
+        CfProduct::Analytics => render_cf_analytics(f, header, body, app),
         CfProduct::Dns => match app.cf.screen {
             CfScreen::Zones => render_cf_zones(f, header, body, app),
             CfScreen::Records | CfScreen::Objects => render_cf_records(f, header, body, app),
@@ -764,7 +779,9 @@ pub(super) const CF_BUCKETS_HINTS: &str =
 pub(super) const CF_OBJECTS_HINTS: &str =
     "a account · : palette · u upload · Enter download · x delete · v/V mark · Space menu/bulk · / filter · r refresh · Esc up/buckets";
 
-/// The orange workspace header: the bordered title + the PRODUCT tab bar (DNS
+pub(super) const CF_ANALYTICS_HINTS: &str = "a account · : palette · r refresh · Esc EasyPanel";
+
+/// The orange workspace header: the bordered title + the PRODUCT tab bar (Domains
 /// today; D1/R2/KV/Workers/Connectors slot in later). Drawn exactly like the
 /// EasyPanel `render_tabs` — `│` gray separators, gray inactive tabs, the active
 /// tab bold with a brief "reversed flash" on change — but in CF orange. The
@@ -834,6 +851,191 @@ fn cf_placeholder(
             .style(Style::default().fg(colour))
             .block(pane(title.to_string(), tint)),
         body,
+    );
+}
+
+fn compact_count(n: u64) -> String {
+    let f = n as f64;
+    if n >= 1_000_000_000 {
+        format!("{:.2}B", f / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
+        format!("{:.2}M", f / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.2}k", f / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+fn metric_bar(value: u64, max: u64) -> String {
+    let width = 10usize;
+    let filled = if max == 0 {
+        0
+    } else {
+        ((value as f64 / max as f64) * width as f64).round() as usize
+    }
+    .clamp(0, width);
+    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
+}
+
+fn analytics_metric_block(metric: &str, value: String, tint: Color) -> Paragraph<'static> {
+    Paragraph::new(vec![
+        Line::from(Span::styled(
+            metric.to_string(),
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            value,
+            Style::default()
+                .fg(Color::Indexed(252))
+                .add_modifier(Modifier::BOLD),
+        )),
+    ])
+    .block(pane(format!(" {metric} "), tint))
+}
+
+fn analytics_breakdown_table(title: &str, rows: &[AnalyticsMetric], tint: Color) -> Table<'static> {
+    let max = rows.iter().map(|r| r.value).max().unwrap_or(0);
+    let body = rows.iter().map(|r| {
+        Row::new([
+            r.label.clone(),
+            compact_count(r.value),
+            metric_bar(r.value, max),
+        ])
+    });
+    Table::new(
+        body,
+        [
+            Constraint::Percentage(42),
+            Constraint::Percentage(24),
+            Constraint::Percentage(34),
+        ],
+    )
+    .header(
+        Row::new(["Metric", "Requests", ""]).style(Style::default().add_modifier(Modifier::BOLD)),
+    )
+    .block(pane(format!(" {title} "), tint))
+}
+
+pub(super) fn render_cf_analytics(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    let title = app
+        .cf
+        .active
+        .as_ref()
+        .map(|a| format!("Cloudflare — {} — analytics", a.name))
+        .unwrap_or_else(|| "Cloudflare — Analytics".into());
+    cf_header(
+        f,
+        header,
+        &title,
+        app,
+        app.cf_product_at.elapsed().as_millis() < 300,
+    );
+
+    let tint = cf_tint(app);
+    let state = cf_list_state(
+        cf_loading(app, "account analytics"),
+        app.cf.error.is_some(),
+        app.cf.analytics.is_none(),
+    );
+    if state != CfListState::Ready {
+        cf_placeholder(
+            f,
+            body,
+            "account analytics",
+            &state,
+            app.cf.error.as_deref(),
+            tint,
+        );
+        return;
+    }
+    let Some(summary) = app.cf.analytics.as_ref() else {
+        return;
+    };
+
+    let outer = Layout::vertical([
+        Constraint::Length(5),
+        Constraint::Min(12),
+        Constraint::Length(9),
+        Constraint::Length(9),
+    ])
+    .split(body);
+    let kpis = Layout::horizontal([
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+    ])
+    .split(outer[0]);
+    f.render_widget(
+        analytics_metric_block("Requests", compact_count(summary.requests), tint),
+        kpis[0],
+    );
+    f.render_widget(
+        analytics_metric_block("Bandwidth", format_bytes(summary.bandwidth as f64), tint),
+        kpis[1],
+    );
+    f.render_widget(
+        analytics_metric_block("Visits", compact_count(summary.visits), tint),
+        kpis[2],
+    );
+    f.render_widget(
+        analytics_metric_block("Page views", "-".into(), tint),
+        kpis[3],
+    );
+
+    let middle = Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(outer[1]);
+    let countries = summary.countries.iter().map(|c| {
+        Row::new([
+            c.country.clone(),
+            compact_count(c.requests),
+            format_bytes(c.bandwidth as f64),
+        ])
+    });
+    let country_table = Table::new(
+        countries,
+        [
+            Constraint::Percentage(46),
+            Constraint::Percentage(24),
+            Constraint::Percentage(30),
+        ],
+    )
+    .header(
+        Row::new(["Country", "Requests", "Bandwidth"])
+            .style(Style::default().add_modifier(Modifier::BOLD)),
+    )
+    .block(pane(
+        format!(" Top countries · last {} days ", summary.days),
+        tint,
+    ));
+    f.render_widget(country_table, middle[0]);
+
+    let side =
+        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(middle[1]);
+    f.render_widget(
+        analytics_breakdown_table("Traffic served over SSL", &summary.ssl, tint),
+        side[0],
+    );
+    f.render_widget(
+        analytics_breakdown_table("Cache", &summary.cache, tint),
+        side[1],
+    );
+
+    let lower_a = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(outer[2]);
+    f.render_widget(
+        analytics_breakdown_table("Status codes", &summary.status, tint),
+        lower_a[0],
+    );
+    f.render_widget(
+        analytics_breakdown_table("Client HTTP version", &summary.protocols, tint),
+        lower_a[1],
+    );
+
+    f.render_widget(
+        analytics_breakdown_table("Top content types", &summary.content_types, tint),
+        outer[3],
     );
 }
 
@@ -2974,6 +3176,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
             (format!(" {msg}"), bar.add_modifier(Modifier::BOLD))
         } else {
             let hints = match app.cf.product {
+                CfProduct::Analytics => CF_ANALYTICS_HINTS,
                 CfProduct::R2 => match app.cf.screen {
                     CfScreen::Objects => CF_OBJECTS_HINTS,
                     _ => CF_BUCKETS_HINTS,

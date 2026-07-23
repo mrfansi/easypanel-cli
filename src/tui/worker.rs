@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 
 use crate::client::EasypanelClient;
 use crate::cloudflare::{
-    object_basename, upload_key, CloudflareClient, R2Bucket, R2Object, Record, RecordFilter, Zone,
-    MAX_REST_OBJECT_BYTES,
+    object_basename, upload_key, AnalyticsSummary, CloudflareClient, R2Bucket, R2Object, Record,
+    RecordFilter, Zone, MAX_REST_OBJECT_BYTES,
 };
 use crate::output::field;
 
@@ -442,6 +442,11 @@ pub(super) enum Req {
 /// A Cloudflare worker request. The token travels in every variant — the worker is
 /// stateless about CF config and builds a fresh client per request. Never logged.
 pub(super) enum CfReq {
+    Analytics {
+        token: String,
+        account_id: String,
+        days: u16,
+    },
     Zones {
         token: String,
         account_id: Option<String>,
@@ -725,6 +730,7 @@ pub(super) enum Resp {
 
 /// A Cloudflare worker reply.
 pub(super) enum CfResp {
+    Analytics(AnalyticsSummary),
     Zones(Vec<Zone>),
     /// The records for `zone_id` — the id is echoed back so a stale reply for a
     /// zone the user already left is discarded rather than drawn.
@@ -1972,6 +1978,14 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
 /// config. The token is used only to authenticate the call and is never logged.
 fn handle_cf(req: CfReq) -> CfResp {
     match req {
+        CfReq::Analytics {
+            token,
+            account_id,
+            days,
+        } => match CloudflareClient::new(&token).account_analytics(&account_id, days) {
+            Ok(summary) => CfResp::Analytics(summary),
+            Err(e) => CfResp::Err(e.to_string()),
+        },
         CfReq::Zones { token, account_id } => {
             match CloudflareClient::new(&token).list_zones(account_id.as_deref()) {
                 Ok(zones) => CfResp::Zones(zones),

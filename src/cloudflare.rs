@@ -3,6 +3,7 @@
 //! share only the TUI event loop and the config directory (separate files).
 
 use anyhow::Result;
+use chrono::{Duration, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -172,6 +173,118 @@ pub fn upload_key(prefix: &str, local_path: &str) -> String {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| local_path.to_string());
     format!("{prefix}{base}")
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AnalyticsMetric {
+    pub label: String,
+    pub value: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CountryTraffic {
+    pub country: String,
+    pub requests: u64,
+    pub bandwidth: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AnalyticsSummary {
+    pub days: u16,
+    pub requests: u64,
+    pub bandwidth: u64,
+    pub visits: u64,
+    pub countries: Vec<CountryTraffic>,
+    pub ssl: Vec<AnalyticsMetric>,
+    pub cache: Vec<AnalyticsMetric>,
+    pub status: Vec<AnalyticsMetric>,
+    pub protocols: Vec<AnalyticsMetric>,
+    pub content_types: Vec<AnalyticsMetric>,
+}
+
+fn graphql_error(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    v.get("errors")
+        .and_then(Value::as_array)
+        .and_then(|errs| errs.first())
+        .and_then(|e| e.get("message"))
+        .and_then(Value::as_str)
+        .map(|s| format!("Cloudflare GraphQL: {s}"))
+}
+
+fn group_count(g: &Value) -> u64 {
+    g.get("count").and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn group_sum(g: &Value, key: &str) -> u64 {
+    g.get("sum")
+        .and_then(|s| s.get(key))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn group_dimension(g: &Value, key: &str) -> String {
+    g.get("dimensions")
+        .and_then(|d| d.get(key))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("-")
+        .to_string()
+}
+
+fn metric_groups(account: &Value, key: &str, dimension: &str) -> Vec<AnalyticsMetric> {
+    account
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|g| AnalyticsMetric {
+            label: group_dimension(g, dimension),
+            value: group_count(g),
+        })
+        .collect()
+}
+
+pub fn parse_account_analytics(body: &str, days: u16) -> Result<AnalyticsSummary> {
+    if let Some(e) = graphql_error(body) {
+        anyhow::bail!("{e}");
+    }
+    let v: Value = serde_json::from_str(body)
+        .map_err(|e| anyhow::anyhow!("unexpected Cloudflare GraphQL response: {e}"))?;
+    let account = v
+        .pointer("/data/viewer/accounts")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .ok_or_else(|| anyhow::anyhow!("Cloudflare GraphQL returned no account analytics"))?;
+    let total = account
+        .get("totals")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .cloned()
+        .unwrap_or(Value::Null);
+    let countries = account
+        .get("countries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|g| CountryTraffic {
+            country: group_dimension(g, "clientCountryName"),
+            requests: group_count(g),
+            bandwidth: group_sum(g, "edgeResponseBytes"),
+        })
+        .collect();
+    Ok(AnalyticsSummary {
+        days,
+        requests: group_count(&total),
+        bandwidth: group_sum(&total, "edgeResponseBytes"),
+        visits: group_sum(&total, "visits"),
+        countries,
+        ssl: metric_groups(account, "ssl", "clientSSLProtocol"),
+        cache: metric_groups(account, "cache", "cacheStatus"),
+        status: metric_groups(account, "status", "edgeResponseStatus"),
+        protocols: metric_groups(account, "protocols", "clientRequestHTTPProtocol"),
+        content_types: metric_groups(account, "contentTypes", "edgeResponseContentTypeName"),
+    })
 }
 
 // ---------- Envelope parsing ----------
@@ -562,6 +675,71 @@ impl CloudflareClient {
             req = req.json(b);
         }
         Ok(req.send()?.text()?)
+    }
+
+    fn graphql(&self, body: &Value) -> Result<String> {
+        Ok(self
+            .http
+            .post(format!("{BASE}/graphql"))
+            .bearer_auth(&self.token)
+            .json(body)
+            .send()?
+            .text()?)
+    }
+
+    pub fn account_analytics(&self, account_id: &str, days: u16) -> Result<AnalyticsSummary> {
+        let end = Utc::now();
+        let start = end - Duration::days(i64::from(days.max(1)));
+        let query = r#"
+query AccountAnalytics($accountTag: string, $filter: filter) {
+  viewer {
+    accounts(filter: { accountTag: $accountTag }) {
+      totals: httpRequestsAdaptiveGroups(limit: 1, filter: $filter) {
+        count
+        sum { edgeResponseBytes visits }
+      }
+      countries: httpRequestsAdaptiveGroups(limit: 10, orderBy: [count_DESC], filter: $filter) {
+        count
+        sum { edgeResponseBytes }
+        dimensions { clientCountryName }
+      }
+      ssl: httpRequestsAdaptiveGroups(limit: 6, orderBy: [count_DESC], filter: $filter) {
+        count
+        dimensions { clientSSLProtocol }
+      }
+      cache: httpRequestsAdaptiveGroups(limit: 8, orderBy: [count_DESC], filter: $filter) {
+        count
+        dimensions { cacheStatus }
+      }
+      status: httpRequestsAdaptiveGroups(limit: 8, orderBy: [count_DESC], filter: $filter) {
+        count
+        dimensions { edgeResponseStatus }
+      }
+      protocols: httpRequestsAdaptiveGroups(limit: 6, orderBy: [count_DESC], filter: $filter) {
+        count
+        dimensions { clientRequestHTTPProtocol }
+      }
+      contentTypes: httpRequestsAdaptiveGroups(limit: 6, orderBy: [count_DESC], filter: $filter) {
+        count
+        dimensions { edgeResponseContentTypeName }
+      }
+    }
+  }
+}
+"#;
+        let body = json!({
+            "query": query,
+            "variables": {
+                "accountTag": account_id,
+                "filter": {
+                    "datetime_geq": start.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "datetime_lt": end.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "requestSource": "eyeball"
+                }
+            }
+        });
+        let resp = self.graphql(&body)?;
+        parse_account_analytics(&resp, days)
     }
 
     /// Create a zone under `account_id` (required in practice for a token).
@@ -1135,6 +1313,47 @@ mod tests {
             marks_status("file", 1),
             "1 file(s) marked — [Space] to act on them, [Esc] to clear"
         );
+    }
+
+    #[test]
+    fn account_analytics_parser_reads_totals_countries_and_breakdowns() {
+        let body = r#"{
+          "data": {"viewer": {"accounts": [{
+            "totals": [{"count": 44120000, "sum": {"edgeResponseBytes": 4606400000000, "visits": 2280000}}],
+            "countries": [
+              {"count": 17590000, "sum": {"edgeResponseBytes": 2396400000000}, "dimensions": {"clientCountryName": "Indonesia"}},
+              {"count": 11280000, "sum": {"edgeResponseBytes": 883179520000}, "dimensions": {"clientCountryName": "Singapore"}}
+            ],
+            "ssl": [{"count": 39960000, "dimensions": {"clientSSLProtocol": "TLSv1.3"}}],
+            "cache": [{"count": 623820, "dimensions": {"cacheStatus": "hit"}}],
+            "status": [{"count": 12780000, "dimensions": {"edgeResponseStatus": "404"}}],
+            "protocols": [{"count": 17200000, "dimensions": {"clientRequestHTTPProtocol": "HTTP/1.1"}}],
+            "contentTypes": [{"count": 16780000, "dimensions": {"edgeResponseContentTypeName": "html"}}]
+          }]}}
+        }"#;
+        let s = parse_account_analytics(body, 7).unwrap();
+        assert_eq!(s.days, 7);
+        assert_eq!(s.requests, 44_120_000);
+        assert_eq!(s.bandwidth, 4_606_400_000_000);
+        assert_eq!(s.visits, 2_280_000);
+        assert_eq!(s.countries[0].country, "Indonesia");
+        assert_eq!(s.countries[1].bandwidth, 883_179_520_000);
+        assert_eq!(s.ssl[0].label, "TLSv1.3");
+        assert_eq!(s.cache[0].label, "hit");
+        assert_eq!(s.status[0].label, "404");
+        assert_eq!(s.protocols[0].label, "HTTP/1.1");
+        assert_eq!(s.content_types[0].label, "html");
+    }
+
+    #[test]
+    fn account_analytics_parser_surfaces_graphql_errors() {
+        let err = parse_account_analytics(
+            r#"{"errors":[{"message":"permission denied: Account Analytics Read required"}]}"#,
+            7,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("Account Analytics Read required"));
     }
 
     fn rec(id: &str, kind: &str, name: &str, content: &str) -> Record {

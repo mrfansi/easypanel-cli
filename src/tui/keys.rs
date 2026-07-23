@@ -476,6 +476,7 @@ impl App {
         if self.workspace == Workspace::Cloudflare {
             if self.select_row_at(col, row) {
                 match (self.cf.product, self.cf.screen) {
+                    (CfProduct::Analytics, _) => {}
                     // R2 Objects: a FILE row gets the per-object menu (Download / Delete);
                     // a FOLDER row has no actions, so `open_cf_object_menu` no-ops on it.
                     // NOT the bucket menu — that would offer to delete the very bucket you
@@ -1354,10 +1355,10 @@ impl App {
             self.open_cf_picker();
             return;
         }
-        // Product tabs (DNS · R2; D1/KV/Workers/Connectors later): 1..=N jump,
+        // Product tabs (Analytics · Domains · R2; D1/KV/Workers/Connectors later): 1..=N jump,
         // Tab/→ cycle forward, ← cycles back — the CF mirror of the EasyPanel tab
         // keys. Overlays/forms/the filter are handled above this dispatch, so they
-        // can't be swallowed here. Switching to R2 loads its buckets.
+        // can't be swallowed here. Switching products loads that product's home.
         match code {
             KeyCode::Char(d @ '1'..='9') => {
                 if let Some(&(_, p)) = CF_PRODUCTS.get(d as usize - '1' as usize) {
@@ -1376,6 +1377,7 @@ impl App {
             _ => {}
         }
         match self.cf.product {
+            CfProduct::Analytics => self.cf_analytics_key(code, req),
             CfProduct::R2 => match self.cf.screen {
                 CfScreen::Objects => self.cf_objects_key(code, req),
                 _ => self.cf_buckets_key(code, req),
@@ -1384,6 +1386,17 @@ impl App {
                 CfScreen::Zones => self.cf_zones_key(code, req),
                 CfScreen::Records | CfScreen::Objects => self.cf_records_key(code, req),
             },
+        }
+    }
+
+    /// Account-level Analytics home. It is read-only: `r` refreshes, `Esc` leaves the
+    /// workspace, and `a`/product switching are handled by the outer CF dispatcher.
+    fn cf_analytics_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        match code {
+            KeyCode::Esc => self.set_workspace(Workspace::Easypanel),
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('r') => self.cf_goto_analytics(req),
+            _ => {}
         }
     }
 

@@ -5719,7 +5719,7 @@ fn cf_palette_lists_products_accounts_zones_buckets_and_jumps_by_identity() {
         .map(|it| it.label.clone())
         .collect();
     for want in [
-        "⇥  DNS",
+        "⇥  Domains",
         "⇥  R2",
         "Account: prod  ·  active",
         "Zone: example.com",
@@ -5782,7 +5782,7 @@ fn cf_palette_starts_with_context_actions_for_the_selected_row() {
     assert_eq!(labels[0], "Open DNS records");
     assert_eq!(labels[1], "Delete zone…");
     assert!(
-        labels.iter().any(|l| l == "⇥  DNS"),
+        labels.iter().any(|l| l == "⇥  Domains"),
         "navigation entries still follow the contextual actions: {labels:?}"
     );
 
@@ -6865,14 +6865,19 @@ fn the_cf_product_tab_bar_renders_with_dns_active() {
         .collect();
 
     // The border title still names the active account; the header's SECOND line
-    // (inside the border) is the product tab bar, with the DNS tab present.
+    // (inside the border) is the product tab bar, with Analytics before Domains.
     assert!(
         rows[0].contains("Cloudflare — prod"),
         "header title names the account:\n{}",
         rows[0]
     );
     assert!(
-        rows[1].contains("DNS"),
+        rows[1].contains("Analytics") && rows[1].find("Analytics") < rows[1].find("Domains"),
+        "Analytics is the first Cloudflare product tab:\n{}",
+        rows[1]
+    );
+    assert!(
+        rows[1].contains("Domains"),
         "the product tab bar sits on the header's second line:\n{}",
         rows[1]
     );
@@ -6935,7 +6940,8 @@ fn clicking_cf_product_tabs_switches_products_like_easypanel_tabs() {
 
     let mut term = Terminal::new(TestBackend::new(90, 12)).unwrap();
     term.draw(|f| super::render::ui(f, &mut app)).unwrap();
-    let (start, end) = app.cf_product_spans[1];
+    let _ = rx.try_recv(); // initial Analytics load
+    let (start, end) = app.cf_product_spans[2];
     app.on_mouse(
         MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -6954,17 +6960,19 @@ fn clicking_cf_product_tabs_switches_products_like_easypanel_tabs() {
 
 #[test]
 fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
-    // CF_PRODUCTS is the single source the tab bar and the switch keys share: DNS is
-    // tab 1, R2 tab 2. A future product is one more row here (plus its enum variant).
-    assert_eq!(CF_PRODUCTS.len(), 2);
-    assert_eq!(CF_PRODUCTS[0], ("DNS", CfProduct::Dns));
-    assert_eq!(CF_PRODUCTS[1], ("R2", CfProduct::R2));
-    assert_eq!(CfProduct::Dns.index(), 0);
-    assert_eq!(CfProduct::R2.index(), 1);
-    // Cycling wraps between the two products.
+    // CF_PRODUCTS is the single source the tab bar and the switch keys share:
+    // Analytics is tab 1, Domains tab 2, R2 tab 3.
+    assert_eq!(CF_PRODUCTS.len(), 3);
+    assert_eq!(CF_PRODUCTS[0], ("Analytics", CfProduct::Analytics));
+    assert_eq!(CF_PRODUCTS[1], ("Domains", CfProduct::Dns));
+    assert_eq!(CF_PRODUCTS[2], ("R2", CfProduct::R2));
+    assert_eq!(CfProduct::Analytics.index(), 0);
+    assert_eq!(CfProduct::Dns.index(), 1);
+    assert_eq!(CfProduct::R2.index(), 2);
+    assert_eq!(CfProduct::Analytics.next(), CfProduct::Dns);
     assert_eq!(CfProduct::Dns.next(), CfProduct::R2);
-    assert_eq!(CfProduct::R2.next(), CfProduct::Dns);
-    assert_eq!(CfProduct::Dns.prev(), CfProduct::R2);
+    assert_eq!(CfProduct::R2.next(), CfProduct::Analytics);
+    assert_eq!(CfProduct::Analytics.prev(), CfProduct::R2);
 
     // In the workspace the tab keys act on the product, never on the EasyPanel
     // Screen or the workspace. Selecting R2 loads the active account's buckets.
@@ -6974,7 +6982,7 @@ fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
     app.set_workspace(Workspace::Cloudflare);
     assert_eq!(app.cf.product, CfProduct::Dns);
 
-    // Tab → R2: the product flips and a buckets request is sent (account-scoped).
+    // Tab → R2: Domains stays the landing product, and cycling follows the visual order.
     app.on_key(KeyCode::Tab, &tx);
     assert_eq!(app.cf.product, CfProduct::R2);
     assert!(app.workspace == Workspace::Cloudflare);
@@ -6983,11 +6991,22 @@ fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
         "switching to R2 loads the account's buckets"
     );
 
-    // `1` jumps back to DNS; `2` selects R2 again.
+    // `1` jumps to Analytics; `2` selects Domains; `3` selects R2.
     app.on_key(KeyCode::Char('1'), &tx);
-    assert_eq!(app.cf.product, CfProduct::Dns);
+    assert_eq!(app.cf.product, CfProduct::Analytics);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::Analytics { .. }))
+    ));
     app.on_key(KeyCode::Char('2'), &tx);
+    assert_eq!(app.cf.product, CfProduct::Dns);
+    assert!(matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Zones { .. }))));
+    app.on_key(KeyCode::Char('3'), &tx);
     assert_eq!(app.cf.product, CfProduct::R2);
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::R2Buckets { .. }))),
+        "switching to R2 loads the account's buckets"
+    );
 }
 
 #[test]
@@ -7074,7 +7093,7 @@ fn cf_buckets_key_handles_add_delete_and_filter() {
     let mut app = App::new("s".into(), vec![]);
     app.cf.accounts = vec![cf_account()];
     app.set_workspace(Workspace::Cloudflare);
-    app.on_key(KeyCode::Tab, &tx); // → R2
+    app.on_key(KeyCode::Char('3'), &tx); // → R2 (Analytics is tab 1)
     assert_eq!(app.cf.product, CfProduct::R2);
 
     app.cf.r2_buckets = vec![cf_bucket("assets"), cf_bucket("backups")];
@@ -7119,9 +7138,9 @@ fn cf_bucket_enter_drills_into_objects_and_esc_walks_back() {
     let mut app = App::new("s".into(), vec![]);
     app.cf.accounts = vec![cf_account()];
     app.set_workspace(Workspace::Cloudflare);
-    app.on_key(KeyCode::Tab, &tx); // → R2
+    app.on_key(KeyCode::Char('3'), &tx); // → R2 (Analytics is tab 1)
     assert_eq!(app.cf.product, CfProduct::R2);
-    let _ = rx.try_recv(); // drain the buckets load from switching to R2
+    while rx.try_recv().is_ok() {} // drain Analytics + buckets load
 
     app.cf.r2_buckets = vec![cf_bucket("assets"), cf_bucket("backups")];
     app.cf.r2_row.select(Some(0));
@@ -7192,8 +7211,8 @@ fn cf_objects_folder_tree_enter_descends_and_esc_goes_up() {
     let mut app = App::new("s".into(), vec![]);
     app.cf.accounts = vec![cf_account()];
     app.set_workspace(Workspace::Cloudflare);
-    app.on_key(KeyCode::Tab, &tx); // → R2
-    let _ = rx.try_recv(); // drain the buckets load
+    app.on_key(KeyCode::Char('3'), &tx); // → R2 (Analytics is tab 1)
+    while rx.try_recv().is_ok() {} // drain Analytics + buckets load
 
     app.cf.r2_buckets = vec![cf_bucket("assets")];
     app.cf.r2_row.select(Some(0));

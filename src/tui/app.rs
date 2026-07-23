@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 
 use crate::cloudflare::{
     apply_patch, filter_buckets, filter_records, filter_zones, proxyable, record_body,
-    valid_record_type, CloudflareAccount, R2Bucket, R2Object, Record, RecordFilter, RecordPatch,
-    Zone,
+    valid_record_type, AnalyticsSummary, CloudflareAccount, R2Bucket, R2Object, Record,
+    RecordFilter, RecordPatch, Zone,
 };
 use crate::commands;
 use crate::output::field;
@@ -195,6 +195,7 @@ pub(super) enum CfScreen {
 /// code — so growing it is: add a variant here plus one row to `CF_PRODUCTS`.
 #[derive(PartialEq, Debug, Clone, Copy, Default)]
 pub(super) enum CfProduct {
+    Analytics,
     #[default]
     Dns,
     R2,
@@ -202,8 +203,11 @@ pub(super) enum CfProduct {
 
 /// The product tab bar, in label order. The single list the tab bar renders and
 /// the switch keys index into — adding a product is one row here.
-pub(super) const CF_PRODUCTS: &[(&str, CfProduct)] =
-    &[("DNS", CfProduct::Dns), ("R2", CfProduct::R2)];
+pub(super) const CF_PRODUCTS: &[(&str, CfProduct)] = &[
+    ("Analytics", CfProduct::Analytics),
+    ("Domains", CfProduct::Dns),
+    ("R2", CfProduct::R2),
+];
 
 impl CfProduct {
     /// This product's position in `CF_PRODUCTS` — i.e. the active tab index.
@@ -229,7 +233,8 @@ impl CfProduct {
 #[derive(Default)]
 pub(super) struct CfUi {
     pub(super) screen: CfScreen,
-    /// The active product tab. DNS today; the tab bar + switch keys read this.
+    /// The active product tab. Analytics is tab 1, before DNS, matching Cloudflare's
+    /// account-level dashboard hierarchy.
     pub(super) product: CfProduct,
     pub(super) accounts: Vec<CloudflareAccount>,
     /// The active account — the token for every zone/record request.
@@ -258,6 +263,10 @@ pub(super) struct CfUi {
     /// This level had more than one page; only the first is loaded, so the screen says
     /// "narrow with a filter" rather than pretending it's the whole level.
     pub(super) r2_truncated: bool,
+    /// Account-level analytics summary (GraphQL). This is account-scoped and needs an
+    /// account_id plus the Account Analytics:Read permission on the token.
+    pub(super) analytics: Option<AnalyticsSummary>,
+    pub(super) analytics_days: u16,
     pub(super) current_bucket: Option<String>,
     /// A CF-local text filter, narrowing the loaded list client-side.
     pub(super) filter: String,
@@ -740,6 +749,7 @@ impl App {
         // filtered CF list under the cursor.
         if self.workspace == Workspace::Cloudflare {
             return match self.cf.product {
+                CfProduct::Analytics => 0,
                 CfProduct::R2 => match self.cf.screen {
                     CfScreen::Objects => self.cf_level_len(),
                     _ => self.cf_buckets_shown().len(),
@@ -767,16 +777,17 @@ impl App {
         // rather than the hidden EasyPanel screen, so scroll/hover/click land on the
         // CF row state.
         if self.workspace == Workspace::Cloudflare {
-            return Some(match self.cf.product {
+            return match self.cf.product {
+                CfProduct::Analytics => None,
                 CfProduct::R2 => match self.cf.screen {
-                    CfScreen::Objects => &mut self.cf.r2_objects_row,
-                    _ => &mut self.cf.r2_row,
+                    CfScreen::Objects => Some(&mut self.cf.r2_objects_row),
+                    _ => Some(&mut self.cf.r2_row),
                 },
                 CfProduct::Dns => match self.cf.screen {
-                    CfScreen::Zones => &mut self.cf.zones_row,
-                    CfScreen::Records | CfScreen::Objects => &mut self.cf.records_row,
+                    CfScreen::Zones => Some(&mut self.cf.zones_row),
+                    CfScreen::Records | CfScreen::Objects => Some(&mut self.cf.records_row),
                 },
-            });
+            };
         }
         match self.screen {
             Screen::Projects => Some(&mut self.services_table),
@@ -1137,7 +1148,7 @@ impl App {
         if self.cf.active.is_none() {
             self.cf.active = self.cf_default_account();
         }
-        self.cf_goto_zones(req);
+        self.cf_goto_home(req);
     }
 
     /// Show the Zones home for the active account, clearing the old list so the
@@ -1181,10 +1192,42 @@ impl App {
         }
     }
 
+    /// Show the account-level Analytics dashboard. This is tab 1, before DNS, and is
+    /// account-scoped: Cloudflare GraphQL requires an accountTag, and the token needs
+    /// Account Analytics:Read.
+    pub(super) fn cf_goto_analytics(&mut self, req: &Sender<Req>) {
+        let Some(name) = self.cf.active.as_ref().map(|a| a.name.clone()) else {
+            self.status = "No Cloudflare account yet — press a to add one".into();
+            return;
+        };
+        self.cf.screen = CfScreen::Zones;
+        self.cf.filter.clear();
+        self.cf.filter_input = false;
+        self.cf.marked.clear();
+        self.cf.error = None;
+        self.cf.analytics = None;
+        let Some(account_id) = self.cf_account_id() else {
+            self.status =
+                "This account has no account-id — Analytics is account-scoped; edit it with a"
+                    .into();
+            return;
+        };
+        if let Some(token) = self.cf_token() {
+            let days = self.cf.analytics_days.max(7);
+            let _ = req.send(Req::Cf(CfReq::Analytics {
+                token,
+                account_id,
+                days,
+            }));
+            self.status = format!("Loading account analytics for {name}…");
+        }
+    }
+
     /// The home for the active product: Zones for DNS, Buckets for R2. Used after an
     /// account switch so the picker lands on the right product's list.
     pub(super) fn cf_goto_home(&mut self, req: &Sender<Req>) {
         match self.cf.product {
+            CfProduct::Analytics => self.cf_goto_analytics(req),
             CfProduct::Dns => self.cf_goto_zones(req),
             CfProduct::R2 => self.cf_goto_buckets(req),
         }
@@ -1372,6 +1415,16 @@ impl App {
         let Some(token) = self.cf_token() else {
             return;
         };
+        if self.cf.product == CfProduct::Analytics {
+            if let Some(account_id) = self.cf_account_id() {
+                let _ = req.send(Req::Cf(CfReq::Analytics {
+                    token,
+                    account_id,
+                    days: self.cf.analytics_days.max(7),
+                }));
+            }
+            return;
+        }
         if self.cf.product == CfProduct::R2 {
             // In the objects drill-in, `r` re-lists that bucket; on the buckets home it
             // re-lists buckets. Both go through the same Bearer token as the rest of CF.
@@ -2402,6 +2455,11 @@ impl App {
     /// change is visible at once (the "deleted row still showing" class of bug).
     fn handle_cf_resp(&mut self, resp: CfResp, req: &Sender<Req>) {
         match resp {
+            CfResp::Analytics(summary) => {
+                self.cf.error = None;
+                self.cf.analytics_days = summary.days;
+                self.cf.analytics = Some(summary);
+            }
             CfResp::Zones(zones) => {
                 self.cf.error = None;
                 self.cf.zones = zones;

@@ -89,10 +89,10 @@ searchable table, and every domain on the box — without clicking through a hie
   run any action on the selected row from the same box (`deploy karir`, `logs api`). It
   knows every service from the moment the app starts, so it works before you have opened
   anything.
-- **Cloudflare beside EasyPanel** (`W`) — switch into DNS and R2 without leaving the
-  terminal. The Cloudflare workspace has clickable product tabs, an account picker you
-  can edit in place, row actions in the `:` palette, visible status feedback, and the
-  same mark-then-`Space` bulk flow used by EasyPanel tables.
+- **Cloudflare beside EasyPanel** (`W`) — switch into account analytics, domains and R2
+  without leaving the terminal. The Cloudflare workspace has clickable product tabs, an
+  account picker you can edit in place, row actions in the `:` palette, visible status
+  feedback, and the same mark-then-`Space` bulk flow used by EasyPanel tables.
 - **Mouse and keyboard** — click tabs and rows, right-click for a context menu, scroll,
   hover to highlight; every action also has a key.
 
@@ -544,9 +544,10 @@ and DNS records from the same terminal. It's here because moving a service betwe
 means repointing DNS, and doing that in a browser one record at a time is the slow part.
 
 Accounts are standalone (not tied to any EasyPanel server — you may have several) and live
-in their own `~/.config/easypanel/cloudflare.json` (`0600`). Use a **scoped API Token**
-(Cloudflare's "Edit zone DNS" template = `Zone:DNS:Edit` + `Zone:Read`); the token is
-masked in every listing and never printed.
+in their own `~/.config/easypanel/cloudflare.json` (`0600`). Use a **scoped API Token**:
+`Zone:DNS:Edit` + `Zone:Read` for DNS, account-scoped **Workers R2 Storage** for R2, and
+**Account Analytics: Read** for the account analytics tab. The token is masked in every
+listing and never printed.
 
 ```bash
 # accounts
@@ -596,17 +597,20 @@ files. Uploads are capped at Cloudflare's 300 MB REST object limit; larger objec
 need a multipart S3-compatible flow outside this command.
 
 **In the TUI:** press **`W`** to switch into an isolated, Cloudflare-orange workspace with
-its own product tab bar (**DNS │ R2**, switched with `1`/`2`/`Tab`/`←→` or mouse click).
-On **DNS**, the home is the active account's zones; **`a`** opens an account picker
-(select / add / edit / delete, just like the server switcher), **Enter** on a zone drills
-into its records, and records support add/edit/delete, a `/` filter, and bulk change by
-marking rows with `v`/`V` then a `Space` menu (`Space`/right-click also opens a per-zone
-or per-record action menu). On **R2**, the same shape lists buckets with `n` create /
-`x` delete, and **Enter** drills into a bucket's objects. `:` opens the Cloudflare command
-palette: it jumps to products/accounts/zones/buckets and starts with the selected row's
-own actions, so "edit this record" or "download this object" is reachable from the same
-muscle memory as EasyPanel. The EasyPanel tabs and 1–8 keys are inert inside the
-Cloudflare workspace, and vice-versa.
+its own product tab bar (**Analytics │ Domains │ R2**). `1` opens Analytics, `2` Domains, `3` R2;
+`Tab`/`←→` cycle and mouse clicks work too. On **Analytics**, the tab shows account-level
+requests, bandwidth, visits, top countries, SSL/cache/status/protocol/content-type
+breakdowns from Cloudflare GraphQL. On **Domains**, the home is the active account's zones;
+**`a`** opens an account picker (select / add / edit / delete, just like the server
+switcher), **Enter** on a domain drills into its DNS records, and records support
+add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a
+`Space` menu (`Space`/right-click also opens a per-zone or per-record action menu). On
+**R2**, the same shape lists buckets with `n` create / `x` delete, and **Enter** drills
+into a bucket's objects. `:` opens the Cloudflare command palette: it jumps to
+products/accounts/zones/buckets and starts with the selected row's own actions, so
+"edit this record" or "download this object" is reachable from the same muscle memory as
+EasyPanel. The EasyPanel tabs and 1–8 keys are inert inside the Cloudflare workspace, and
+vice-versa.
 
 v1 covers the common record types (A, AAAA, CNAME, TXT, NS, MX). Endpoint shapes are kept
 close to Cloudflare's official API reference, pure request builders are unit-tested, and

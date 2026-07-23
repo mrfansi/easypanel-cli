@@ -90,7 +90,7 @@ pub(super) enum PaletteAction {
     Run(MenuRun),
     /// Switch to a tab.
     Tab(Screen),
-    /// Cloudflare: switch the product tab (DNS/R2) — the CF analogue of `Tab`.
+    /// Cloudflare: switch the product tab (Analytics/Domains/R2) — the CF analogue of `Tab`.
     CfProduct(CfProduct),
     /// Cloudflare: open a zone's DNS records (switches to DNS first). Carries the
     /// zone's own id so the jump is by identity, never a filtered-row index that a
@@ -683,6 +683,7 @@ impl App {
 
     fn cf_palette_context_label(&self) -> Option<String> {
         match (self.cf.product, self.cf.screen) {
+            (CfProduct::Analytics, _) => None,
             (CfProduct::Dns, CfScreen::Zones) => {
                 self.selected_cf_zone().map(|z| format!("Zone: {}", z.name))
             }
@@ -707,6 +708,7 @@ impl App {
     fn cf_palette_context_actions(&self) -> Vec<(String, String, MenuRun)> {
         let mut items = Vec::new();
         match (self.cf.product, self.cf.screen) {
+            (CfProduct::Analytics, _) => {}
             (CfProduct::Dns, CfScreen::Zones) => {
                 if let Some(zone) = self.selected_cf_zone() {
                     let ctx = format!("zone {}", zone.name);
@@ -800,7 +802,7 @@ impl App {
                 action: PaletteAction::Run(run),
             });
         }
-        // Products (the tab bar), so `:` reaches DNS/R2 the way it reaches tabs in
+        // Products (the tab bar), so `:` reaches Analytics/Domains/R2 the way it reaches tabs in
         // EasyPanel.
         for (label, product) in CF_PRODUCTS {
             items.push(PaletteItem {
