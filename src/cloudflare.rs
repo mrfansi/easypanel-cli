@@ -224,12 +224,150 @@ fn group_sum(g: &Value, key: &str) -> u64 {
 }
 
 fn group_dimension(g: &Value, key: &str) -> String {
-    g.get("dimensions")
-        .and_then(|d| d.get(key))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("-")
-        .to_string()
+    let Some(value) = g.get("dimensions").and_then(|d| d.get(key)) else {
+        return "-".into();
+    };
+    match value {
+        Value::String(s) if !s.is_empty() => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => "-".into(),
+    }
+}
+
+fn country_label(raw: &str) -> String {
+    match raw {
+        "AD" => "Andorra",
+        "AE" => "United Arab Emirates",
+        "AF" => "Afghanistan",
+        "AG" => "Antigua and Barbuda",
+        "AI" => "Anguilla",
+        "AL" => "Albania",
+        "AM" => "Armenia",
+        "AO" => "Angola",
+        "AR" => "Argentina",
+        "AT" => "Austria",
+        "AU" => "Australia",
+        "AZ" => "Azerbaijan",
+        "BA" => "Bosnia and Herzegovina",
+        "BB" => "Barbados",
+        "BD" => "Bangladesh",
+        "BE" => "Belgium",
+        "BF" => "Burkina Faso",
+        "BG" => "Bulgaria",
+        "BH" => "Bahrain",
+        "BI" => "Burundi",
+        "BJ" => "Benin",
+        "BN" => "Brunei",
+        "BO" => "Bolivia",
+        "BR" => "Brazil",
+        "BS" => "Bahamas",
+        "BT" => "Bhutan",
+        "BW" => "Botswana",
+        "BY" => "Belarus",
+        "BZ" => "Belize",
+        "CA" => "Canada",
+        "CD" => "Congo, Democratic Republic",
+        "CG" => "Congo",
+        "CH" => "Switzerland",
+        "CI" => "Cote d'Ivoire",
+        "CL" => "Chile",
+        "CM" => "Cameroon",
+        "CN" => "China",
+        "CO" => "Colombia",
+        "CR" => "Costa Rica",
+        "CU" => "Cuba",
+        "CV" => "Cabo Verde",
+        "CY" => "Cyprus",
+        "CZ" => "Czechia",
+        "DE" => "Germany",
+        "DK" => "Denmark",
+        "DO" => "Dominican Republic",
+        "DZ" => "Algeria",
+        "EC" => "Ecuador",
+        "EE" => "Estonia",
+        "EG" => "Egypt",
+        "ES" => "Spain",
+        "ET" => "Ethiopia",
+        "FI" => "Finland",
+        "FR" => "France",
+        "GB" => "United Kingdom",
+        "GE" => "Georgia",
+        "GH" => "Ghana",
+        "GR" => "Greece",
+        "GT" => "Guatemala",
+        "HK" => "Hong Kong",
+        "HN" => "Honduras",
+        "HR" => "Croatia",
+        "HU" => "Hungary",
+        "ID" => "Indonesia",
+        "IE" => "Ireland",
+        "IL" => "Israel",
+        "IN" => "India",
+        "IQ" => "Iraq",
+        "IR" => "Iran",
+        "IS" => "Iceland",
+        "IT" => "Italy",
+        "JM" => "Jamaica",
+        "JO" => "Jordan",
+        "JP" => "Japan",
+        "KE" => "Kenya",
+        "KH" => "Cambodia",
+        "KR" => "South Korea",
+        "KW" => "Kuwait",
+        "KZ" => "Kazakhstan",
+        "LA" => "Laos",
+        "LB" => "Lebanon",
+        "LK" => "Sri Lanka",
+        "LT" => "Lithuania",
+        "LU" => "Luxembourg",
+        "LV" => "Latvia",
+        "MA" => "Morocco",
+        "MD" => "Moldova",
+        "MG" => "Madagascar",
+        "MM" => "Myanmar",
+        "MN" => "Mongolia",
+        "MO" => "Macao",
+        "MT" => "Malta",
+        "MU" => "Mauritius",
+        "MX" => "Mexico",
+        "MY" => "Malaysia",
+        "NG" => "Nigeria",
+        "NL" => "Netherlands",
+        "NO" => "Norway",
+        "NP" => "Nepal",
+        "NZ" => "New Zealand",
+        "OM" => "Oman",
+        "PA" => "Panama",
+        "PE" => "Peru",
+        "PH" => "Philippines",
+        "PK" => "Pakistan",
+        "PL" => "Poland",
+        "PR" => "Puerto Rico",
+        "PT" => "Portugal",
+        "QA" => "Qatar",
+        "RO" => "Romania",
+        "RS" => "Serbia",
+        "RU" => "Russia",
+        "SA" => "Saudi Arabia",
+        "SE" => "Sweden",
+        "SG" => "Singapore",
+        "SI" => "Slovenia",
+        "SK" => "Slovakia",
+        "TH" => "Thailand",
+        "TN" => "Tunisia",
+        "TR" => "Turkey",
+        "TW" => "Taiwan",
+        "UA" => "Ukraine",
+        "US" => "United States",
+        "UY" => "Uruguay",
+        "UZ" => "Uzbekistan",
+        "VE" => "Venezuela",
+        "VN" => "Vietnam",
+        "ZA" => "South Africa",
+        _ => raw,
+    }
+    .to_string()
 }
 
 fn metric_groups(account: &Value, key: &str, dimension: &str) -> Vec<AnalyticsMetric> {
@@ -268,7 +406,7 @@ pub fn parse_account_analytics(body: &str, days: u16) -> Result<AnalyticsSummary
         .into_iter()
         .flatten()
         .map(|g| CountryTraffic {
-            country: group_dimension(g, "clientCountryName"),
+            country: country_label(&group_dimension(g, "clientCountryName")),
             requests: group_count(g),
             bandwidth: group_sum(g, "edgeResponseBytes"),
         })
@@ -1317,12 +1455,12 @@ mod tests {
           "data": {"viewer": {"accounts": [{
             "totals": [{"count": 44120000, "sum": {"edgeResponseBytes": 4606400000000, "visits": 2280000}}],
             "countries": [
-              {"count": 17590000, "sum": {"edgeResponseBytes": 2396400000000}, "dimensions": {"clientCountryName": "Indonesia"}},
+              {"count": 17590000, "sum": {"edgeResponseBytes": 2396400000000}, "dimensions": {"clientCountryName": "ID"}},
               {"count": 11280000, "sum": {"edgeResponseBytes": 883179520000}, "dimensions": {"clientCountryName": "Singapore"}}
             ],
             "ssl": [{"count": 39960000, "dimensions": {"clientSSLProtocol": "TLSv1.3"}}],
             "cache": [{"count": 623820, "dimensions": {"cacheStatus": "hit"}}],
-            "status": [{"count": 12780000, "dimensions": {"edgeResponseStatus": "404"}}],
+            "status": [{"count": 12780000, "dimensions": {"edgeResponseStatus": 404}}],
             "protocols": [{"count": 17200000, "dimensions": {"clientRequestHTTPProtocol": "HTTP/1.1"}}]
           }]}}
         }"#;
@@ -1332,6 +1470,7 @@ mod tests {
         assert_eq!(s.bandwidth, 4_606_400_000_000);
         assert_eq!(s.visits, 2_280_000);
         assert_eq!(s.countries[0].country, "Indonesia");
+        assert_eq!(s.countries[1].country, "Singapore");
         assert_eq!(s.countries[1].bandwidth, 883_179_520_000);
         assert_eq!(s.ssl[0].label, "TLSv1.3");
         assert_eq!(s.cache[0].label, "hit");

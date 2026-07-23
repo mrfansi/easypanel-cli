@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.93.2] — 2026-07-23
+
+### Fixed
+
+- Cloudflare Analytics now renders numeric GraphQL dimensions such as
+  `edgeResponseStatus` as real status codes instead of `-`.
+- Cloudflare Analytics expands common country codes like `ID`, `US`, and `SG`
+  into dashboard-style country names in the Top countries table.
+
 ## [0.93.1] — 2026-07-23
 
 ### Fixed
@@ -3499,7 +3508,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.93.1...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.93.2...HEAD
+[0.93.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.2
 [0.93.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.1
 [0.93.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.0
 [0.92.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.92.0
