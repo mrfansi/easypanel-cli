@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use chrono::{Duration, Utc};
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Deserializer};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -514,11 +514,19 @@ struct CfError {
 #[derive(Debug, Deserialize)]
 struct Envelope<T> {
     success: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "vec_or_null")]
     errors: Vec<CfError>,
     result: Option<T>,
     #[serde(default)]
     result_info: Option<ResultInfo>,
+}
+
+fn vec_or_null<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 fn envelope_error(errors: &[CfError]) -> String {
@@ -1218,6 +1226,16 @@ mod tests {
             "result":[{"id":"z1","name":"example.com","status":"active"}]}"#;
         let zones: Vec<Zone> = parse_envelope(body).unwrap();
         assert_eq!(zones[0].name, "example.com");
+    }
+
+    #[test]
+    fn envelope_accepts_null_error_lists_from_cloudflare() {
+        let body = r#"{"success":true,"errors":null,"messages":null,
+            "result":[{"id":"z1","name":"example.com","status":"active"}],
+            "result_info":null}"#;
+        let (zones, info): (Vec<Zone>, ResultInfo) = parse_envelope_paged(body).unwrap();
+        assert_eq!(zones[0].name, "example.com");
+        assert_eq!(info.total_pages, 0);
     }
 
     #[test]

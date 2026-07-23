@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.93.5] — 2026-07-23
+
+### Fixed
+
+- Cloudflare envelope parsing now accepts `errors: null` / `messages: null`
+  responses, fixing the Web Analytics metadata fetch that previously surfaced
+  `invalid type: null, expected a sequence` in the Domains status bar.
+
 ## [0.93.4] — 2026-07-23
 
 ### Fixed
@@ -3525,7 +3533,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.93.4...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.93.5...HEAD
+[0.93.5]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.5
 [0.93.4]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.4
 [0.93.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.3
 [0.93.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.2
