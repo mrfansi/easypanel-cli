@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.88.0] — 2026-07-23
+
+### Changed
+
+- **The Cloudflare lists now colour their state, the way the EasyPanel tables colour
+  Status.** Two columns that carry the state an operator scans for were plain, undifferentiated
+  text; now they read at a glance, matching EasyPanel's green/red Status convention:
+  - **Zone Status** — `active` green, `pending`/`initializing` yellow (nameservers not
+    moved yet — you have to act), `moved`/`deactivated`/`deleted` red (not serving). A
+    zone that isn't live no longer looks identical to a healthy one. The status
+    classification is a pure domain function (`cloudflare::zone_health`, unit-tested), so
+    the renderer only maps a category to a colour.
+  - **Record Proxied** — proxied records show the flag in **Cloudflare orange** (the
+    orange-cloud state: origin hidden, WAF/CDN on), DNS-only records in grey (origin IP
+    exposed) — colour *is* how Cloudflare's own dashboard represents this field, and it's
+    the fastest way to spot a record that's accidentally exposing the origin.
+  Reuses the table renderer's existing per-cell styler; no other columns change.
+
 ## [0.87.7] — 2026-07-23
 
 ### Fixed

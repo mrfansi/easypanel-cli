@@ -211,6 +211,31 @@ pub fn proxyable(kind: &str) -> bool {
     matches!(kind.to_ascii_uppercase().as_str(), "A" | "AAAA" | "CNAME")
 }
 
+/// A zone's health category, for the at-a-glance status colour in the Zones list — the
+/// CF analogue of EasyPanel's coloured Status column. Classifying the raw status string
+/// is a domain decision, so it lives here (pure, testable); the renderer only maps a
+/// category to a colour.
+///
+/// `active` serves through Cloudflare; `pending`/`initializing` are not live yet (the
+/// nameservers have not been moved to Cloudflare — the operator must act);
+/// `moved`/`deactivated`/`deleted` no longer serve. Anything unrecognised stays neutral.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneHealth {
+    Active,
+    Pending,
+    Inactive,
+    Unknown,
+}
+
+pub fn zone_health(status: &str) -> ZoneHealth {
+    match status {
+        "active" => ZoneHealth::Active,
+        "pending" | "initializing" => ZoneHealth::Pending,
+        "moved" | "deactivated" | "deleted" => ZoneHealth::Inactive,
+        _ => ZoneHealth::Unknown,
+    }
+}
+
 /// The CREATE body. `ttl = 1` means "automatic". `proxied` only rides A/AAAA/CNAME;
 /// `priority` only MX (and SRV later). Callers pass values already validated.
 pub fn record_body(
@@ -581,6 +606,18 @@ fn parse_r2_level(body: &str) -> Result<R2Level> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zone_health_classifies_the_status_string() {
+        assert_eq!(zone_health("active"), ZoneHealth::Active);
+        assert_eq!(zone_health("pending"), ZoneHealth::Pending);
+        assert_eq!(zone_health("initializing"), ZoneHealth::Pending);
+        assert_eq!(zone_health("moved"), ZoneHealth::Inactive);
+        assert_eq!(zone_health("deactivated"), ZoneHealth::Inactive);
+        // An unrecognised status stays neutral rather than being mislabelled healthy.
+        assert_eq!(zone_health("read only"), ZoneHealth::Unknown);
+        assert_eq!(zone_health(""), ZoneHealth::Unknown);
+    }
 
     #[test]
     fn envelope_success_unwraps_result() {

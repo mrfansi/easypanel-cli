@@ -934,7 +934,26 @@ fn render_cf_zones(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         rows,
         &mut app.cf.zones_row,
         CF_ORANGE,
-        |_, _| None,
+        // Colour the Status like EasyPanel colours its Status column: green = serving
+        // through Cloudflare, yellow = not live yet (move your nameservers), red = no
+        // longer serving. The health classification is a domain decision (cloudflare.rs).
+        |col, text| {
+            if col != 1 {
+                return None;
+            }
+            match crate::cloudflare::zone_health(text) {
+                crate::cloudflare::ZoneHealth::Active => {
+                    Some(Style::default().fg(Color::Indexed(2)))
+                }
+                crate::cloudflare::ZoneHealth::Pending => {
+                    Some(Style::default().fg(Color::Indexed(3)))
+                }
+                crate::cloudflare::ZoneHealth::Inactive => {
+                    Some(Style::default().fg(Color::Indexed(196)))
+                }
+                crate::cloudflare::ZoneHealth::Unknown => None,
+            }
+        },
     );
 }
 
@@ -1025,7 +1044,15 @@ fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         rows,
         &mut app.cf.records_row,
         CF_ORANGE,
-        |_, _| None,
+        // Colour the Proxied flag the way Cloudflare's own dashboard does — it is the
+        // load-bearing per-record state: orange cloud = proxied (origin hidden, WAF/CDN
+        // on), grey = DNS-only (origin IP exposed). The analogue of EasyPanel's Auto
+        // column being green ✓ / grey ✗.
+        |col, text| match (col, text) {
+            (5, "yes") => Some(Style::default().fg(CF_ORANGE)),
+            (5, "no") => Some(Style::default().fg(Color::Indexed(8))),
+            _ => None,
+        },
     );
 }
 

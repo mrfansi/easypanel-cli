@@ -6110,6 +6110,114 @@ fn right_click_on_an_r2_object_opens_no_bucket_menu() {
 }
 
 #[test]
+fn cf_lists_colour_meaningful_state_like_easypanel() {
+    // EasyPanel colours its Status/Auto columns so state reads at a glance. The CF lists
+    // now do the same via the existing per-cell styler: zone Status active=green /
+    // pending=yellow / deactivated=red, and record Proxied = CF orange (proxied, origin
+    // hidden) / grey (DNS-only).
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+    const CF_ORANGE: Color = Color::Rgb(243, 128, 32); // mirrors render.rs
+
+    const W: u16 = 170;
+    const H: u16 = 12;
+    // Does the row containing `row_needle` have a coloured LETTER cell with `want`? (State
+    // text — active / pending / yes / no — is all letters; borders are box-drawing.)
+    let row_has_letter_fg = |buf: &Buffer, row_needle: &str, want: Color| -> bool {
+        for y in 0..H {
+            let line: String = (0..W)
+                .map(|x| buf.cell((x, y)).map_or(" ", |c| c.symbol()).to_string())
+                .collect();
+            if line.contains(row_needle) {
+                return (0..W).any(|x| {
+                    let c = buf.cell((x, y)).unwrap();
+                    c.fg == want
+                        && c.symbol()
+                            .chars()
+                            .next()
+                            .is_some_and(|ch| ch.is_alphabetic())
+                });
+            }
+        }
+        false
+    };
+    let zone = |id: &str, name: &str, status: &str| crate::cloudflare::Zone {
+        id: id.into(),
+        name: name.into(),
+        status: status.into(),
+    };
+
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.zones = vec![
+        zone("z1", "healthy.example", "active"),
+        zone("z2", "waiting.example", "pending"),
+        zone("z3", "gone.example", "deactivated"),
+    ];
+    // No row selected: the highlight reverses fg/bg, which would mask the colour we're
+    // checking. The state colour is independent of selection anyway.
+    app.cf.zones_row.select(None);
+
+    let mut term = Terminal::new(TestBackend::new(W, H)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    {
+        let buf = term.backend().buffer();
+        assert!(
+            row_has_letter_fg(buf, "healthy.example", Color::Indexed(2)),
+            "an active zone's Status is green"
+        );
+        assert!(
+            row_has_letter_fg(buf, "waiting.example", Color::Indexed(3)),
+            "a pending zone's Status is yellow"
+        );
+        assert!(
+            row_has_letter_fg(buf, "gone.example", Color::Indexed(196)),
+            "a deactivated zone's Status is red"
+        );
+    }
+
+    // Records: Proxied = CF orange (proxied) / grey (DNS-only).
+    app.cf.screen = CfScreen::Records;
+    app.cf.current_zone = Some(zone("z1", "healthy.example", "active"));
+    app.cf.records = vec![
+        crate::cloudflare::Record {
+            id: "r1".into(),
+            kind: "A".into(),
+            name: "proxied.example".into(),
+            content: "1.2.3.4".into(),
+            ttl: 1,
+            proxied: true,
+            priority: None,
+        },
+        crate::cloudflare::Record {
+            id: "r2".into(),
+            kind: "A".into(),
+            name: "direct.example".into(),
+            content: "5.6.7.8".into(),
+            ttl: 1,
+            proxied: false,
+            priority: None,
+        },
+    ];
+    app.cf.records_row.select(None);
+    let mut term = Terminal::new(TestBackend::new(W, H)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let buf = term.backend().buffer();
+    assert!(
+        row_has_letter_fg(buf, "proxied.example", CF_ORANGE),
+        "a proxied record shows the orange-cloud state"
+    );
+    assert!(
+        row_has_letter_fg(buf, "direct.example", Color::Indexed(8)),
+        "a DNS-only record is grey"
+    );
+}
+
+#[test]
 fn cf_home_is_zones_and_the_account_picker_switches_accounts() {
     // Entering the workspace lands on the Zones home of the active (default)
     // account; `a` opens the account picker; Enter there activates the account.
