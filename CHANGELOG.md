@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.91.0] — 2026-07-23
+
+### Changed
+
+- Cloudflare: the list titles and the filter prompt now use EasyPanel's exact
+  grammar, sharing its `count_title` helper instead of imitating it. At rest a
+  title reads ` Zones (47) ` (just the total, padded like every EasyPanel
+  title); while filtering it reads ` Zones (18/47)  /ed▏ ` and keeps the
+  applied filter named — so the two workspaces read as one app, and the title
+  format can no longer drift because both are built by the same function.
+- Cloudflare: the filter prompt in the status bar is now the same widget
+  EasyPanel uses, gaining the `↑↓ select` hint — the arrows really did move
+  the selection while typing, but nothing said so.
+
 ## [0.90.0] — 2026-07-23
 
 ### Added

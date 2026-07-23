@@ -5896,6 +5896,58 @@ fn cf_marks_report_like_easypanel_in_the_title_and_status_bar() {
 }
 
 #[test]
+fn cf_filter_titles_and_status_hints_match_easypanel() {
+    // EasyPanel parity: the CF titles share count_title's grammar — bare `(total)`
+    // at rest, `(shown/total)  /text▏` while filtering — and the filter prompt in
+    // the status bar carries EasyPanel's full hint line, "↑↓ select" included
+    // (the arrows really do move the CF selection while typing).
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.status = "Ready".into();
+    app.cf.zones = vec![cf_zone("z1", "edddu.net"), cf_zone("z2", "other.com")];
+
+    let paint = |app: &mut App| -> String {
+        let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        term.draw(|f| super::render::ui(f, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    };
+
+    let rest = paint(&mut app);
+    assert!(
+        rest.contains(" Zones (2) "),
+        "at rest the title shows just the total, like EasyPanel: {rest:?}"
+    );
+
+    app.cf.filter_input = true;
+    app.cf.filter = "ed".into();
+    let typing = paint(&mut app);
+    assert!(
+        typing.contains(" Zones (1/2)  /ed▏ "),
+        "typing shows shown/total and the text with a cursor: {typing:?}"
+    );
+    assert!(
+        typing.contains("↑↓ select · Enter apply · Esc cancel"),
+        "the filter prompt carries EasyPanel's full hints: {typing:?}"
+    );
+
+    app.cf.filter_input = false;
+    let applied = paint(&mut app);
+    assert!(
+        applied.contains(" Zones (1/2)  /ed "),
+        "an applied filter stays named in the title, cursor gone: {applied:?}"
+    );
+}
+
+#[test]
 fn cf_confirm_dialog_shows_the_account_not_the_easypanel_host() {
     // A Cloudflare confirm is not an EasyPanel host operation: the shared confirm
     // dialog must NOT name the EasyPanel server or warn "Affects the ENTIRE host"

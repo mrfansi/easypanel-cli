@@ -909,15 +909,12 @@ fn render_cf_zones(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     }
 
     let shown = app.cf_zones_shown();
-    let title = format!(
-        "Zones ({} of {}){}",
+    let title = filter_count_title(
+        "Zones",
         shown.len(),
         app.cf.zones.len(),
-        if app.cf.filter.is_empty() {
-            String::new()
-        } else {
-            format!(" · /{}", app.cf.filter)
-        }
+        &app.cf.filter,
+        app.cf.filter_input,
     );
     let rows: Vec<Vec<String>> = shown
         .iter()
@@ -993,22 +990,18 @@ fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
 
     let shown = app.cf_records_shown();
     let marked = &app.cf.marked;
-    let title = format!(
-        "DNS records ({} of {}){}{}",
+    let mut title = filter_count_title(
+        "DNS records",
         shown.len(),
         app.cf.records.len(),
-        if marked.is_empty() {
-            String::new()
-        } else {
-            // EasyPanel's exact marked-count suffix (see the Services title), ✓ included.
-            format!(" · ✓ {} marked", marked.len())
-        },
-        if app.cf.filter.is_empty() {
-            String::new()
-        } else {
-            format!(" · /{}", app.cf.filter)
-        }
+        &app.cf.filter,
+        app.cf.filter_input,
     );
+    if !marked.is_empty() {
+        // EasyPanel's exact marked-count suffix, appended after the count like
+        // the Services title does.
+        title.push_str(&format!(" · ✓ {} marked", marked.len()));
+    }
     let rows: Vec<Vec<String>> = shown
         .iter()
         .map(|r| {
@@ -1103,15 +1096,12 @@ fn render_cf_buckets(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     }
 
     let shown = app.cf_buckets_shown();
-    let title = format!(
-        "Buckets ({} of {}){}",
+    let title = filter_count_title(
+        "Buckets",
         shown.len(),
         app.cf.r2_buckets.len(),
-        if app.cf.filter.is_empty() {
-            String::new()
-        } else {
-            format!(" · /{}", app.cf.filter)
-        }
+        &app.cf.filter,
+        app.cf.filter_input,
     );
     let rows: Vec<Vec<String>> = shown
         .iter()
@@ -1224,26 +1214,20 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         }));
         (rows, folders.len() + files.len())
     };
-    let title = format!(
-        "Objects ({} of {}){}{}{}",
+    let mut title = filter_count_title(
+        "Objects",
         shown_count,
         app.cf.r2_folders.len() + app.cf.r2_objects.len(),
-        // A big level loads only its first page; say so rather than implying it's whole.
-        if app.cf.r2_truncated {
-            " · first page, more exist — narrow with /"
-        } else {
-            ""
-        },
-        match app.cf.marked.len() {
-            0 => String::new(),
-            n => format!(" · ✓ {n} marked"),
-        },
-        if app.cf.filter.is_empty() {
-            String::new()
-        } else {
-            format!(" · /{}", app.cf.filter)
-        }
+        &app.cf.filter,
+        app.cf.filter_input,
     );
+    // A big level loads only its first page; say so rather than implying it's whole.
+    if app.cf.r2_truncated {
+        title.push_str(" · first page, more exist — narrow with /");
+    }
+    if !app.cf.marked.is_empty() {
+        title.push_str(&format!(" · ✓ {} marked", app.cf.marked.len()));
+    }
     let headers = ["Name", "Size", "Modified"];
     let widths = [
         Constraint::Min(30),
@@ -1878,11 +1862,24 @@ pub(super) fn render_maintenance(f: &mut Frame, area: Rect, app: &App) {
 /// filter is worse than no filter — the user would assume the missing rows simply
 /// don't exist.
 pub(super) fn count_title(name: &str, shown: usize, total: usize, app: &App) -> String {
-    if app.filter.is_empty() && !app.filter_input {
+    filter_count_title(name, shown, total, &app.filter, app.filter_input)
+}
+
+/// The workspace-agnostic body of [`count_title`]: the Cloudflare screens pass
+/// their own filter state here, so both workspaces share ONE title grammar —
+/// `(total)` at rest, `(shown/total)  /filter` when filtering — and can't drift.
+pub(super) fn filter_count_title(
+    name: &str,
+    shown: usize,
+    total: usize,
+    filter: &str,
+    typing: bool,
+) -> String {
+    if filter.is_empty() && !typing {
         return format!(" {name} ({total}) ");
     }
-    let cursor = if app.filter_input { "▏" } else { "" };
-    format!(" {name} ({shown}/{total})  /{}{cursor} ", app.filter)
+    let cursor = if typing { "▏" } else { "" };
+    format!(" {name} ({shown}/{total})  /{filter}{cursor} ")
 }
 
 /// Every host at once. Rows are colored by status because the point of this screen
@@ -2841,13 +2838,19 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     // index gives a definite dark gray.
     let bar = Style::default().bg(Color::Indexed(238)).fg(Color::White);
 
-    if app.filter_input {
+    if app.filter_input || app.cf.filter_input {
         // While typing a filter, show how to apply/cancel it (contextual, not the
-        // full key list — that's in the "?" overlay).
+        // full key list — that's in the "?" overlay). ONE widget serves both
+        // workspaces' filter prompt, so the wording and hints cannot drift.
+        let filter = if app.filter_input {
+            &app.filter
+        } else {
+            &app.cf.filter
+        };
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(" filter: ", bar.fg(Color::Indexed(252))),
-                Span::styled(format!("{}▏", app.filter), bar.add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{filter}▏"), bar.add_modifier(Modifier::BOLD)),
                 Span::styled(
                     "  ↑↓ select · Enter apply · Esc cancel",
                     bar.fg(Color::Indexed(244)),
@@ -2871,12 +2874,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     //     selected" or a create/delete that the API rejected);
     //   - otherwise → the resting per-screen key hints.
     if app.workspace == Workspace::Cloudflare {
-        let (text, style) = if app.cf.filter_input {
-            (
-                format!(" filter: {}▏  Enter apply · Esc cancel", app.cf.filter),
-                bar.fg(Color::Indexed(244)),
-            )
-        } else if let Some(c) = app.spinner() {
+        let (text, style) = if let Some(c) = app.spinner() {
             (
                 format!(" {c} {} ", app.status_line()),
                 bar.add_modifier(Modifier::BOLD),
