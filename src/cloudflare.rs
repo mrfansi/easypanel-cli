@@ -2,6 +2,8 @@
 //! accounts' zones and DNS records. Nothing here touches the EasyPanel domain; the two
 //! share only the TUI event loop and the config directory (separate files).
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use chrono::{Duration, Utc};
 use serde::de::{DeserializeOwned, Deserializer};
@@ -156,10 +158,359 @@ impl WorkerDeployment {
     }
 }
 
+/// One binding from a Worker's version settings. Cloudflare has many binding
+/// variants; keeping the common identifiers plus `extra` lets new binding types
+/// render without needing a code release.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkerSettingBinding {
+    #[serde(default)]
+    pub name: String,
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub json: Option<Value>,
+    #[serde(default)]
+    pub service: String,
+    #[serde(default)]
+    pub environment: String,
+    #[serde(default)]
+    pub namespace: String,
+    #[serde(default)]
+    pub queue_name: String,
+    #[serde(default)]
+    pub bucket_name: String,
+    #[serde(default)]
+    pub database_id: String,
+    #[serde(default)]
+    pub id: String,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+impl WorkerSettingBinding {
+    pub fn display_type(&self) -> String {
+        self.kind.replace('_', " ")
+    }
+
+    pub fn display_value(&self) -> String {
+        match self.kind.as_str() {
+            "plain_text" => empty_or_dash(&self.text),
+            "secret_text" => "secret".into(),
+            "json" => self
+                .json
+                .as_ref()
+                .map(short_json)
+                .unwrap_or_else(|| "-".into()),
+            "service" => {
+                if self.environment.is_empty() {
+                    empty_or_dash(&self.service)
+                } else {
+                    format!("{} / {}", empty_or_dash(&self.service), self.environment)
+                }
+            }
+            "assets" | "images" => format!("{} binding", self.kind.replace('_', " ")),
+            _ => [
+                self.service.as_str(),
+                self.namespace.as_str(),
+                self.queue_name.as_str(),
+                self.bucket_name.as_str(),
+                self.database_id.as_str(),
+                self.id.as_str(),
+            ]
+            .into_iter()
+            .find(|v| !v.trim().is_empty())
+            .map(str::to_string)
+            .or_else(|| self.extra.values().next().map(short_json))
+            .unwrap_or_else(|| "-".into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkerSecretBinding {
+    #[serde(default)]
+    pub name: String,
+    #[serde(rename = "type", default)]
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkerSchedule {
+    #[serde(default)]
+    pub cron: String,
+    #[serde(default)]
+    pub created_on: String,
+    #[serde(default)]
+    pub modified_on: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkerTailConsumer {
+    #[serde(default)]
+    pub service: String,
+    #[serde(default)]
+    pub environment: String,
+    #[serde(default)]
+    pub namespace: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkerSamplingSettings {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub invocation_logs: Option<bool>,
+    #[serde(default, deserialize_with = "vec_or_null")]
+    pub destinations: Vec<String>,
+    #[serde(default)]
+    pub head_sampling_rate: Option<f64>,
+    #[serde(default)]
+    pub persist: Option<bool>,
+    #[serde(default)]
+    pub propagation_policy: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkerObservability {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub head_sampling_rate: Option<f64>,
+    #[serde(default)]
+    pub logs: Option<WorkerSamplingSettings>,
+    #[serde(default)]
+    pub traces: Option<WorkerSamplingSettings>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkerScriptSettings {
+    #[serde(default)]
+    pub logpush: Option<bool>,
+    #[serde(default)]
+    pub observability: Option<WorkerObservability>,
+    #[serde(default, deserialize_with = "vec_or_null")]
+    pub tags: Vec<String>,
+    #[serde(default, deserialize_with = "vec_or_null")]
+    pub tail_consumers: Vec<WorkerTailConsumer>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkerVersionSettings {
+    #[serde(default, deserialize_with = "vec_or_null")]
+    pub bindings: Vec<WorkerSettingBinding>,
+    #[serde(default)]
+    pub compatibility_date: String,
+    #[serde(default, deserialize_with = "vec_or_null")]
+    pub compatibility_flags: Vec<String>,
+    #[serde(default)]
+    pub usage_model: String,
+    #[serde(default)]
+    pub placement: Option<Value>,
+    #[serde(default)]
+    pub cache_options: Option<Value>,
+    #[serde(default)]
+    pub limits: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct WorkerSettingsBundle {
+    pub version: WorkerVersionSettings,
+    pub script: WorkerScriptSettings,
+    pub secrets: Vec<WorkerSecretBinding>,
+    pub schedules: Vec<WorkerSchedule>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct WorkerSettingsRow {
+    pub section: String,
+    pub name: String,
+    pub value: String,
+}
+
+impl WorkerSettingsBundle {
+    pub fn rows(&self, worker: &WorkerScript) -> Vec<WorkerSettingsRow> {
+        let mut rows = Vec::new();
+        push_row(&mut rows, "General", "Name", &worker.id);
+        push_row(
+            &mut rows,
+            "General",
+            "Usage model",
+            &first_non_empty(&[
+                self.version.usage_model.as_str(),
+                worker.usage_model.as_str(),
+            ]),
+        );
+        push_row(
+            &mut rows,
+            "General",
+            "Modified",
+            &short_cf_date(&worker.modified_on),
+        );
+
+        if self.version.bindings.is_empty() && self.secrets.is_empty() {
+            push_row(&mut rows, "Variables and secrets", "Bindings", "-");
+        } else {
+            for binding in &self.version.bindings {
+                push_row(
+                    &mut rows,
+                    "Variables and secrets",
+                    &format!(
+                        "{} ({})",
+                        empty_or_dash(&binding.name),
+                        binding.display_type()
+                    ),
+                    &binding.display_value(),
+                );
+            }
+            for secret in &self.secrets {
+                push_row(
+                    &mut rows,
+                    "Variables and secrets",
+                    &format!(
+                        "{} ({})",
+                        empty_or_dash(&secret.name),
+                        empty_or_dash(&secret.kind)
+                    ),
+                    "secret",
+                );
+            }
+        }
+
+        if worker.handlers.iter().any(|h| h == "fetch") {
+            push_row(&mut rows, "Trigger events", "Service fetch()", &worker.id);
+        }
+        if self.schedules.is_empty() {
+            push_row(&mut rows, "Trigger events", "Cron scheduled()", "-");
+        } else {
+            for schedule in &self.schedules {
+                push_row(
+                    &mut rows,
+                    "Trigger events",
+                    "Cron scheduled()",
+                    &schedule.cron,
+                );
+            }
+        }
+
+        if let Some(obs) = &self.script.observability {
+            push_row(
+                &mut rows,
+                "Observability",
+                "Observability",
+                &bool_label(obs.enabled),
+            );
+            if let Some(logs) = &obs.logs {
+                push_row(&mut rows, "Observability", "Logs", &sampling_label(logs));
+            }
+            if let Some(traces) = &obs.traces {
+                push_row(
+                    &mut rows,
+                    "Observability",
+                    "Traces",
+                    &sampling_label(traces),
+                );
+            }
+            push_row(
+                &mut rows,
+                "Observability",
+                "Sampling",
+                &obs.head_sampling_rate
+                    .map(percent_label)
+                    .unwrap_or_else(|| "-".into()),
+            );
+        } else {
+            push_row(&mut rows, "Observability", "Observability", "-");
+        }
+        push_row(
+            &mut rows,
+            "Observability",
+            "Logpush",
+            &bool_label(self.script.logpush),
+        );
+        if self.script.tail_consumers.is_empty() {
+            push_row(&mut rows, "Observability", "Tail Worker", "-");
+        } else {
+            for tail in &self.script.tail_consumers {
+                let value = first_non_empty(&[
+                    tail.service.as_str(),
+                    tail.namespace.as_str(),
+                    tail.environment.as_str(),
+                ]);
+                push_row(&mut rows, "Observability", "Tail Worker", &value);
+            }
+        }
+
+        push_row(
+            &mut rows,
+            "Runtime",
+            "Compatibility date",
+            &empty_or_dash(&self.version.compatibility_date),
+        );
+        push_row(
+            &mut rows,
+            "Runtime",
+            "Compatibility flags",
+            &join_or_dash(&self.version.compatibility_flags),
+        );
+        push_row(
+            &mut rows,
+            "Runtime",
+            "Placement",
+            &self
+                .version
+                .placement
+                .as_ref()
+                .map(short_json)
+                .unwrap_or_else(|| "-".into()),
+        );
+        push_row(
+            &mut rows,
+            "Runtime",
+            "Cache",
+            &self
+                .version
+                .cache_options
+                .as_ref()
+                .map(short_json)
+                .unwrap_or_else(|| "-".into()),
+        );
+        push_row(
+            &mut rows,
+            "Runtime",
+            "Limits",
+            &self
+                .version
+                .limits
+                .as_ref()
+                .map(short_json)
+                .unwrap_or_else(|| "-".into()),
+        );
+
+        push_row(&mut rows, "Build", "Repository/build config", "-");
+        if !self.script.tags.is_empty() {
+            push_row(
+                &mut rows,
+                "General",
+                "Tags",
+                &join_or_dash(&self.script.tags),
+            );
+        }
+        rows
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct WorkerDeploymentsResult {
     #[serde(default)]
     deployments: Vec<WorkerDeployment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkerSchedulesResult {
+    #[serde(default, deserialize_with = "vec_or_null")]
+    schedules: Vec<WorkerSchedule>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -944,6 +1295,119 @@ pub fn filter_worker_deployments<'a>(
         .collect()
 }
 
+pub fn filter_worker_settings_rows(
+    rows: &[WorkerSettingsRow],
+    needle: &str,
+) -> Vec<WorkerSettingsRow> {
+    let n = needle.to_ascii_lowercase();
+    rows.iter()
+        .filter(|r| {
+            n.is_empty()
+                || r.section.to_ascii_lowercase().contains(&n)
+                || r.name.to_ascii_lowercase().contains(&n)
+                || r.value.to_ascii_lowercase().contains(&n)
+        })
+        .cloned()
+        .collect()
+}
+
+fn push_row(rows: &mut Vec<WorkerSettingsRow>, section: &str, name: &str, value: &str) {
+    rows.push(WorkerSettingsRow {
+        section: section.into(),
+        name: name.into(),
+        value: empty_or_dash(value),
+    });
+}
+
+fn empty_or_dash(value: &str) -> String {
+    if value.trim().is_empty() {
+        "-".into()
+    } else {
+        value.to_string()
+    }
+}
+
+fn join_or_dash(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".into()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn first_non_empty(values: &[&str]) -> String {
+    values
+        .iter()
+        .find(|v| !v.trim().is_empty())
+        .copied()
+        .map(str::to_string)
+        .unwrap_or_else(|| "-".into())
+}
+
+fn bool_label(value: Option<bool>) -> String {
+    match value {
+        Some(true) => "Enabled".into(),
+        Some(false) => "Disabled".into(),
+        None => "-".into(),
+    }
+}
+
+fn percent_label(value: f64) -> String {
+    let percentage = if value <= 1.0 { value * 100.0 } else { value };
+    format!("{}%", trim_percent(percentage))
+}
+
+fn sampling_label(settings: &WorkerSamplingSettings) -> String {
+    let mut parts = vec![bool_label(settings.enabled)];
+    if let Some(rate) = settings.head_sampling_rate {
+        parts.push(percent_label(rate));
+    }
+    if settings.persist == Some(true) {
+        parts.push("persist".into());
+    }
+    if !settings.destinations.is_empty() {
+        parts.push(settings.destinations.join(","));
+    }
+    parts.retain(|p| p != "-");
+    if parts.is_empty() {
+        "-".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn short_json(value: &Value) -> String {
+    match value {
+        Value::Null => "-".into(),
+        Value::Bool(v) => bool_label(Some(*v)),
+        Value::Number(v) => v.to_string(),
+        Value::String(v) => empty_or_dash(v),
+        Value::Array(values) => {
+            if values.is_empty() {
+                "-".into()
+            } else {
+                values.iter().map(short_json).collect::<Vec<_>>().join(", ")
+            }
+        }
+        Value::Object(map) => {
+            let pairs = map
+                .iter()
+                .take(4)
+                .map(|(k, v)| format!("{k}: {}", short_json(v)))
+                .collect::<Vec<_>>();
+            if pairs.is_empty() {
+                "-".into()
+            } else {
+                pairs.join(", ")
+            }
+        }
+    }
+}
+
+fn short_cf_date(value: &str) -> String {
+    value.split('T').next().unwrap_or(value).to_string()
+}
+
 /// A bulk selection over records: explicit ids and/or where-clauses.
 #[derive(Debug, Clone, Default)]
 pub struct Selector {
@@ -1255,6 +1719,78 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
             .map_err(workers_hint)?;
         let result: WorkerDeploymentsResult = parse_envelope(&body).map_err(workers_hint)?;
         Ok(result.deployments)
+    }
+
+    pub fn get_worker_version_settings(
+        &self,
+        account_id: &str,
+        name: &str,
+    ) -> Result<WorkerVersionSettings> {
+        let body = self
+            .get(
+                &format!("/accounts/{account_id}/workers/scripts/{name}/settings"),
+                &[],
+            )
+            .map_err(workers_hint)?;
+        parse_envelope(&body).map_err(workers_hint)
+    }
+
+    pub fn get_worker_script_settings(
+        &self,
+        account_id: &str,
+        name: &str,
+    ) -> Result<WorkerScriptSettings> {
+        let body = self
+            .get(
+                &format!("/accounts/{account_id}/workers/scripts/{name}/script-settings"),
+                &[],
+            )
+            .map_err(workers_hint)?;
+        parse_envelope(&body).map_err(workers_hint)
+    }
+
+    pub fn list_worker_secrets(
+        &self,
+        account_id: &str,
+        name: &str,
+    ) -> Result<Vec<WorkerSecretBinding>> {
+        let body = self
+            .get(
+                &format!("/accounts/{account_id}/workers/scripts/{name}/secrets"),
+                &[],
+            )
+            .map_err(workers_hint)?;
+        let secrets: Option<Vec<WorkerSecretBinding>> =
+            parse_envelope(&body).map_err(workers_hint)?;
+        Ok(secrets.unwrap_or_default())
+    }
+
+    pub fn list_worker_schedules(
+        &self,
+        account_id: &str,
+        name: &str,
+    ) -> Result<Vec<WorkerSchedule>> {
+        let body = self
+            .get(
+                &format!("/accounts/{account_id}/workers/scripts/{name}/schedules"),
+                &[],
+            )
+            .map_err(workers_hint)?;
+        let result: WorkerSchedulesResult = parse_envelope(&body).map_err(workers_hint)?;
+        Ok(result.schedules)
+    }
+
+    pub fn get_worker_settings_bundle(
+        &self,
+        account_id: &str,
+        name: &str,
+    ) -> Result<WorkerSettingsBundle> {
+        Ok(WorkerSettingsBundle {
+            version: self.get_worker_version_settings(account_id, name)?,
+            script: self.get_worker_script_settings(account_id, name)?,
+            secrets: self.list_worker_secrets(account_id, name)?,
+            schedules: self.list_worker_schedules(account_id, name)?,
+        })
     }
 
     /// Download a Worker's script content. On success Cloudflare returns raw script bytes
@@ -1575,6 +2111,51 @@ mod tests {
         assert_eq!(deployments[0].message(), "Merge pull request #16");
         assert_eq!(deployments[0].triggered_by(), "github");
         assert_eq!(deployments[0].author_email, "operator@example.com");
+    }
+
+    #[test]
+    fn worker_settings_parse_null_arrays_and_render_rows() {
+        let body = r#"{"success":true,"errors":[],"messages":[],
+            "result":{
+                "bindings":null,
+                "compatibility_date":"2025-12-01",
+                "compatibility_flags":null,
+                "usage_model":"standard"
+            }}"#;
+        let version: WorkerVersionSettings = parse_envelope(body).unwrap();
+        let bundle = WorkerSettingsBundle {
+            version,
+            script: WorkerScriptSettings {
+                observability: Some(WorkerObservability {
+                    enabled: Some(true),
+                    logs: Some(WorkerSamplingSettings {
+                        enabled: Some(true),
+                        head_sampling_rate: Some(1.0),
+                        persist: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            schedules: vec![WorkerSchedule {
+                cron: "0 9 * * *".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let rows = bundle.rows(&WorkerScript {
+            id: "siakad".into(),
+            handlers: vec!["fetch".into()],
+            ..Default::default()
+        });
+        assert!(rows
+            .iter()
+            .any(|r| r.name == "Cron scheduled()" && r.value == "0 9 * * *"));
+        assert!(rows
+            .iter()
+            .any(|r| r.name == "Compatibility flags" && r.value == "-"));
+        assert!(filter_worker_settings_rows(&rows, "observability").len() >= 2);
     }
 
     #[test]

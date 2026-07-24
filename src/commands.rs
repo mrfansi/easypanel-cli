@@ -846,6 +846,60 @@ pub fn cf_workers_deployments(
     Ok(())
 }
 
+pub fn cf_workers_settings(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    name: &str,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let settings = client.get_worker_settings_bundle(&account_id, name)?;
+    let worker = client
+        .list_worker_scripts(&account_id)?
+        .into_iter()
+        .find(|w| w.id == name)
+        .unwrap_or_else(|| crate::cloudflare::WorkerScript {
+            id: name.into(),
+            ..Default::default()
+        });
+    let rows = settings.rows(&worker);
+    if output::json_output() {
+        output::print_json(&json!({
+            "worker": name,
+            "rows": rows.iter().map(|r| json!({
+                "section": r.section,
+                "name": r.name,
+                "value": r.value,
+            })).collect::<Vec<_>>(),
+            "version": {
+                "compatibility_date": settings.version.compatibility_date,
+                "compatibility_flags": settings.version.compatibility_flags,
+                "usage_model": settings.version.usage_model,
+                "bindings": settings.version.bindings,
+                "placement": settings.version.placement,
+                "cache_options": settings.version.cache_options,
+                "limits": settings.version.limits,
+            },
+            "script": {
+                "logpush": settings.script.logpush,
+                "observability": settings.script.observability,
+                "tags": settings.script.tags,
+                "tail_consumers": settings.script.tail_consumers,
+            },
+            "secrets": settings.secrets,
+            "schedules": settings.schedules,
+        }));
+        return Ok(());
+    }
+    table(
+        &["Section", "Name", "Value"],
+        rows.into_iter()
+            .map(|r| vec![r.section, r.name, r.value])
+            .collect(),
+    );
+    Ok(())
+}
+
 pub fn cf_workers_deploy(
     cfg: &CloudflareConfig,
     account: Option<&str>,

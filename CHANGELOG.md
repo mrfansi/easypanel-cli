@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.96.0] — 2026-07-24
+
+### Added
+
+- Cloudflare Workers now has a per-Worker settings/configuration drill-in. Press
+  **s** on a Worker (or choose **View settings** from the row menu / command
+  palette) to inspect variables and bindings, secret metadata, cron triggers,
+  observability, runtime compatibility, limits/cache/placement, and general
+  Worker metadata. From the settings view, **d** jumps back to deployments.
+- Added `easypanel cf workers settings <name>` for a CLI view of the same Worker
+  configuration bundle, with normal table output and JSON output support.
+
+### Fixed
+
+- Worker settings parsing now accepts Cloudflare's real-world `null` arrays for
+  fields such as bindings, compatibility flags, tags, tail consumers, and cron
+  schedules.
+
 ## [0.95.0] — 2026-07-24
 
 ### Added
@@ -3566,7 +3584,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.95.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.96.0...HEAD
+[0.96.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.96.0
 [0.95.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.95.0
 [0.94.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.94.0
 [0.93.5]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.5

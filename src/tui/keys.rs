@@ -478,6 +478,7 @@ impl App {
                 match (self.cf.product, self.cf.screen) {
                     (CfProduct::Analytics, _) => {}
                     (CfProduct::Workers, CfScreen::WorkerDeployments) => {}
+                    (CfProduct::Workers, CfScreen::WorkerSettings) => {}
                     (CfProduct::Workers, _) => self.open_cf_worker_menu(),
                     // R2 Objects: a FILE row gets the per-object menu (Download / Delete);
                     // a FOLDER row has no actions, so `open_cf_object_menu` no-ops on it.
@@ -1382,6 +1383,7 @@ impl App {
             CfProduct::Analytics => self.cf_analytics_key(code, req),
             CfProduct::Workers => match self.cf.screen {
                 CfScreen::WorkerDeployments => self.cf_worker_deployments_key(code, req),
+                CfScreen::WorkerSettings => self.cf_worker_settings_key(code, req),
                 _ => self.cf_workers_key(code, req),
             },
             CfProduct::R2 => match self.cf.screen {
@@ -1390,9 +1392,10 @@ impl App {
             },
             CfProduct::Dns => match self.cf.screen {
                 CfScreen::Zones => self.cf_zones_key(code, req),
-                CfScreen::Records | CfScreen::Objects | CfScreen::WorkerDeployments => {
-                    self.cf_records_key(code, req)
-                }
+                CfScreen::Records
+                | CfScreen::Objects
+                | CfScreen::WorkerDeployments
+                | CfScreen::WorkerSettings => self.cf_records_key(code, req),
             },
         }
     }
@@ -1424,6 +1427,7 @@ impl App {
             KeyCode::Char('n') => self.open_cf_worker_deploy_form(),
             KeyCode::Char('x') => self.open_cf_worker_delete_form(),
             KeyCode::Char(' ') => self.open_cf_worker_menu(),
+            KeyCode::Char('s') | KeyCode::Char('S') => self.cf_open_worker_settings(req),
             KeyCode::Enter => self.cf_open_worker_deployments(req),
             _ => {
                 let len = self.cf_workers_shown().len();
@@ -1452,9 +1456,46 @@ impl App {
                 self.cf.filter.clear();
             }
             KeyCode::Char('r') => self.cf_reload(req),
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                if let Some(name) = self.cf.current_worker.clone() {
+                    self.cf_open_worker_settings_for(name, req);
+                }
+            }
             _ => {
                 let len = self.cf_worker_deployments_shown().len();
                 move_table(&mut self.cf.worker_deployments_row, code, len);
+            }
+        }
+    }
+
+    fn cf_worker_settings_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        match code {
+            KeyCode::Esc if !self.cf.filter.is_empty() => {
+                self.cf.filter.clear();
+                self.cf_clamp_filtered();
+            }
+            KeyCode::Esc => {
+                self.cf.screen = CfScreen::Zones;
+                self.cf.current_worker = None;
+                self.cf.worker_settings = None;
+                self.cf.worker_settings_row.select(None);
+                self.cf.filter.clear();
+                self.cf.error = None;
+            }
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('/') => {
+                self.cf.filter_input = true;
+                self.cf.filter.clear();
+            }
+            KeyCode::Char('r') => self.cf_reload(req),
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                if let Some(name) = self.cf.current_worker.clone() {
+                    self.cf_open_worker_deployments_for(name, req);
+                }
+            }
+            _ => {
+                let len = self.cf_worker_settings_shown().len();
+                move_table(&mut self.cf.worker_settings_row, code, len);
             }
         }
     }

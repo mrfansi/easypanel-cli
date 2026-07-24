@@ -689,6 +689,11 @@ impl App {
                 .current_worker
                 .as_ref()
                 .map(|w| format!("Deployments: {w}")),
+            (CfProduct::Workers, CfScreen::WorkerSettings) => self
+                .cf
+                .current_worker
+                .as_ref()
+                .map(|w| format!("Settings: {w}")),
             (CfProduct::Workers, _) => self
                 .selected_cf_worker()
                 .map(|w| format!("Worker: {}", w.id)),
@@ -697,7 +702,10 @@ impl App {
             }
             (
                 CfProduct::Dns,
-                CfScreen::Records | CfScreen::Objects | CfScreen::WorkerDeployments,
+                CfScreen::Records
+                | CfScreen::Objects
+                | CfScreen::WorkerDeployments
+                | CfScreen::WorkerSettings,
             ) => self
                 .selected_cf_record()
                 .map(|r| format!("Record: {} {}", r.kind, r.name)),
@@ -722,6 +730,15 @@ impl App {
             (CfProduct::Analytics, _) => {}
             (CfProduct::Workers, CfScreen::WorkerDeployments) => {
                 items.push((
+                    "View settings".into(),
+                    "open worker settings configuration variables secrets cron runtime".into(),
+                    |a: &mut App, r: &Sender<Req>| {
+                        if let Some(name) = a.cf.current_worker.clone() {
+                            a.cf_open_worker_settings_for(name, r);
+                        }
+                    },
+                ));
+                items.push((
                     "Back to Workers".into(),
                     "back workers list".into(),
                     |a: &mut App, _r: &Sender<Req>| {
@@ -734,9 +751,37 @@ impl App {
                     },
                 ));
             }
+            (CfProduct::Workers, CfScreen::WorkerSettings) => {
+                items.push((
+                    "View deployments".into(),
+                    "open deployments version history".into(),
+                    |a: &mut App, r: &Sender<Req>| {
+                        if let Some(name) = a.cf.current_worker.clone() {
+                            a.cf_open_worker_deployments_for(name, r);
+                        }
+                    },
+                ));
+                items.push((
+                    "Back to Workers".into(),
+                    "back workers list".into(),
+                    |a: &mut App, _r: &Sender<Req>| {
+                        a.cf.screen = CfScreen::Zones;
+                        a.cf.current_worker = None;
+                        a.cf.worker_settings = None;
+                        a.cf.worker_settings_row.select(None);
+                        a.cf.filter.clear();
+                        a.cf.error = None;
+                    },
+                ));
+            }
             (CfProduct::Workers, _) => {
                 if let Some(worker) = self.selected_cf_worker() {
                     let ctx = format!("worker {}", worker.id);
+                    items.push((
+                        "View settings".into(),
+                        format!("open settings configuration variables secrets cron runtime {ctx}"),
+                        |a: &mut App, r: &Sender<Req>| a.cf_open_worker_settings(r),
+                    ));
                     items.push((
                         "View deployments".into(),
                         format!("open deployments version history {ctx}"),
@@ -774,7 +819,10 @@ impl App {
             }
             (
                 CfProduct::Dns,
-                CfScreen::Records | CfScreen::Objects | CfScreen::WorkerDeployments,
+                CfScreen::Records
+                | CfScreen::Objects
+                | CfScreen::WorkerDeployments
+                | CfScreen::WorkerSettings,
             ) => {
                 if let Some(record) = self.selected_cf_record() {
                     let ctx = format!("record {} {}", record.kind, record.name);

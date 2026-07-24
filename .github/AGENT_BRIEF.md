@@ -433,6 +433,16 @@ hint on the auth error, same pitfall as Zone:DNS).
   version history; **Esc** returns to the Workers list. Cloudflare returns the newest
   deployment first, so the first row is treated as active. Token can use account-level
   **Workers Scripts Read** for this read-only view.
+- **Workers Settings / Configuration — DONE v0.96.0.** The CLI
+  `cf workers settings <name>` and TUI `CfScreen::WorkerSettings` combine four Cloudflare
+  endpoints: `/settings` for bindings/runtime/version settings, `/script-settings` for
+  observability/logpush/tail, `/schedules` for cron triggers, and `/secrets` for secret
+  metadata. In the TUI, **s** opens settings from the Workers list or deployments view,
+  **d** jumps from settings back to deployments, and **Esc** returns to the Workers list.
+  Cloudflare may return `null` arrays even where docs describe lists; keep `vec_or_null`
+  on settings vectors. The screen masks secret values and shows secret metadata only.
+  Write/edit actions for variables/secrets/cron/runtime should be a separate guarded slice
+  smoke-tested against `mrfansi-dev`, not guessed against production accounts.
 - **D1 (serverless SQL database).** New `CfProduct::D1` tab. Databases via
   `/accounts/{account_id}/d1/database` (list/create/delete); run SQL via
   `POST /accounts/{account_id}/d1/database/{database_id}/query` (or `/raw`), which returns

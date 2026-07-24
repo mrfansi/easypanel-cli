@@ -7102,6 +7102,63 @@ fn cf_worker_enter_opens_deployments_and_esc_returns_to_workers() {
 }
 
 #[test]
+fn cf_worker_s_opens_settings_and_d_returns_to_deployments() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::Workers;
+    app.cf.workers = vec![crate::cloudflare::WorkerScript {
+        id: "siakad".into(),
+        handlers: vec!["fetch".into()],
+        usage_model: "standard".into(),
+        ..Default::default()
+    }];
+    app.cf.workers_row.select(Some(0));
+
+    app.on_key(KeyCode::Char('s'), &tx);
+    assert_eq!(app.cf.screen, CfScreen::WorkerSettings);
+    assert_eq!(app.cf.current_worker.as_deref(), Some("siakad"));
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::WorkerSettings { name, .. })) if name == "siakad"
+    ));
+
+    app.handle(
+        Resp::Cf(CfResp::WorkerSettings {
+            worker: "siakad".into(),
+            settings: Box::new(crate::cloudflare::WorkerSettingsBundle {
+                version: crate::cloudflare::WorkerVersionSettings {
+                    compatibility_date: "2025-12-01".into(),
+                    compatibility_flags: vec!["nodejs_compat".into()],
+                    usage_model: "standard".into(),
+                    ..Default::default()
+                },
+                schedules: vec![crate::cloudflare::WorkerSchedule {
+                    cron: "0 9 * * *".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        }),
+        &tx,
+    );
+    assert!(app.cf.worker_settings.is_some());
+    assert_eq!(app.cf.worker_settings_row.selected(), Some(0));
+    assert!(app
+        .cf_worker_settings_shown()
+        .iter()
+        .any(|r| r.value == "0 9 * * *"));
+
+    app.on_key(KeyCode::Char('d'), &tx);
+    assert_eq!(app.cf.screen, CfScreen::WorkerDeployments);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::WorkerDeployments { name, .. })) if name == "siakad"
+    ));
+}
+
+#[test]
 fn switching_back_to_dns_reloads_zones_for_the_active_account() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);

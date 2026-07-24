@@ -7,10 +7,11 @@ use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
 
 use crate::cloudflare::{
-    apply_patch, filter_buckets, filter_records, filter_worker_deployments, filter_workers,
-    filter_zones, proxyable, record_body, valid_record_type, AnalyticsSummary, CloudflareAccount,
-    R2Bucket, R2Object, Record, RecordFilter, RecordPatch, WebAnalyticsSite, WorkerDeployment,
-    WorkerScript, WorkerUploadMode, Zone,
+    apply_patch, filter_buckets, filter_records, filter_worker_deployments,
+    filter_worker_settings_rows, filter_workers, filter_zones, proxyable, record_body,
+    valid_record_type, AnalyticsSummary, CloudflareAccount, R2Bucket, R2Object, Record,
+    RecordFilter, RecordPatch, WebAnalyticsSite, WorkerDeployment, WorkerScript,
+    WorkerSettingsBundle, WorkerSettingsRow, WorkerUploadMode, Zone,
 };
 use crate::commands;
 use crate::output::field;
@@ -190,6 +191,8 @@ pub(super) enum CfScreen {
     Objects,
     /// The Workers deployments/version-history drill-in from a selected Worker.
     WorkerDeployments,
+    /// The Workers settings/configuration drill-in from a selected Worker.
+    WorkerSettings,
 }
 
 /// A Cloudflare product section, shown as a tab in the CF workspace. DNS (zones +
@@ -280,6 +283,8 @@ pub(super) struct CfUi {
     pub(super) current_worker: Option<String>,
     pub(super) worker_deployments: Vec<WorkerDeployment>,
     pub(super) worker_deployments_row: TableState,
+    pub(super) worker_settings: Option<WorkerSettingsBundle>,
+    pub(super) worker_settings_row: TableState,
     pub(super) current_bucket: Option<String>,
     /// A CF-local text filter, narrowing the loaded list client-side.
     pub(super) filter: String,
@@ -765,6 +770,7 @@ impl App {
                 CfProduct::Analytics => 0,
                 CfProduct::Workers => match self.cf.screen {
                     CfScreen::WorkerDeployments => self.cf_worker_deployments_shown().len(),
+                    CfScreen::WorkerSettings => self.cf_worker_settings_shown().len(),
                     _ => self.cf_workers_shown().len(),
                 },
                 CfProduct::R2 => match self.cf.screen {
@@ -773,9 +779,10 @@ impl App {
                 },
                 CfProduct::Dns => match self.cf.screen {
                     CfScreen::Zones => self.cf_zones_shown().len(),
-                    CfScreen::Records | CfScreen::Objects | CfScreen::WorkerDeployments => {
-                        self.cf_records_shown().len()
-                    }
+                    CfScreen::Records
+                    | CfScreen::Objects
+                    | CfScreen::WorkerDeployments
+                    | CfScreen::WorkerSettings => self.cf_records_shown().len(),
                 },
             };
         }
@@ -800,6 +807,7 @@ impl App {
                 CfProduct::Analytics => None,
                 CfProduct::Workers => match self.cf.screen {
                     CfScreen::WorkerDeployments => Some(&mut self.cf.worker_deployments_row),
+                    CfScreen::WorkerSettings => Some(&mut self.cf.worker_settings_row),
                     _ => Some(&mut self.cf.workers_row),
                 },
                 CfProduct::R2 => match self.cf.screen {
@@ -808,9 +816,10 @@ impl App {
                 },
                 CfProduct::Dns => match self.cf.screen {
                     CfScreen::Zones => Some(&mut self.cf.zones_row),
-                    CfScreen::Records | CfScreen::Objects | CfScreen::WorkerDeployments => {
-                        Some(&mut self.cf.records_row)
-                    }
+                    CfScreen::Records
+                    | CfScreen::Objects
+                    | CfScreen::WorkerDeployments
+                    | CfScreen::WorkerSettings => Some(&mut self.cf.records_row),
                 },
             };
         }
@@ -1142,6 +1151,24 @@ impl App {
         filter_worker_deployments(&self.cf.worker_deployments, &self.cf.filter)
     }
 
+    /// The Worker settings rows shown right now (after the CF-local filter).
+    pub(super) fn cf_worker_settings_shown(&self) -> Vec<WorkerSettingsRow> {
+        let Some(settings) = &self.cf.worker_settings else {
+            return Vec::new();
+        };
+        let worker = self
+            .cf
+            .current_worker
+            .as_ref()
+            .and_then(|name| self.cf.workers.iter().find(|w| &w.id == name))
+            .cloned()
+            .unwrap_or_else(|| WorkerScript {
+                id: self.cf.current_worker.clone().unwrap_or_default(),
+                ..Default::default()
+            });
+        filter_worker_settings_rows(&settings.rows(&worker), &self.cf.filter)
+    }
+
     /// The active account's account-id, which every R2 call needs (R2 is
     /// account-scoped — unlike DNS, which can list zones without one).
     pub(super) fn cf_account_id(&self) -> Option<String> {
@@ -1445,6 +1472,31 @@ impl App {
         }
     }
 
+    /// Open the highlighted Worker's settings/configuration.
+    pub(super) fn cf_open_worker_settings(&mut self, req: &Sender<Req>) {
+        let Some(worker) = self.selected_cf_worker() else {
+            self.status = "No Worker selected".into();
+            return;
+        };
+        self.cf_open_worker_settings_for(worker.id, req);
+    }
+
+    /// Open a specific Worker's settings by name — shared by `s` and palette.
+    pub(super) fn cf_open_worker_settings_for(&mut self, name: String, req: &Sender<Req>) {
+        self.cf.product = CfProduct::Workers;
+        self.cf.screen = CfScreen::WorkerSettings;
+        self.cf.current_worker = Some(name.clone());
+        self.cf_enter_list();
+        if let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id()) {
+            let _ = req.send(Req::Cf(CfReq::WorkerSettings {
+                token,
+                account_id,
+                name: name.clone(),
+            }));
+            self.status = format!("Loading settings for {name}…");
+        }
+    }
+
     /// Make an account the active one — shared by Enter in the `a` picker and the
     /// palette's account jump. Records the SetDefault side-effect (persisted by the
     /// event loop) and returns to that account's home, exactly as the picker did inline.
@@ -1527,6 +1579,10 @@ impl App {
                 self.cf.worker_deployments.clear();
                 self.cf.worker_deployments_row.select(None);
             }
+            CfScreen::WorkerSettings => {
+                self.cf.worker_settings = None;
+                self.cf.worker_settings_row.select(None);
+            }
         }
     }
 
@@ -1547,16 +1603,28 @@ impl App {
         }
         if self.cf.product == CfProduct::Workers {
             if let Some(account_id) = self.cf_account_id() {
-                if self.cf.screen == CfScreen::WorkerDeployments {
-                    if let Some(name) = self.cf.current_worker.clone() {
-                        let _ = req.send(Req::Cf(CfReq::WorkerDeployments {
-                            token,
-                            account_id,
-                            name,
-                        }));
+                match self.cf.screen {
+                    CfScreen::WorkerDeployments => {
+                        if let Some(name) = self.cf.current_worker.clone() {
+                            let _ = req.send(Req::Cf(CfReq::WorkerDeployments {
+                                token,
+                                account_id,
+                                name,
+                            }));
+                        }
                     }
-                } else {
-                    let _ = req.send(Req::Cf(CfReq::Workers { token, account_id }));
+                    CfScreen::WorkerSettings => {
+                        if let Some(name) = self.cf.current_worker.clone() {
+                            let _ = req.send(Req::Cf(CfReq::WorkerSettings {
+                                token,
+                                account_id,
+                                name,
+                            }));
+                        }
+                    }
+                    _ => {
+                        let _ = req.send(Req::Cf(CfReq::Workers { token, account_id }));
+                    }
                 }
             }
             return;
@@ -1603,9 +1671,9 @@ impl App {
                     }));
                 }
             }
-            // Objects is an R2 screen and WorkerDeployments is a Workers screen,
+            // Objects and Worker detail screens are handled by their product branches above.
             // both handled by their product branches above.
-            CfScreen::Objects | CfScreen::WorkerDeployments => {}
+            CfScreen::Objects | CfScreen::WorkerDeployments | CfScreen::WorkerSettings => {}
         }
     }
 
@@ -1624,16 +1692,24 @@ impl App {
             return;
         }
         if self.cf.product == CfProduct::Workers {
-            if self.cf.screen == CfScreen::WorkerDeployments {
-                let len = self.cf_worker_deployments_shown().len();
-                *self.cf.worker_deployments_row.offset_mut() = 0;
-                self.cf
-                    .worker_deployments_row
-                    .select((len > 0).then_some(0));
-            } else {
-                let len = self.cf_workers_shown().len();
-                *self.cf.workers_row.offset_mut() = 0;
-                self.cf.workers_row.select((len > 0).then_some(0));
+            match self.cf.screen {
+                CfScreen::WorkerDeployments => {
+                    let len = self.cf_worker_deployments_shown().len();
+                    *self.cf.worker_deployments_row.offset_mut() = 0;
+                    self.cf
+                        .worker_deployments_row
+                        .select((len > 0).then_some(0));
+                }
+                CfScreen::WorkerSettings => {
+                    let len = self.cf_worker_settings_shown().len();
+                    *self.cf.worker_settings_row.offset_mut() = 0;
+                    self.cf.worker_settings_row.select((len > 0).then_some(0));
+                }
+                _ => {
+                    let len = self.cf_workers_shown().len();
+                    *self.cf.workers_row.offset_mut() = 0;
+                    self.cf.workers_row.select((len > 0).then_some(0));
+                }
             }
             return;
         }
@@ -1648,9 +1724,8 @@ impl App {
                 *self.cf.records_row.offset_mut() = 0;
                 self.cf.records_row.select((len > 0).then_some(0));
             }
-            // Objects is an R2 screen and WorkerDeployments is a Workers screen,
-            // both handled by their product branches above.
-            CfScreen::Objects | CfScreen::WorkerDeployments => {}
+            // Objects and Worker detail screens are handled by their product branches above.
+            CfScreen::Objects | CfScreen::WorkerDeployments | CfScreen::WorkerSettings => {}
         }
     }
 
@@ -1937,6 +2012,7 @@ impl App {
             return;
         }
         self.open_menu(vec![
+            MenuItem::new("View settings", |a, r| a.cf_open_worker_settings(r)),
             MenuItem::new("View deployments", |a, r| a.cf_open_worker_deployments(r)),
             MenuItem::new("Deploy/replace Worker…", |a, _| {
                 a.open_cf_worker_deploy_form()
@@ -2721,6 +2797,15 @@ impl App {
                     self.cf.worker_deployments = deployments;
                     let len = self.cf_worker_deployments_shown().len();
                     select_first(&mut self.cf.worker_deployments_row, len);
+                }
+            }
+            CfResp::WorkerSettings { worker, settings } => {
+                // Discard a stale settings reply if the user has already opened another Worker.
+                if self.cf.current_worker.as_deref() == Some(worker.as_str()) {
+                    self.cf.error = None;
+                    self.cf.worker_settings = Some(*settings);
+                    let len = self.cf_worker_settings_shown().len();
+                    select_first(&mut self.cf.worker_settings_row, len);
                 }
             }
             CfResp::R2Objects {

@@ -479,6 +479,13 @@ enum CfWorkersCmd {
         #[arg(long)]
         account: Option<String>,
     },
+    /// Show Worker settings: bindings, secrets metadata, cron, observability, runtime
+    Settings {
+        /// Worker script name
+        name: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
     /// Deploy one local file as Worker script content
     Deploy {
         /// Worker script name
@@ -1178,6 +1185,9 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     }
                     CfWorkersCmd::Deployments { name, account } => {
                         commands::cf_workers_deployments(&cf, account.as_deref(), &name)
+                    }
+                    CfWorkersCmd::Settings { name, account } => {
+                        commands::cf_workers_settings(&cf, account.as_deref(), &name)
                     }
                     CfWorkersCmd::Deploy {
                         name,

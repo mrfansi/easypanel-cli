@@ -10,8 +10,8 @@ use serde_json::{json, Value};
 use crate::client::EasypanelClient;
 use crate::cloudflare::{
     object_basename, upload_key, AnalyticsSummary, CloudflareClient, R2Bucket, R2Object, Record,
-    RecordFilter, WebAnalyticsSite, WorkerDeployment, WorkerScript, WorkerUploadMode, Zone,
-    MAX_REST_OBJECT_BYTES,
+    RecordFilter, WebAnalyticsSite, WorkerDeployment, WorkerScript, WorkerSettingsBundle,
+    WorkerUploadMode, Zone, MAX_REST_OBJECT_BYTES,
 };
 use crate::output::field;
 
@@ -514,6 +514,11 @@ pub(super) enum CfReq {
         account_id: String,
         name: String,
     },
+    WorkerSettings {
+        token: String,
+        account_id: String,
+        name: String,
+    },
     WorkerDeploy {
         token: String,
         account_id: String,
@@ -778,6 +783,10 @@ pub(super) enum CfResp {
     WorkerDeployments {
         worker: String,
         deployments: Vec<WorkerDeployment>,
+    },
+    WorkerSettings {
+        worker: String,
+        settings: Box<WorkerSettingsBundle>,
     },
     /// One folder level of `bucket` at `prefix` — the subfolders (`folders`, full key
     /// prefixes ending in `/`) and the files directly here. Both bucket AND prefix are
@@ -2133,6 +2142,17 @@ fn handle_cf(req: CfReq) -> CfResp {
             Ok(deployments) => CfResp::WorkerDeployments {
                 worker: name,
                 deployments,
+            },
+            Err(e) => CfResp::Err(e.to_string()),
+        },
+        CfReq::WorkerSettings {
+            token,
+            account_id,
+            name,
+        } => match CloudflareClient::new(&token).get_worker_settings_bundle(&account_id, &name) {
+            Ok(settings) => CfResp::WorkerSettings {
+                worker: name,
+                settings: Box::new(settings),
             },
             Err(e) => CfResp::Err(e.to_string()),
         },
