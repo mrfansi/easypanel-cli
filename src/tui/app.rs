@@ -1895,6 +1895,24 @@ impl App {
         }
     }
 
+    pub(super) fn cf_open_tunnel_token(&mut self, req: &Sender<Req>) {
+        let Some(tunnel) = self.selected_cf_tunnel() else {
+            self.status = "No tunnel selected".into();
+            return;
+        };
+        let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id()) else {
+            self.status = "No active account".into();
+            return;
+        };
+        let _ = req.send(Req::Cf(CfReq::TunnelToken {
+            token,
+            account_id,
+            tunnel_id: tunnel.id.clone(),
+            name: tunnel.name.clone(),
+        }));
+        self.status = format!("Loading install command for {}…", tunnel.name);
+    }
+
     /// Enter on a Worker: open its deployments/version history. This mirrors the
     /// Cloudflare dashboard's Worker detail page without adding another product tab.
     pub(super) fn cf_open_worker_deployments(&mut self, req: &Sender<Req>) {
@@ -2466,6 +2484,12 @@ impl App {
             items.push(MenuItem::new("View routes/config", |a, r| {
                 a.cf_open_tunnel_config(r)
             }));
+            items.push(MenuItem::new("Install command…", |a, r| {
+                a.cf_open_tunnel_token(r)
+            }));
+            items.push(MenuItem::new("Delete tunnel…", |a, _| {
+                a.open_cf_tunnel_delete_form()
+            }));
         }
         self.open_menu(items);
     }
@@ -2489,6 +2513,27 @@ impl App {
         );
     }
 
+    pub(super) fn open_cf_tunnel_delete_form(&mut self) {
+        let Some(tunnel) = self.selected_cf_tunnel() else {
+            self.status = "No tunnel selected".into();
+            return;
+        };
+        self.form = Some(
+            Form::new(
+                FormKind::CfTunnelDelete {
+                    tunnel_id: tunnel.id.clone(),
+                    name: tunnel.name.clone(),
+                },
+                " Delete Cloudflare Tunnel ",
+                vec![Field::text("Type the tunnel name to confirm", "")],
+            )
+            .with_note(format!(
+                "Deletes tunnel '{}' from Cloudflare. Existing DNS/routes are not deleted automatically.",
+                tunnel.name
+            )),
+        );
+    }
+
     pub(super) fn open_cf_tunnel_config_menu(&mut self) {
         self.open_menu(vec![
             MenuItem::new("Add route…", |a, _| a.open_cf_tunnel_route_form()),
@@ -2506,6 +2551,9 @@ impl App {
         };
         let mut fields = vec![Field::text("Hostname", ""), Field::text("Path", "")];
         fields.extend(tunnel_service_fields("http://localhost:3000"));
+        fields.push(Field::boolean("Sync DNS CNAME", true));
+        fields.push(Field::text("DNS Zone", ""));
+        fields.push(Field::boolean("DNS Proxied", true));
         fields.extend(tunnel_origin_fields(None));
         self.form = Some(
             Form::new(
@@ -2535,6 +2583,9 @@ impl App {
             return;
         }
         let mut fields = tunnel_service_fields(&rule.service);
+        fields.push(Field::boolean("Sync DNS CNAME", true));
+        fields.push(Field::text("DNS Zone", ""));
+        fields.push(Field::boolean("DNS Proxied", true));
         fields.extend(tunnel_origin_fields(rule.origin_request.as_ref()));
         fields.push(Field::boolean("Clear origin request", false));
         let original_origin = rule.origin_request.clone().unwrap_or_else(|| json!({}));
@@ -2576,7 +2627,11 @@ impl App {
                     path: rule.path.clone(),
                 },
                 " Delete tunnel route ",
-                vec![Field::text("Type the hostname to confirm", "")],
+                vec![
+                    Field::text("Type the hostname to confirm", ""),
+                    Field::boolean("Delete DNS CNAME", true),
+                    Field::text("DNS Zone", ""),
+                ],
             )
             .with_note(format!(
                 "Removes '{}' from '{}' ingress config",
@@ -3465,6 +3520,11 @@ impl App {
                     let len = self.cf_level_len();
                     select_first(&mut self.cf.r2_objects_row, len);
                 }
+            }
+            CfResp::Viewer { title, lines } => {
+                self.viewer.from = self.screen;
+                self.show_viewer(title, lines);
+                self.viewer.ctx = None;
             }
             CfResp::Done(msg) => {
                 self.status = msg;
@@ -5761,6 +5821,23 @@ impl App {
                     name,
                 }));
             }
+            FormKind::CfTunnelDelete { tunnel_id, name } => {
+                if form.val(0) != name.as_str() {
+                    self.status = "Tunnel name did not match — nothing deleted".into();
+                    return;
+                }
+                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
+                else {
+                    self.status = "No active account".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::TunnelDelete {
+                    token,
+                    account_id,
+                    tunnel_id: tunnel_id.clone(),
+                    name: name.clone(),
+                }));
+            }
             FormKind::CfTunnelRouteCreate { tunnel_id } => {
                 let (hostname, service_type, service_url, path) = (
                     form.by_label("Hostname").trim().to_string(),
@@ -5784,6 +5861,10 @@ impl App {
                         return;
                     }
                 };
+                let dns = form.by_label("Sync DNS CNAME") == "yes";
+                let zone = (!form.by_label("DNS Zone").trim().is_empty())
+                    .then(|| form.by_label("DNS Zone").trim().to_string());
+                let proxied = form.by_label("DNS Proxied") == "yes";
                 let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
                 else {
                     self.status = "No active account".into();
@@ -5797,6 +5878,9 @@ impl App {
                     service,
                     path,
                     origin_request,
+                    dns,
+                    zone,
+                    proxied,
                 }));
             }
             FormKind::CfTunnelRouteEdit {
@@ -5823,6 +5907,10 @@ impl App {
                         }
                     }
                 };
+                let dns = form.by_label("Sync DNS CNAME") == "yes";
+                let zone = (!form.by_label("DNS Zone").trim().is_empty())
+                    .then(|| form.by_label("DNS Zone").trim().to_string());
+                let proxied = form.by_label("DNS Proxied") == "yes";
                 let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
                 else {
                     self.status = "No active account".into();
@@ -5836,6 +5924,9 @@ impl App {
                     path: path.clone(),
                     service,
                     origin_request,
+                    dns,
+                    zone,
+                    proxied,
                 }));
             }
             FormKind::CfTunnelRouteDelete {
@@ -5852,12 +5943,17 @@ impl App {
                     self.status = "No active account".into();
                     return;
                 };
+                let delete_dns = form.by_label("Delete DNS CNAME") == "yes";
+                let zone = (!form.by_label("DNS Zone").trim().is_empty())
+                    .then(|| form.by_label("DNS Zone").trim().to_string());
                 let _ = req.send(Req::Cf(CfReq::TunnelRouteDelete {
                     token,
                     account_id,
                     tunnel_id: tunnel_id.clone(),
                     hostname: hostname.clone(),
                     path: path.clone(),
+                    delete_dns,
+                    zone,
                 }));
             }
             FormKind::R2Upload => {

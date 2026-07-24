@@ -9,10 +9,10 @@ use serde_json::{json, Value};
 
 use crate::client::EasypanelClient;
 use crate::cloudflare::{
-    object_basename, upload_key, AnalyticsSummary, CloudflareClient, CloudflareTunnel, R2Bucket,
-    R2Object, Record, RecordFilter, TunnelConfiguration, TunnelIngressRule, TunnelRouteChange,
-    WebAnalyticsSite, WorkerDeployment, WorkerScript, WorkerSettingsBundle, WorkerUploadMode, Zone,
-    MAX_REST_OBJECT_BYTES,
+    object_basename, record_body, upload_key, AnalyticsSummary, CloudflareClient, CloudflareTunnel,
+    R2Bucket, R2Object, Record, RecordFilter, TunnelConfiguration, TunnelIngressRule,
+    TunnelRouteChange, WebAnalyticsSite, WorkerDeployment, WorkerScript, WorkerSettingsBundle,
+    WorkerUploadMode, Zone, MAX_REST_OBJECT_BYTES,
 };
 use crate::output::field;
 
@@ -515,6 +515,18 @@ pub(super) enum CfReq {
         account_id: String,
         name: String,
     },
+    TunnelDelete {
+        token: String,
+        account_id: String,
+        tunnel_id: String,
+        name: String,
+    },
+    TunnelToken {
+        token: String,
+        account_id: String,
+        tunnel_id: String,
+        name: String,
+    },
     TunnelConfig {
         token: String,
         account_id: String,
@@ -528,6 +540,9 @@ pub(super) enum CfReq {
         service: String,
         path: String,
         origin_request: Option<Value>,
+        dns: bool,
+        zone: Option<String>,
+        proxied: bool,
     },
     TunnelRouteEdit {
         token: String,
@@ -537,6 +552,9 @@ pub(super) enum CfReq {
         path: String,
         service: String,
         origin_request: Option<Option<Value>>,
+        dns: bool,
+        zone: Option<String>,
+        proxied: bool,
     },
     TunnelRouteDelete {
         token: String,
@@ -544,6 +562,8 @@ pub(super) enum CfReq {
         tunnel_id: String,
         hostname: String,
         path: String,
+        delete_dns: bool,
+        zone: Option<String>,
     },
     Workers {
         token: String,
@@ -823,6 +843,10 @@ pub(super) enum CfResp {
     TunnelConfig {
         tunnel_id: String,
         config: Box<TunnelConfiguration>,
+    },
+    Viewer {
+        title: String,
+        lines: Vec<String>,
     },
     /// The Worker scripts for the active account.
     Workers(Vec<WorkerScript>),
@@ -2190,6 +2214,40 @@ fn handle_cf(req: CfReq) -> CfResp {
             Ok(tunnel) => CfResp::Done(format!("Tunnel '{}' created", tunnel.name)),
             Err(e) => CfResp::Err(e.to_string()),
         },
+        CfReq::TunnelDelete {
+            token,
+            account_id,
+            tunnel_id,
+            name,
+        } => match CloudflareClient::new(&token).delete_tunnel(&account_id, &tunnel_id) {
+            Ok(()) => CfResp::Done(format!("Tunnel '{name}' deleted")),
+            Err(e) => CfResp::Err(e.to_string()),
+        },
+        CfReq::TunnelToken {
+            token,
+            account_id,
+            tunnel_id,
+            name,
+        } => match CloudflareClient::new(&token).get_tunnel_token(&account_id, &tunnel_id) {
+            Ok(tunnel_token) => CfResp::Viewer {
+                title: format!("Tunnel install · {name}"),
+                lines: vec![
+                    "Install cloudflared on the origin machine, then run one of:".into(),
+                    String::new(),
+                    "Linux service:".into(),
+                    format!("sudo cloudflared service install {tunnel_token}"),
+                    String::new(),
+                    "Docker:".into(),
+                    format!(
+                        "docker run -d --name cloudflared --restart unless-stopped cloudflare/cloudflared:latest tunnel --no-autoupdate run --token {tunnel_token}"
+                    ),
+                    String::new(),
+                    "Token:".into(),
+                    tunnel_token,
+                ],
+            },
+            Err(e) => CfResp::Err(e.to_string()),
+        },
         CfReq::TunnelConfig {
             token,
             account_id,
@@ -2209,10 +2267,36 @@ fn handle_cf(req: CfReq) -> CfResp {
             service,
             path,
             origin_request,
+            dns,
+            zone,
+            proxied,
         } => {
             let rule = TunnelIngressRule::route(&hostname, &service, &path, origin_request);
-            match CloudflareClient::new(&token).add_tunnel_route(&account_id, &tunnel_id, rule) {
-                Ok(_) => CfResp::Done(format!("Tunnel route '{}' added", hostname)),
+            let client = CloudflareClient::new(&token);
+            match client.add_tunnel_route(&account_id, &tunnel_id, rule) {
+                Ok(_) => {
+                    let mut msg = format!("Tunnel route '{}' added", hostname);
+                    if dns {
+                        match upsert_tunnel_dns(
+                            &client,
+                            &account_id,
+                            &tunnel_id,
+                            &hostname,
+                            zone.as_deref(),
+                            proxied,
+                        ) {
+                            Ok(record) => {
+                                msg.push_str(&format!(
+                                    "; DNS CNAME '{}' -> {} updated",
+                                    record.name,
+                                    tunnel_target(&tunnel_id)
+                                ));
+                            }
+                            Err(e) => return CfResp::Err(e.to_string()),
+                        }
+                    }
+                    CfResp::Done(msg)
+                }
                 Err(e) => CfResp::Err(e.to_string()),
             }
         }
@@ -2224,8 +2308,12 @@ fn handle_cf(req: CfReq) -> CfResp {
             path,
             service,
             origin_request,
+            dns,
+            zone,
+            proxied,
         } => {
-            match CloudflareClient::new(&token).edit_tunnel_route(
+            let client = CloudflareClient::new(&token);
+            match client.edit_tunnel_route(
                 &account_id,
                 &tunnel_id,
                 TunnelRouteChange {
@@ -2235,7 +2323,29 @@ fn handle_cf(req: CfReq) -> CfResp {
                     origin_request,
                 },
             ) {
-                Ok(_) => CfResp::Done(format!("Tunnel route '{}' updated", hostname)),
+                Ok(_) => {
+                    let mut msg = format!("Tunnel route '{}' updated", hostname);
+                    if dns {
+                        match upsert_tunnel_dns(
+                            &client,
+                            &account_id,
+                            &tunnel_id,
+                            &hostname,
+                            zone.as_deref(),
+                            proxied,
+                        ) {
+                            Ok(record) => {
+                                msg.push_str(&format!(
+                                    "; DNS CNAME '{}' -> {} updated",
+                                    record.name,
+                                    tunnel_target(&tunnel_id)
+                                ));
+                            }
+                            Err(e) => return CfResp::Err(e.to_string()),
+                        }
+                    }
+                    CfResp::Done(msg)
+                }
                 Err(e) => CfResp::Err(e.to_string()),
             }
         }
@@ -2245,15 +2355,39 @@ fn handle_cf(req: CfReq) -> CfResp {
             tunnel_id,
             hostname,
             path,
-        } => match CloudflareClient::new(&token).delete_tunnel_route(
-            &account_id,
-            &tunnel_id,
-            &hostname,
-            (!path.trim().is_empty()).then_some(path.as_str()),
-        ) {
-            Ok(_) => CfResp::Done(format!("Tunnel route '{}' deleted", hostname)),
-            Err(e) => CfResp::Err(e.to_string()),
-        },
+            delete_dns,
+            zone,
+        } => {
+            let client = CloudflareClient::new(&token);
+            match client.delete_tunnel_route(
+                &account_id,
+                &tunnel_id,
+                &hostname,
+                (!path.trim().is_empty()).then_some(path.as_str()),
+            ) {
+                Ok(_) => {
+                    let mut msg = format!("Tunnel route '{}' deleted", hostname);
+                    if delete_dns {
+                        match delete_tunnel_dns(
+                            &client,
+                            &account_id,
+                            &tunnel_id,
+                            &hostname,
+                            zone.as_deref(),
+                        ) {
+                            Ok(deleted) => {
+                                msg.push_str(&format!(
+                                    "; deleted {deleted} matching DNS CNAME record(s)"
+                                ));
+                            }
+                            Err(e) => return CfResp::Err(e.to_string()),
+                        }
+                    }
+                    CfResp::Done(msg)
+                }
+                Err(e) => CfResp::Err(e.to_string()),
+            }
+        }
         CfReq::Workers { token, account_id } => {
             match CloudflareClient::new(&token).list_worker_scripts(&account_id) {
                 Ok(workers) => CfResp::Workers(workers),
@@ -2498,6 +2632,91 @@ fn handle_cf(req: CfReq) -> CfResp {
             CfResp::Done(msg)
         }
     }
+}
+
+fn tunnel_target(tunnel_id: &str) -> String {
+    format!("{}.cfargotunnel.com", tunnel_id.trim())
+}
+
+fn cf_zone_for_hostname(
+    client: &CloudflareClient,
+    account_id: &str,
+    hostname: &str,
+    zone: Option<&str>,
+) -> Result<Zone> {
+    if let Some(zone) = zone.filter(|z| !z.trim().is_empty()) {
+        return client
+            .list_zones(Some(account_id))?
+            .into_iter()
+            .find(|z| z.id == zone || z.name == zone)
+            .ok_or_else(|| anyhow::anyhow!("No zone named or identified by '{zone}'"));
+    }
+    client
+        .list_zones(Some(account_id))?
+        .into_iter()
+        .filter(|z| hostname == z.name || hostname.ends_with(&format!(".{}", z.name)))
+        .max_by_key(|z| z.name.len())
+        .ok_or_else(|| {
+            anyhow::anyhow!("Cannot infer a zone for '{hostname}'. Fill DNS Zone explicitly.")
+        })
+}
+
+fn upsert_tunnel_dns(
+    client: &CloudflareClient,
+    account_id: &str,
+    tunnel_id: &str,
+    hostname: &str,
+    zone: Option<&str>,
+    proxied: bool,
+) -> Result<Record> {
+    let hostname = hostname.trim();
+    let zone = cf_zone_for_hostname(client, account_id, hostname, zone)?;
+    let target = tunnel_target(tunnel_id);
+    let body = record_body("CNAME", hostname, &target, 1, proxied, None);
+    let matches = client.list_records(
+        &zone.id,
+        &RecordFilter {
+            kind: Some("CNAME".into()),
+            name: Some(hostname.to_string()),
+            content: None,
+        },
+    )?;
+    if let Some(existing) = matches
+        .into_iter()
+        .find(|r| r.name.eq_ignore_ascii_case(hostname))
+    {
+        client.patch_record(&zone.id, &existing.id, &body)
+    } else {
+        client.create_record(&zone.id, &body)
+    }
+}
+
+fn delete_tunnel_dns(
+    client: &CloudflareClient,
+    account_id: &str,
+    tunnel_id: &str,
+    hostname: &str,
+    zone: Option<&str>,
+) -> Result<usize> {
+    let hostname = hostname.trim();
+    let zone = cf_zone_for_hostname(client, account_id, hostname, zone)?;
+    let target = tunnel_target(tunnel_id);
+    let records = client.list_records(
+        &zone.id,
+        &RecordFilter {
+            kind: Some("CNAME".into()),
+            name: Some(hostname.to_string()),
+            content: Some(target.clone()),
+        },
+    )?;
+    let mut deleted = 0;
+    for record in records {
+        if record.name.eq_ignore_ascii_case(hostname) && record.content == target {
+            client.delete_record(&zone.id, &record.id)?;
+            deleted += 1;
+        }
+    }
+    Ok(deleted)
 }
 
 /// Back a database up once, through a schedule that exists only for this run.

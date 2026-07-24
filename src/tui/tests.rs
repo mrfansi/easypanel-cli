@@ -23,6 +23,15 @@ fn f_val(f: &Form, label: &str) -> String {
     f.by_label(label)
 }
 
+fn set_f_val(f: &mut Form, label: &str, value: &str) {
+    let field = f
+        .fields
+        .iter_mut()
+        .find(|field| field.label == label)
+        .unwrap_or_else(|| panic!("missing form field {label}"));
+    field.value = value.into();
+}
+
 #[test]
 fn source_without_config_does_not_default_to_first_repo() {
     // A new service: Enter must not unknowingly point the source at a random repo.
@@ -7193,6 +7202,8 @@ fn cf_tunnel_route_edit_models_service_and_origin_request_as_fields() {
     assert!(matches!(form.kind, FormKind::CfTunnelRouteEdit { .. }));
     assert_eq!(f_val(form, "Service Type"), "https");
     assert_eq!(f_val(form, "Service URL"), "openclaw-master:18789");
+    assert_eq!(f_val(form, "Sync DNS CNAME"), "yes");
+    assert_eq!(f_val(form, "DNS Proxied"), "yes");
     assert_eq!(f_val(form, "Origin Server Name"), "origin.mrfansi.dev");
     assert_eq!(f_val(form, "Match SNI to Host"), "yes");
     assert_eq!(
@@ -7234,6 +7245,69 @@ fn cf_tunnels_n_opens_create_tunnel_form() {
     let form = app.form.as_ref().expect("create tunnel form should open");
     assert!(matches!(form.kind, FormKind::CfTunnelCreate));
     assert_eq!(f_val(form, "Tunnel name"), "");
+}
+
+#[test]
+fn cf_tunnels_install_and_delete_actions_are_wired() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::Tunnels;
+    app.cf.tunnels = vec![cf_tunnel("tunnel-1", "edge-router")];
+    app.cf.tunnels_row.select(Some(0));
+
+    app.on_key(KeyCode::Char('i'), &tx);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::TunnelToken { tunnel_id, name, .. }))
+            if tunnel_id == "tunnel-1" && name == "edge-router"
+    ));
+
+    app.on_key(KeyCode::Char('x'), &tx);
+    {
+        let form = app.form.as_mut().expect("delete form should open");
+        assert!(matches!(form.kind, FormKind::CfTunnelDelete { .. }));
+        set_f_val(form, "Type the tunnel name to confirm", "edge-router");
+    }
+    app.submit_form(&tx);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::TunnelDelete { tunnel_id, name, .. }))
+            if tunnel_id == "tunnel-1" && name == "edge-router"
+    ));
+}
+
+#[test]
+fn cf_tunnel_route_create_sends_dns_options() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::Tunnels;
+    app.cf.screen = CfScreen::TunnelConfig;
+    app.cf.current_tunnel = Some(cf_tunnel("tunnel-1", "edge-router"));
+
+    app.open_cf_tunnel_route_form();
+    {
+        let form = app.form.as_mut().expect("route form should open");
+        assert_eq!(f_val(form, "Sync DNS CNAME"), "yes");
+        set_f_val(form, "Hostname", "app.example.com");
+        set_f_val(form, "DNS Zone", "example.com");
+    }
+    app.submit_form(&tx);
+
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::TunnelRouteAdd {
+            tunnel_id,
+            hostname,
+            dns: true,
+            zone: Some(zone),
+            proxied: true,
+            ..
+        })) if tunnel_id == "tunnel-1" && hostname == "app.example.com" && zone == "example.com"
+    ));
 }
 
 #[test]

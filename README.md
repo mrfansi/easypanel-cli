@@ -551,7 +551,8 @@ metadata shown on Domains, account-scoped **Workers R2 Storage** for R2,
 **Cloudflare Tunnel Read/Write** / **Cloudflare One Connectors Read/Write** for Tunnels,
 zone **DNS Write** when using tunnel route `--dns` / `--delete-dns`,
 **Workers Scripts** for Workers, and **Account Analytics: Read** for the account
-analytics tab. The token is masked in every listing and never printed.
+analytics tab. Account tokens are masked in listings; tunnel connector tokens are shown
+only when you explicitly run the tunnel install flow.
 
 ```bash
 # accounts
@@ -583,15 +584,19 @@ non-default account.
 
 ```bash
 easypanel cf tunnels list
+easypanel cf tunnels create my-tunnel
+easypanel cf tunnels install my-tunnel
 easypanel cf tunnels config my-tunnel
 easypanel cf tunnels route add my-tunnel --hostname app.example.com --service http://localhost:3000 --dns
 easypanel cf tunnels route edit my-tunnel --hostname app.example.com --service http://localhost:8080
 easypanel cf tunnels route delete my-tunnel --hostname app.example.com --delete-dns
+easypanel cf tunnels delete my-tunnel             # asks you to type the tunnel name
 ```
 
 Tunnels uses Cloudflare's account-scoped cloudflared Tunnel API:
 `GET /accounts/{account_id}/cfd_tunnel` for the list,
 `POST /accounts/{account_id}/cfd_tunnel` for remotely configured tunnel creation, and
+`GET /accounts/{account_id}/cfd_tunnel/{tunnel_id}/token` for connector install commands.
 `GET` / `PUT /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations` for the
 ingress configuration. The list shows each tunnel's status, config source, created
 date, target `<tunnel-id>.cfargotunnel.com`, and id. The config view shows the
@@ -602,8 +607,8 @@ Cloudflare's service value into **Service Type** plus **Service URL** and expose
 request settings as normal form fields instead of raw JSON. Pass `--dns` on add/edit to
 create or update the public CNAME to the tunnel target; pass `--delete-dns` on delete
 to remove matching CNAME records. If the hostname spans multiple zones, pass
-`--zone <zone-name-or-id>`. Connector-token handling should remain a separate, guarded
-flow.
+`--zone <zone-name-or-id>`. Tunnel delete uses typed-name confirmation in both CLI and
+TUI.
 
 **R2 (object storage) — buckets and objects:**
 
@@ -662,13 +667,16 @@ switcher), **Enter** on a domain drills into its DNS records, and records suppor
 add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a
 `Space` menu (`Space`/right-click also opens a per-zone or per-record action menu). On
 **Tunnels**, the list shows cloudflared tunnels with status, config source, created date,
-target, and id; **`n`** creates a remote-configured tunnel, and **Enter** opens that tunnel's published routes/config table with
+target, and id; **`n`** creates a remote-configured tunnel, **`i`** opens the cloudflared
+install commands/token for the selected tunnel, **`x`** deletes it with typed-name
+confirmation, and **Enter** opens that tunnel's published routes/config table with
 hostname, service, and origin request columns. In that route table, **`n`** adds an
 ingress route, **`e`** edits the selected route, **`x`** deletes it with typed-hostname
 confirmation, and `Space`/right-click opens the same row menu. Route add/edit uses a
 service-type picker for `http`, `https`, `unix`, `unix+tls`, `tcp`, `ssh`, `rdp`, `smb`,
 `http_status`, `bastion`, and `hello_world`, with origin request settings shown as form
-fields. On
+fields, plus DNS CNAME sync fields that mirror Cloudflare's published-application route
+flow. On
 **R2**, the same shape lists buckets with `n` create / `x` delete, and **Enter** drills
 into a bucket's objects. On **Workers**, the list shows scripts, handlers, usage model,
 modified date, and etag; **Enter** opens that Worker's deployments/version history with

@@ -465,6 +465,30 @@ enum CfTunnelCmd {
         #[arg(long)]
         account: Option<String>,
     },
+    /// Create a remotely configured Cloudflare Tunnel
+    Create {
+        /// Tunnel name
+        name: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Show cloudflared install commands for a tunnel
+    Install {
+        /// Tunnel id or name
+        tunnel: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Delete a Cloudflare Tunnel
+    Delete {
+        /// Tunnel id or name
+        tunnel: String,
+        #[arg(long)]
+        account: Option<String>,
+        /// Skip typed-name confirmation
+        #[arg(long)]
+        yes: bool,
+    },
     /// Show a tunnel's published application routes / ingress config
     Config {
         /// Tunnel id or name
@@ -1316,6 +1340,17 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     CfTunnelCmd::List { account } => {
                         commands::cf_tunnels_list(&cf, account.as_deref())
                     }
+                    CfTunnelCmd::Create { name, account } => {
+                        commands::cf_tunnels_create(&cf, account.as_deref(), &name)
+                    }
+                    CfTunnelCmd::Install { tunnel, account } => {
+                        commands::cf_tunnels_install(&cf, account.as_deref(), &tunnel)
+                    }
+                    CfTunnelCmd::Delete {
+                        tunnel,
+                        account,
+                        yes,
+                    } => commands::cf_tunnels_delete(&cf, account.as_deref(), &tunnel, yes),
                     CfTunnelCmd::Config { tunnel, account } => {
                         commands::cf_tunnels_config(&cf, account.as_deref(), &tunnel)
                     }

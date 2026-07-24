@@ -1421,8 +1421,7 @@ impl App {
     }
 
     /// The Cloudflare Tunnels home. Enter opens the selected tunnel's ingress/config
-    /// rows; the screen itself is read-only because Cloudflare tunnel lifecycle and
-    /// connector tokens are safer as a later explicit write slice.
+    /// rows; `n`/`i`/`x` cover the lifecycle actions exposed by the dashboard.
     fn cf_tunnels_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
             KeyCode::Esc if !self.cf.filter.is_empty() => {
@@ -1437,6 +1436,8 @@ impl App {
             }
             KeyCode::Char('r') => self.cf_reload(req),
             KeyCode::Char('n') => self.open_cf_tunnel_form(),
+            KeyCode::Char('i') => self.cf_open_tunnel_token(req),
+            KeyCode::Char('x') => self.open_cf_tunnel_delete_form(),
             KeyCode::Char(' ') => self.open_cf_tunnel_menu(),
             KeyCode::Enter => self.cf_open_tunnel_config(req),
             _ => {

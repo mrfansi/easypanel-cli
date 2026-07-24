@@ -443,7 +443,7 @@ hint on the auth error, same pitfall as Zone:DNS).
   on settings vectors. The screen masks secret values and shows secret metadata only.
   Write/edit actions for variables/secrets/cron/runtime should be a separate guarded slice
   smoke-tested against `mrfansi-dev`, not guessed against production accounts.
-- **Cloudflare Tunnels — DONE v0.97.0; route writes DONE v0.98.0.** `CfProduct::Tunnels`
+- **Cloudflare Tunnels — DONE v0.97.0; route writes DONE v0.98.0; lifecycle/DNS TUI DONE v0.98.3.** `CfProduct::Tunnels`
   sits between Domains and R2 because tunnel routing is domain-adjacent. Read endpoints:
   `GET /accounts/{account_id}/cfd_tunnel` with `is_deleted=false` for the list, and
   `GET /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations` for ingress/config
@@ -452,13 +452,17 @@ hint on the auth error, same pitfall as Zone:DNS).
   `config.ingress` array, keeping a catch-all at the end. Domain types
   `CloudflareTunnel`/`TunnelConfiguration`/`TunnelIngressRule` and filters live in
   `cloudflare.rs`; client methods are `list_tunnels`, `get_tunnel_config`,
-  `create_tunnel`, `put_tunnel_config`, `add_tunnel_route`, `edit_tunnel_route`, and
-  `delete_tunnel_route`. CLI is `cf tunnels list`, `cf tunnels config <tunnel>`, and
+  `create_tunnel`, `delete_tunnel`, `get_tunnel_token`, `put_tunnel_config`,
+  `add_tunnel_route`, `edit_tunnel_route`, and `delete_tunnel_route`. CLI is
+  `cf tunnels list|create|install|delete|config <tunnel>` plus
   `cf tunnels route add|edit|delete`; route add/edit can also upsert a public CNAME
   with `--dns`, and delete can remove matching CNAMEs with `--delete-dns`.
   TUI list columns: name/status/config/created/target/id; on the Tunnels list **n**
   creates a remotely configured tunnel via `POST /accounts/{account_id}/cfd_tunnel`
-  with `config_src=cloudflare`; **Enter** opens `CfScreen::TunnelConfig` with
+  with `config_src=cloudflare`; **i** fetches the connector token through
+  `GET /accounts/{account_id}/cfd_tunnel/{tunnel_id}/token` and opens install
+  commands in the viewer; **x** deletes the selected tunnel behind typed-name
+  confirmation; **Enter** opens `CfScreen::TunnelConfig` with
   hostname/service/origin request rows. In config, **n** adds a route, **e** edits the
   selected route, **x** deletes it behind typed-hostname confirmation, and
   `Space`/right-click opens the route menu. As of v0.98.2, the TUI route form splits
@@ -467,7 +471,9 @@ hint on the auth error, same pitfall as Zone:DNS).
   `bastion`, `hello_world`) and maps origin request settings to explicit fields for
   TLS, HTTP, connection, proxy, keep-alive, and Access JWT validation. Do not re-add
   raw **Advanced origin JSON**; unknown existing originRequest keys are preserved on
-  edit through `Form::with_original`. **Esc** returns to the Tunnels list.
+  edit through `Form::with_original`. As of v0.98.3, route add/edit/delete TUI forms
+  also expose **Sync/Delete DNS CNAME**, **DNS Zone**, and **DNS Proxied** fields that
+  call the same CNAME automation as the CLI. **Esc** returns to the Tunnels list.
   Product shortcuts are now `1` Analytics, `2` Domains, `3` Tunnels, `4` R2, `5`
   Workers. Token needs account-level **Cloudflare Tunnel Read/Write** or **Cloudflare
   One Connectors Read/Write** for config writes, plus zone **DNS Write** for CNAME

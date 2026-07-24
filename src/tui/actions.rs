@@ -840,6 +840,16 @@ impl App {
                         format!("open routes ingress config published applications {ctx}"),
                         App::cf_open_tunnel_config as MenuRun,
                     ));
+                    items.push((
+                        "Install command…".into(),
+                        format!("cloudflared connector install token command {ctx}"),
+                        App::cf_open_tunnel_token as MenuRun,
+                    ));
+                    items.push((
+                        "Delete tunnel…".into(),
+                        format!("delete remove cloudflared tunnel {ctx}"),
+                        |a, _| a.open_cf_tunnel_delete_form(),
+                    ));
                 }
             }
             (CfProduct::Dns, CfScreen::Zones) => {

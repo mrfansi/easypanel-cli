@@ -535,7 +535,13 @@ pub(super) fn cf_tunnels_keys() -> &'static [Key] {
             "a",
             "switch Cloudflare account (a picker, like `s` switches servers)",
         ),
+        Key("n", "create a remotely configured tunnel"),
         Key("Enter", "open routes/config for the selected tunnel"),
+        Key(
+            "i",
+            "show cloudflared install command for the selected tunnel",
+        ),
+        Key("x", "delete the selected tunnel after typed confirmation"),
         Key("Space", "action menu for the selected tunnel"),
         Key("/", "filter tunnels"),
         Key("r", "refresh tunnels"),
@@ -901,7 +907,7 @@ pub(super) const CF_OBJECTS_HINTS: &str =
 pub(super) const CF_ANALYTICS_HINTS: &str = "a account · : palette · r refresh · Esc EasyPanel";
 
 pub(super) const CF_TUNNELS_HINTS: &str =
-    "a account · : palette · n add · Enter routes/config · Space menu · / filter · r refresh · Esc EasyPanel";
+    "a account · : palette · n add · Enter routes/config · i install · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
 
 pub(super) const CF_TUNNEL_CONFIG_HINTS: &str =
     "a account · : palette · n add · e edit · x delete · Space menu · / filter · r refresh · Esc Tunnels";

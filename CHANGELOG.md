@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.3] — 2026-07-25
+
+### Added
+
+- Cloudflare Tunnels now has full tunnel lifecycle coverage in CLI and TUI:
+  `cf tunnels create`, `cf tunnels install`, and `cf tunnels delete`, plus TUI
+  shortcuts **i** for install commands and **x** for typed-name deletion.
+- Tunnel route add/edit/delete forms in the TUI now include DNS CNAME sync fields,
+  so published application routes can update or delete the matching
+  `<tunnel-id>.cfargotunnel.com` CNAME without leaving the route workflow.
+
+### Changed
+
+- Tunnel install output opens in the TUI viewer and CLI install output prints both
+  Linux service and Docker commands, with the connector token shown only for that
+  explicit install flow.
+
 ## [0.98.2] — 2026-07-24
 
 ### Added

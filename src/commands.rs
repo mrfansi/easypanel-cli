@@ -992,6 +992,91 @@ pub fn cf_tunnels_list(cfg: &CloudflareConfig, account: Option<&str>) -> Result<
     Ok(())
 }
 
+pub fn cf_tunnels_create(cfg: &CloudflareConfig, account: Option<&str>, name: &str) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let tunnel = client.create_tunnel(&account_id, name)?;
+    if output::json_output() {
+        output::print_json(&serde_json::to_value(&tunnel)?);
+        return Ok(());
+    }
+    println!(
+        "Tunnel '{}' created. Run `easypanel cf tunnels install {}` on the origin machine setup path.",
+        tunnel.name, tunnel.name
+    );
+    Ok(())
+}
+
+pub fn cf_tunnels_install(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    tunnel: &str,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let found = cf_resolve_tunnel(&client, &account_id, tunnel)?;
+    let token = client.get_tunnel_token(&account_id, &found.id)?;
+    let linux = format!("sudo cloudflared service install {token}");
+    let docker = format!(
+        "docker run -d --name cloudflared --restart unless-stopped cloudflare/cloudflared:latest tunnel --no-autoupdate run --token {token}"
+    );
+    if output::json_output() {
+        output::print_json(&json!({
+            "tunnel": found,
+            "token": token,
+            "commands": {
+                "linux_service": linux,
+                "docker": docker,
+            }
+        }));
+        return Ok(());
+    }
+    println!("Install cloudflared for tunnel '{}':", found.name);
+    println!();
+    println!("Linux service:");
+    println!("{linux}");
+    println!();
+    println!("Docker:");
+    println!("{docker}");
+    println!();
+    println!("Token:");
+    println!("{token}");
+    Ok(())
+}
+
+pub fn cf_tunnels_delete(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    tunnel: &str,
+    yes: bool,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let found = cf_resolve_tunnel(&client, &account_id, tunnel)?;
+    if !yes {
+        let typed: String = Input::new()
+            .with_prompt(format!(
+                "Delete tunnel '{}'? Type the tunnel name to confirm",
+                found.name
+            ))
+            .interact_text()?;
+        if typed != found.name {
+            println!("Tunnel name did not match — nothing deleted.");
+            return Ok(());
+        }
+    }
+    client.delete_tunnel(&account_id, &found.id)?;
+    if output::json_output() {
+        output::print_json(&json!({
+            "deleted": true,
+            "tunnel": found,
+        }));
+        return Ok(());
+    }
+    println!("Tunnel '{}' deleted.", found.name);
+    Ok(())
+}
+
 pub fn cf_tunnels_config(
     cfg: &CloudflareConfig,
     account: Option<&str>,

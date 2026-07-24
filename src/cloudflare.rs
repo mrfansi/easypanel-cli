@@ -2106,6 +2106,32 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
         .map_err(tunnels_hint)
     }
 
+    pub fn delete_tunnel(&self, account_id: &str, tunnel_id: &str) -> Result<()> {
+        let _: Value = parse_envelope(
+            &self
+                .send(
+                    reqwest::Method::DELETE,
+                    &format!("/accounts/{account_id}/cfd_tunnel/{tunnel_id}"),
+                    None,
+                )
+                .map_err(tunnels_hint)?,
+        )
+        .map_err(tunnels_hint)?;
+        Ok(())
+    }
+
+    pub fn get_tunnel_token(&self, account_id: &str, tunnel_id: &str) -> Result<String> {
+        parse_envelope(
+            &self
+                .get(
+                    &format!("/accounts/{account_id}/cfd_tunnel/{tunnel_id}/token"),
+                    &[],
+                )
+                .map_err(tunnels_hint)?,
+        )
+        .map_err(tunnels_hint)
+    }
+
     pub fn get_tunnel_config(
         &self,
         account_id: &str,
