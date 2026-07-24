@@ -193,8 +193,9 @@ pub fn cf_account_delete(cfg: &CloudflareConfig, name: &str) -> Result<()> {
 // ---------- Cloudflare zones + records (network) ----------
 
 use crate::cloudflare::{
-    apply_patch, object_basename, record_body, resolve_zone, select_records, valid_record_type,
-    CloudflareClient, RecordFilter, RecordPatch, Selector, WorkerUploadMode, Zone,
+    apply_patch, object_basename, parse_tunnel_origin_request, record_body, resolve_zone,
+    select_records, valid_record_type, CloudflareClient, CloudflareTunnel, RecordFilter,
+    RecordPatch, Selector, TunnelIngressRule, TunnelRouteChange, WorkerUploadMode, Zone,
     MAX_REST_OBJECT_BYTES,
 };
 
@@ -1025,6 +1026,245 @@ pub fn cf_tunnels_config(
     }
     table(&["Hostname", "Service", "Origin request"], rows);
     Ok(())
+}
+
+pub struct TunnelRouteAddOpts<'a> {
+    pub account: Option<&'a str>,
+    pub tunnel: &'a str,
+    pub hostname: &'a str,
+    pub service: &'a str,
+    pub path: Option<&'a str>,
+    pub origin_request_json: Option<&'a str>,
+    pub dns: bool,
+    pub zone: Option<&'a str>,
+    pub proxied: bool,
+}
+
+pub struct TunnelRouteEditOpts<'a> {
+    pub account: Option<&'a str>,
+    pub tunnel: &'a str,
+    pub hostname: &'a str,
+    pub path: Option<&'a str>,
+    pub service: Option<&'a str>,
+    pub origin_request_json: Option<&'a str>,
+    pub clear_origin_request: bool,
+    pub dns: bool,
+    pub zone: Option<&'a str>,
+    pub proxied: bool,
+}
+
+pub struct TunnelRouteDeleteOpts<'a> {
+    pub account: Option<&'a str>,
+    pub tunnel: &'a str,
+    pub hostname: &'a str,
+    pub path: Option<&'a str>,
+    pub delete_dns: bool,
+    pub zone: Option<&'a str>,
+}
+
+pub fn cf_tunnels_route_add(cfg: &CloudflareConfig, opts: TunnelRouteAddOpts<'_>) -> Result<()> {
+    let (client, acc) = cf_client(cfg, opts.account)?;
+    let account_id = cf_account_id(&acc)?;
+    let found = cf_resolve_tunnel(&client, &account_id, opts.tunnel)?;
+    let origin_request = parse_tunnel_origin_request(opts.origin_request_json.unwrap_or(""))?;
+    let rule = TunnelIngressRule::route(
+        opts.hostname,
+        opts.service,
+        opts.path.unwrap_or(""),
+        origin_request,
+    );
+    client.add_tunnel_route(&account_id, &found.id, rule)?;
+    let mut suffix = String::new();
+    if opts.dns {
+        let record = upsert_tunnel_dns(
+            &client,
+            &acc,
+            opts.hostname,
+            &found,
+            opts.zone,
+            opts.proxied,
+        )?;
+        suffix = format!(
+            " DNS CNAME '{}' -> {} updated.",
+            record.name,
+            found.target()
+        );
+    }
+    println!(
+        "Route '{}' -> '{}' added to tunnel '{}'.{}",
+        opts.hostname.trim(),
+        opts.service.trim(),
+        found.name,
+        suffix
+    );
+    Ok(())
+}
+
+pub fn cf_tunnels_route_edit(cfg: &CloudflareConfig, opts: TunnelRouteEditOpts<'_>) -> Result<()> {
+    if opts.service.is_none()
+        && opts.origin_request_json.is_none()
+        && !opts.clear_origin_request
+        && !opts.dns
+    {
+        anyhow::bail!("Nothing to change; pass --service, --origin-request-json, --clear-origin-request, or --dns");
+    }
+    if opts.origin_request_json.is_some() && opts.clear_origin_request {
+        anyhow::bail!("Use either --origin-request-json or --clear-origin-request, not both");
+    }
+    let (client, acc) = cf_client(cfg, opts.account)?;
+    let account_id = cf_account_id(&acc)?;
+    let found = cf_resolve_tunnel(&client, &account_id, opts.tunnel)?;
+    if opts.service.is_some() || opts.origin_request_json.is_some() || opts.clear_origin_request {
+        let origin_request = if opts.clear_origin_request {
+            Some(None)
+        } else if let Some(raw) = opts.origin_request_json {
+            Some(parse_tunnel_origin_request(raw)?)
+        } else {
+            None
+        };
+        client.edit_tunnel_route(
+            &account_id,
+            &found.id,
+            TunnelRouteChange {
+                hostname: opts.hostname.trim().into(),
+                service: opts.service.map(|s| s.trim().into()),
+                path: opts.path.map(|p| p.trim().into()),
+                origin_request,
+            },
+        )?;
+    }
+    let mut suffix = String::new();
+    if opts.dns {
+        let record = upsert_tunnel_dns(
+            &client,
+            &acc,
+            opts.hostname,
+            &found,
+            opts.zone,
+            opts.proxied,
+        )?;
+        suffix = format!(
+            " DNS CNAME '{}' -> {} updated.",
+            record.name,
+            found.target()
+        );
+    }
+    println!(
+        "Route '{}' on tunnel '{}' updated.{}",
+        opts.hostname.trim(),
+        found.name,
+        suffix
+    );
+    Ok(())
+}
+
+pub fn cf_tunnels_route_delete(
+    cfg: &CloudflareConfig,
+    opts: TunnelRouteDeleteOpts<'_>,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, opts.account)?;
+    let account_id = cf_account_id(&acc)?;
+    let found = cf_resolve_tunnel(&client, &account_id, opts.tunnel)?;
+    client.delete_tunnel_route(&account_id, &found.id, opts.hostname, opts.path)?;
+    let mut suffix = String::new();
+    if opts.delete_dns {
+        let deleted = delete_tunnel_dns(&client, &acc, opts.hostname, &found, opts.zone)?;
+        suffix = format!(" Deleted {deleted} matching DNS CNAME record(s).");
+    }
+    println!(
+        "Route '{}' removed from tunnel '{}'.{}",
+        opts.hostname.trim(),
+        found.name,
+        suffix
+    );
+    Ok(())
+}
+
+fn cf_resolve_tunnel(
+    client: &CloudflareClient,
+    account_id: &str,
+    needle: &str,
+) -> Result<CloudflareTunnel> {
+    client
+        .list_tunnels(account_id)?
+        .into_iter()
+        .find(|t| t.id == needle || t.name == needle)
+        .ok_or_else(|| anyhow!("No tunnel named or identified by '{needle}'"))
+}
+
+fn zone_for_hostname(
+    client: &CloudflareClient,
+    acc: &CloudflareAccount,
+    hostname: &str,
+    zone: Option<&str>,
+) -> Result<Zone> {
+    if let Some(zone) = zone {
+        return cf_resolve_zone(client, acc, zone);
+    }
+    let zones = client.list_zones(acc.account_id.as_deref())?;
+    zones
+        .into_iter()
+        .filter(|z| hostname == z.name || hostname.ends_with(&format!(".{}", z.name)))
+        .max_by_key(|z| z.name.len())
+        .ok_or_else(|| {
+            anyhow!("Cannot infer a zone for '{hostname}'. Pass --zone <zone-name-or-id>.")
+        })
+}
+
+fn upsert_tunnel_dns(
+    client: &CloudflareClient,
+    acc: &CloudflareAccount,
+    hostname: &str,
+    tunnel: &CloudflareTunnel,
+    zone: Option<&str>,
+    proxied: bool,
+) -> Result<crate::cloudflare::Record> {
+    let zone = zone_for_hostname(client, acc, hostname.trim(), zone)?;
+    let target = tunnel.target();
+    let body = record_body("CNAME", hostname.trim(), &target, 1, proxied, None);
+    let matches = client.list_records(
+        &zone.id,
+        &RecordFilter {
+            kind: Some("CNAME".into()),
+            name: Some(hostname.trim().into()),
+            content: None,
+        },
+    )?;
+    if let Some(existing) = matches
+        .into_iter()
+        .find(|r| r.name.eq_ignore_ascii_case(hostname.trim()))
+    {
+        client.patch_record(&zone.id, &existing.id, &body)
+    } else {
+        client.create_record(&zone.id, &body)
+    }
+}
+
+fn delete_tunnel_dns(
+    client: &CloudflareClient,
+    acc: &CloudflareAccount,
+    hostname: &str,
+    tunnel: &CloudflareTunnel,
+    zone: Option<&str>,
+) -> Result<usize> {
+    let zone = zone_for_hostname(client, acc, hostname.trim(), zone)?;
+    let target = tunnel.target();
+    let records = client.list_records(
+        &zone.id,
+        &RecordFilter {
+            kind: Some("CNAME".into()),
+            name: Some(hostname.trim().into()),
+            content: Some(target.clone()),
+        },
+    )?;
+    let mut deleted = 0;
+    for record in records {
+        if record.name.eq_ignore_ascii_case(hostname.trim()) && record.content == target {
+            client.delete_record(&zone.id, &record.id)?;
+            deleted += 1;
+        }
+    }
+    Ok(deleted)
 }
 
 fn mask_token(token: &str) -> String {

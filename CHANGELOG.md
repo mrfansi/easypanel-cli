@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.0] — 2026-07-24
+
+### Added
+
+- Cloudflare Tunnels can now manage published application routes. The CLI adds
+  `easypanel cf tunnels route add|edit|delete`, performs Cloudflare's required
+  read-modify-write on `config.ingress`, preserves the catch-all rule at the end,
+  validates Cloudflare service prefixes, and can create/update/delete the matching
+  public CNAME via `--dns` / `--delete-dns`.
+- The TUI Tunnel config screen is no longer read-only: **n** adds a route, **e**
+  edits the selected route, **x** deletes it with typed-hostname confirmation, and
+  `Space` / right-click opens the route action menu.
+- Added route-mutation unit coverage for catch-all ordering, duplicate rejection,
+  service validation, edit, and delete flows.
+
 ## [0.97.0] — 2026-07-24
 
 ### Added

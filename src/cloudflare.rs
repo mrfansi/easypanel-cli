@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{Duration, Utc};
 use serde::de::{DeserializeOwned, Deserializer};
 use serde::{Deserialize, Serialize};
@@ -681,25 +681,57 @@ pub struct TunnelConfiguration {
 pub struct TunnelConfig {
     #[serde(default, deserialize_with = "vec_or_null")]
     pub ingress: Vec<TunnelIngressRule>,
-    #[serde(default, rename = "originRequest")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "originRequest"
+    )]
     pub origin_request: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TunnelIngressRule {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hostname: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub path: String,
     #[serde(default)]
     pub service: String,
-    #[serde(default, rename = "originRequest")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "originRequest"
+    )]
     pub origin_request: Option<Value>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
 
 impl TunnelIngressRule {
+    pub fn route(hostname: &str, service: &str, path: &str, origin_request: Option<Value>) -> Self {
+        Self {
+            hostname: hostname.trim().to_string(),
+            path: path.trim().to_string(),
+            service: service.trim().to_string(),
+            origin_request,
+            extra: HashMap::new(),
+        }
+    }
+
+    pub fn catch_all() -> Self {
+        Self {
+            hostname: String::new(),
+            path: String::new(),
+            service: "http_status:404".into(),
+            origin_request: None,
+            extra: HashMap::new(),
+        }
+    }
+
+    pub fn is_catch_all(&self) -> bool {
+        self.hostname.trim().is_empty()
+    }
+
     pub fn hostname_label(&self) -> String {
         if self.hostname.trim().is_empty() {
             "catch-all".into()
@@ -736,6 +768,151 @@ impl TunnelConfiguration {
                 origin: rule.origin_label(),
             })
             .collect()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TunnelRouteChange {
+    pub hostname: String,
+    pub service: Option<String>,
+    pub path: Option<String>,
+    pub origin_request: Option<Option<Value>>,
+}
+
+const TUNNEL_SERVICE_PREFIXES: &[&str] = &[
+    "http://",
+    "https://",
+    "unix://",
+    "tcp://",
+    "ssh://",
+    "rdp://",
+    "unix+tls://",
+    "smb://",
+    "http_status:",
+];
+
+pub fn parse_tunnel_origin_request(input: &str) -> Result<Option<Value>> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_str(trimmed)
+        .map_err(|e| anyhow!("origin request JSON is invalid: {e}"))?;
+    if !value.is_object() {
+        return Err(anyhow!("origin request JSON must be an object"));
+    }
+    Ok(Some(value))
+}
+
+pub fn validate_tunnel_route(hostname: &str, service: &str) -> Result<()> {
+    if hostname.trim().is_empty() {
+        return Err(anyhow!("Hostname is required"));
+    }
+    if service.trim().is_empty() {
+        return Err(anyhow!("Service is required"));
+    }
+    if !TUNNEL_SERVICE_PREFIXES
+        .iter()
+        .any(|prefix| service.starts_with(prefix))
+    {
+        return Err(anyhow!(
+            "Service must start with one of: {}",
+            TUNNEL_SERVICE_PREFIXES.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+pub fn add_tunnel_route(config: &mut TunnelConfig, rule: TunnelIngressRule) -> Result<()> {
+    validate_tunnel_route(&rule.hostname, &rule.service)?;
+    if config.ingress.iter().any(|r| {
+        !r.is_catch_all() && r.hostname.eq_ignore_ascii_case(&rule.hostname) && r.path == rule.path
+    }) {
+        return Err(anyhow!(
+            "Route '{}' already exists",
+            route_key(&rule.hostname, &rule.path)
+        ));
+    }
+    let insert_at = config
+        .ingress
+        .iter()
+        .position(TunnelIngressRule::is_catch_all)
+        .unwrap_or(config.ingress.len());
+    config.ingress.insert(insert_at, rule);
+    normalize_tunnel_ingress(config);
+    Ok(())
+}
+
+pub fn edit_tunnel_route(config: &mut TunnelConfig, change: TunnelRouteChange) -> Result<()> {
+    let index = find_tunnel_route_index(config, &change.hostname, change.path.as_deref())?;
+    if let Some(service) = &change.service {
+        validate_tunnel_route(&change.hostname, service)?;
+        config.ingress[index].service = service.trim().to_string();
+    }
+    if let Some(path) = &change.path {
+        config.ingress[index].path = path.trim().to_string();
+    }
+    if let Some(origin_request) = change.origin_request {
+        config.ingress[index].origin_request = origin_request;
+    }
+    normalize_tunnel_ingress(config);
+    Ok(())
+}
+
+pub fn delete_tunnel_route(
+    config: &mut TunnelConfig,
+    hostname: &str,
+    path: Option<&str>,
+) -> Result<()> {
+    let index = find_tunnel_route_index(config, hostname, path)?;
+    config.ingress.remove(index);
+    normalize_tunnel_ingress(config);
+    Ok(())
+}
+
+fn find_tunnel_route_index(
+    config: &TunnelConfig,
+    hostname: &str,
+    path: Option<&str>,
+) -> Result<usize> {
+    let matches = config
+        .ingress
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| {
+            !rule.is_catch_all()
+                && rule.hostname.eq_ignore_ascii_case(hostname.trim())
+                && path.map(|p| rule.path == p.trim()).unwrap_or(true)
+        })
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(anyhow!("No route found for '{}'", hostname.trim())),
+        _ => Err(anyhow!(
+            "Multiple routes use '{}'; pass --path to choose one",
+            hostname.trim()
+        )),
+    }
+}
+
+fn normalize_tunnel_ingress(config: &mut TunnelConfig) {
+    let catch_all = config
+        .ingress
+        .iter()
+        .rev()
+        .find(|rule| rule.is_catch_all())
+        .cloned()
+        .unwrap_or_else(TunnelIngressRule::catch_all);
+    config.ingress.retain(|rule| !rule.is_catch_all());
+    config.ingress.push(catch_all);
+}
+
+fn route_key(hostname: &str, path: &str) -> String {
+    if path.trim().is_empty() {
+        hostname.trim().to_string()
+    } else {
+        format!("{}{}", hostname.trim(), path.trim())
     }
 }
 
@@ -1922,6 +2099,59 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
         parse_envelope(&body).map_err(tunnels_hint)
     }
 
+    pub fn put_tunnel_config(
+        &self,
+        account_id: &str,
+        tunnel_id: &str,
+        config: &TunnelConfig,
+    ) -> Result<TunnelConfiguration> {
+        let body = json!({ "config": config });
+        parse_envelope(
+            &self
+                .send(
+                    reqwest::Method::PUT,
+                    &format!("/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations"),
+                    Some(&body),
+                )
+                .map_err(tunnels_hint)?,
+        )
+        .map_err(tunnels_hint)
+    }
+
+    pub fn add_tunnel_route(
+        &self,
+        account_id: &str,
+        tunnel_id: &str,
+        rule: TunnelIngressRule,
+    ) -> Result<TunnelConfiguration> {
+        let mut current = self.get_tunnel_config(account_id, tunnel_id)?;
+        crate::cloudflare::add_tunnel_route(&mut current.config, rule)?;
+        self.put_tunnel_config(account_id, tunnel_id, &current.config)
+    }
+
+    pub fn edit_tunnel_route(
+        &self,
+        account_id: &str,
+        tunnel_id: &str,
+        change: TunnelRouteChange,
+    ) -> Result<TunnelConfiguration> {
+        let mut current = self.get_tunnel_config(account_id, tunnel_id)?;
+        crate::cloudflare::edit_tunnel_route(&mut current.config, change)?;
+        self.put_tunnel_config(account_id, tunnel_id, &current.config)
+    }
+
+    pub fn delete_tunnel_route(
+        &self,
+        account_id: &str,
+        tunnel_id: &str,
+        hostname: &str,
+        path: Option<&str>,
+    ) -> Result<TunnelConfiguration> {
+        let mut current = self.get_tunnel_config(account_id, tunnel_id)?;
+        crate::cloudflare::delete_tunnel_route(&mut current.config, hostname, path)?;
+        self.put_tunnel_config(account_id, tunnel_id, &current.config)
+    }
+
     // ---------- Workers scripts (account-scoped) ----------
 
     pub fn list_worker_scripts(&self, account_id: &str) -> Result<Vec<WorkerScript>> {
@@ -2829,6 +3059,75 @@ mod tests {
             config.config.origin_request.as_ref().unwrap()["connectTimeout"],
             json!(30)
         );
+    }
+
+    #[test]
+    fn tunnel_route_mutations_keep_catch_all_last() {
+        let mut config = TunnelConfig {
+            ingress: vec![TunnelIngressRule::catch_all()],
+            ..Default::default()
+        };
+        add_tunnel_route(
+            &mut config,
+            TunnelIngressRule::route(
+                "app.example.com",
+                "http://localhost:3000",
+                "",
+                Some(json!({"connectTimeout": 10})),
+            ),
+        )
+        .unwrap();
+        add_tunnel_route(
+            &mut config,
+            TunnelIngressRule::route("ssh.example.com", "ssh://localhost:22", "", None),
+        )
+        .unwrap();
+        assert_eq!(config.ingress[0].hostname, "app.example.com");
+        assert_eq!(config.ingress[1].hostname, "ssh.example.com");
+        assert!(config.ingress[2].is_catch_all());
+
+        edit_tunnel_route(
+            &mut config,
+            TunnelRouteChange {
+                hostname: "app.example.com".into(),
+                service: Some("http://localhost:8080".into()),
+                origin_request: Some(None),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(config.ingress[0].service, "http://localhost:8080");
+        assert!(config.ingress[0].origin_request.is_none());
+
+        delete_tunnel_route(&mut config, "ssh.example.com", None).unwrap();
+        assert_eq!(config.ingress.len(), 2);
+        assert_eq!(config.ingress[0].hostname, "app.example.com");
+        assert!(config.ingress[1].is_catch_all());
+    }
+
+    #[test]
+    fn tunnel_route_validation_rejects_unknown_services_and_duplicates() {
+        let mut config = TunnelConfig::default();
+        let bad = add_tunnel_route(
+            &mut config,
+            TunnelIngressRule::route("app.example.com", "localhost:3000", "", None),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(bad.contains("Service must start"));
+
+        add_tunnel_route(
+            &mut config,
+            TunnelIngressRule::route("app.example.com", "https://localhost:3000", "", None),
+        )
+        .unwrap();
+        let duplicate = add_tunnel_route(
+            &mut config,
+            TunnelIngressRule::route("app.example.com", "https://localhost:8080", "", None),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(duplicate.contains("already exists"));
     }
 
     #[test]

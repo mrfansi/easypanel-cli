@@ -480,7 +480,9 @@ impl App {
                     (CfProduct::Workers, CfScreen::WorkerDeployments) => {}
                     (CfProduct::Workers, CfScreen::WorkerSettings) => {}
                     (CfProduct::Workers, _) => self.open_cf_worker_menu(),
-                    (CfProduct::Tunnels, CfScreen::TunnelConfig) => {}
+                    (CfProduct::Tunnels, CfScreen::TunnelConfig) => {
+                        self.open_cf_tunnel_config_menu()
+                    }
                     (CfProduct::Tunnels, _) => self.open_cf_tunnel_menu(),
                     // R2 Objects: a FILE row gets the per-object menu (Download / Delete);
                     // a FOLDER row has no actions, so `open_cf_object_menu` no-ops on it.
@@ -1463,6 +1465,10 @@ impl App {
                 self.cf.filter.clear();
             }
             KeyCode::Char('r') => self.cf_reload(req),
+            KeyCode::Char('n') => self.open_cf_tunnel_route_form(),
+            KeyCode::Char('e') => self.open_cf_tunnel_route_edit_form(),
+            KeyCode::Char('x') => self.open_cf_tunnel_route_delete_form(),
+            KeyCode::Char(' ') => self.open_cf_tunnel_config_menu(),
             _ => {
                 let len = self.cf_tunnel_config_rows_shown().len();
                 move_table(&mut self.cf.tunnel_config_row, code, len);

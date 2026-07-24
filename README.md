@@ -548,7 +548,8 @@ Accounts are standalone (not tied to any EasyPanel server — you may have sever
 in their own `~/.config/easypanel/cloudflare.json` (`0600`). Use a **scoped API Token**:
 `Zone:DNS:Edit` + `Zone:Read` for DNS, **Account Settings Read** for the Web Analytics
 metadata shown on Domains, account-scoped **Workers R2 Storage** for R2,
-**Cloudflare Tunnel Read** / **Cloudflare One Connectors Read** for Tunnels,
+**Cloudflare Tunnel Read/Write** / **Cloudflare One Connectors Read/Write** for Tunnels,
+zone **DNS Write** when using tunnel route `--dns` / `--delete-dns`,
 **Workers Scripts** for Workers, and **Account Analytics: Read** for the account
 analytics tab. The token is masked in every listing and never printed.
 
@@ -583,16 +584,23 @@ non-default account.
 ```bash
 easypanel cf tunnels list
 easypanel cf tunnels config my-tunnel
+easypanel cf tunnels route add my-tunnel --hostname app.example.com --service http://localhost:3000 --dns
+easypanel cf tunnels route edit my-tunnel --hostname app.example.com --service http://localhost:8080
+easypanel cf tunnels route delete my-tunnel --hostname app.example.com --delete-dns
 ```
 
 Tunnels uses Cloudflare's account-scoped cloudflared Tunnel API:
 `GET /accounts/{account_id}/cfd_tunnel` for the list and
-`GET /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations` for the ingress
-configuration. The list shows each tunnel's status, config source, created date, target
-`<tunnel-id>.cfargotunnel.com`, and id. The config view shows the hostnames/services
-published through that tunnel, including the catch-all rule. This slice is read-only in
-the TUI and CLI; lifecycle writes and connector-token handling should be a separate,
-guarded flow.
+`GET` / `PUT /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations` for the
+ingress configuration. The list shows each tunnel's status, config source, created
+date, target `<tunnel-id>.cfargotunnel.com`, and id. The config view shows the
+hostnames/services published through that tunnel, including the catch-all rule.
+Route add/edit/delete performs Cloudflare's required read-modify-write on
+`config.ingress` and keeps a catch-all rule at the end. Pass `--dns` on add/edit to
+create or update the public CNAME to the tunnel target; pass `--delete-dns` on delete
+to remove matching CNAME records. If the hostname spans multiple zones, pass
+`--zone <zone-name-or-id>`. Tunnel lifecycle writes and connector-token handling should
+remain a separate, guarded flow.
 
 **R2 (object storage) — buckets and objects:**
 
@@ -652,7 +660,9 @@ add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then
 `Space` menu (`Space`/right-click also opens a per-zone or per-record action menu). On
 **Tunnels**, the list shows cloudflared tunnels with status, config source, created date,
 target, and id; **Enter** opens that tunnel's published routes/config table with
-hostname, service, and origin request columns. On
+hostname, service, and origin request columns. In that route table, **`n`** adds an
+ingress route, **`e`** edits the selected route, **`x`** deletes it with typed-hostname
+confirmation, and `Space`/right-click opens the same row menu. On
 **R2**, the same shape lists buckets with `n` create / `x` delete, and **Enter** drills
 into a bucket's objects. On **Workers**, the list shows scripts, handlers, usage model,
 modified date, and etag; **Enter** opens that Worker's deployments/version history with

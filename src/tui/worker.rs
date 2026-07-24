@@ -10,8 +10,9 @@ use serde_json::{json, Value};
 use crate::client::EasypanelClient;
 use crate::cloudflare::{
     object_basename, upload_key, AnalyticsSummary, CloudflareClient, CloudflareTunnel, R2Bucket,
-    R2Object, Record, RecordFilter, TunnelConfiguration, WebAnalyticsSite, WorkerDeployment,
-    WorkerScript, WorkerSettingsBundle, WorkerUploadMode, Zone, MAX_REST_OBJECT_BYTES,
+    R2Object, Record, RecordFilter, TunnelConfiguration, TunnelIngressRule, TunnelRouteChange,
+    WebAnalyticsSite, WorkerDeployment, WorkerScript, WorkerSettingsBundle, WorkerUploadMode, Zone,
+    MAX_REST_OBJECT_BYTES,
 };
 use crate::output::field;
 
@@ -513,6 +514,31 @@ pub(super) enum CfReq {
         token: String,
         account_id: String,
         tunnel_id: String,
+    },
+    TunnelRouteAdd {
+        token: String,
+        account_id: String,
+        tunnel_id: String,
+        hostname: String,
+        service: String,
+        path: String,
+        origin_request: Option<Value>,
+    },
+    TunnelRouteEdit {
+        token: String,
+        account_id: String,
+        tunnel_id: String,
+        hostname: String,
+        path: String,
+        service: String,
+        origin_request: Option<Option<Value>>,
+    },
+    TunnelRouteDelete {
+        token: String,
+        account_id: String,
+        tunnel_id: String,
+        hostname: String,
+        path: String,
     },
     Workers {
         token: String,
@@ -2160,6 +2186,59 @@ fn handle_cf(req: CfReq) -> CfResp {
                 tunnel_id,
                 config: Box::new(config),
             },
+            Err(e) => CfResp::Err(e.to_string()),
+        },
+        CfReq::TunnelRouteAdd {
+            token,
+            account_id,
+            tunnel_id,
+            hostname,
+            service,
+            path,
+            origin_request,
+        } => {
+            let rule = TunnelIngressRule::route(&hostname, &service, &path, origin_request);
+            match CloudflareClient::new(&token).add_tunnel_route(&account_id, &tunnel_id, rule) {
+                Ok(_) => CfResp::Done(format!("Tunnel route '{}' added", hostname)),
+                Err(e) => CfResp::Err(e.to_string()),
+            }
+        }
+        CfReq::TunnelRouteEdit {
+            token,
+            account_id,
+            tunnel_id,
+            hostname,
+            path,
+            service,
+            origin_request,
+        } => {
+            match CloudflareClient::new(&token).edit_tunnel_route(
+                &account_id,
+                &tunnel_id,
+                TunnelRouteChange {
+                    hostname: hostname.clone(),
+                    service: (!service.trim().is_empty()).then_some(service),
+                    path: (!path.trim().is_empty()).then_some(path),
+                    origin_request,
+                },
+            ) {
+                Ok(_) => CfResp::Done(format!("Tunnel route '{}' updated", hostname)),
+                Err(e) => CfResp::Err(e.to_string()),
+            }
+        }
+        CfReq::TunnelRouteDelete {
+            token,
+            account_id,
+            tunnel_id,
+            hostname,
+            path,
+        } => match CloudflareClient::new(&token).delete_tunnel_route(
+            &account_id,
+            &tunnel_id,
+            &hostname,
+            (!path.trim().is_empty()).then_some(path.as_str()),
+        ) {
+            Ok(_) => CfResp::Done(format!("Tunnel route '{}' deleted", hostname)),
             Err(e) => CfResp::Err(e.to_string()),
         },
         CfReq::Workers { token, account_id } => {

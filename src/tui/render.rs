@@ -549,6 +549,10 @@ pub(super) fn cf_tunnel_config_keys() -> &'static [Key] {
             "a",
             "switch Cloudflare account (a picker, like `s` switches servers)",
         ),
+        Key("n", "add a route to this tunnel"),
+        Key("e", "edit the selected route"),
+        Key("x", "delete the selected route"),
+        Key("Space", "action menu for tunnel routes"),
         Key("/", "filter routes/config"),
         Key("r", "refresh config"),
         Key("Esc", "back to Tunnels"),
@@ -900,7 +904,7 @@ pub(super) const CF_TUNNELS_HINTS: &str =
     "a account · : palette · Enter routes/config · Space menu · / filter · r refresh · Esc EasyPanel";
 
 pub(super) const CF_TUNNEL_CONFIG_HINTS: &str =
-    "a account · : palette · / filter · r refresh · Esc Tunnels";
+    "a account · : palette · n add · e edit · x delete · Space menu · / filter · r refresh · Esc Tunnels";
 
 pub(super) const CF_WORKERS_HINTS: &str =
     "a account · : palette · Enter deployments · s settings · n deploy · x delete · Space menu · / filter · r refresh · Esc EasyPanel";

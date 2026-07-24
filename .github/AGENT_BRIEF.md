@@ -443,22 +443,31 @@ hint on the auth error, same pitfall as Zone:DNS).
   on settings vectors. The screen masks secret values and shows secret metadata only.
   Write/edit actions for variables/secrets/cron/runtime should be a separate guarded slice
   smoke-tested against `mrfansi-dev`, not guessed against production accounts.
-- **Cloudflare Tunnels — DONE v0.97.0.** `CfProduct::Tunnels` sits between Domains and
-  R2 because tunnel routing is domain-adjacent. Read-only endpoints:
+- **Cloudflare Tunnels — DONE v0.97.0; route writes DONE v0.98.0.** `CfProduct::Tunnels`
+  sits between Domains and R2 because tunnel routing is domain-adjacent. Read endpoints:
   `GET /accounts/{account_id}/cfd_tunnel` with `is_deleted=false` for the list, and
   `GET /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations` for ingress/config
-  rows. Domain types `CloudflareTunnel`/`TunnelConfiguration`/`TunnelIngressRule` and
-  filters live in `cloudflare.rs`; client methods are `list_tunnels` and
-  `get_tunnel_config`. CLI is `cf tunnels list` and `cf tunnels config <tunnel>`.
+  rows. Route writes use Cloudflare's documented read-modify-write:
+  `PUT /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations` with the whole
+  `config.ingress` array, keeping a catch-all at the end. Domain types
+  `CloudflareTunnel`/`TunnelConfiguration`/`TunnelIngressRule` and filters live in
+  `cloudflare.rs`; client methods are `list_tunnels`, `get_tunnel_config`,
+  `put_tunnel_config`, `add_tunnel_route`, `edit_tunnel_route`, and
+  `delete_tunnel_route`. CLI is `cf tunnels list`, `cf tunnels config <tunnel>`, and
+  `cf tunnels route add|edit|delete`; route add/edit can also upsert a public CNAME
+  with `--dns`, and delete can remove matching CNAMEs with `--delete-dns`.
   TUI list columns: name/status/config/created/target/id; **Enter** opens
-  `CfScreen::TunnelConfig` with hostname/service/origin request rows; **Esc** returns
-  to the Tunnels list. Product shortcuts are now `1` Analytics, `2` Domains,
-  `3` Tunnels, `4` R2, `5` Workers. Token needs account-level **Cloudflare Tunnel Read**
-  or **Cloudflare One Connectors Read**; `tunnels_hint` surfaces that on auth errors.
+  `CfScreen::TunnelConfig` with hostname/service/origin request rows; **n** adds a route,
+  **e** edits the selected route, **x** deletes it behind typed-hostname confirmation,
+  and `Space`/right-click opens the route menu. **Esc** returns to the Tunnels list.
+  Product shortcuts are now `1` Analytics, `2` Domains, `3` Tunnels, `4` R2, `5`
+  Workers. Token needs account-level **Cloudflare Tunnel Read/Write** or **Cloudflare
+  One Connectors Read/Write** for config writes, plus zone **DNS Write** for CNAME
+  automation; `tunnels_hint` surfaces missing tunnel read/write auth errors.
   Verified live against `mrfansi-dev`: list returned `macbook-docker`, `mrfansi-macbook`,
   and `mrfansi.dev`; config for `mrfansi.dev` returned `awan.mrfansi.dev ->
   http://localhost:3000`, apex `mrfansi.dev -> http://localhost:80`, and catch-all.
-  Create/delete/update tunnel, connector-token generation, and DNS CNAME automation are
+  Create/delete/update tunnel resources themselves and connector-token generation remain
   deliberately future guarded write slices.
 - **D1 (serverless SQL database).** New `CfProduct::D1` tab. Databases via
   `/accounts/{account_id}/d1/database` (list/create/delete); run SQL via

@@ -9,10 +9,10 @@ use serde_json::{json, Value};
 use crate::cloudflare::{
     apply_patch, filter_buckets, filter_records, filter_tunnel_config_rows, filter_tunnels,
     filter_worker_deployments, filter_worker_settings_rows, filter_workers, filter_zones,
-    proxyable, record_body, valid_record_type, AnalyticsSummary, CloudflareAccount,
-    CloudflareTunnel, R2Bucket, R2Object, Record, RecordFilter, RecordPatch, TunnelConfigRow,
-    TunnelConfiguration, WebAnalyticsSite, WorkerDeployment, WorkerScript, WorkerSettingsBundle,
-    WorkerSettingsRow, WorkerUploadMode, Zone,
+    parse_tunnel_origin_request, proxyable, record_body, valid_record_type, AnalyticsSummary,
+    CloudflareAccount, CloudflareTunnel, R2Bucket, R2Object, Record, RecordFilter, RecordPatch,
+    TunnelConfigRow, TunnelConfiguration, TunnelIngressRule, WebAnalyticsSite, WorkerDeployment,
+    WorkerScript, WorkerSettingsBundle, WorkerSettingsRow, WorkerUploadMode, Zone,
 };
 use crate::commands;
 use crate::output::field;
@@ -1161,6 +1161,31 @@ impl App {
         filter_tunnel_config_rows(&config.rows(), &self.cf.filter)
     }
 
+    /// The highlighted real ingress rule, mapped back from the filtered display row.
+    pub(super) fn selected_cf_tunnel_route(&self) -> Option<TunnelIngressRule> {
+        let shown = self.cf_tunnel_config_rows_shown();
+        let row = self
+            .cf
+            .tunnel_config_row
+            .selected()
+            .and_then(|i| shown.get(i))?;
+        self.cf
+            .tunnel_config
+            .as_ref()?
+            .config
+            .ingress
+            .iter()
+            .find(|rule| {
+                let service = if rule.service.trim().is_empty() {
+                    "-"
+                } else {
+                    rule.service.as_str()
+                };
+                rule.hostname_label() == row.hostname && service == row.service
+            })
+            .cloned()
+    }
+
     /// The R2 buckets shown right now (after the CF-local filter).
     pub(super) fn cf_buckets_shown(&self) -> Vec<&R2Bucket> {
         filter_buckets(&self.cf.r2_buckets, &self.cf.filter)
@@ -2120,9 +2145,7 @@ impl App {
         ]);
     }
 
-    /// The row action menu for the selected tunnel. Tunnel writes touch connector
-    /// lifecycle and secrets, so this first slice keeps the TUI read-only and makes
-    /// the high-frequency action — viewing published routes/config — one click away.
+    /// The row action menu for the selected tunnel.
     pub(super) fn open_cf_tunnel_menu(&mut self) {
         if self.selected_cf_tunnel().is_none() {
             self.status = "No tunnel selected".into();
@@ -2131,6 +2154,109 @@ impl App {
         self.open_menu(vec![MenuItem::new("View routes/config", |a, r| {
             a.cf_open_tunnel_config(r)
         })]);
+    }
+
+    pub(super) fn open_cf_tunnel_config_menu(&mut self) {
+        self.open_menu(vec![
+            MenuItem::new("Add route…", |a, _| a.open_cf_tunnel_route_form()),
+            MenuItem::new("Edit route…", |a, _| a.open_cf_tunnel_route_edit_form()),
+            MenuItem::new("Delete route…", |a, _| {
+                a.open_cf_tunnel_route_delete_form()
+            }),
+        ]);
+    }
+
+    pub(super) fn open_cf_tunnel_route_form(&mut self) {
+        let Some(tunnel) = self.cf.current_tunnel.clone() else {
+            self.status = "No tunnel open".into();
+            return;
+        };
+        self.form = Some(
+            Form::new(
+                FormKind::CfTunnelRouteCreate {
+                    tunnel_id: tunnel.id.clone(),
+                },
+                " Add tunnel route ",
+                vec![
+                    Field::text("Hostname", ""),
+                    Field::text("Service", "http://localhost:3000"),
+                    Field::text("Path", ""),
+                    Field::text("Origin request JSON", ""),
+                ],
+            )
+            .with_note(
+                "Service examples: http://localhost:3000, ssh://localhost:22, http_status:404",
+            ),
+        );
+    }
+
+    pub(super) fn open_cf_tunnel_route_edit_form(&mut self) {
+        let Some(tunnel) = self.cf.current_tunnel.clone() else {
+            self.status = "No tunnel open".into();
+            return;
+        };
+        let Some(rule) = self.selected_cf_tunnel_route() else {
+            self.status = "No route selected".into();
+            return;
+        };
+        if rule.is_catch_all() {
+            self.status = "Catch-all route is managed automatically".into();
+            return;
+        }
+        let origin = rule
+            .origin_request
+            .as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        self.form = Some(
+            Form::new(
+                FormKind::CfTunnelRouteEdit {
+                    tunnel_id: tunnel.id.clone(),
+                    hostname: rule.hostname.clone(),
+                    path: rule.path.clone(),
+                },
+                format!(" Edit route {} ", rule.hostname_label()),
+                vec![
+                    Field::text("Service", &rule.service),
+                    Field::text("Origin request JSON", &origin),
+                    Field::boolean("Clear origin request", false),
+                ],
+            )
+            .with_note(
+                "Leave Origin request JSON empty to keep it empty; toggle clear to remove it.",
+            ),
+        );
+    }
+
+    pub(super) fn open_cf_tunnel_route_delete_form(&mut self) {
+        let Some(tunnel) = self.cf.current_tunnel.clone() else {
+            self.status = "No tunnel open".into();
+            return;
+        };
+        let Some(rule) = self.selected_cf_tunnel_route() else {
+            self.status = "No route selected".into();
+            return;
+        };
+        if rule.is_catch_all() {
+            self.status = "Catch-all route is kept automatically".into();
+            return;
+        }
+        self.form = Some(
+            Form::new(
+                FormKind::CfTunnelRouteDelete {
+                    tunnel_id: tunnel.id.clone(),
+                    hostname: rule.hostname.clone(),
+                    path: rule.path.clone(),
+                },
+                " Delete tunnel route ",
+                vec![Field::text("Type the hostname to confirm", "")],
+            )
+            .with_note(format!(
+                "Removes '{}' from '{}' ingress config",
+                rule.hostname_label(),
+                tunnel.name
+            )),
+        );
     }
 
     pub(super) fn open_cf_worker_deploy_form(&mut self) {
@@ -5288,6 +5414,101 @@ impl App {
                     account_id,
                     name,
                     force: false,
+                }));
+            }
+            FormKind::CfTunnelRouteCreate { tunnel_id } => {
+                let (hostname, service, path, origin_raw) = (
+                    form.by_label("Hostname").trim().to_string(),
+                    form.by_label("Service").trim().to_string(),
+                    form.by_label("Path").trim().to_string(),
+                    form.by_label("Origin request JSON"),
+                );
+                if hostname.is_empty() || service.is_empty() {
+                    self.status = "Hostname and service are required".into();
+                    return;
+                }
+                let origin_request = match parse_tunnel_origin_request(&origin_raw) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.status = e.to_string();
+                        return;
+                    }
+                };
+                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
+                else {
+                    self.status = "No active account".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::TunnelRouteAdd {
+                    token,
+                    account_id,
+                    tunnel_id: tunnel_id.clone(),
+                    hostname,
+                    service,
+                    path,
+                    origin_request,
+                }));
+            }
+            FormKind::CfTunnelRouteEdit {
+                tunnel_id,
+                hostname,
+                path,
+            } => {
+                let service = form.by_label("Service").trim().to_string();
+                if service.is_empty() {
+                    self.status = "Service is required".into();
+                    return;
+                }
+                let clear = form.by_label("Clear origin request") == "yes";
+                let raw = form.by_label("Origin request JSON");
+                let origin_request = if clear {
+                    Some(None)
+                } else if raw.trim().is_empty() {
+                    None
+                } else {
+                    match parse_tunnel_origin_request(&raw) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            self.status = e.to_string();
+                            return;
+                        }
+                    }
+                };
+                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
+                else {
+                    self.status = "No active account".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::TunnelRouteEdit {
+                    token,
+                    account_id,
+                    tunnel_id: tunnel_id.clone(),
+                    hostname: hostname.clone(),
+                    path: path.clone(),
+                    service,
+                    origin_request,
+                }));
+            }
+            FormKind::CfTunnelRouteDelete {
+                tunnel_id,
+                hostname,
+                path,
+            } => {
+                if form.val(0) != hostname.as_str() {
+                    self.status = "Hostname did not match — nothing deleted".into();
+                    return;
+                }
+                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
+                else {
+                    self.status = "No active account".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::TunnelRouteDelete {
+                    token,
+                    account_id,
+                    tunnel_id: tunnel_id.clone(),
+                    hostname: hostname.clone(),
+                    path: path.clone(),
                 }));
             }
             FormKind::R2Upload => {

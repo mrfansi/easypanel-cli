@@ -472,6 +472,91 @@ enum CfTunnelCmd {
         #[arg(long)]
         account: Option<String>,
     },
+    /// Add, edit, or delete public hostname routes on a tunnel
+    #[command(subcommand)]
+    Route(CfTunnelRouteCmd),
+}
+
+#[derive(Subcommand)]
+enum CfTunnelRouteCmd {
+    /// Add one ingress route to a tunnel
+    Add {
+        /// Tunnel id or name
+        tunnel: String,
+        /// Public hostname, e.g. app.example.com
+        #[arg(long)]
+        hostname: String,
+        /// Origin service, e.g. http://localhost:3000
+        #[arg(long)]
+        service: String,
+        /// Optional path matcher, e.g. /api/*
+        #[arg(long)]
+        path: Option<String>,
+        /// Optional originRequest JSON object
+        #[arg(long = "origin-request-json")]
+        origin_request_json: Option<String>,
+        /// Also create or update the DNS CNAME to <tunnel-id>.cfargotunnel.com
+        #[arg(long)]
+        dns: bool,
+        /// Zone name or id for DNS. If omitted with --dns, the zone is inferred from hostname.
+        #[arg(long)]
+        zone: Option<String>,
+        /// Proxied CNAME when --dns is used
+        #[arg(long, default_value_t = true)]
+        proxied: bool,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Edit an existing ingress route's service/origin request
+    Edit {
+        /// Tunnel id or name
+        tunnel: String,
+        /// Existing public hostname to edit
+        #[arg(long)]
+        hostname: String,
+        /// Existing path matcher when a hostname has multiple routes
+        #[arg(long)]
+        path: Option<String>,
+        /// New origin service, e.g. http://localhost:3000
+        #[arg(long)]
+        service: Option<String>,
+        /// Replace originRequest with this JSON object
+        #[arg(long = "origin-request-json")]
+        origin_request_json: Option<String>,
+        /// Clear originRequest from the route
+        #[arg(long)]
+        clear_origin_request: bool,
+        /// Also create or update the DNS CNAME to <tunnel-id>.cfargotunnel.com
+        #[arg(long)]
+        dns: bool,
+        /// Zone name or id for DNS. If omitted with --dns, the zone is inferred from hostname.
+        #[arg(long)]
+        zone: Option<String>,
+        /// Proxied CNAME when --dns is used
+        #[arg(long, default_value_t = true)]
+        proxied: bool,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Delete one ingress route from a tunnel
+    Delete {
+        /// Tunnel id or name
+        tunnel: String,
+        /// Public hostname to remove
+        #[arg(long)]
+        hostname: String,
+        /// Existing path matcher when a hostname has multiple routes
+        #[arg(long)]
+        path: Option<String>,
+        /// Also delete matching CNAME records that point to this tunnel
+        #[arg(long)]
+        delete_dns: bool,
+        /// Zone name or id for DNS. If omitted with --delete-dns, the zone is inferred.
+        #[arg(long)]
+        zone: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1234,6 +1319,76 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     CfTunnelCmd::Config { tunnel, account } => {
                         commands::cf_tunnels_config(&cf, account.as_deref(), &tunnel)
                     }
+                    CfTunnelCmd::Route(route) => match route {
+                        CfTunnelRouteCmd::Add {
+                            tunnel,
+                            hostname,
+                            service,
+                            path,
+                            origin_request_json,
+                            dns,
+                            zone,
+                            proxied,
+                            account,
+                        } => commands::cf_tunnels_route_add(
+                            &cf,
+                            commands::TunnelRouteAddOpts {
+                                account: account.as_deref(),
+                                tunnel: &tunnel,
+                                hostname: &hostname,
+                                service: &service,
+                                path: path.as_deref(),
+                                origin_request_json: origin_request_json.as_deref(),
+                                dns,
+                                zone: zone.as_deref(),
+                                proxied,
+                            },
+                        ),
+                        CfTunnelRouteCmd::Edit {
+                            tunnel,
+                            hostname,
+                            path,
+                            service,
+                            origin_request_json,
+                            clear_origin_request,
+                            dns,
+                            zone,
+                            proxied,
+                            account,
+                        } => commands::cf_tunnels_route_edit(
+                            &cf,
+                            commands::TunnelRouteEditOpts {
+                                account: account.as_deref(),
+                                tunnel: &tunnel,
+                                hostname: &hostname,
+                                path: path.as_deref(),
+                                service: service.as_deref(),
+                                origin_request_json: origin_request_json.as_deref(),
+                                clear_origin_request,
+                                dns,
+                                zone: zone.as_deref(),
+                                proxied,
+                            },
+                        ),
+                        CfTunnelRouteCmd::Delete {
+                            tunnel,
+                            hostname,
+                            path,
+                            delete_dns,
+                            zone,
+                            account,
+                        } => commands::cf_tunnels_route_delete(
+                            &cf,
+                            commands::TunnelRouteDeleteOpts {
+                                account: account.as_deref(),
+                                tunnel: &tunnel,
+                                hostname: &hostname,
+                                path: path.as_deref(),
+                                delete_dns,
+                                zone: zone.as_deref(),
+                            },
+                        ),
+                    },
                 },
             }
         }
