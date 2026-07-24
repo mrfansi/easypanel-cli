@@ -997,12 +997,44 @@ impl App {
         // The caller already checked is_some(), but taking is more robust than an
         // unwrap that depends on a guard elsewhere: if called with no active
         // confirmation, there's nothing to do.
-        let Some(c) = self.confirm.take() else {
+        let Some(mut c) = self.confirm.take() else {
             return;
         };
-        if !matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-            self.status = "Cancelled".into();
-            return;
+        if let Some(expected) = c.stype.strip_prefix("expect:").map(str::to_string) {
+            match code {
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.status = "Cancelled".into();
+                    return;
+                }
+                KeyCode::Backspace => {
+                    c.service.pop();
+                    self.confirm = Some(c);
+                    return;
+                }
+                KeyCode::Enter => {
+                    if c.service.trim() == expected {
+                        c.service.clear();
+                    } else {
+                        self.status = format!("Type {expected} exactly, then Enter");
+                        self.confirm = Some(c);
+                        return;
+                    }
+                }
+                KeyCode::Char(ch) => {
+                    c.service.push(ch);
+                    self.confirm = Some(c);
+                    return;
+                }
+                _ => {
+                    self.confirm = Some(c);
+                    return;
+                }
+            }
+        } else {
+            if !matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                self.status = "Cancelled".into();
+                return;
+            }
         }
 
         // Deleting a project/domain has its own endpoint; the rest are ordinary

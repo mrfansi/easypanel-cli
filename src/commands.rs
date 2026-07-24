@@ -196,7 +196,7 @@ use crate::cloudflare::{
     apply_patch, object_basename, parse_tunnel_origin_request, record_body, resolve_zone,
     select_records, valid_record_type, CloudflareClient, CloudflareTunnel, RecordFilter,
     RecordPatch, Selector, TunnelIngressRule, TunnelRouteChange, WorkerUploadMode, Zone,
-    MAX_REST_OBJECT_BYTES,
+    DNS_BATCH_LIMIT, MAX_REST_OBJECT_BYTES,
 };
 
 /// Resolve the account (named or default) and build a client, with a clear message when
@@ -445,12 +445,20 @@ pub fn cf_record_set(
         ok: vec![],
         failed: vec![],
     };
-    for r in &matched {
-        match client.patch_record(&zone.id, &r.id, &body) {
-            Ok(_) => report.ok.push(format!("{} {}", r.kind, r.name)),
-            Err(e) => report
-                .failed
-                .push((format!("{} {}", r.kind, r.name), e.to_string())),
+    for chunk in matched.chunks(DNS_BATCH_LIMIT) {
+        let ids: Vec<String> = chunk.iter().map(|r| r.id.clone()).collect();
+        match client.batch_patch_records(&zone.id, &ids, &body) {
+            Ok(()) => report
+                .ok
+                .extend(chunk.iter().map(|r| format!("{} {}", r.kind, r.name))),
+            Err(e) => {
+                let msg = e.to_string();
+                report.failed.extend(
+                    chunk
+                        .iter()
+                        .map(|r| (format!("{} {}", r.kind, r.name), msg.clone())),
+                );
+            }
         }
     }
     report.print_and_status("changed")
@@ -471,10 +479,15 @@ pub fn cf_record_delete(
         ok: vec![],
         failed: vec![],
     };
-    for id in ids {
-        match client.delete_record(&zone.id, id) {
-            Ok(()) => report.ok.push(id.clone()),
-            Err(e) => report.failed.push((id.clone(), e.to_string())),
+    for chunk in ids.chunks(DNS_BATCH_LIMIT) {
+        match client.batch_delete_records(&zone.id, chunk) {
+            Ok(()) => report.ok.extend(chunk.iter().cloned()),
+            Err(e) => {
+                let msg = e.to_string();
+                report
+                    .failed
+                    .extend(chunk.iter().cloned().map(|id| (id, msg.clone())));
+            }
         }
     }
     report.print_and_status("deleted")

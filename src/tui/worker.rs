@@ -12,7 +12,7 @@ use crate::cloudflare::{
     object_basename, record_body, upload_key, AnalyticsSummary, CloudflareClient, CloudflareTunnel,
     R2Bucket, R2Object, Record, RecordFilter, TunnelConfiguration, TunnelIngressRule,
     TunnelRouteChange, WebAnalyticsSite, WorkerDeployment, WorkerScript, WorkerSettingsBundle,
-    WorkerUploadMode, Zone, MAX_REST_OBJECT_BYTES,
+    WorkerUploadMode, Zone, DNS_BATCH_LIMIT, MAX_REST_OBJECT_BYTES,
 };
 use crate::output::field;
 
@@ -487,14 +487,16 @@ pub(super) enum CfReq {
         zone_id: String,
         id: String,
     },
-    /// Apply the same patch to many records, one call per id — a mid-list failure
-    /// never aborts the rest (the same fan-out shape as EasyPanel's Bulk).
+    /// Apply the same patch to many records through Cloudflare's DNS batch endpoint.
+    /// Chunked at `DNS_BATCH_LIMIT`, so one failed chunk does not abort later chunks.
     BulkPatch {
         token: String,
         zone_id: String,
         ids: Vec<String>,
         body: Value,
     },
+    /// Delete many records through Cloudflare's DNS batch endpoint, chunked at the
+    /// lowest official plan limit.
     BulkDelete {
         token: String,
         zone_id: String,
@@ -2171,10 +2173,13 @@ fn handle_cf(req: CfReq) -> CfResp {
         } => {
             let client = CloudflareClient::new(&token);
             let (mut ok, mut failed) = (0usize, Vec::new());
-            for id in ids {
-                match client.patch_record(&zone_id, &id, &body) {
-                    Ok(_) => ok += 1,
-                    Err(e) => failed.push((id, e.to_string())),
+            for chunk in ids.chunks(DNS_BATCH_LIMIT) {
+                match client.batch_patch_records(&zone_id, chunk, &body) {
+                    Ok(()) => ok += chunk.len(),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        failed.extend(chunk.iter().cloned().map(|id| (id, msg.clone())));
+                    }
                 }
             }
             CfResp::BulkDone { ok, failed }
@@ -2186,10 +2191,13 @@ fn handle_cf(req: CfReq) -> CfResp {
         } => {
             let client = CloudflareClient::new(&token);
             let (mut ok, mut failed) = (0usize, Vec::new());
-            for id in ids {
-                match client.delete_record(&zone_id, &id) {
-                    Ok(()) => ok += 1,
-                    Err(e) => failed.push((id, e.to_string())),
+            for chunk in ids.chunks(DNS_BATCH_LIMIT) {
+                match client.batch_delete_records(&zone_id, chunk) {
+                    Ok(()) => ok += chunk.len(),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        failed.extend(chunk.iter().cloned().map(|id| (id, msg.clone())));
+                    }
                 }
             }
             CfResp::BulkDone { ok, failed }

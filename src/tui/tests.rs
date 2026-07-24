@@ -6930,6 +6930,50 @@ fn cf_records_select_all_filter_executes_bulk_without_materializing_marks() {
 }
 
 #[test]
+fn cf_large_bulk_delete_requires_typed_confirmation() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_zone = Some(cf_zone("z1", "example.com"));
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.screen = CfScreen::Records;
+    app.cf.records = (0..101)
+        .map(|i| {
+            cf_record(
+                &format!("r{i}"),
+                "CNAME",
+                &format!("www{i}.example.com"),
+                "example.com",
+            )
+        })
+        .collect();
+
+    app.on_key(KeyCode::Char('V'), &tx);
+    app.ask_cf_bulk_delete();
+    assert!(app
+        .confirm
+        .as_ref()
+        .is_some_and(|c| c.stype == "expect:DELETE 101"));
+
+    app.confirm_key(KeyCode::Char('y'), &tx);
+    assert!(
+        rx.try_recv().is_err(),
+        "plain y must not run a large delete"
+    );
+    assert!(app.confirm.is_some(), "dialog stays open after wrong input");
+    app.confirm_key(KeyCode::Backspace, &tx);
+
+    for ch in "DELETE 101".chars() {
+        app.confirm_key(KeyCode::Char(ch), &tx);
+    }
+    app.confirm_key(KeyCode::Enter, &tx);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::BulkDelete { ids, .. })) if ids.len() == 101
+    ));
+}
+
+#[test]
 fn cf_records_have_a_right_click_action_menu_like_easypanel() {
     // EasyPanel opens a per-row action menu on right-click; the CF Records screen now
     // mirrors it (Space stays the bulk menu) with a single-record Edit/Delete menu.

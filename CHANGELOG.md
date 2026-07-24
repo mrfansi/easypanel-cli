@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.5] — 2026-07-25
+
+### Changed
+
+- Cloudflare DNS bulk patch/delete now use Cloudflare's DNS batch endpoint instead
+  of one API request per record. Requests are chunked at 200 records per batch, the
+  documented Free-plan limit, so the same flow is safer across every Cloudflare plan
+  and less likely to run into per-record API rate-limit storms.
+- The batched DNS path is shared by the TUI bulk DNS actions, CLI
+  `cf record set`, and CLI multi-id `cf record delete`.
+
+### Fixed
+
+- Large TUI DNS bulk deletes now require typed confirmation (`DELETE N`) when more
+  than 100 records are selected, reducing the chance of accidentally deleting a
+  broad production filter result.
+
 ## [0.98.4] — 2026-07-25
 
 ### Changed

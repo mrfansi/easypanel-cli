@@ -578,9 +578,12 @@ easypanel cf record set example.com --where-content 203.0.113.10 --content 198.5
 ```
 
 `cf record set` prints the matched records, asks to confirm (skip with `--yes`), applies
-the change to each with **PATCH** (so it never wipes fields you didn't name), and reports
-per-record pass/fail. Pass `--account <name>` on any zone/record command to target a
-non-default account.
+the change with Cloudflare's DNS batch endpoint using **PATCH** entries (so it never wipes
+fields you didn't name), and reports per-record pass/fail. Multi-id `cf record delete`
+uses the same batch endpoint. Batches are chunked at 200 records, the lowest documented
+Cloudflare plan limit, so large operations avoid thousands of one-record API calls while
+remaining portable across plans. Pass `--account <name>` on any zone/record command to
+target a non-default account.
 
 **Cloudflare Tunnels — published routes/config:**
 
@@ -669,7 +672,9 @@ blank with a permission hint in the status bar.
 switcher), **Enter** on a domain drills into its DNS records, and records support
 add/edit/delete, a regex-capable `/` filter, and bulk change by marking rows with `v` or
 selecting every shown row with `V` then a `Space` menu (`Space`/right-click also opens a
-per-zone or per-record action menu). On
+per-zone or per-record action menu). Bulk DNS patch/delete uses Cloudflare's DNS batch API
+in 200-record chunks; deleting more than 100 records in the TUI requires typing
+`DELETE N` in the confirmation dialog. On
 **Tunnels**, the list shows cloudflared tunnels with status, config source, created date,
 target, and id; **`n`** creates a remote-configured tunnel, **`i`** opens the cloudflared
 install commands/token for the selected tunnel, **`x`** deletes it with typed-name

@@ -10,6 +10,12 @@ use serde::de::{DeserializeOwned, Deserializer};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+/// Cloudflare allows larger DNS batch actions on paid plans, but Free is capped at
+/// 200 records per action. Chunking at the lowest official limit keeps the tool safe
+/// across accounts and still turns thousands of per-record calls into a small handful
+/// of batch requests.
+pub const DNS_BATCH_LIMIT: usize = 200;
+
 /// A stored Cloudflare account: a user-labelled scoped API token, kept in cloudflare.json
 /// independent of any EasyPanel server (an operator may hold several CF accounts).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1496,6 +1502,24 @@ pub fn apply_patch(patch: &RecordPatch) -> Value {
     b
 }
 
+pub fn batch_delete_body(ids: &[String]) -> Value {
+    json!({
+        "deletes": ids.iter().map(|id| json!({ "id": id })).collect::<Vec<_>>()
+    })
+}
+
+pub fn batch_patch_body(ids: &[String], patch: &Value) -> Value {
+    let patches = ids
+        .iter()
+        .map(|id| {
+            let mut p = patch.clone();
+            p["id"] = json!(id);
+            p
+        })
+        .collect::<Vec<_>>();
+    json!({ "patches": patches })
+}
+
 // ---------- Zone resolution, record selection, filter query ----------
 
 #[derive(Debug, Clone, Default)]
@@ -2009,6 +2033,28 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
             reqwest::Method::DELETE,
             &format!("/zones/{zone_id}/dns_records/{record_id}"),
             None,
+        )?)?;
+        Ok(())
+    }
+
+    /// Cloudflare's batched DNS endpoint applies the listed changes in one database
+    /// transaction. The caller chunks at `DNS_BATCH_LIMIT` to stay within all plans.
+    pub fn batch_delete_records(&self, zone_id: &str, ids: &[String]) -> Result<()> {
+        let body = batch_delete_body(ids);
+        let _: Value = parse_envelope(&self.send(
+            reqwest::Method::POST,
+            &format!("/zones/{zone_id}/dns_records/batch"),
+            Some(&body),
+        )?)?;
+        Ok(())
+    }
+
+    pub fn batch_patch_records(&self, zone_id: &str, ids: &[String], patch: &Value) -> Result<()> {
+        let body = batch_patch_body(ids, patch);
+        let _: Value = parse_envelope(&self.send(
+            reqwest::Method::POST,
+            &format!("/zones/{zone_id}/dns_records/batch"),
+            Some(&body),
         )?)?;
         Ok(())
     }
@@ -2852,6 +2898,35 @@ mod tests {
         assert!(
             RecordPatch::default().is_empty(),
             "an all-None patch is empty"
+        );
+    }
+
+    #[test]
+    fn batch_delete_body_uses_cloudflare_deletes_shape() {
+        let body = batch_delete_body(&["r1".into(), "r2".into()]);
+        assert_eq!(
+            body,
+            json!({
+                "deletes": [
+                    { "id": "r1" },
+                    { "id": "r2" }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn batch_patch_body_adds_id_to_each_patch() {
+        let patch = json!({ "proxied": false, "ttl": 1 });
+        let body = batch_patch_body(&["r1".into(), "r2".into()], &patch);
+        assert_eq!(
+            body,
+            json!({
+                "patches": [
+                    { "id": "r1", "proxied": false, "ttl": 1 },
+                    { "id": "r2", "proxied": false, "ttl": 1 }
+                ]
+            })
         );
     }
 

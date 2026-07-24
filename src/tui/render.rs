@@ -4132,7 +4132,8 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
     // line: a dialog one row too tall is harmless, one row too short hides the keys.
     let label_lines = c.label.chars().count().div_ceil(inner) as u16 + 1;
     // blank + label + blank + server + target + blank + keys, plus the borders.
-    let h = (label_lines + 8).min(full.height);
+    let typed_extra = u16::from(c.stype.starts_with("expect:")) * 2;
+    let h = (label_lines + 8 + typed_extra).min(full.height);
     // COLUMNS, like `w` and `inner` above. As a percentage the box came out
     // narrower than the width the wrap was calculated with, so the label ran to
     // more lines than the height allowed for and the line naming the keys could
@@ -4166,7 +4167,15 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
         };
         v.push(Line::from(scope));
         v.push(Line::from(""));
-        v.push(Line::from("[y] Yes      [n] Cancel"));
+        if let Some(expected) = c.stype.strip_prefix("expect:") {
+            v.push(Line::from(format!("Type: {}", c.service)));
+            v.push(Line::from(format!(
+                "[Enter] confirm when it matches {expected}"
+            )));
+            v.push(Line::from("[Esc] Cancel"));
+        } else {
+            v.push(Line::from("[y] Yes      [n] Cancel"));
+        }
         v
     } else {
         // Name the actual target. The line "Affects a real service" used to be shown on

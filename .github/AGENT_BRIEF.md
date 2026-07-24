@@ -514,6 +514,13 @@ add/edit/delete + bulk (v/V mark + Space menu) + `/` filter. Record edits use Cl
 **PATCH** (partial), filter uses the `name.contains=`/`content.contains=` operator keys.
 Design + plan under `docs/superpowers/specs|plans/2026-07-22-cloudflare-*`.
 
+Update v0.98.5: DNS bulk patch/delete must stay on Cloudflare's DNS batch endpoint, not
+per-record loops. Use `DNS_BATCH_LIMIT = 200` because Cloudflare documents that as the
+Free-plan cap per batch action; higher plans allow more, but 200 is the safe portable
+floor. This applies to TUI bulk DNS actions, CLI `cf record set`, and CLI multi-id
+`cf record delete`. Large TUI DNS bulk deletes (>100 records) require typed confirmation
+`DELETE N`; keep that guard when touching selection, filter, or bulk dispatch code.
+
 **NOT LIVE-VERIFIED (the one gap) — do this on first real use with a token:** the tool
 has no Cloudflare token in-session, so only the request/ERROR plumbing is proven live (an
 invalid token returns Cloudflare's real error envelope, surfaced in the TUI error state).

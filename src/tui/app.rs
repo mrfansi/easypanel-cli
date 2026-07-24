@@ -2938,12 +2938,18 @@ impl App {
     /// Ask before deleting the marked records.
     pub(super) fn ask_cf_bulk_delete(&mut self) {
         let n = self.cf_bulk_count();
+        let typed = (n > 100).then(|| format!("expect:DELETE {n}"));
         self.confirm = Some(Confirm {
             action: "cf-bulk-delete".into(),
             project: String::new(),
+            // For large DNS deletes, service becomes the typed confirmation input.
             service: String::new(),
-            stype: String::new(),
-            label: format!("Delete {n} marked DNS record(s)?"),
+            stype: typed.unwrap_or_default(),
+            label: if n > 100 {
+                format!("Delete {n} marked DNS record(s)? Type DELETE {n} to confirm.")
+            } else {
+                format!("Delete {n} marked DNS record(s)?")
+            },
         });
     }
 
