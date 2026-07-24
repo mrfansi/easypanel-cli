@@ -63,6 +63,40 @@ pub struct R2Bucket {
     pub jurisdiction: String,
 }
 
+/// One Cloudflare Worker script at account scope. The list/content/delete/upload APIs
+/// live under `accounts/{account_id}/workers/scripts`, so Workers sits beside R2 as an
+/// account product, not under DNS zones.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct WorkerScript {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub created_on: String,
+    #[serde(default)]
+    pub modified_on: String,
+    #[serde(default)]
+    pub etag: String,
+    #[serde(default)]
+    pub handlers: Vec<String>,
+    #[serde(default)]
+    pub usage_model: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerUploadMode {
+    Module,
+    ServiceWorker,
+}
+
+impl WorkerUploadMode {
+    pub fn metadata_key(self) -> &'static str {
+        match self {
+            Self::Module => "main_module",
+            Self::ServiceWorker => "body_part",
+        }
+    }
+}
+
 /// The list-buckets `result` is NOT a bare array: it is an object wrapping a
 /// `buckets` array. Deserialize `result` into this, not `Vec<R2Bucket>`.
 #[derive(Debug, Deserialize)]
@@ -552,6 +586,17 @@ fn r2_hint(e: anyhow::Error) -> anyhow::Error {
     }
 }
 
+fn workers_hint(e: anyhow::Error) -> anyhow::Error {
+    let msg = e.to_string();
+    if msg.to_ascii_lowercase().contains("authentication error") {
+        anyhow::anyhow!(
+            "{msg} — the token may lack the Workers Scripts permission (Read for list/get, Write for deploy/delete)"
+        )
+    } else {
+        e
+    }
+}
+
 /// Unwrap a Cloudflare v4 envelope, turning `success:false` into an error carrying the
 /// first `errors[].message` (Cloudflare's messages are human-readable), not the status.
 pub fn parse_envelope<T: DeserializeOwned>(body: &str) -> Result<T> {
@@ -761,6 +806,24 @@ pub fn filter_buckets<'a>(buckets: &'a [R2Bucket], needle: &str) -> Vec<&'a R2Bu
                     .unwrap_or("")
                     .to_ascii_lowercase()
                     .contains(&n)
+        })
+        .collect()
+}
+
+/// The Worker scripts whose name/handler/usage/etag contains `needle`
+/// (case-insensitive). An empty needle keeps everything.
+pub fn filter_workers<'a>(workers: &'a [WorkerScript], needle: &str) -> Vec<&'a WorkerScript> {
+    let n = needle.to_ascii_lowercase();
+    workers
+        .iter()
+        .filter(|w| {
+            n.is_empty()
+                || w.id.to_ascii_lowercase().contains(&n)
+                || w.usage_model.to_ascii_lowercase().contains(&n)
+                || w.etag.to_ascii_lowercase().contains(&n)
+                || w.handlers
+                    .iter()
+                    .any(|h| h.to_ascii_lowercase().contains(&n))
         })
         .collect()
 }
@@ -1054,6 +1117,89 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
         Ok(all)
     }
 
+    // ---------- Workers scripts (account-scoped) ----------
+
+    pub fn list_worker_scripts(&self, account_id: &str) -> Result<Vec<WorkerScript>> {
+        let body = self
+            .get(&format!("/accounts/{account_id}/workers/scripts"), &[])
+            .map_err(workers_hint)?;
+        parse_envelope(&body).map_err(workers_hint)
+    }
+
+    /// Download a Worker's script content. On success Cloudflare returns raw script bytes
+    /// (not a JSON envelope); on error it returns the standard envelope.
+    pub fn get_worker_script_content(
+        &self,
+        account_id: &str,
+        name: &str,
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64> {
+        let url = format!("{BASE}/accounts/{account_id}/workers/scripts/{name}/content/v2");
+        let mut resp = self
+            .http
+            .get(url)
+            .bearer_auth(&self.token)
+            .send()
+            .map_err(|e| workers_hint(e.into()))?;
+        if resp.status().is_success() {
+            Ok(resp.copy_to(out)?)
+        } else {
+            let body = resp.text().map_err(|e| workers_hint(e.into()))?;
+            let _: Value = parse_envelope(&body).map_err(workers_hint)?;
+            anyhow::bail!("Cloudflare returned an error status but no error message")
+        }
+    }
+
+    /// Upload one local file as a Worker script. Cloudflare's content endpoint is
+    /// multipart: `metadata` names either `main_module` (module syntax) or `body_part`
+    /// (service-worker syntax), and the file part uses the same filename.
+    pub fn put_worker_script_content(
+        &self,
+        account_id: &str,
+        name: &str,
+        filename: &str,
+        bytes: Vec<u8>,
+        mode: WorkerUploadMode,
+    ) -> Result<WorkerScript> {
+        let metadata = json!({ mode.metadata_key(): filename }).to_string();
+        let content_type = match mode {
+            WorkerUploadMode::Module => "application/javascript+module",
+            WorkerUploadMode::ServiceWorker => "application/javascript",
+        };
+        let file_part = reqwest::blocking::multipart::Part::bytes(bytes)
+            .file_name(filename.to_string())
+            .mime_str(content_type)?;
+        let form = reqwest::blocking::multipart::Form::new()
+            .text("metadata", metadata)
+            .part(filename.to_string(), file_part);
+        let body = self
+            .http
+            .put(format!(
+                "{BASE}/accounts/{account_id}/workers/scripts/{name}/content"
+            ))
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .send()
+            .and_then(|r| r.text())
+            .map_err(|e| workers_hint(e.into()))?;
+        parse_envelope(&body).map_err(workers_hint)
+    }
+
+    pub fn delete_worker_script(&self, account_id: &str, name: &str, force: bool) -> Result<()> {
+        let body = self
+            .http
+            .delete(format!(
+                "{BASE}/accounts/{account_id}/workers/scripts/{name}"
+            ))
+            .bearer_auth(&self.token)
+            .query(&[("force", force)])
+            .send()
+            .and_then(|r| r.text())
+            .map_err(|e| workers_hint(e.into()))?;
+        let _: Value = parse_envelope(&body).map_err(workers_hint)?;
+        Ok(())
+    }
+
     /// Create an R2 bucket by name under `account_id`.
     pub fn create_r2_bucket(&self, account_id: &str, name: &str) -> Result<R2Bucket> {
         let body = json!({ "name": name });
@@ -1236,6 +1382,45 @@ mod tests {
         let (zones, info): (Vec<Zone>, ResultInfo) = parse_envelope_paged(body).unwrap();
         assert_eq!(zones[0].name, "example.com");
         assert_eq!(info.total_pages, 0);
+    }
+
+    #[test]
+    fn workers_scripts_parse_from_the_standard_cloudflare_envelope() {
+        let body = r#"{"success":true,"errors":[],"messages":[],
+            "result":[{"id":"api-worker","created_on":"2026-01-01T00:00:00Z",
+                       "modified_on":"2026-02-03T04:05:06Z","etag":"abc123",
+                       "handlers":["fetch"],"usage_model":"standard"}]}"#;
+        let scripts: Vec<WorkerScript> = parse_envelope(body).unwrap();
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(scripts[0].id, "api-worker");
+        assert_eq!(scripts[0].handlers, vec!["fetch"]);
+        assert_eq!(scripts[0].usage_model, "standard");
+        assert_eq!(scripts[0].modified_on, "2026-02-03T04:05:06Z");
+    }
+
+    #[test]
+    fn filter_workers_matches_name_handlers_usage_and_etag() {
+        let scripts = vec![
+            WorkerScript {
+                id: "frontend".into(),
+                handlers: vec!["fetch".into()],
+                usage_model: "standard".into(),
+                etag: "aaa".into(),
+                ..Default::default()
+            },
+            WorkerScript {
+                id: "cron-job".into(),
+                handlers: vec!["scheduled".into()],
+                usage_model: "unbound".into(),
+                etag: "bbb".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(filter_workers(&scripts, "front")[0].id, "frontend");
+        assert_eq!(filter_workers(&scripts, "sched")[0].id, "cron-job");
+        assert_eq!(filter_workers(&scripts, "unbound")[0].id, "cron-job");
+        assert_eq!(filter_workers(&scripts, "bbb")[0].id, "cron-job");
+        assert_eq!(filter_workers(&scripts, "").len(), 2);
     }
 
     #[test]

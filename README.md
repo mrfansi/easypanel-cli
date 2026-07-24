@@ -89,7 +89,7 @@ searchable table, and every domain on the box — without clicking through a hie
   run any action on the selected row from the same box (`deploy karir`, `logs api`). It
   knows every service from the moment the app starts, so it works before you have opened
   anything.
-- **Cloudflare beside EasyPanel** (`W`) — switch into account analytics, domains and R2
+- **Cloudflare beside EasyPanel** (`W`) — switch into account analytics, domains, R2 and Workers
   without leaving the terminal. The Cloudflare workspace has clickable product tabs, an
   account picker you can edit in place, row actions in the `:` palette, visible status
   feedback, and the same mark-then-`Space` bulk flow used by EasyPanel tables.
@@ -546,9 +546,9 @@ means repointing DNS, and doing that in a browser one record at a time is the sl
 Accounts are standalone (not tied to any EasyPanel server — you may have several) and live
 in their own `~/.config/easypanel/cloudflare.json` (`0600`). Use a **scoped API Token**:
 `Zone:DNS:Edit` + `Zone:Read` for DNS, **Account Settings Read** for the Web Analytics
-metadata shown on Domains, account-scoped **Workers R2 Storage** for R2, and
-**Account Analytics: Read** for the account analytics tab. The token is masked in every
-listing and never printed.
+metadata shown on Domains, account-scoped **Workers R2 Storage** for R2,
+**Workers Scripts** for Workers, and **Account Analytics: Read** for the account analytics
+tab. The token is masked in every listing and never printed.
 
 ```bash
 # accounts
@@ -597,9 +597,25 @@ deletes the selected file, and `v`/`V` + **Space** bulk-downloads or bulk-delete
 files. Uploads are capped at Cloudflare's 300 MB REST object limit; larger objects still
 need a multipart S3-compatible flow outside this command.
 
+**Workers scripts:**
+
+```bash
+easypanel cf workers list
+easypanel cf workers get my-worker --out ./worker.js
+easypanel cf workers deploy my-worker --file ./worker.js --mode module
+easypanel cf workers deploy legacy-worker --file ./worker.js --mode service-worker
+easypanel cf workers delete my-worker          # asks you to type the Worker name
+```
+
+Workers uses Cloudflare's account-scoped Workers Scripts API. `deploy` uploads one local
+JavaScript file and replaces that script's content; `--mode module` is the modern module
+syntax, while `--mode service-worker` supports older `addEventListener("fetch", ...)`
+scripts. Deletes require typed-name confirmation in both CLI and TUI.
+
 **In the TUI:** press **`W`** to switch into an isolated, Cloudflare-orange workspace with
-its own product tab bar (**Analytics │ Domains │ R2**). `1` opens Analytics, `2` Domains, `3` R2;
-`Tab`/`←→` cycle and mouse clicks work too. On **Analytics**, the tab shows account-level
+its own product tab bar (**Analytics │ Domains │ R2 │ Workers**). `1` opens Analytics,
+`2` Domains, `3` R2, `4` Workers; `Tab`/`←→` cycle and mouse clicks work too. On
+**Analytics**, the tab shows account-level
 requests, bandwidth, visits, top countries, and SSL/cache/status/protocol breakdowns
 from Cloudflare GraphQL. On **Domains**, the home is the active account's zones,
 enriched with Web Analytics status/setup/date columns from Cloudflare's RUM Site Info API;
@@ -610,11 +626,13 @@ switcher), **Enter** on a domain drills into its DNS records, and records suppor
 add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a
 `Space` menu (`Space`/right-click also opens a per-zone or per-record action menu). On
 **R2**, the same shape lists buckets with `n` create / `x` delete, and **Enter** drills
-into a bucket's objects. `:` opens the Cloudflare command palette: it jumps to
-products/accounts/zones/buckets and starts with the selected row's own actions, so
-"edit this record" or "download this object" is reachable from the same muscle memory as
-EasyPanel. The EasyPanel tabs and 1–8 keys are inert inside the Cloudflare workspace, and
-vice-versa.
+into a bucket's objects. On **Workers**, the list shows scripts, handlers, usage model,
+modified date, and etag; `n` deploys/replaces from a local file, `x` deletes with typed
+confirmation, and `Space`/right-click opens the row menu. `:` opens the Cloudflare command
+palette: it jumps to products/accounts/zones/buckets/Workers and starts with the selected row's
+own actions, so "edit this record", "download this object", or "delete this Worker" is
+reachable from the same muscle memory as EasyPanel. The EasyPanel tabs and 1–8 keys are
+inert inside the Cloudflare workspace, and vice-versa.
 
 v1 covers the common record types (A, AAAA, CNAME, TXT, NS, MX). Endpoint shapes are kept
 close to Cloudflare's official API reference, pure request builders are unit-tested, and

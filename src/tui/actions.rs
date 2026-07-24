@@ -684,6 +684,9 @@ impl App {
     fn cf_palette_context_label(&self) -> Option<String> {
         match (self.cf.product, self.cf.screen) {
             (CfProduct::Analytics, _) => None,
+            (CfProduct::Workers, _) => self
+                .selected_cf_worker()
+                .map(|w| format!("Worker: {}", w.id)),
             (CfProduct::Dns, CfScreen::Zones) => {
                 self.selected_cf_zone().map(|z| format!("Zone: {}", z.name))
             }
@@ -706,9 +709,24 @@ impl App {
     }
 
     fn cf_palette_context_actions(&self) -> Vec<(String, String, MenuRun)> {
-        let mut items = Vec::new();
+        let mut items: Vec<(String, String, MenuRun)> = Vec::new();
         match (self.cf.product, self.cf.screen) {
             (CfProduct::Analytics, _) => {}
+            (CfProduct::Workers, _) => {
+                items.push((
+                    "Deploy Worker…".into(),
+                    "deploy replace worker script".into(),
+                    |a: &mut App, _r: &Sender<Req>| a.open_cf_worker_deploy_form(),
+                ));
+                if let Some(worker) = self.selected_cf_worker() {
+                    let ctx = format!("worker {}", worker.id);
+                    items.push((
+                        "Delete Worker…".into(),
+                        format!("delete remove {ctx}"),
+                        |a, _| a.open_cf_worker_delete_form(),
+                    ));
+                }
+            }
             (CfProduct::Dns, CfScreen::Zones) => {
                 if let Some(zone) = self.selected_cf_zone() {
                     let ctx = format!("zone {}", zone.name);

@@ -1154,6 +1154,12 @@ pub(super) enum FormKind {
     CfBucketDelete {
         name: String,
     },
+    /// Deploy or replace a Worker script from one local file.
+    CfWorkerDeploy,
+    /// Delete a Worker script behind a typed-name confirmation.
+    CfWorkerDelete {
+        name: String,
+    },
     /// Upload a local file into the currently-browsed bucket/prefix. The worker reads
     /// the file and computes the key; the form carries only the local path.
     R2Upload,

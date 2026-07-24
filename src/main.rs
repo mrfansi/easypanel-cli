@@ -19,11 +19,26 @@ mod tui;
 mod uptime;
 
 use anyhow::Result;
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 use commands::resolve_client;
 use config::ServerConfig;
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum WorkerModeArg {
+    Module,
+    ServiceWorker,
+}
+
+impl From<WorkerModeArg> for cloudflare::WorkerUploadMode {
+    fn from(value: WorkerModeArg) -> Self {
+        match value {
+            WorkerModeArg::Module => Self::Module,
+            WorkerModeArg::ServiceWorker => Self::ServiceWorker,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -435,6 +450,54 @@ enum CfCmd {
     /// Manage R2 (object storage) on the active account
     #[command(subcommand)]
     R2(CfR2Cmd),
+    /// Manage Workers scripts on the active account
+    #[command(subcommand)]
+    Workers(CfWorkersCmd),
+}
+
+#[derive(Subcommand)]
+enum CfWorkersCmd {
+    /// List Worker scripts
+    List {
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Download Worker script content
+    Get {
+        /// Worker script name
+        name: String,
+        /// Where to write it (default: the Worker name in the current directory)
+        #[arg(long)]
+        out: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Deploy one local file as Worker script content
+    Deploy {
+        /// Worker script name
+        name: String,
+        /// Local JavaScript file to upload
+        #[arg(long)]
+        file: String,
+        /// Upload syntax: module (default) or service-worker
+        #[arg(long, value_enum, default_value_t = WorkerModeArg::Module)]
+        mode: WorkerModeArg,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Delete a Worker script
+    Delete {
+        /// Worker script name
+        name: String,
+        #[arg(long)]
+        account: Option<String>,
+        /// Skip typed-name confirmation
+        #[arg(long)]
+        yes: bool,
+        /// Also remove associated bindings/durable objects when Cloudflare permits it
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1098,6 +1161,32 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                             account,
                         } => commands::cf_r2_object_rm(&cf, account.as_deref(), &bucket, &keys),
                     },
+                },
+                CfCmd::Workers(workers) => match workers {
+                    CfWorkersCmd::List { account } => {
+                        commands::cf_workers_list(&cf, account.as_deref())
+                    }
+                    CfWorkersCmd::Get { name, out, account } => {
+                        commands::cf_workers_get(&cf, account.as_deref(), &name, out.as_deref())
+                    }
+                    CfWorkersCmd::Deploy {
+                        name,
+                        file,
+                        mode,
+                        account,
+                    } => commands::cf_workers_deploy(
+                        &cf,
+                        account.as_deref(),
+                        &name,
+                        &file,
+                        mode.into(),
+                    ),
+                    CfWorkersCmd::Delete {
+                        name,
+                        account,
+                        yes,
+                        force,
+                    } => commands::cf_workers_delete(&cf, account.as_deref(), &name, yes, force),
                 },
             }
         }

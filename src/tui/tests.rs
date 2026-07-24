@@ -6996,18 +6996,21 @@ fn clicking_cf_product_tabs_switches_products_like_easypanel_tabs() {
 #[test]
 fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
     // CF_PRODUCTS is the single source the tab bar and the switch keys share:
-    // Analytics is tab 1, Domains tab 2, R2 tab 3.
-    assert_eq!(CF_PRODUCTS.len(), 3);
+    // Analytics is tab 1, Domains tab 2, R2 tab 3, Workers tab 4.
+    assert_eq!(CF_PRODUCTS.len(), 4);
     assert_eq!(CF_PRODUCTS[0], ("Analytics", CfProduct::Analytics));
     assert_eq!(CF_PRODUCTS[1], ("Domains", CfProduct::Dns));
     assert_eq!(CF_PRODUCTS[2], ("R2", CfProduct::R2));
+    assert_eq!(CF_PRODUCTS[3], ("Workers", CfProduct::Workers));
     assert_eq!(CfProduct::Analytics.index(), 0);
     assert_eq!(CfProduct::Dns.index(), 1);
     assert_eq!(CfProduct::R2.index(), 2);
+    assert_eq!(CfProduct::Workers.index(), 3);
     assert_eq!(CfProduct::Analytics.next(), CfProduct::Dns);
     assert_eq!(CfProduct::Dns.next(), CfProduct::R2);
-    assert_eq!(CfProduct::R2.next(), CfProduct::Analytics);
-    assert_eq!(CfProduct::Analytics.prev(), CfProduct::R2);
+    assert_eq!(CfProduct::R2.next(), CfProduct::Workers);
+    assert_eq!(CfProduct::Workers.next(), CfProduct::Analytics);
+    assert_eq!(CfProduct::Analytics.prev(), CfProduct::Workers);
 
     // In the workspace the tab keys act on the product, never on the EasyPanel
     // Screen or the workspace. Selecting R2 loads the active account's buckets.
@@ -7026,7 +7029,7 @@ fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
         "switching to R2 loads the account's buckets"
     );
 
-    // `1` jumps to Analytics; `2` selects Domains; `3` selects R2.
+    // `1` jumps to Analytics; `2` selects Domains; `3` selects R2; `4` selects Workers.
     app.on_key(KeyCode::Char('1'), &tx);
     assert_eq!(app.cf.product, CfProduct::Analytics);
     assert!(matches!(
@@ -7041,6 +7044,12 @@ fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
     assert!(
         matches!(rx.try_recv(), Ok(Req::Cf(CfReq::R2Buckets { .. }))),
         "switching to R2 loads the account's buckets"
+    );
+    app.on_key(KeyCode::Char('4'), &tx);
+    assert_eq!(app.cf.product, CfProduct::Workers);
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Workers { .. }))),
+        "switching to Workers loads account scripts"
     );
 }
 

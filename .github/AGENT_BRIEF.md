@@ -352,7 +352,7 @@ behaves exactly like the EasyPanel TUI.** The two workspaces (`W` toggles) must 
 like one app. Concretely, replicate EasyPanel's patterns in the CF workspace:
 
 - **Header = "Cloudflare — <account>"** (like "EasyPanel — <server>"); the second line
-  is a **product tab bar** (DNS today; D1/R2/KV/Workers/Connectors later) styled like
+  is a **product tab bar** (Analytics, Domains, R2, Workers today; D1/KV/Connectors later) styled like
   EasyPanel's tab bar; per-screen **key hints live in the status bar**, not the header.
 - **Account switching is a PICKER (`a`), the analogue of the `s` server switcher — NOT a
   tab.** Do not turn accounts into tabs (owner was explicit, twice).
@@ -376,7 +376,7 @@ like one app. Concretely, replicate EasyPanel's patterns in the CF workspace:
   that the token likely lacks the **Zone : DNS** permission (use the "Edit zone DNS"
   template) — a common pitfall, proven via curl this session.
 
-### BACKLOG (owner-requested 2026-07-22): more Cloudflare products — R2, D1
+### BACKLOG (owner-requested 2026-07-22): more Cloudflare products — R2, Workers, D1
 
 The CF workspace's product tab bar was built to grow (`CF_PRODUCTS`; DNS is tab 1).
 Owner wants these next products, each a NEW product tab beside DNS. Each is a real
@@ -384,7 +384,7 @@ vertical slice — brainstorm a spec first (docs/superpowers/specs/), verify liv
 against the owner's `pt-karya-kaya-bahagia` account (has real resources; never mutate
 production — use owner-supplied throwaway names for any create/delete test). Account-scoped:
 all need the account's `account_id` (already stored on `CloudflareAccount`), and the API
-token must carry the matching permission (surface a clear "token lacks R2/D1 permission"
+token must carry the matching permission (surface a clear "token lacks R2/Workers/D1 permission"
 hint on the auth error, same pitfall as Zone:DNS).
 
 - **R2 (object storage) — buckets DONE v0.84.0, object browsing DONE v0.85.0.**
@@ -409,6 +409,21 @@ hint on the auth error, same pitfall as Zone:DNS).
   needs S3 multipart, out of scope); downloads stream; keys percent-encoded (slashes
   literal). Verified live end-to-end on a throwaway bucket (upload→download byte-identical
   →bulk-delete→cleanup). Token needs account-level Workers R2 Storage **Edit** for writes.
+- **Workers Scripts — DONE v0.94.0.** `CfProduct::Workers` tab. Account-scoped endpoints:
+  `GET /accounts/{account_id}/workers/scripts`,
+  `GET /accounts/{account_id}/workers/scripts/{script_name}/content/v2`,
+  `PUT /accounts/{account_id}/workers/scripts/{script_name}/content`, and
+  `DELETE /accounts/{account_id}/workers/scripts/{script_name}`. Domain
+  `WorkerScript`/`WorkerUploadMode` + `filter_workers` and client
+  `list_worker_scripts`/`get_worker_script_content`/`put_worker_script_content`/
+  `delete_worker_script` live in `cloudflare.rs`; CLI is `cf workers list|get|deploy|delete`;
+  TUI lists scripts, supports `/` filter, `n` deploy/replace one JS file, `x` typed-name
+  delete, row menu/right-click, command palette actions, and `1-4` product switching.
+  Upload uses Cloudflare multipart metadata with `main_module` for modern modules or
+  `body_part` for legacy service-worker syntax. Token needs account-level
+  **Workers Scripts** (Read for list/get, Write for deploy/delete); `workers_hint` surfaces
+  that on auth errors. Verified by unit tests and compile/test/clippy; no live mutation was
+  performed.
 - **D1 (serverless SQL database).** New `CfProduct::D1` tab. Databases via
   `/accounts/{account_id}/d1/database` (list/create/delete); run SQL via
   `POST /accounts/{account_id}/d1/database/{database_id}/query` (or `/raw`), which returns

@@ -162,12 +162,12 @@ pub(super) const MOUSE_KEYS: &[Key] = &[
 /// EasyPanel tab keys — so the help documents it (the header shows the tabs; nothing
 /// else told the reader how to reach them). `:` opens the CF command palette (the
 /// mirror of EasyPanel's `:`). The `s` server list stays inert here (the CF analogue
-/// is `a`, a per-screen key), so listing it would be help that lies. The `1-3` upper
+/// is `a`, a per-screen key), so listing it would be help that lies. The `1-4` upper
 /// bound is pinned to CF_PRODUCTS by `the_cf_product_tab_hint_names_every_product`.
 pub(super) const CF_GLOBAL_KEYS: &[Key] = &[
     Key("W", "switch workspace (EasyPanel / Cloudflare)"),
     Key("?", "this help"),
-    Key("1-3 / Tab / ←→", "switch product tab"),
+    Key("1-4 / Tab / ←→", "switch product tab"),
     Key(
         ":",
         "command palette (jump to a product / account / zone / bucket)",
@@ -479,6 +479,21 @@ pub(super) fn cf_analytics_keys() -> &'static [Key] {
     ]
 }
 
+pub(super) fn cf_workers_keys() -> &'static [Key] {
+    &[
+        Key(
+            "a",
+            "switch Cloudflare account (a picker, like `s` switches servers)",
+        ),
+        Key("Space", "action menu for the selected Worker"),
+        Key("n", "deploy or replace a Worker from a local file"),
+        Key("x", "delete a Worker (type its name to confirm)"),
+        Key("/", "filter the list"),
+        Key("r", "refresh"),
+        Key("Esc", "back to EasyPanel"),
+    ]
+}
+
 pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     // In the Cloudflare workspace the "this screen" section documents the CF screen's
     // keys, not the (stale) EasyPanel Screen's — the two workspaces are isolated.
@@ -486,6 +501,7 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     let rows = if cf {
         match app.cf.product {
             CfProduct::Analytics => cf_analytics_keys(),
+            CfProduct::Workers => cf_workers_keys(),
             CfProduct::R2 => match app.cf.screen {
                 CfScreen::Objects => cf_objects_keys(),
                 _ => cf_buckets_keys(),
@@ -548,6 +564,7 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     let screen_label = if cf {
         match app.cf.product {
             CfProduct::Analytics => "Cloudflare · Analytics",
+            CfProduct::Workers => "Cloudflare · Workers",
             CfProduct::R2 => match app.cf.screen {
                 CfScreen::Objects => "Cloudflare · R2 · objects",
                 _ => "Cloudflare · R2",
@@ -741,6 +758,7 @@ pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &m
     // (Zones home / Records drill-in). R2 has a single buckets screen for now.
     match app.cf.product {
         CfProduct::Analytics => render_cf_analytics(f, header, body, app),
+        CfProduct::Workers => render_cf_workers(f, header, body, app),
         CfProduct::Dns => match app.cf.screen {
             CfScreen::Zones => render_cf_zones(f, header, body, app),
             CfScreen::Records | CfScreen::Objects => render_cf_records(f, header, body, app),
@@ -780,6 +798,9 @@ pub(super) const CF_OBJECTS_HINTS: &str =
     "a account · : palette · u upload · Enter download · x delete · v/V mark · Space menu/bulk · / filter · r refresh · Esc up/buckets";
 
 pub(super) const CF_ANALYTICS_HINTS: &str = "a account · : palette · r refresh · Esc EasyPanel";
+
+pub(super) const CF_WORKERS_HINTS: &str =
+    "a account · : palette · n deploy · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
 
 /// The orange workspace header: the bordered title + the PRODUCT tab bar (Domains
 /// today; D1/R2/KV/Workers/Connectors slot in later). Drawn exactly like the
@@ -1453,6 +1474,94 @@ fn render_cf_buckets(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         &widths,
         rows,
         &mut app.cf.r2_row,
+        tint,
+        |_, _| None,
+    );
+}
+
+fn render_cf_workers(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    let acct = app.cf.active.as_ref().map(|a| a.name.clone());
+    let title = match &acct {
+        Some(name) => format!("Cloudflare — {name}"),
+        None => "Cloudflare".to_string(),
+    };
+    cf_header(
+        f,
+        header,
+        &title,
+        app,
+        app.cf_product_at.elapsed().as_millis() < 300,
+    );
+
+    if app.cf_empty() {
+        f.render_widget(
+            Paragraph::new(format!("  {CF_EMPTY_HINT}"))
+                .style(Style::default().fg(Color::DarkGray))
+                .block(pane("Workers".to_string(), cf_tint(app))),
+            body,
+        );
+        return;
+    }
+
+    let state = cf_list_state(
+        cf_loading(app, "Workers"),
+        app.cf.error.is_some(),
+        app.cf.workers.is_empty(),
+    );
+    if state != CfListState::Ready {
+        cf_placeholder(
+            f,
+            body,
+            "Workers",
+            &state,
+            app.cf.error.as_deref(),
+            cf_tint(app),
+        );
+        return;
+    }
+
+    let shown = app.cf_workers_shown();
+    let title = filter_count_title(
+        "Workers",
+        shown.len(),
+        app.cf.workers.len(),
+        &app.cf.filter,
+        app.cf.filter_input,
+    );
+    let rows: Vec<Vec<String>> = shown
+        .iter()
+        .map(|w| {
+            vec![
+                w.id.clone(),
+                w.handlers.join(","),
+                w.usage_model.clone(),
+                w.modified_on
+                    .split('T')
+                    .next()
+                    .unwrap_or(&w.modified_on)
+                    .to_string(),
+                w.etag.clone(),
+            ]
+        })
+        .collect();
+    let headers = ["Name", "Handlers", "Usage", "Modified", "ETag"];
+    let widths = [
+        Constraint::Min(22),
+        Constraint::Length(20),
+        Constraint::Length(16),
+        Constraint::Length(12),
+        Constraint::Length(30),
+    ];
+    app.table_area = body;
+    let tint = cf_tint(app);
+    render_table(
+        f,
+        body,
+        title,
+        &headers,
+        &widths,
+        rows,
+        &mut app.cf.workers_row,
         tint,
         |_, _| None,
     );
@@ -3226,6 +3335,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
         } else {
             let hints = match app.cf.product {
                 CfProduct::Analytics => CF_ANALYTICS_HINTS,
+                CfProduct::Workers => CF_WORKERS_HINTS,
                 CfProduct::R2 => match app.cf.screen {
                     CfScreen::Objects => CF_OBJECTS_HINTS,
                     _ => CF_BUCKETS_HINTS,

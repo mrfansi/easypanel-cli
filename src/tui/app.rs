@@ -7,9 +7,9 @@ use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
 
 use crate::cloudflare::{
-    apply_patch, filter_buckets, filter_records, filter_zones, proxyable, record_body,
-    valid_record_type, AnalyticsSummary, CloudflareAccount, R2Bucket, R2Object, Record,
-    RecordFilter, RecordPatch, WebAnalyticsSite, Zone,
+    apply_patch, filter_buckets, filter_records, filter_workers, filter_zones, proxyable,
+    record_body, valid_record_type, AnalyticsSummary, CloudflareAccount, R2Bucket, R2Object,
+    Record, RecordFilter, RecordPatch, WebAnalyticsSite, WorkerScript, WorkerUploadMode, Zone,
 };
 use crate::commands;
 use crate::output::field;
@@ -199,6 +199,7 @@ pub(super) enum CfProduct {
     #[default]
     Dns,
     R2,
+    Workers,
 }
 
 /// The product tab bar, in label order. The single list the tab bar renders and
@@ -207,6 +208,7 @@ pub(super) const CF_PRODUCTS: &[(&str, CfProduct)] = &[
     ("Analytics", CfProduct::Analytics),
     ("Domains", CfProduct::Dns),
     ("R2", CfProduct::R2),
+    ("Workers", CfProduct::Workers),
 ];
 
 impl CfProduct {
@@ -268,6 +270,10 @@ pub(super) struct CfUi {
     /// account_id plus the Account Analytics:Read permission on the token.
     pub(super) analytics: Option<AnalyticsSummary>,
     pub(super) analytics_days: u16,
+    /// Workers scripts are account-scoped like R2. They are rendered as their own product
+    /// tab and mutate through explicit deploy/delete actions.
+    pub(super) workers: Vec<WorkerScript>,
+    pub(super) workers_row: TableState,
     pub(super) current_bucket: Option<String>,
     /// A CF-local text filter, narrowing the loaded list client-side.
     pub(super) filter: String,
@@ -751,6 +757,7 @@ impl App {
         if self.workspace == Workspace::Cloudflare {
             return match self.cf.product {
                 CfProduct::Analytics => 0,
+                CfProduct::Workers => self.cf_workers_shown().len(),
                 CfProduct::R2 => match self.cf.screen {
                     CfScreen::Objects => self.cf_level_len(),
                     _ => self.cf_buckets_shown().len(),
@@ -780,6 +787,7 @@ impl App {
         if self.workspace == Workspace::Cloudflare {
             return match self.cf.product {
                 CfProduct::Analytics => None,
+                CfProduct::Workers => Some(&mut self.cf.workers_row),
                 CfProduct::R2 => match self.cf.screen {
                     CfScreen::Objects => Some(&mut self.cf.r2_objects_row),
                     _ => Some(&mut self.cf.r2_row),
@@ -1098,6 +1106,21 @@ impl App {
             .map(|b| (*b).clone())
     }
 
+    /// The Worker scripts shown right now (after the CF-local filter).
+    pub(super) fn cf_workers_shown(&self) -> Vec<&WorkerScript> {
+        filter_workers(&self.cf.workers, &self.cf.filter)
+    }
+
+    /// The highlighted Worker script, indexing into the FILTERED list.
+    pub(super) fn selected_cf_worker(&self) -> Option<WorkerScript> {
+        let shown = self.cf_workers_shown();
+        self.cf
+            .workers_row
+            .selected()
+            .and_then(|i| shown.get(i))
+            .map(|w| (*w).clone())
+    }
+
     /// The active account's account-id, which every R2 call needs (R2 is
     /// account-scoped — unlike DNS, which can list zones without one).
     pub(super) fn cf_account_id(&self) -> Option<String> {
@@ -1239,6 +1262,31 @@ impl App {
         }
     }
 
+    /// Show the account-level Workers scripts list. Workers is account-scoped, so it
+    /// requires the account-id just like R2.
+    pub(super) fn cf_goto_workers(&mut self, req: &Sender<Req>) {
+        let Some(name) = self.cf.active.as_ref().map(|a| a.name.clone()) else {
+            self.status = "No Cloudflare account yet — press a to add one".into();
+            return;
+        };
+        self.cf.screen = CfScreen::Zones;
+        self.cf.filter.clear();
+        self.cf.filter_input = false;
+        self.cf.marked.clear();
+        self.cf.error = None;
+        self.cf.workers.clear();
+        self.cf.workers_row.select(None);
+        let Some(account_id) = self.cf_account_id() else {
+            self.status =
+                "This account has no account-id — Workers is account-scoped; edit it with a".into();
+            return;
+        };
+        if let Some(token) = self.cf_token() {
+            let _ = req.send(Req::Cf(CfReq::Workers { token, account_id }));
+            self.status = format!("Loading Workers for {name}…");
+        }
+    }
+
     /// The home for the active product: Zones for DNS, Buckets for R2. Used after an
     /// account switch so the picker lands on the right product's list.
     pub(super) fn cf_goto_home(&mut self, req: &Sender<Req>) {
@@ -1246,6 +1294,7 @@ impl App {
             CfProduct::Analytics => self.cf_goto_analytics(req),
             CfProduct::Dns => self.cf_goto_zones(req),
             CfProduct::R2 => self.cf_goto_buckets(req),
+            CfProduct::Workers => self.cf_goto_workers(req),
         }
     }
 
@@ -1442,6 +1491,12 @@ impl App {
             }
             return;
         }
+        if self.cf.product == CfProduct::Workers {
+            if let Some(account_id) = self.cf_account_id() {
+                let _ = req.send(Req::Cf(CfReq::Workers { token, account_id }));
+            }
+            return;
+        }
         if self.cf.product == CfProduct::R2 {
             // In the objects drill-in, `r` re-lists that bucket; on the buckets home it
             // re-lists buckets. Both go through the same Bearer token as the rest of CF.
@@ -1501,6 +1556,12 @@ impl App {
             let len = self.cf_buckets_shown().len();
             *self.cf.r2_row.offset_mut() = 0;
             self.cf.r2_row.select((len > 0).then_some(0));
+            return;
+        }
+        if self.cf.product == CfProduct::Workers {
+            let len = self.cf_workers_shown().len();
+            *self.cf.workers_row.offset_mut() = 0;
+            self.cf.workers_row.select((len > 0).then_some(0));
             return;
         }
         match self.cf.screen {
@@ -1752,6 +1813,60 @@ impl App {
         self.open_menu(vec![
             MenuItem::new("Browse objects", |a, r| a.cf_open_objects(r)),
             MenuItem::new("Delete bucket…", |a, _| a.open_cf_bucket_delete_form()),
+        ]);
+    }
+
+    pub(super) fn open_cf_worker_deploy_form(&mut self) {
+        if self.cf_account_id().is_none() {
+            self.status =
+                "This account has no account-id — Workers is account-scoped; re-add it with one"
+                    .into();
+            return;
+        }
+        self.form = Some(
+            Form::new(
+                FormKind::CfWorkerDeploy,
+                " Deploy Worker ",
+                vec![
+                    Field::text("Worker name", ""),
+                    Field::text("Local file", ""),
+                    Field::choice("Mode", &["module", "service-worker"], "module"),
+                ],
+            )
+            .with_note("Uploads one JavaScript file to Workers Scripts. Existing script content is replaced."),
+        );
+    }
+
+    pub(super) fn open_cf_worker_delete_form(&mut self) {
+        let Some(worker) = self.selected_cf_worker() else {
+            self.status = "No Worker selected".into();
+            return;
+        };
+        self.form = Some(
+            Form::new(
+                FormKind::CfWorkerDelete {
+                    name: worker.id.clone(),
+                },
+                " Delete Worker ",
+                vec![Field::text("Type the Worker name to confirm", "")],
+            )
+            .with_note(format!(
+                "Deletes '{}' and cannot be undone. Use CLI --force if Cloudflare reports attached bindings.",
+                worker.id
+            )),
+        );
+    }
+
+    pub(super) fn open_cf_worker_menu(&mut self) {
+        if self.selected_cf_worker().is_none() {
+            self.status = "No Worker selected".into();
+            return;
+        }
+        self.open_menu(vec![
+            MenuItem::new("Deploy/replace Worker…", |a, _| {
+                a.open_cf_worker_deploy_form()
+            }),
+            MenuItem::new("Delete Worker…", |a, _| a.open_cf_worker_delete_form()),
         ]);
     }
 
@@ -2513,6 +2628,12 @@ impl App {
                 self.cf.r2_buckets = buckets;
                 let len = self.cf_buckets_shown().len();
                 select_first(&mut self.cf.r2_row, len);
+            }
+            CfResp::Workers(workers) => {
+                self.cf.error = None;
+                self.cf.workers = workers;
+                let len = self.cf_workers_shown().len();
+                select_first(&mut self.cf.workers_row, len);
             }
             CfResp::R2Objects {
                 bucket,
@@ -4764,6 +4885,51 @@ impl App {
                     token,
                     account_id,
                     name,
+                }));
+            }
+            FormKind::CfWorkerDeploy => {
+                let name = form.by_label("Worker name").trim().to_string();
+                let path = crate::output::expand_tilde(
+                    form.by_label("Local file").trim(),
+                    std::env::var("HOME").ok().as_deref(),
+                );
+                if name.is_empty() || path.is_empty() {
+                    self.status = "Worker name and local file are required".into();
+                    return;
+                }
+                let mode = match form.by_label("Mode").as_str() {
+                    "service-worker" => WorkerUploadMode::ServiceWorker,
+                    _ => WorkerUploadMode::Module,
+                };
+                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
+                else {
+                    self.status = "No active account".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::WorkerDeploy {
+                    token,
+                    account_id,
+                    name,
+                    path,
+                    mode,
+                }));
+            }
+            FormKind::CfWorkerDelete { name } => {
+                let name = name.clone();
+                if form.val(0) != name {
+                    self.status = "Name did not match — nothing deleted".into();
+                    return;
+                }
+                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
+                else {
+                    self.status = "No active account".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::WorkerDelete {
+                    token,
+                    account_id,
+                    name,
+                    force: false,
                 }));
             }
             FormKind::R2Upload => {

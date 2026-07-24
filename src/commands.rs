@@ -194,7 +194,8 @@ pub fn cf_account_delete(cfg: &CloudflareConfig, name: &str) -> Result<()> {
 
 use crate::cloudflare::{
     apply_patch, object_basename, record_body, resolve_zone, select_records, valid_record_type,
-    CloudflareClient, RecordFilter, RecordPatch, Selector, Zone, MAX_REST_OBJECT_BYTES,
+    CloudflareClient, RecordFilter, RecordPatch, Selector, WorkerUploadMode, Zone,
+    MAX_REST_OBJECT_BYTES,
 };
 
 /// Resolve the account (named or default) and build a client, with a clear message when
@@ -697,6 +698,129 @@ pub fn cf_r2_object_rm(
             failures.join("\n")
         )
     }
+}
+
+// ---------- Workers scripts (account-scoped) ----------
+
+pub fn cf_workers_list(cfg: &CloudflareConfig, account: Option<&str>) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let scripts = client.list_worker_scripts(&account_id)?;
+    if output::json_output() {
+        output::print_json(&serde_json::to_value(
+            scripts
+                .iter()
+                .map(|w| {
+                    json!({
+                        "id": w.id,
+                        "handlers": w.handlers,
+                        "usage_model": w.usage_model,
+                        "created_on": w.created_on,
+                        "modified_on": w.modified_on,
+                        "etag": w.etag,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?);
+        return Ok(());
+    }
+    if scripts.is_empty() {
+        println!("No Workers scripts on this Cloudflare account.");
+        return Ok(());
+    }
+    let rows = scripts
+        .iter()
+        .map(|w| {
+            vec![
+                w.id.clone(),
+                w.handlers.join(","),
+                w.usage_model.clone(),
+                w.modified_on
+                    .split('T')
+                    .next()
+                    .unwrap_or(&w.modified_on)
+                    .to_string(),
+                w.etag.clone(),
+            ]
+        })
+        .collect();
+    table(&["Name", "Handlers", "Usage", "Modified", "ETag"], rows);
+    Ok(())
+}
+
+pub fn cf_workers_get(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    name: &str,
+    out: Option<&str>,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let dest = out.unwrap_or(name);
+    if std::path::Path::new(dest).exists() {
+        anyhow::bail!("refusing to overwrite {dest} (pass --out to choose)");
+    }
+    let mut bytes = Vec::new();
+    let n = client.get_worker_script_content(&account_id, name, &mut bytes)?;
+    std::fs::write(dest, &bytes).with_context(|| format!("cannot write '{dest}'"))?;
+    println!(
+        "Downloaded Worker {name} → {dest} ({})",
+        format_bytes(n as f64)
+    );
+    Ok(())
+}
+
+pub fn cf_workers_deploy(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    name: &str,
+    file: &str,
+    mode: WorkerUploadMode,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let filename = std::path::Path::new(file)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow!("'{file}' has no filename"))?;
+    let bytes = std::fs::read(file).with_context(|| format!("cannot read '{file}'"))?;
+    let size = bytes.len() as f64;
+    let script = client.put_worker_script_content(&account_id, name, filename, bytes, mode)?;
+    println!(
+        "Deployed Worker '{}' from {file} ({})",
+        if script.id.is_empty() {
+            name
+        } else {
+            &script.id
+        },
+        format_bytes(size)
+    );
+    Ok(())
+}
+
+pub fn cf_workers_delete(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    name: &str,
+    yes: bool,
+    force: bool,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    if !yes {
+        let typed: String = Input::new()
+            .with_prompt(format!(
+                "Delete Worker '{name}'? Type the Worker name to confirm"
+            ))
+            .interact_text()?;
+        if typed != name {
+            println!("Name did not match — nothing deleted.");
+            return Ok(());
+        }
+    }
+    client.delete_worker_script(&account_id, name, force)?;
+    println!("Worker '{name}' deleted.");
+    Ok(())
 }
 
 fn mask_token(token: &str) -> String {

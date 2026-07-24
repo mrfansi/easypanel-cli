@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.94.0] — 2026-07-24
+
+### Added
+
+- Cloudflare Workers is now a full account-scoped product tab beside Analytics,
+  Domains, and R2. The TUI lists Worker scripts with handlers, usage model,
+  modified date, and etag; supports `/` filtering, `n` deploy/replace from a
+  local file, `x` typed-name delete, row menus, right-click actions, command
+  palette actions, and `1-4`/Tab product switching.
+- Added CLI Workers management:
+  `easypanel cf workers list|get|deploy|delete`. Deploy uploads one local
+  JavaScript file through Cloudflare's Workers Scripts content endpoint and
+  supports both modern module syntax (`--mode module`) and legacy service-worker
+  syntax (`--mode service-worker`).
+
+### Changed
+
+- Cloudflare permission hints now call out missing **Workers Scripts** access for
+  Workers list/get/deploy/delete errors.
+
 ## [0.93.5] — 2026-07-23
 
 ### Fixed
@@ -3533,7 +3553,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.93.5...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.94.0...HEAD
+[0.94.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.94.0
 [0.93.5]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.5
 [0.93.4]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.4
 [0.93.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.3

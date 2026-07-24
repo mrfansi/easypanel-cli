@@ -477,6 +477,7 @@ impl App {
             if self.select_row_at(col, row) {
                 match (self.cf.product, self.cf.screen) {
                     (CfProduct::Analytics, _) => {}
+                    (CfProduct::Workers, _) => self.open_cf_worker_menu(),
                     // R2 Objects: a FILE row gets the per-object menu (Download / Delete);
                     // a FOLDER row has no actions, so `open_cf_object_menu` no-ops on it.
                     // NOT the bucket menu — that would offer to delete the very bucket you
@@ -1378,6 +1379,7 @@ impl App {
         }
         match self.cf.product {
             CfProduct::Analytics => self.cf_analytics_key(code, req),
+            CfProduct::Workers => self.cf_workers_key(code, req),
             CfProduct::R2 => match self.cf.screen {
                 CfScreen::Objects => self.cf_objects_key(code, req),
                 _ => self.cf_buckets_key(code, req),
@@ -1397,6 +1399,29 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('r') => self.cf_goto_analytics(req),
             _ => {}
+        }
+    }
+
+    fn cf_workers_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        match code {
+            KeyCode::Esc if !self.cf.filter.is_empty() => {
+                self.cf.filter.clear();
+                self.cf_clamp_filtered();
+            }
+            KeyCode::Esc => self.set_workspace(Workspace::Easypanel),
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('/') => {
+                self.cf.filter_input = true;
+                self.cf.filter.clear();
+            }
+            KeyCode::Char('r') => self.cf_reload(req),
+            KeyCode::Char('n') => self.open_cf_worker_deploy_form(),
+            KeyCode::Char('x') => self.open_cf_worker_delete_form(),
+            KeyCode::Char(' ') => self.open_cf_worker_menu(),
+            _ => {
+                let len = self.cf_workers_shown().len();
+                move_table(&mut self.cf.workers_row, code, len);
+            }
         }
     }
 

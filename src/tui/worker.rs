@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use crate::client::EasypanelClient;
 use crate::cloudflare::{
     object_basename, upload_key, AnalyticsSummary, CloudflareClient, R2Bucket, R2Object, Record,
-    RecordFilter, WebAnalyticsSite, Zone, MAX_REST_OBJECT_BYTES,
+    RecordFilter, WebAnalyticsSite, WorkerScript, WorkerUploadMode, Zone, MAX_REST_OBJECT_BYTES,
 };
 use crate::output::field;
 
@@ -504,6 +504,23 @@ pub(super) enum CfReq {
         token: String,
         account_id: String,
     },
+    Workers {
+        token: String,
+        account_id: String,
+    },
+    WorkerDeploy {
+        token: String,
+        account_id: String,
+        name: String,
+        path: String,
+        mode: WorkerUploadMode,
+    },
+    WorkerDelete {
+        token: String,
+        account_id: String,
+        name: String,
+        force: bool,
+    },
     CreateR2Bucket {
         token: String,
         account_id: String,
@@ -748,6 +765,8 @@ pub(super) enum CfResp {
     WebAnalyticsErr(String),
     /// The R2 buckets for the active account.
     R2Buckets(Vec<R2Bucket>),
+    /// The Worker scripts for the active account.
+    Workers(Vec<WorkerScript>),
     /// One folder level of `bucket` at `prefix` — the subfolders (`folders`, full key
     /// prefixes ending in `/`) and the files directly here. Both bucket AND prefix are
     /// echoed back so a stale reply for a level the user already left (a different bucket
@@ -2088,6 +2107,54 @@ fn handle_cf(req: CfReq) -> CfResp {
                 Err(e) => CfResp::Err(e.to_string()),
             }
         }
+        CfReq::Workers { token, account_id } => {
+            match CloudflareClient::new(&token).list_worker_scripts(&account_id) {
+                Ok(workers) => CfResp::Workers(workers),
+                Err(e) => CfResp::Err(e.to_string()),
+            }
+        }
+        CfReq::WorkerDeploy {
+            token,
+            account_id,
+            name,
+            path,
+            mode,
+        } => match std::fs::read(&path) {
+            Ok(bytes) => {
+                let filename = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("worker.js")
+                    .to_string();
+                match CloudflareClient::new(&token).put_worker_script_content(
+                    &account_id,
+                    &name,
+                    &filename,
+                    bytes,
+                    mode,
+                ) {
+                    Ok(script) => CfResp::Done(format!(
+                        "Worker '{}' deployed",
+                        if script.id.is_empty() {
+                            name
+                        } else {
+                            script.id
+                        }
+                    )),
+                    Err(e) => CfResp::Err(e.to_string()),
+                }
+            }
+            Err(e) => CfResp::Err(format!("Can't read {path}: {e}")),
+        },
+        CfReq::WorkerDelete {
+            token,
+            account_id,
+            name,
+            force,
+        } => match CloudflareClient::new(&token).delete_worker_script(&account_id, &name, force) {
+            Ok(()) => CfResp::Done(format!("Worker '{name}' deleted")),
+            Err(e) => CfResp::Err(e.to_string()),
+        },
         CfReq::CreateR2Bucket {
             token,
             account_id,
