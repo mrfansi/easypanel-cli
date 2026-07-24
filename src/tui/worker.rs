@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 use crate::client::EasypanelClient;
 use crate::cloudflare::{
     object_basename, upload_key, AnalyticsSummary, CloudflareClient, R2Bucket, R2Object, Record,
-    RecordFilter, WebAnalyticsSite, WorkerScript, WorkerUploadMode, Zone, MAX_REST_OBJECT_BYTES,
+    RecordFilter, WebAnalyticsSite, WorkerDeployment, WorkerScript, WorkerUploadMode, Zone,
+    MAX_REST_OBJECT_BYTES,
 };
 use crate::output::field;
 
@@ -508,6 +509,11 @@ pub(super) enum CfReq {
         token: String,
         account_id: String,
     },
+    WorkerDeployments {
+        token: String,
+        account_id: String,
+        name: String,
+    },
     WorkerDeploy {
         token: String,
         account_id: String,
@@ -767,6 +773,12 @@ pub(super) enum CfResp {
     R2Buckets(Vec<R2Bucket>),
     /// The Worker scripts for the active account.
     Workers(Vec<WorkerScript>),
+    /// The deployments/version history for one Worker. The worker name is echoed so
+    /// stale replies can be ignored when the user opens another Worker.
+    WorkerDeployments {
+        worker: String,
+        deployments: Vec<WorkerDeployment>,
+    },
     /// One folder level of `bucket` at `prefix` — the subfolders (`folders`, full key
     /// prefixes ending in `/`) and the files directly here. Both bucket AND prefix are
     /// echoed back so a stale reply for a level the user already left (a different bucket
@@ -2113,6 +2125,17 @@ fn handle_cf(req: CfReq) -> CfResp {
                 Err(e) => CfResp::Err(e.to_string()),
             }
         }
+        CfReq::WorkerDeployments {
+            token,
+            account_id,
+            name,
+        } => match CloudflareClient::new(&token).list_worker_deployments(&account_id, &name) {
+            Ok(deployments) => CfResp::WorkerDeployments {
+                worker: name,
+                deployments,
+            },
+            Err(e) => CfResp::Err(e.to_string()),
+        },
         CfReq::WorkerDeploy {
             token,
             account_id,

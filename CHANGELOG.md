@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.95.0] — 2026-07-24
+
+### Added
+
+- Cloudflare Workers now has a per-Worker deployments/version-history drill-in.
+  Press **Enter** on a Worker (or choose **View deployments** from the row menu /
+  command palette) to see the active deployment summary and the full deployment
+  history with versions, traffic percentage, source, trigger, author, timestamp,
+  and deployment message.
+- Added `easypanel cf workers deployments <name>` for a read-only CLI view of the
+  same Cloudflare Workers deployments API, with normal table output and JSON
+  output support.
+
 ## [0.94.0] — 2026-07-24
 
 ### Added
@@ -3553,7 +3566,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.94.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.95.0...HEAD
+[0.95.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.95.0
 [0.94.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.94.0
 [0.93.5]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.5
 [0.93.4]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.93.4

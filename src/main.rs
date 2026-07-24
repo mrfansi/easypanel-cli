@@ -472,6 +472,13 @@ enum CfWorkersCmd {
         #[arg(long)]
         account: Option<String>,
     },
+    /// List deployment/version history for a Worker
+    Deployments {
+        /// Worker script name
+        name: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
     /// Deploy one local file as Worker script content
     Deploy {
         /// Worker script name
@@ -1168,6 +1175,9 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     }
                     CfWorkersCmd::Get { name, out, account } => {
                         commands::cf_workers_get(&cf, account.as_deref(), &name, out.as_deref())
+                    }
+                    CfWorkersCmd::Deployments { name, account } => {
+                        commands::cf_workers_deployments(&cf, account.as_deref(), &name)
                     }
                     CfWorkersCmd::Deploy {
                         name,

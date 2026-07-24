@@ -7054,6 +7054,54 @@ fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
 }
 
 #[test]
+fn cf_worker_enter_opens_deployments_and_esc_returns_to_workers() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::Workers;
+    app.cf.workers = vec![crate::cloudflare::WorkerScript {
+        id: "siakad".into(),
+        handlers: vec!["fetch".into()],
+        usage_model: "standard".into(),
+        ..Default::default()
+    }];
+    app.cf.workers_row.select(Some(0));
+
+    app.on_key(KeyCode::Enter, &tx);
+    assert_eq!(app.cf.product, CfProduct::Workers);
+    assert_eq!(app.cf.screen, CfScreen::WorkerDeployments);
+    assert_eq!(app.cf.current_worker.as_deref(), Some("siakad"));
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::WorkerDeployments { name, .. })) if name == "siakad"
+    ));
+
+    app.handle(
+        Resp::Cf(CfResp::WorkerDeployments {
+            worker: "siakad".into(),
+            deployments: vec![crate::cloudflare::WorkerDeployment {
+                id: "4e907926".into(),
+                created_on: "2026-07-23T04:05:06Z".into(),
+                versions: vec![crate::cloudflare::WorkerDeploymentVersion {
+                    version_id: "abc123456789".into(),
+                    percentage: 100.0,
+                }],
+                ..Default::default()
+            }],
+        }),
+        &tx,
+    );
+    assert_eq!(app.cf.worker_deployments.len(), 1);
+    assert_eq!(app.cf.worker_deployments_row.selected(), Some(0));
+
+    app.on_key(KeyCode::Esc, &tx);
+    assert_eq!(app.cf.screen, CfScreen::Zones);
+    assert_eq!(app.cf.current_worker, None);
+    assert!(app.cf.worker_deployments.is_empty());
+}
+
+#[test]
 fn switching_back_to_dns_reloads_zones_for_the_active_account() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);

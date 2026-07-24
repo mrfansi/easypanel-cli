@@ -684,13 +684,21 @@ impl App {
     fn cf_palette_context_label(&self) -> Option<String> {
         match (self.cf.product, self.cf.screen) {
             (CfProduct::Analytics, _) => None,
+            (CfProduct::Workers, CfScreen::WorkerDeployments) => self
+                .cf
+                .current_worker
+                .as_ref()
+                .map(|w| format!("Deployments: {w}")),
             (CfProduct::Workers, _) => self
                 .selected_cf_worker()
                 .map(|w| format!("Worker: {}", w.id)),
             (CfProduct::Dns, CfScreen::Zones) => {
                 self.selected_cf_zone().map(|z| format!("Zone: {}", z.name))
             }
-            (CfProduct::Dns, CfScreen::Records | CfScreen::Objects) => self
+            (
+                CfProduct::Dns,
+                CfScreen::Records | CfScreen::Objects | CfScreen::WorkerDeployments,
+            ) => self
                 .selected_cf_record()
                 .map(|r| format!("Record: {} {}", r.kind, r.name)),
             (CfProduct::R2, CfScreen::Objects) => self
@@ -712,7 +720,29 @@ impl App {
         let mut items: Vec<(String, String, MenuRun)> = Vec::new();
         match (self.cf.product, self.cf.screen) {
             (CfProduct::Analytics, _) => {}
+            (CfProduct::Workers, CfScreen::WorkerDeployments) => {
+                items.push((
+                    "Back to Workers".into(),
+                    "back workers list".into(),
+                    |a: &mut App, _r: &Sender<Req>| {
+                        a.cf.screen = CfScreen::Zones;
+                        a.cf.current_worker = None;
+                        a.cf.worker_deployments.clear();
+                        a.cf.worker_deployments_row.select(None);
+                        a.cf.filter.clear();
+                        a.cf.error = None;
+                    },
+                ));
+            }
             (CfProduct::Workers, _) => {
+                if let Some(worker) = self.selected_cf_worker() {
+                    let ctx = format!("worker {}", worker.id);
+                    items.push((
+                        "View deployments".into(),
+                        format!("open deployments version history {ctx}"),
+                        |a: &mut App, r: &Sender<Req>| a.cf_open_worker_deployments(r),
+                    ));
+                }
                 items.push((
                     "Deploy Worker…".into(),
                     "deploy replace worker script".into(),
@@ -742,7 +772,10 @@ impl App {
                     ));
                 }
             }
-            (CfProduct::Dns, CfScreen::Records | CfScreen::Objects) => {
+            (
+                CfProduct::Dns,
+                CfScreen::Records | CfScreen::Objects | CfScreen::WorkerDeployments,
+            ) => {
                 if let Some(record) = self.selected_cf_record() {
                     let ctx = format!("record {} {}", record.kind, record.name);
                     items.push(("Edit record".into(), format!("edit {ctx}"), |a, _| {

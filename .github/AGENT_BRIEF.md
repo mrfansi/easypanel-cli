@@ -424,6 +424,15 @@ hint on the auth error, same pitfall as Zone:DNS).
   **Workers Scripts** (Read for list/get, Write for deploy/delete); `workers_hint` surfaces
   that on auth errors. Verified by unit tests and compile/test/clippy; no live mutation was
   performed.
+- **Workers Deployments / Version History — DONE v0.95.0.** Read-only endpoint
+  `GET /accounts/{account_id}/workers/scripts/{script_name}/deployments`. Domain
+  `WorkerDeployment`/`WorkerDeploymentVersion`/`WorkerDeploymentAnnotations` +
+  `filter_worker_deployments` and client `list_worker_deployments` live in
+  `cloudflare.rs`; CLI is `cf workers deployments <name>`. In the TUI, **Enter** on a
+  Worker opens a deployments drill-in with active deployment summary plus filterable
+  version history; **Esc** returns to the Workers list. Cloudflare returns the newest
+  deployment first, so the first row is treated as active. Token can use account-level
+  **Workers Scripts Read** for this read-only view.
 - **D1 (serverless SQL database).** New `CfProduct::D1` tab. Databases via
   `/accounts/{account_id}/d1/database` (list/create/delete); run SQL via
   `POST /accounts/{account_id}/d1/database/{database_id}/query` (or `/raw`), which returns

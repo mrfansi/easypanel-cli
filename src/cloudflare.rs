@@ -82,10 +82,101 @@ pub struct WorkerScript {
     pub usage_model: String,
 }
 
+/// One version entry inside a Worker deployment. Cloudflare lets a deployment point
+/// to one version at 100% traffic, or split traffic across two versions.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct WorkerDeploymentVersion {
+    #[serde(default)]
+    pub percentage: f64,
+    #[serde(default)]
+    pub version_id: String,
+}
+
+/// Free-form metadata Cloudflare attaches to Worker deployments. The dashboard uses
+/// these annotations for commit/PR messages and trigger source labels.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct WorkerDeploymentAnnotations {
+    #[serde(default, rename = "workers/message")]
+    pub message: String,
+    #[serde(default, rename = "workers/triggered_by")]
+    pub triggered_by: String,
+}
+
+/// A Workers deployment/version-history row. The latest deployment returned by
+/// Cloudflare is the active deployment.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct WorkerDeployment {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub created_on: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub strategy: String,
+    #[serde(default)]
+    pub versions: Vec<WorkerDeploymentVersion>,
+    #[serde(default)]
+    pub annotations: Option<WorkerDeploymentAnnotations>,
+    #[serde(default)]
+    pub author_email: String,
+}
+
+impl WorkerDeployment {
+    pub fn short_id(&self) -> String {
+        self.id.chars().take(8).collect()
+    }
+
+    pub fn message(&self) -> &str {
+        self.annotations
+            .as_ref()
+            .map(|a| a.message.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn triggered_by(&self) -> &str {
+        self.annotations
+            .as_ref()
+            .map(|a| a.triggered_by.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn versions_label(&self) -> String {
+        if self.versions.is_empty() {
+            return "-".into();
+        }
+        self.versions
+            .iter()
+            .map(|v| {
+                let short: String = v.version_id.chars().take(8).collect();
+                format!("{short} {}%", trim_percent(v.percentage))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkerDeploymentsResult {
+    #[serde(default)]
+    deployments: Vec<WorkerDeployment>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerUploadMode {
     Module,
     ServiceWorker,
+}
+
+fn trim_percent(value: f64) -> String {
+    let mut s = format!("{value:.2}");
+    while s.contains('.') && s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    s
 }
 
 impl WorkerUploadMode {
@@ -828,6 +919,31 @@ pub fn filter_workers<'a>(workers: &'a [WorkerScript], needle: &str) -> Vec<&'a 
         .collect()
 }
 
+/// The Worker deployments whose id/version/source/strategy/annotation/author contains
+/// `needle` (case-insensitive). Empty keeps everything.
+pub fn filter_worker_deployments<'a>(
+    deployments: &'a [WorkerDeployment],
+    needle: &str,
+) -> Vec<&'a WorkerDeployment> {
+    let n = needle.to_ascii_lowercase();
+    deployments
+        .iter()
+        .filter(|d| {
+            n.is_empty()
+                || d.id.to_ascii_lowercase().contains(&n)
+                || d.source.to_ascii_lowercase().contains(&n)
+                || d.strategy.to_ascii_lowercase().contains(&n)
+                || d.author_email.to_ascii_lowercase().contains(&n)
+                || d.message().to_ascii_lowercase().contains(&n)
+                || d.triggered_by().to_ascii_lowercase().contains(&n)
+                || d.versions.iter().any(|v| {
+                    v.version_id.to_ascii_lowercase().contains(&n)
+                        || trim_percent(v.percentage).contains(&n)
+                })
+        })
+        .collect()
+}
+
 /// A bulk selection over records: explicit ids and/or where-clauses.
 #[derive(Debug, Clone, Default)]
 pub struct Selector {
@@ -1126,6 +1242,21 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
         parse_envelope(&body).map_err(workers_hint)
     }
 
+    pub fn list_worker_deployments(
+        &self,
+        account_id: &str,
+        name: &str,
+    ) -> Result<Vec<WorkerDeployment>> {
+        let body = self
+            .get(
+                &format!("/accounts/{account_id}/workers/scripts/{name}/deployments"),
+                &[],
+            )
+            .map_err(workers_hint)?;
+        let result: WorkerDeploymentsResult = parse_envelope(&body).map_err(workers_hint)?;
+        Ok(result.deployments)
+    }
+
     /// Download a Worker's script content. On success Cloudflare returns raw script bytes
     /// (not a JSON envelope); on error it returns the standard envelope.
     pub fn get_worker_script_content(
@@ -1421,6 +1552,73 @@ mod tests {
         assert_eq!(filter_workers(&scripts, "unbound")[0].id, "cron-job");
         assert_eq!(filter_workers(&scripts, "bbb")[0].id, "cron-job");
         assert_eq!(filter_workers(&scripts, "").len(), 2);
+    }
+
+    #[test]
+    fn worker_deployments_parse_from_nested_result_object() {
+        let body = r#"{"success":true,"errors":[],"messages":[],
+            "result":{"deployments":[{
+                "id":"4e907926deployment","created_on":"2026-07-23T04:05:06Z",
+                "source":"api","strategy":"percentage",
+                "versions":[{"version_id":"abc123456789","percentage":100}],
+                "annotations":{
+                    "workers/message":"Merge pull request #16",
+                    "workers/triggered_by":"github"
+                },
+                "author_email":"operator@example.com"
+            }]}}"#;
+        let result: WorkerDeploymentsResult = parse_envelope(body).unwrap();
+        let deployments = result.deployments;
+        assert_eq!(deployments.len(), 1);
+        assert_eq!(deployments[0].short_id(), "4e907926");
+        assert_eq!(deployments[0].versions_label(), "abc12345 100%");
+        assert_eq!(deployments[0].message(), "Merge pull request #16");
+        assert_eq!(deployments[0].triggered_by(), "github");
+        assert_eq!(deployments[0].author_email, "operator@example.com");
+    }
+
+    #[test]
+    fn filter_worker_deployments_matches_versions_annotations_and_author() {
+        let deployments = vec![
+            WorkerDeployment {
+                id: "deploy-one".into(),
+                source: "api".into(),
+                strategy: "percentage".into(),
+                versions: vec![WorkerDeploymentVersion {
+                    version_id: "version-alpha".into(),
+                    percentage: 100.0,
+                }],
+                annotations: Some(WorkerDeploymentAnnotations {
+                    message: "release checkout".into(),
+                    triggered_by: "github".into(),
+                }),
+                author_email: "ops@example.com".into(),
+                ..Default::default()
+            },
+            WorkerDeployment {
+                id: "deploy-two".into(),
+                source: "dash".into(),
+                strategy: "percentage".into(),
+                versions: vec![WorkerDeploymentVersion {
+                    version_id: "version-beta".into(),
+                    percentage: 20.0,
+                }],
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            filter_worker_deployments(&deployments, "checkout")[0].id,
+            "deploy-one"
+        );
+        assert_eq!(
+            filter_worker_deployments(&deployments, "version-beta")[0].id,
+            "deploy-two"
+        );
+        assert_eq!(
+            filter_worker_deployments(&deployments, "ops@example")[0].id,
+            "deploy-one"
+        );
+        assert_eq!(filter_worker_deployments(&deployments, "").len(), 2);
     }
 
     #[test]

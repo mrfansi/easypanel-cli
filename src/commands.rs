@@ -702,6 +702,14 @@ pub fn cf_r2_object_rm(
 
 // ---------- Workers scripts (account-scoped) ----------
 
+fn empty_dash(value: &str) -> String {
+    if value.trim().is_empty() {
+        "-".into()
+    } else {
+        value.to_string()
+    }
+}
+
 pub fn cf_workers_list(cfg: &CloudflareConfig, account: Option<&str>) -> Result<()> {
     let (client, acc) = cf_client(cfg, account)?;
     let account_id = cf_account_id(&acc)?;
@@ -766,6 +774,74 @@ pub fn cf_workers_get(
     println!(
         "Downloaded Worker {name} → {dest} ({})",
         format_bytes(n as f64)
+    );
+    Ok(())
+}
+
+pub fn cf_workers_deployments(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    name: &str,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let deployments = client.list_worker_deployments(&account_id, name)?;
+    if output::json_output() {
+        output::print_json(&serde_json::to_value(
+            deployments
+                .iter()
+                .map(|d| {
+                    json!({
+                        "id": d.id,
+                        "created_on": d.created_on,
+                        "source": d.source,
+                        "strategy": d.strategy,
+                        "versions": d.versions.iter().map(|v| json!({
+                            "version_id": v.version_id,
+                            "percentage": v.percentage,
+                        })).collect::<Vec<_>>(),
+                        "message": d.message(),
+                        "triggered_by": d.triggered_by(),
+                        "author_email": d.author_email,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?);
+        return Ok(());
+    }
+    if deployments.is_empty() {
+        println!("No deployments found for Worker '{name}'.");
+        return Ok(());
+    }
+    let rows = deployments
+        .iter()
+        .map(|d| {
+            vec![
+                d.short_id(),
+                d.versions_label(),
+                d.created_on
+                    .split('T')
+                    .next()
+                    .unwrap_or(&d.created_on)
+                    .to_string(),
+                empty_dash(&d.source),
+                empty_dash(d.triggered_by()),
+                empty_dash(&d.author_email),
+                empty_dash(d.message()),
+            ]
+        })
+        .collect();
+    table(
+        &[
+            "Deployment",
+            "Versions / traffic",
+            "Created",
+            "Source",
+            "Trigger",
+            "Author",
+            "Message",
+        ],
+        rows,
     );
     Ok(())
 }

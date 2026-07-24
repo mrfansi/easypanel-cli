@@ -427,6 +427,8 @@ pub(super) fn cf_screen_keys(screen: CfScreen) -> &'static [Key] {
         // Objects is an R2 screen (render_help routes R2 to cf_objects_keys); it shares
         // this fn only to keep the match exhaustive.
         CfScreen::Objects => cf_objects_keys(),
+        // WorkerDeployments is rendered through the Workers product route.
+        CfScreen::WorkerDeployments => cf_worker_deployments_keys(),
     }
 }
 
@@ -485,12 +487,28 @@ pub(super) fn cf_workers_keys() -> &'static [Key] {
             "a",
             "switch Cloudflare account (a picker, like `s` switches servers)",
         ),
+        Key(
+            "Enter",
+            "open deployments/version history for the selected Worker",
+        ),
         Key("Space", "action menu for the selected Worker"),
         Key("n", "deploy or replace a Worker from a local file"),
         Key("x", "delete a Worker (type its name to confirm)"),
         Key("/", "filter the list"),
         Key("r", "refresh"),
         Key("Esc", "back to EasyPanel"),
+    ]
+}
+
+pub(super) fn cf_worker_deployments_keys() -> &'static [Key] {
+    &[
+        Key(
+            "a",
+            "switch Cloudflare account (a picker, like `s` switches servers)",
+        ),
+        Key("/", "filter deployments/version history"),
+        Key("r", "refresh deployments"),
+        Key("Esc", "back to Workers"),
     ]
 }
 
@@ -501,7 +519,10 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     let rows = if cf {
         match app.cf.product {
             CfProduct::Analytics => cf_analytics_keys(),
-            CfProduct::Workers => cf_workers_keys(),
+            CfProduct::Workers => match app.cf.screen {
+                CfScreen::WorkerDeployments => cf_worker_deployments_keys(),
+                _ => cf_workers_keys(),
+            },
             CfProduct::R2 => match app.cf.screen {
                 CfScreen::Objects => cf_objects_keys(),
                 _ => cf_buckets_keys(),
@@ -564,14 +585,19 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     let screen_label = if cf {
         match app.cf.product {
             CfProduct::Analytics => "Cloudflare · Analytics",
-            CfProduct::Workers => "Cloudflare · Workers",
+            CfProduct::Workers => match app.cf.screen {
+                CfScreen::WorkerDeployments => "Cloudflare · Workers · deployments",
+                _ => "Cloudflare · Workers",
+            },
             CfProduct::R2 => match app.cf.screen {
                 CfScreen::Objects => "Cloudflare · R2 · objects",
                 _ => "Cloudflare · R2",
             },
             CfProduct::Dns => match app.cf.screen {
                 CfScreen::Zones => "Cloudflare · Domains",
-                CfScreen::Records | CfScreen::Objects => "Cloudflare · Domains · records",
+                CfScreen::Records | CfScreen::Objects | CfScreen::WorkerDeployments => {
+                    "Cloudflare · Domains · records"
+                }
             },
         }
     } else {
@@ -758,10 +784,15 @@ pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &m
     // (Zones home / Records drill-in). R2 has a single buckets screen for now.
     match app.cf.product {
         CfProduct::Analytics => render_cf_analytics(f, header, body, app),
-        CfProduct::Workers => render_cf_workers(f, header, body, app),
+        CfProduct::Workers => match app.cf.screen {
+            CfScreen::WorkerDeployments => render_cf_worker_deployments(f, header, body, app),
+            _ => render_cf_workers(f, header, body, app),
+        },
         CfProduct::Dns => match app.cf.screen {
             CfScreen::Zones => render_cf_zones(f, header, body, app),
-            CfScreen::Records | CfScreen::Objects => render_cf_records(f, header, body, app),
+            CfScreen::Records | CfScreen::Objects | CfScreen::WorkerDeployments => {
+                render_cf_records(f, header, body, app)
+            }
         },
         CfProduct::R2 => match app.cf.screen {
             CfScreen::Objects => render_cf_objects(f, header, body, app),
@@ -780,7 +811,7 @@ pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
         }
         // The Zones home. R2's Objects drill-in never routes here (R2 uses the CF_*_HINTS
         // consts), so it shares this arm only to keep the match exhaustive.
-        CfScreen::Zones | CfScreen::Objects => {
+        CfScreen::Zones | CfScreen::Objects | CfScreen::WorkerDeployments => {
             "a account · : palette · Enter records · n add zone · x delete · Space menu · / filter · r refresh · Esc EasyPanel"
         }
     }
@@ -800,7 +831,10 @@ pub(super) const CF_OBJECTS_HINTS: &str =
 pub(super) const CF_ANALYTICS_HINTS: &str = "a account · : palette · r refresh · Esc EasyPanel";
 
 pub(super) const CF_WORKERS_HINTS: &str =
-    "a account · : palette · n deploy · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
+    "a account · : palette · Enter deployments · n deploy · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
+
+pub(super) const CF_WORKER_DEPLOYMENTS_HINTS: &str =
+    "a account · : palette · / filter · r refresh · Esc Workers";
 
 /// The orange workspace header: the bordered title + the PRODUCT tab bar (Domains
 /// today; D1/R2/KV/Workers/Connectors slot in later). Drawn exactly like the
@@ -914,6 +948,14 @@ fn short_cf_date(raw: &str) -> String {
         .filter(|s| s.chars().all(|c| c.is_ascii_digit() || c == '-'))
         .unwrap_or("-")
         .to_string()
+}
+
+fn dash_if_empty(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        "-".into()
+    } else {
+        raw.to_string()
+    }
 }
 
 fn metric_bar(value: u64, max: u64) -> String {
@@ -1562,6 +1604,148 @@ fn render_cf_workers(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         &widths,
         rows,
         &mut app.cf.workers_row,
+        tint,
+        |_, _| None,
+    );
+}
+
+fn render_cf_worker_deployments(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    let acct = app.cf.active.as_ref().map(|a| a.name.clone());
+    let worker = app
+        .cf
+        .current_worker
+        .clone()
+        .unwrap_or_else(|| "Worker".into());
+    let title = match &acct {
+        Some(name) => format!("Cloudflare — {name} — {worker}"),
+        None => format!("Cloudflare — {worker}"),
+    };
+    cf_header(
+        f,
+        header,
+        &title,
+        app,
+        app.cf_product_at.elapsed().as_millis() < 300,
+    );
+
+    if app.cf_empty() {
+        f.render_widget(
+            Paragraph::new(format!("  {CF_EMPTY_HINT}"))
+                .style(Style::default().fg(Color::DarkGray))
+                .block(pane("Worker deployments".to_string(), cf_tint(app))),
+            body,
+        );
+        return;
+    }
+
+    let state = cf_list_state(
+        cf_loading(app, "Worker deployments"),
+        app.cf.error.is_some(),
+        app.cf.worker_deployments.is_empty(),
+    );
+    if state != CfListState::Ready {
+        cf_placeholder(
+            f,
+            body,
+            "Worker deployments",
+            &state,
+            app.cf.error.as_deref(),
+            cf_tint(app),
+        );
+        return;
+    }
+
+    let chunks = Layout::vertical([Constraint::Length(5), Constraint::Min(8)])
+        .spacing(1)
+        .split(body);
+    let active = app.cf.worker_deployments.first();
+    let active_rows = active
+        .map(|d| {
+            vec![Row::new(vec![
+                Cell::from(d.short_id()),
+                Cell::from(d.versions_label()),
+                Cell::from(short_cf_date(&d.created_on)),
+                Cell::from(dash_if_empty(&d.source)),
+                Cell::from(dash_if_empty(d.triggered_by())),
+                Cell::from(dash_if_empty(&d.author_email)),
+            ])]
+        })
+        .unwrap_or_default();
+    let active_table = Table::new(
+        active_rows,
+        [
+            Constraint::Length(12),
+            Constraint::Min(24),
+            Constraint::Length(12),
+            Constraint::Length(14),
+            Constraint::Length(16),
+            Constraint::Length(24),
+        ],
+    )
+    .header(
+        Row::new([
+            "Deployment",
+            "Versions / traffic",
+            "Deployed",
+            "Source",
+            "Trigger",
+            "Author",
+        ])
+        .style(Style::default().fg(Color::Gray)),
+    )
+    .block(pane("Active deployment".to_string(), cf_tint(app)));
+    f.render_widget(active_table, chunks[0]);
+
+    let shown = app.cf_worker_deployments_shown();
+    let title = filter_count_title(
+        "Version history",
+        shown.len(),
+        app.cf.worker_deployments.len(),
+        &app.cf.filter,
+        app.cf.filter_input,
+    );
+    let rows: Vec<Vec<String>> = shown
+        .iter()
+        .map(|d| {
+            vec![
+                d.short_id(),
+                d.versions_label(),
+                short_cf_date(&d.created_on),
+                dash_if_empty(&d.source),
+                dash_if_empty(d.triggered_by()),
+                dash_if_empty(&d.author_email),
+                dash_if_empty(d.message()),
+            ]
+        })
+        .collect();
+    let headers = [
+        "Deployment",
+        "Versions / traffic",
+        "Created",
+        "Source",
+        "Trigger",
+        "Author",
+        "Message",
+    ];
+    let widths = [
+        Constraint::Length(12),
+        Constraint::Length(26),
+        Constraint::Length(12),
+        Constraint::Length(14),
+        Constraint::Length(16),
+        Constraint::Length(24),
+        Constraint::Min(28),
+    ];
+    app.table_area = chunks[1];
+    let tint = cf_tint(app);
+    render_table(
+        f,
+        chunks[1],
+        title,
+        &headers,
+        &widths,
+        rows,
+        &mut app.cf.worker_deployments_row,
         tint,
         |_, _| None,
     );
@@ -3335,7 +3519,10 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
         } else {
             let hints = match app.cf.product {
                 CfProduct::Analytics => CF_ANALYTICS_HINTS,
-                CfProduct::Workers => CF_WORKERS_HINTS,
+                CfProduct::Workers => match app.cf.screen {
+                    CfScreen::WorkerDeployments => CF_WORKER_DEPLOYMENTS_HINTS,
+                    _ => CF_WORKERS_HINTS,
+                },
                 CfProduct::R2 => match app.cf.screen {
                     CfScreen::Objects => CF_OBJECTS_HINTS,
                     _ => CF_BUCKETS_HINTS,

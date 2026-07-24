@@ -7,9 +7,10 @@ use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
 
 use crate::cloudflare::{
-    apply_patch, filter_buckets, filter_records, filter_workers, filter_zones, proxyable,
-    record_body, valid_record_type, AnalyticsSummary, CloudflareAccount, R2Bucket, R2Object,
-    Record, RecordFilter, RecordPatch, WebAnalyticsSite, WorkerScript, WorkerUploadMode, Zone,
+    apply_patch, filter_buckets, filter_records, filter_worker_deployments, filter_workers,
+    filter_zones, proxyable, record_body, valid_record_type, AnalyticsSummary, CloudflareAccount,
+    R2Bucket, R2Object, Record, RecordFilter, RecordPatch, WebAnalyticsSite, WorkerDeployment,
+    WorkerScript, WorkerUploadMode, Zone,
 };
 use crate::commands;
 use crate::output::field;
@@ -187,6 +188,8 @@ pub(super) enum CfScreen {
     /// The R2 objects drill-in from a selected bucket — the mirror of Records for
     /// DNS. R2's buckets home is any non-`Objects` state (R2 dispatches on this).
     Objects,
+    /// The Workers deployments/version-history drill-in from a selected Worker.
+    WorkerDeployments,
 }
 
 /// A Cloudflare product section, shown as a tab in the CF workspace. DNS (zones +
@@ -274,6 +277,9 @@ pub(super) struct CfUi {
     /// tab and mutate through explicit deploy/delete actions.
     pub(super) workers: Vec<WorkerScript>,
     pub(super) workers_row: TableState,
+    pub(super) current_worker: Option<String>,
+    pub(super) worker_deployments: Vec<WorkerDeployment>,
+    pub(super) worker_deployments_row: TableState,
     pub(super) current_bucket: Option<String>,
     /// A CF-local text filter, narrowing the loaded list client-side.
     pub(super) filter: String,
@@ -757,14 +763,19 @@ impl App {
         if self.workspace == Workspace::Cloudflare {
             return match self.cf.product {
                 CfProduct::Analytics => 0,
-                CfProduct::Workers => self.cf_workers_shown().len(),
+                CfProduct::Workers => match self.cf.screen {
+                    CfScreen::WorkerDeployments => self.cf_worker_deployments_shown().len(),
+                    _ => self.cf_workers_shown().len(),
+                },
                 CfProduct::R2 => match self.cf.screen {
                     CfScreen::Objects => self.cf_level_len(),
                     _ => self.cf_buckets_shown().len(),
                 },
                 CfProduct::Dns => match self.cf.screen {
                     CfScreen::Zones => self.cf_zones_shown().len(),
-                    CfScreen::Records | CfScreen::Objects => self.cf_records_shown().len(),
+                    CfScreen::Records | CfScreen::Objects | CfScreen::WorkerDeployments => {
+                        self.cf_records_shown().len()
+                    }
                 },
             };
         }
@@ -787,14 +798,19 @@ impl App {
         if self.workspace == Workspace::Cloudflare {
             return match self.cf.product {
                 CfProduct::Analytics => None,
-                CfProduct::Workers => Some(&mut self.cf.workers_row),
+                CfProduct::Workers => match self.cf.screen {
+                    CfScreen::WorkerDeployments => Some(&mut self.cf.worker_deployments_row),
+                    _ => Some(&mut self.cf.workers_row),
+                },
                 CfProduct::R2 => match self.cf.screen {
                     CfScreen::Objects => Some(&mut self.cf.r2_objects_row),
                     _ => Some(&mut self.cf.r2_row),
                 },
                 CfProduct::Dns => match self.cf.screen {
                     CfScreen::Zones => Some(&mut self.cf.zones_row),
-                    CfScreen::Records | CfScreen::Objects => Some(&mut self.cf.records_row),
+                    CfScreen::Records | CfScreen::Objects | CfScreen::WorkerDeployments => {
+                        Some(&mut self.cf.records_row)
+                    }
                 },
             };
         }
@@ -1121,6 +1137,11 @@ impl App {
             .map(|w| (*w).clone())
     }
 
+    /// The Worker deployments shown right now (after the CF-local filter).
+    pub(super) fn cf_worker_deployments_shown(&self) -> Vec<&WorkerDeployment> {
+        filter_worker_deployments(&self.cf.worker_deployments, &self.cf.filter)
+    }
+
     /// The active account's account-id, which every R2 call needs (R2 is
     /// account-scoped — unlike DNS, which can list zones without one).
     pub(super) fn cf_account_id(&self) -> Option<String> {
@@ -1276,6 +1297,9 @@ impl App {
         self.cf.error = None;
         self.cf.workers.clear();
         self.cf.workers_row.select(None);
+        self.cf.current_worker = None;
+        self.cf.worker_deployments.clear();
+        self.cf.worker_deployments_row.select(None);
         let Some(account_id) = self.cf_account_id() else {
             self.status =
                 "This account has no account-id — Workers is account-scoped; edit it with a".into();
@@ -1395,6 +1419,32 @@ impl App {
         self.cf_request_level(String::new(), req);
     }
 
+    /// Enter on a Worker: open its deployments/version history. This mirrors the
+    /// Cloudflare dashboard's Worker detail page without adding another product tab.
+    pub(super) fn cf_open_worker_deployments(&mut self, req: &Sender<Req>) {
+        let Some(worker) = self.selected_cf_worker() else {
+            self.status = "No Worker selected".into();
+            return;
+        };
+        self.cf_open_worker_deployments_for(worker.id, req);
+    }
+
+    /// Open a specific Worker's deployments by name — shared by Enter and palette.
+    pub(super) fn cf_open_worker_deployments_for(&mut self, name: String, req: &Sender<Req>) {
+        self.cf.product = CfProduct::Workers;
+        self.cf.screen = CfScreen::WorkerDeployments;
+        self.cf.current_worker = Some(name.clone());
+        self.cf_enter_list();
+        if let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id()) {
+            let _ = req.send(Req::Cf(CfReq::WorkerDeployments {
+                token,
+                account_id,
+                name: name.clone(),
+            }));
+            self.status = format!("Loading deployments for {name}…");
+        }
+    }
+
     /// Make an account the active one — shared by Enter in the `a` picker and the
     /// palette's account jump. Records the SetDefault side-effect (persisted by the
     /// event loop) and returns to that account's home, exactly as the picker did inline.
@@ -1473,6 +1523,10 @@ impl App {
                 self.cf.r2_objects.clear();
                 self.cf.r2_objects_row.select(None);
             }
+            CfScreen::WorkerDeployments => {
+                self.cf.worker_deployments.clear();
+                self.cf.worker_deployments_row.select(None);
+            }
         }
     }
 
@@ -1493,7 +1547,17 @@ impl App {
         }
         if self.cf.product == CfProduct::Workers {
             if let Some(account_id) = self.cf_account_id() {
-                let _ = req.send(Req::Cf(CfReq::Workers { token, account_id }));
+                if self.cf.screen == CfScreen::WorkerDeployments {
+                    if let Some(name) = self.cf.current_worker.clone() {
+                        let _ = req.send(Req::Cf(CfReq::WorkerDeployments {
+                            token,
+                            account_id,
+                            name,
+                        }));
+                    }
+                } else {
+                    let _ = req.send(Req::Cf(CfReq::Workers { token, account_id }));
+                }
             }
             return;
         }
@@ -1539,8 +1603,9 @@ impl App {
                     }));
                 }
             }
-            // Objects is an R2 screen, handled by the R2 branch above.
-            CfScreen::Objects => {}
+            // Objects is an R2 screen and WorkerDeployments is a Workers screen,
+            // both handled by their product branches above.
+            CfScreen::Objects | CfScreen::WorkerDeployments => {}
         }
     }
 
@@ -1559,9 +1624,17 @@ impl App {
             return;
         }
         if self.cf.product == CfProduct::Workers {
-            let len = self.cf_workers_shown().len();
-            *self.cf.workers_row.offset_mut() = 0;
-            self.cf.workers_row.select((len > 0).then_some(0));
+            if self.cf.screen == CfScreen::WorkerDeployments {
+                let len = self.cf_worker_deployments_shown().len();
+                *self.cf.worker_deployments_row.offset_mut() = 0;
+                self.cf
+                    .worker_deployments_row
+                    .select((len > 0).then_some(0));
+            } else {
+                let len = self.cf_workers_shown().len();
+                *self.cf.workers_row.offset_mut() = 0;
+                self.cf.workers_row.select((len > 0).then_some(0));
+            }
             return;
         }
         match self.cf.screen {
@@ -1575,8 +1648,9 @@ impl App {
                 *self.cf.records_row.offset_mut() = 0;
                 self.cf.records_row.select((len > 0).then_some(0));
             }
-            // Objects is an R2 screen, handled by the R2 branch above.
-            CfScreen::Objects => {}
+            // Objects is an R2 screen and WorkerDeployments is a Workers screen,
+            // both handled by their product branches above.
+            CfScreen::Objects | CfScreen::WorkerDeployments => {}
         }
     }
 
@@ -1863,6 +1937,7 @@ impl App {
             return;
         }
         self.open_menu(vec![
+            MenuItem::new("View deployments", |a, r| a.cf_open_worker_deployments(r)),
             MenuItem::new("Deploy/replace Worker…", |a, _| {
                 a.open_cf_worker_deploy_form()
             }),
@@ -2634,6 +2709,19 @@ impl App {
                 self.cf.workers = workers;
                 let len = self.cf_workers_shown().len();
                 select_first(&mut self.cf.workers_row, len);
+            }
+            CfResp::WorkerDeployments {
+                worker,
+                deployments,
+            } => {
+                // Discard a stale deployments reply if the user has already opened
+                // another Worker.
+                if self.cf.current_worker.as_deref() == Some(worker.as_str()) {
+                    self.cf.error = None;
+                    self.cf.worker_deployments = deployments;
+                    let len = self.cf_worker_deployments_shown().len();
+                    select_first(&mut self.cf.worker_deployments_row, len);
+                }
             }
             CfResp::R2Objects {
                 bucket,
