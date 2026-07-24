@@ -510,6 +510,11 @@ pub(super) enum CfReq {
         token: String,
         account_id: String,
     },
+    TunnelCreate {
+        token: String,
+        account_id: String,
+        name: String,
+    },
     TunnelConfig {
         token: String,
         account_id: String,
@@ -2177,6 +2182,14 @@ fn handle_cf(req: CfReq) -> CfResp {
                 Err(e) => CfResp::Err(e.to_string()),
             }
         }
+        CfReq::TunnelCreate {
+            token,
+            account_id,
+            name,
+        } => match CloudflareClient::new(&token).create_tunnel(&account_id, &name) {
+            Ok(tunnel) => CfResp::Done(format!("Tunnel '{}' created", tunnel.name)),
+            Err(e) => CfResp::Err(e.to_string()),
+        },
         CfReq::TunnelConfig {
             token,
             account_id,

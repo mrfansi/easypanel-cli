@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.2] — 2026-07-24
+
+### Added
+
+- Cloudflare Tunnels can now be created from the TUI. On the Tunnels list, **n**
+  opens a remotely configured tunnel form (`config_src=cloudflare`), and the
+  Space menu / command palette expose the same create action.
+
+### Changed
+
+- Tunnel route add/edit forms now mirror Cloudflare's published-application flow:
+  **Service Type** is a choice (`http`, `https`, `unix`, `unix+tls`, `tcp`, `ssh`,
+  `rdp`, `smb`, `http_status`, `bastion`, `hello_world`) and **Service URL** is
+  collected separately where that type needs one.
+- Removed **Advanced origin JSON** from Tunnel route forms. Origin request options
+  are now explicit fields for TLS, HTTP, connection, proxy, keep-alive, and Access
+  JWT validation settings, while unknown existing keys are preserved on edit.
+
+### Fixed
+
+- Tunnel service validation now accepts Cloudflare's documented `unix:/path`,
+  `unix+tls:/path`, `bastion`, and `hello_world` service values.
+
 ## [0.98.1] — 2026-07-24
 
 ### Changed

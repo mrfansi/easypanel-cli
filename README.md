@@ -590,17 +590,20 @@ easypanel cf tunnels route delete my-tunnel --hostname app.example.com --delete-
 ```
 
 Tunnels uses Cloudflare's account-scoped cloudflared Tunnel API:
-`GET /accounts/{account_id}/cfd_tunnel` for the list and
+`GET /accounts/{account_id}/cfd_tunnel` for the list,
+`POST /accounts/{account_id}/cfd_tunnel` for remotely configured tunnel creation, and
 `GET` / `PUT /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations` for the
 ingress configuration. The list shows each tunnel's status, config source, created
 date, target `<tunnel-id>.cfargotunnel.com`, and id. The config view shows the
 hostnames/services published through that tunnel, including the catch-all rule.
 Route add/edit/delete performs Cloudflare's required read-modify-write on
-`config.ingress` and keeps a catch-all rule at the end. Pass `--dns` on add/edit to
+`config.ingress` and keeps a catch-all rule at the end. In the TUI, route forms split
+Cloudflare's service value into **Service Type** plus **Service URL** and expose origin
+request settings as normal form fields instead of raw JSON. Pass `--dns` on add/edit to
 create or update the public CNAME to the tunnel target; pass `--delete-dns` on delete
 to remove matching CNAME records. If the hostname spans multiple zones, pass
-`--zone <zone-name-or-id>`. Tunnel lifecycle writes and connector-token handling should
-remain a separate, guarded flow.
+`--zone <zone-name-or-id>`. Connector-token handling should remain a separate, guarded
+flow.
 
 **R2 (object storage) — buckets and objects:**
 
@@ -659,10 +662,13 @@ switcher), **Enter** on a domain drills into its DNS records, and records suppor
 add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a
 `Space` menu (`Space`/right-click also opens a per-zone or per-record action menu). On
 **Tunnels**, the list shows cloudflared tunnels with status, config source, created date,
-target, and id; **Enter** opens that tunnel's published routes/config table with
+target, and id; **`n`** creates a remote-configured tunnel, and **Enter** opens that tunnel's published routes/config table with
 hostname, service, and origin request columns. In that route table, **`n`** adds an
 ingress route, **`e`** edits the selected route, **`x`** deletes it with typed-hostname
-confirmation, and `Space`/right-click opens the same row menu. On
+confirmation, and `Space`/right-click opens the same row menu. Route add/edit uses a
+service-type picker for `http`, `https`, `unix`, `unix+tls`, `tcp`, `ssh`, `rdp`, `smb`,
+`http_status`, `bastion`, and `hello_world`, with origin request settings shown as form
+fields. On
 **R2**, the same shape lists buckets with `n` create / `x` delete, and **Enter** drills
 into a bucket's objects. On **Workers**, the list shows scripts, handlers, usage model,
 modified date, and etag; **Enter** opens that Worker's deployments/version history with

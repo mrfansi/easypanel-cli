@@ -828,6 +828,11 @@ impl App {
                 ));
             }
             (CfProduct::Tunnels, _) => {
+                items.push((
+                    "Create tunnel…".into(),
+                    "add new create tunnel cloudflared connector".into(),
+                    |a: &mut App, _r: &Sender<Req>| a.open_cf_tunnel_form(),
+                ));
                 if let Some(tunnel) = self.selected_cf_tunnel() {
                     let ctx = format!("tunnel {}", tunnel.name);
                     items.push((

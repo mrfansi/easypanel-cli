@@ -7144,7 +7144,7 @@ fn cf_tunnel_enter_opens_config_and_esc_returns_to_tunnels() {
 }
 
 #[test]
-fn cf_tunnel_route_edit_shows_no_tls_verify_as_a_toggle() {
+fn cf_tunnel_route_edit_models_service_and_origin_request_as_fields() {
     let mut app = App::new("s".into(), vec![]);
     app.cf.active = Some(cf_account());
     app.set_workspace(Workspace::Cloudflare);
@@ -7156,7 +7156,29 @@ fn cf_tunnel_route_edit_shows_no_tls_verify_as_a_toggle() {
             ingress: vec![crate::cloudflare::TunnelIngressRule {
                 hostname: "ai-master.mrfansi.dev".into(),
                 service: "https://openclaw-master:18789".into(),
-                origin_request: Some(json!({"noTLSVerify": true})),
+                origin_request: Some(json!({
+                    "originServerName": "origin.mrfansi.dev",
+                    "matchSNItoHost": true,
+                    "caPool": "/etc/cloudflared/ca.pem",
+                    "noTLSVerify": true,
+                    "tlsTimeout": "15s",
+                    "http2Origin": true,
+                    "httpHostHeader": "app.internal",
+                    "disableChunkedEncoding": true,
+                    "connectTimeout": "45s",
+                    "noHappyEyeballs": true,
+                    "proxyType": "socks",
+                    "proxyAddress": "127.0.0.1",
+                    "proxyPort": 1080,
+                    "keepAliveTimeout": "2m",
+                    "keepAliveConnections": 150,
+                    "tcpKeepAlive": "45s",
+                    "access": {
+                        "required": true,
+                        "teamName": "mrfansi",
+                        "audTag": ["aud-1", "aud-2"]
+                    }
+                })),
                 ..Default::default()
             }],
             ..Default::default()
@@ -7169,9 +7191,49 @@ fn cf_tunnel_route_edit_shows_no_tls_verify_as_a_toggle() {
 
     let form = app.form.as_ref().expect("edit form should open");
     assert!(matches!(form.kind, FormKind::CfTunnelRouteEdit { .. }));
-    assert_eq!(f_val(form, "No TLS verify"), "yes");
-    assert_eq!(f_val(form, "Advanced origin JSON"), "");
-    assert_eq!(f_val(form, "Service"), "https://openclaw-master:18789");
+    assert_eq!(f_val(form, "Service Type"), "https");
+    assert_eq!(f_val(form, "Service URL"), "openclaw-master:18789");
+    assert_eq!(f_val(form, "Origin Server Name"), "origin.mrfansi.dev");
+    assert_eq!(f_val(form, "Match SNI to Host"), "yes");
+    assert_eq!(
+        f_val(form, "Certificate Authority Pool"),
+        "/etc/cloudflared/ca.pem"
+    );
+    assert_eq!(f_val(form, "No TLS Verify"), "yes");
+    assert_eq!(f_val(form, "TLS Timeout"), "15s");
+    assert_eq!(f_val(form, "HTTP2 Connection"), "yes");
+    assert_eq!(f_val(form, "HTTP Host Header"), "app.internal");
+    assert_eq!(f_val(form, "Disable Chunked Encoding"), "yes");
+    assert_eq!(f_val(form, "Connect Timeout"), "45s");
+    assert_eq!(f_val(form, "No Happy Eyeballs"), "yes");
+    assert_eq!(f_val(form, "Proxy Type"), "socks");
+    assert_eq!(f_val(form, "Proxy Address"), "127.0.0.1");
+    assert_eq!(f_val(form, "Proxy Port"), "1080");
+    assert_eq!(f_val(form, "Keep Alive Timeout"), "2m");
+    assert_eq!(f_val(form, "Keep Alive Connections"), "150");
+    assert_eq!(f_val(form, "TCP Keep Alive"), "45s");
+    assert_eq!(f_val(form, "Access Required"), "yes");
+    assert_eq!(f_val(form, "Access Team Name"), "mrfansi");
+    assert_eq!(f_val(form, "Access AUD Tags"), "aud-1, aud-2");
+    assert!(form
+        .fields
+        .iter()
+        .all(|field| field.label != "Advanced origin JSON"));
+}
+
+#[test]
+fn cf_tunnels_n_opens_create_tunnel_form() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::Tunnels;
+
+    app.on_key(KeyCode::Char('n'), &tx);
+
+    let form = app.form.as_ref().expect("create tunnel form should open");
+    assert!(matches!(form.kind, FormKind::CfTunnelCreate));
+    assert_eq!(f_val(form, "Tunnel name"), "");
 }
 
 #[test]

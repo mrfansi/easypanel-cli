@@ -901,7 +901,7 @@ pub(super) const CF_OBJECTS_HINTS: &str =
 pub(super) const CF_ANALYTICS_HINTS: &str = "a account · : palette · r refresh · Esc EasyPanel";
 
 pub(super) const CF_TUNNELS_HINTS: &str =
-    "a account · : palette · Enter routes/config · Space menu · / filter · r refresh · Esc EasyPanel";
+    "a account · : palette · n add · Enter routes/config · Space menu · / filter · r refresh · Esc EasyPanel";
 
 pub(super) const CF_TUNNEL_CONFIG_HINTS: &str =
     "a account · : palette · n add · e edit · x delete · Space menu · / filter · r refresh · Esc Tunnels";

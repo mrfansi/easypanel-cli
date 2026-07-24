@@ -1436,6 +1436,7 @@ impl App {
                 self.cf.filter.clear();
             }
             KeyCode::Char('r') => self.cf_reload(req),
+            KeyCode::Char('n') => self.open_cf_tunnel_form(),
             KeyCode::Char(' ') => self.open_cf_tunnel_menu(),
             KeyCode::Enter => self.cf_open_tunnel_config(req),
             _ => {

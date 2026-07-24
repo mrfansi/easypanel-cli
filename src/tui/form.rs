@@ -1160,6 +1160,8 @@ pub(super) enum FormKind {
     CfWorkerDelete {
         name: String,
     },
+    /// Create a remotely configured Cloudflare Tunnel under the active account.
+    CfTunnelCreate,
     /// Add one route to the currently open Cloudflare Tunnel config.
     CfTunnelRouteCreate {
         tunnel_id: String,

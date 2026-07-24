@@ -782,13 +782,17 @@ pub struct TunnelRouteChange {
 const TUNNEL_SERVICE_PREFIXES: &[&str] = &[
     "http://",
     "https://",
+    "unix:",
     "unix://",
     "tcp://",
     "ssh://",
     "rdp://",
+    "unix+tls:",
     "unix+tls://",
     "smb://",
     "http_status:",
+    "bastion",
+    "hello_world",
 ];
 
 pub fn parse_tunnel_origin_request(input: &str) -> Result<Option<Value>> {
@@ -2083,6 +2087,23 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
             page += 1;
         }
         Ok(all)
+    }
+
+    pub fn create_tunnel(&self, account_id: &str, name: &str) -> Result<CloudflareTunnel> {
+        let body = json!({
+            "name": name.trim(),
+            "config_src": "cloudflare",
+        });
+        parse_envelope(
+            &self
+                .send(
+                    reqwest::Method::POST,
+                    &format!("/accounts/{account_id}/cfd_tunnel"),
+                    Some(&body),
+                )
+                .map_err(tunnels_hint)?,
+        )
+        .map_err(tunnels_hint)
     }
 
     pub fn get_tunnel_config(

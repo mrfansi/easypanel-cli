@@ -9,10 +9,10 @@ use serde_json::{json, Value};
 use crate::cloudflare::{
     apply_patch, filter_buckets, filter_records, filter_tunnel_config_rows, filter_tunnels,
     filter_worker_deployments, filter_worker_settings_rows, filter_workers, filter_zones,
-    parse_tunnel_origin_request, proxyable, record_body, valid_record_type, AnalyticsSummary,
-    CloudflareAccount, CloudflareTunnel, R2Bucket, R2Object, Record, RecordFilter, RecordPatch,
-    TunnelConfigRow, TunnelConfiguration, TunnelIngressRule, WebAnalyticsSite, WorkerDeployment,
-    WorkerScript, WorkerSettingsBundle, WorkerSettingsRow, WorkerUploadMode, Zone,
+    proxyable, record_body, valid_record_type, AnalyticsSummary, CloudflareAccount,
+    CloudflareTunnel, R2Bucket, R2Object, Record, RecordFilter, RecordPatch, TunnelConfigRow,
+    TunnelConfiguration, TunnelIngressRule, WebAnalyticsSite, WorkerDeployment, WorkerScript,
+    WorkerSettingsBundle, WorkerSettingsRow, WorkerUploadMode, Zone,
 };
 use crate::commands;
 use crate::output::field;
@@ -397,32 +397,311 @@ pub(super) fn cf_record_patch(
     }
 }
 
-fn tunnel_origin_advanced_json(origin: Option<&Value>) -> String {
-    let Some(Value::Object(object)) = origin else {
-        return String::new();
-    };
-    let mut advanced = object.clone();
-    advanced.remove("noTLSVerify");
-    if advanced.is_empty() {
-        String::new()
-    } else {
-        Value::Object(advanced).to_string()
+const TUNNEL_SERVICE_TYPES: &[&str] = &[
+    "http",
+    "https",
+    "unix",
+    "unix+tls",
+    "tcp",
+    "ssh",
+    "rdp",
+    "smb",
+    "http_status",
+    "bastion",
+    "hello_world",
+];
+
+fn tunnel_service_parts(service: &str) -> (&'static str, String) {
+    for service_type in TUNNEL_SERVICE_TYPES {
+        let prefix = format!("{service_type}://");
+        if let Some(rest) = service.strip_prefix(&prefix) {
+            return (service_type, rest.to_string());
+        }
+    }
+    if let Some(rest) = service.strip_prefix("http_status:") {
+        return ("http_status", rest.to_string());
+    }
+    match service {
+        "bastion" => ("bastion", String::new()),
+        "hello_world" => ("hello_world", String::new()),
+        _ => ("http", service.trim().to_string()),
     }
 }
 
-fn tunnel_origin_request_from_form(form: &Form) -> anyhow::Result<Option<Value>> {
-    let no_tls_verify = form.by_label("No TLS verify") == "yes";
-    let mut value = parse_tunnel_origin_request(&form.by_label("Advanced origin JSON"))?;
-    let mut object = match value.take() {
-        Some(Value::Object(map)) => map,
-        Some(_) => unreachable!("parse_tunnel_origin_request only returns JSON objects"),
-        None => serde_json::Map::new(),
-    };
-    if no_tls_verify {
-        object.insert("noTLSVerify".into(), Value::Bool(true));
-    } else {
-        object.remove("noTLSVerify");
+fn tunnel_service_from_form(form: &Form) -> String {
+    let service_type = form.by_label("Service Type");
+    let value = form.by_label("Service URL").trim().to_string();
+    match service_type.as_str() {
+        "http_status" => format!("http_status:{value}"),
+        "bastion" | "hello_world" => service_type.clone(),
+        "unix" | "unix+tls" => format!("{service_type}:{value}"),
+        _ => format!("{service_type}://{value}"),
     }
+}
+
+fn tunnel_service_requires_value(service_type: &str) -> bool {
+    !matches!(service_type, "bastion" | "hello_world")
+}
+
+fn tunnel_service_fields(service: &str) -> Vec<Field> {
+    let (service_type, service_url) = tunnel_service_parts(service);
+    vec![
+        Field::choice("Service Type", TUNNEL_SERVICE_TYPES, service_type),
+        Field::text("Service URL", &service_url).when(
+            "Service Type",
+            "http,https,unix,unix+tls,tcp,ssh,rdp,smb,http_status",
+        ),
+    ]
+}
+
+fn origin_object(origin: Option<&Value>) -> serde_json::Map<String, Value> {
+    origin
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn origin_bool(origin: Option<&Value>, key: &str) -> bool {
+    origin
+        .and_then(|v| v.get(key))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn origin_text(origin: Option<&Value>, key: &str) -> String {
+    origin
+        .and_then(|v| v.get(key))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn origin_u64_text(origin: Option<&Value>, key: &str) -> String {
+    origin
+        .and_then(|v| v.get(key))
+        .and_then(Value::as_u64)
+        .map(|v| v.to_string())
+        .unwrap_or_default()
+}
+
+fn origin_access(origin: Option<&Value>) -> Option<&serde_json::Map<String, Value>> {
+    origin
+        .and_then(|v| v.get("access"))
+        .and_then(Value::as_object)
+}
+
+fn origin_access_required(origin: Option<&Value>) -> bool {
+    origin_access(origin)
+        .and_then(|v| v.get("required"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn origin_access_team(origin: Option<&Value>) -> String {
+    origin_access(origin)
+        .and_then(|v| v.get("teamName"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn origin_access_aud(origin: Option<&Value>) -> String {
+    origin_access(origin)
+        .and_then(|v| v.get("audTag"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
+}
+
+fn tunnel_origin_fields(origin: Option<&Value>) -> Vec<Field> {
+    let proxy_type = match origin_text(origin, "proxyType").as_str() {
+        "socks" => "socks",
+        _ => "regular",
+    };
+    vec![
+        Field::text(
+            "Origin Server Name",
+            &origin_text(origin, "originServerName"),
+        ),
+        Field::boolean("Match SNI to Host", origin_bool(origin, "matchSNItoHost")),
+        Field::text("Certificate Authority Pool", &origin_text(origin, "caPool")),
+        Field::boolean("No TLS Verify", origin_bool(origin, "noTLSVerify")),
+        Field::text("TLS Timeout", &origin_text(origin, "tlsTimeout")),
+        Field::boolean("HTTP2 Connection", origin_bool(origin, "http2Origin")),
+        Field::text("HTTP Host Header", &origin_text(origin, "httpHostHeader")),
+        Field::boolean(
+            "Disable Chunked Encoding",
+            origin_bool(origin, "disableChunkedEncoding"),
+        ),
+        Field::text("Connect Timeout", &origin_text(origin, "connectTimeout")),
+        Field::boolean("No Happy Eyeballs", origin_bool(origin, "noHappyEyeballs")),
+        Field::choice("Proxy Type", &["regular", "socks"], proxy_type),
+        Field::text("Proxy Address", &origin_text(origin, "proxyAddress")),
+        Field::text("Proxy Port", &origin_u64_text(origin, "proxyPort")),
+        Field::text(
+            "Keep Alive Timeout",
+            &origin_text(origin, "keepAliveTimeout"),
+        ),
+        Field::text(
+            "Keep Alive Connections",
+            &origin_u64_text(origin, "keepAliveConnections"),
+        ),
+        Field::text("TCP Keep Alive", &origin_text(origin, "tcpKeepAlive")),
+        Field::boolean("Access Required", origin_access_required(origin)),
+        Field::text("Access Team Name", &origin_access_team(origin)).when("Access Required", "yes"),
+        Field::text("Access AUD Tags", &origin_access_aud(origin)).when("Access Required", "yes"),
+    ]
+}
+
+fn set_origin_string(object: &mut serde_json::Map<String, Value>, key: &str, value: String) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        object.remove(key);
+    } else {
+        object.insert(key.into(), Value::String(trimmed.to_string()));
+    }
+}
+
+fn set_origin_bool(object: &mut serde_json::Map<String, Value>, key: &str, on: bool) {
+    if on {
+        object.insert(key.into(), Value::Bool(true));
+    } else {
+        object.remove(key);
+    }
+}
+
+fn set_origin_u64(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+    value: String,
+) -> anyhow::Result<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        object.remove(key);
+        return Ok(());
+    }
+    let parsed: u64 = trimmed
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{label} must be a positive number"))?;
+    object.insert(key.into(), Value::Number(parsed.into()));
+    Ok(())
+}
+
+fn tunnel_origin_request_from_form(form: &Form) -> anyhow::Result<Option<Value>> {
+    let mut object = origin_object(form.original.as_ref());
+    set_origin_string(
+        &mut object,
+        "originServerName",
+        form.by_label("Origin Server Name"),
+    );
+    set_origin_bool(
+        &mut object,
+        "matchSNItoHost",
+        form.by_label("Match SNI to Host") == "yes",
+    );
+    set_origin_string(
+        &mut object,
+        "caPool",
+        form.by_label("Certificate Authority Pool"),
+    );
+    set_origin_bool(
+        &mut object,
+        "noTLSVerify",
+        form.by_label("No TLS Verify") == "yes",
+    );
+    set_origin_string(&mut object, "tlsTimeout", form.by_label("TLS Timeout"));
+    set_origin_bool(
+        &mut object,
+        "http2Origin",
+        form.by_label("HTTP2 Connection") == "yes",
+    );
+    set_origin_string(
+        &mut object,
+        "httpHostHeader",
+        form.by_label("HTTP Host Header"),
+    );
+    set_origin_bool(
+        &mut object,
+        "disableChunkedEncoding",
+        form.by_label("Disable Chunked Encoding") == "yes",
+    );
+    set_origin_string(
+        &mut object,
+        "connectTimeout",
+        form.by_label("Connect Timeout"),
+    );
+    set_origin_bool(
+        &mut object,
+        "noHappyEyeballs",
+        form.by_label("No Happy Eyeballs") == "yes",
+    );
+    let proxy_type = match form.by_label("Proxy Type").as_str() {
+        "regular" => String::new(),
+        value => value.to_string(),
+    };
+    set_origin_string(&mut object, "proxyType", proxy_type);
+    set_origin_string(&mut object, "proxyAddress", form.by_label("Proxy Address"));
+    set_origin_u64(
+        &mut object,
+        "proxyPort",
+        "Proxy Port",
+        form.by_label("Proxy Port"),
+    )?;
+    set_origin_string(
+        &mut object,
+        "keepAliveTimeout",
+        form.by_label("Keep Alive Timeout"),
+    );
+    set_origin_u64(
+        &mut object,
+        "keepAliveConnections",
+        "Keep Alive Connections",
+        form.by_label("Keep Alive Connections"),
+    )?;
+    set_origin_string(&mut object, "tcpKeepAlive", form.by_label("TCP Keep Alive"));
+
+    if form.by_label("Access Required") == "yes" {
+        let team_name = form.by_label("Access Team Name").trim().to_string();
+        let aud_tags = form
+            .by_label("Access AUD Tags")
+            .split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        if team_name.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Access Team Name is required when Access is enabled"
+            ));
+        }
+        if aud_tags.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Access AUD Tags is required when Access is enabled"
+            ));
+        }
+        let mut access = object
+            .get("access")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        access.insert("required".into(), Value::Bool(true));
+        access.insert("teamName".into(), Value::String(team_name));
+        access.insert(
+            "audTag".into(),
+            Value::Array(aud_tags.into_iter().map(Value::String).collect()),
+        );
+        object.insert("access".into(), Value::Object(access));
+    } else {
+        object.remove("access");
+    }
+
     if object.is_empty() {
         Ok(None)
     } else {
@@ -2180,13 +2459,34 @@ impl App {
 
     /// The row action menu for the selected tunnel.
     pub(super) fn open_cf_tunnel_menu(&mut self) {
-        if self.selected_cf_tunnel().is_none() {
-            self.status = "No tunnel selected".into();
+        let mut items = vec![MenuItem::new("Create tunnel…", |a, _| {
+            a.open_cf_tunnel_form()
+        })];
+        if self.selected_cf_tunnel().is_some() {
+            items.push(MenuItem::new("View routes/config", |a, r| {
+                a.cf_open_tunnel_config(r)
+            }));
+        }
+        self.open_menu(items);
+    }
+
+    pub(super) fn open_cf_tunnel_form(&mut self) {
+        if self.cf_account_id().is_none() {
+            self.status =
+                "This account has no account-id — Tunnels are account-scoped; edit it with one"
+                    .into();
             return;
         }
-        self.open_menu(vec![MenuItem::new("View routes/config", |a, r| {
-            a.cf_open_tunnel_config(r)
-        })]);
+        self.form = Some(
+            Form::new(
+                FormKind::CfTunnelCreate,
+                " New Cloudflare Tunnel ",
+                vec![Field::text("Tunnel name", "")],
+            )
+            .with_note(
+                "Creates a remotely configured tunnel (config_src=cloudflare). Install cloudflared with the tunnel token afterward.",
+            ),
+        );
     }
 
     pub(super) fn open_cf_tunnel_config_menu(&mut self) {
@@ -2204,22 +2504,19 @@ impl App {
             self.status = "No tunnel open".into();
             return;
         };
+        let mut fields = vec![Field::text("Hostname", ""), Field::text("Path", "")];
+        fields.extend(tunnel_service_fields("http://localhost:3000"));
+        fields.extend(tunnel_origin_fields(None));
         self.form = Some(
             Form::new(
                 FormKind::CfTunnelRouteCreate {
                     tunnel_id: tunnel.id.clone(),
                 },
                 " Add tunnel route ",
-                vec![
-                    Field::text("Hostname", ""),
-                    Field::text("Service", "http://localhost:3000"),
-                    Field::text("Path", ""),
-                    Field::boolean("No TLS verify", false),
-                    Field::text("Advanced origin JSON", ""),
-                ],
+                fields,
             )
             .with_note(
-                "Service examples: http://localhost:3000, ssh://localhost:22, http_status:404. Advanced JSON is optional.",
+                "Service types: http, https, unix, unix+tls, tcp, ssh, rdp, smb, http_status, bastion, hello_world.",
             ),
         );
     }
@@ -2237,13 +2534,10 @@ impl App {
             self.status = "Catch-all route is managed automatically".into();
             return;
         }
-        let no_tls_verify = rule
-            .origin_request
-            .as_ref()
-            .and_then(|v| v.get("noTLSVerify"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let advanced = tunnel_origin_advanced_json(rule.origin_request.as_ref());
+        let mut fields = tunnel_service_fields(&rule.service);
+        fields.extend(tunnel_origin_fields(rule.origin_request.as_ref()));
+        fields.push(Field::boolean("Clear origin request", false));
+        let original_origin = rule.origin_request.clone().unwrap_or_else(|| json!({}));
         self.form = Some(
             Form::new(
                 FormKind::CfTunnelRouteEdit {
@@ -2252,16 +2546,12 @@ impl App {
                     path: rule.path.clone(),
                 },
                 format!(" Edit route {} ", rule.hostname_label()),
-                vec![
-                    Field::text("Service", &rule.service),
-                    Field::boolean("No TLS verify", no_tls_verify),
-                    Field::text("Advanced origin JSON", &advanced),
-                    Field::boolean("Clear origin request", false),
-                ],
+                fields,
             )
             .with_note(
-                "No TLS verify maps to Cloudflare noTLSVerify. Advanced JSON preserves other originRequest keys.",
-            ),
+                "Origin request fields map directly to Cloudflare originRequest keys. Unknown existing keys are preserved.",
+            )
+            .with_original(original_origin),
         );
     }
 
@@ -5453,16 +5743,40 @@ impl App {
                     force: false,
                 }));
             }
-            FormKind::CfTunnelRouteCreate { tunnel_id } => {
-                let (hostname, service, path) = (
-                    form.by_label("Hostname").trim().to_string(),
-                    form.by_label("Service").trim().to_string(),
-                    form.by_label("Path").trim().to_string(),
-                );
-                if hostname.is_empty() || service.is_empty() {
-                    self.status = "Hostname and service are required".into();
+            FormKind::CfTunnelCreate => {
+                let name = form.by_label("Tunnel name").trim().to_string();
+                if name.is_empty() {
+                    self.status = "Tunnel name is required".into();
                     return;
                 }
+                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
+                else {
+                    self.status =
+                        "This account has no account-id — Tunnels are account-scoped".into();
+                    return;
+                };
+                let _ = req.send(Req::Cf(CfReq::TunnelCreate {
+                    token,
+                    account_id,
+                    name,
+                }));
+            }
+            FormKind::CfTunnelRouteCreate { tunnel_id } => {
+                let (hostname, service_type, service_url, path) = (
+                    form.by_label("Hostname").trim().to_string(),
+                    form.by_label("Service Type"),
+                    form.by_label("Service URL").trim().to_string(),
+                    form.by_label("Path").trim().to_string(),
+                );
+                if hostname.is_empty() {
+                    self.status = "Hostname is required".into();
+                    return;
+                }
+                if tunnel_service_requires_value(&service_type) && service_url.is_empty() {
+                    self.status = "Service URL is required for this service type".into();
+                    return;
+                }
+                let service = tunnel_service_from_form(form);
                 let origin_request = match tunnel_origin_request_from_form(form) {
                     Ok(v) => v,
                     Err(e) => {
@@ -5490,11 +5804,13 @@ impl App {
                 hostname,
                 path,
             } => {
-                let service = form.by_label("Service").trim().to_string();
-                if service.is_empty() {
-                    self.status = "Service is required".into();
+                let service_type = form.by_label("Service Type");
+                let service_url = form.by_label("Service URL").trim().to_string();
+                if tunnel_service_requires_value(&service_type) && service_url.is_empty() {
+                    self.status = "Service URL is required for this service type".into();
                     return;
                 }
+                let service = tunnel_service_from_form(form);
                 let clear = form.by_label("Clear origin request") == "yes";
                 let origin_request = if clear {
                     Some(None)

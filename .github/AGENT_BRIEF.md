@@ -452,16 +452,22 @@ hint on the auth error, same pitfall as Zone:DNS).
   `config.ingress` array, keeping a catch-all at the end. Domain types
   `CloudflareTunnel`/`TunnelConfiguration`/`TunnelIngressRule` and filters live in
   `cloudflare.rs`; client methods are `list_tunnels`, `get_tunnel_config`,
-  `put_tunnel_config`, `add_tunnel_route`, `edit_tunnel_route`, and
+  `create_tunnel`, `put_tunnel_config`, `add_tunnel_route`, `edit_tunnel_route`, and
   `delete_tunnel_route`. CLI is `cf tunnels list`, `cf tunnels config <tunnel>`, and
   `cf tunnels route add|edit|delete`; route add/edit can also upsert a public CNAME
   with `--dns`, and delete can remove matching CNAMEs with `--delete-dns`.
-  TUI list columns: name/status/config/created/target/id; **Enter** opens
-  `CfScreen::TunnelConfig` with hostname/service/origin request rows; **n** adds a route,
-  **e** edits the selected route, **x** deletes it behind typed-hostname confirmation,
-  and `Space`/right-click opens the route menu. As of v0.98.1, the TUI route form maps
-  common `originRequest.noTLSVerify` to a **No TLS verify** boolean and leaves only less
-  common keys in **Advanced origin JSON**. **Esc** returns to the Tunnels list.
+  TUI list columns: name/status/config/created/target/id; on the Tunnels list **n**
+  creates a remotely configured tunnel via `POST /accounts/{account_id}/cfd_tunnel`
+  with `config_src=cloudflare`; **Enter** opens `CfScreen::TunnelConfig` with
+  hostname/service/origin request rows. In config, **n** adds a route, **e** edits the
+  selected route, **x** deletes it behind typed-hostname confirmation, and
+  `Space`/right-click opens the route menu. As of v0.98.2, the TUI route form splits
+  service into **Service Type** plus **Service URL** (Cloudflare published-app types:
+  `http`, `https`, `unix`, `unix+tls`, `tcp`, `ssh`, `rdp`, `smb`, `http_status`,
+  `bastion`, `hello_world`) and maps origin request settings to explicit fields for
+  TLS, HTTP, connection, proxy, keep-alive, and Access JWT validation. Do not re-add
+  raw **Advanced origin JSON**; unknown existing originRequest keys are preserved on
+  edit through `Form::with_original`. **Esc** returns to the Tunnels list.
   Product shortcuts are now `1` Analytics, `2` Domains, `3` Tunnels, `4` R2, `5`
   Workers. Token needs account-level **Cloudflare Tunnel Read/Write** or **Cloudflare
   One Connectors Read/Write** for config writes, plus zone **DNS Write** for CNAME
