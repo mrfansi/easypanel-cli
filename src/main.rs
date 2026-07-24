@@ -7,6 +7,7 @@ mod container;
 mod credentials;
 mod domains;
 mod dump;
+mod filter;
 mod lifecycle;
 mod logs;
 mod migrate;

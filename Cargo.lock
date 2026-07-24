@@ -826,7 +826,7 @@ dependencies = [
 
 [[package]]
 name = "easypanel"
-version = "0.98.3"
+version = "0.98.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -839,6 +839,7 @@ dependencies = [
  "httpmock",
  "libc",
  "ratatui",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

@@ -1445,6 +1445,7 @@ fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
 
     let shown = app.cf_records_shown();
     let marked = &app.cf.marked;
+    let select_all = app.cf.select_all;
     let mut title = filter_count_title(
         "DNS records",
         shown.len(),
@@ -1452,15 +1453,20 @@ fn render_cf_records(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         &app.cf.filter,
         app.cf.filter_input,
     );
-    if !marked.is_empty() {
+    let n_marked = app.cf_bulk_count();
+    if n_marked > 0 {
         // EasyPanel's exact marked-count suffix, appended after the count like
         // the Services title does.
-        title.push_str(&format!(" · ✓ {} marked", marked.len()));
+        title.push_str(&format!(" · ✓ {n_marked} marked"));
     }
     let rows: Vec<Vec<String>> = shown
         .iter()
         .map(|r| {
-            let mark = if marked.contains(&r.id) { "✓ " } else { "" };
+            let mark = if select_all || marked.contains(&r.id) {
+                "✓ "
+            } else {
+                ""
+            };
             vec![
                 format!("{mark}{}", r.kind),
                 r.name.clone(),
@@ -2180,7 +2186,11 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
             // Strip the current prefix so the file reads as its basename at this level.
             let name = o.key.strip_prefix(&prefix).unwrap_or(&o.key);
             // A marked file gets a leading ✓, like a marked record.
-            let mark = if marked.contains(&o.key) { "✓ " } else { "" };
+            let mark = if app.cf.select_all || marked.contains(&o.key) {
+                "✓ "
+            } else {
+                ""
+            };
             vec![
                 format!("{mark}{name}"),
                 format_bytes(o.size as f64),
@@ -2205,8 +2215,9 @@ fn render_cf_objects(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
     if app.cf.r2_truncated {
         title.push_str(" · first page, more exist — narrow with /");
     }
-    if !app.cf.marked.is_empty() {
-        title.push_str(&format!(" · ✓ {} marked", app.cf.marked.len()));
+    let n_marked = app.cf_bulk_count();
+    if n_marked > 0 {
+        title.push_str(&format!(" · ✓ {n_marked} marked"));
     }
     let headers = ["Name", "Size", "Modified"];
     let widths = [
@@ -2472,7 +2483,7 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
                 // The mark replaces the indent rather than widening the column:
                 // a ✓ that shifted every name two columns would make the table
                 // jump sideways each time one was marked.
-                let indent = if app.is_marked(&project, &service) {
+                let indent = if app.service_is_selected_for_bulk(&project, &service) {
                     "✓ "
                 } else {
                     "  "
@@ -2490,8 +2501,9 @@ pub(super) fn render_projects(f: &mut Frame, area: Rect, app: &mut App) {
     let mut title = count_title("Services", shown, total, app);
     // Marks are the one piece of state a user builds up deliberately and can
     // scroll away from; the title is the only place it stays visible.
-    if !app.marked.is_empty() {
-        title.push_str(&format!(" · ✓ {} marked", app.marked.len()));
+    let n_marked = app.service_bulk_count();
+    if n_marked > 0 {
+        title.push_str(&format!(" · ✓ {n_marked} marked"));
     }
     let down = app.down_count();
     if down > 0 {

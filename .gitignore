@@ -8,8 +8,10 @@
 .omc/
 .superpowers/
 .claude/
+.codex/
 
 # Bukti loop paritas — capture layar dari host/akun produksi, tidak dipublikasikan
 /docs/evidence/
 CLAUDE.md
+AGENTS.md
 graphify-out/

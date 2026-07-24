@@ -453,7 +453,12 @@ fn marking_follows_the_filter_and_forgets_services_that_vanish() {
     let mut app = marking_app();
     app.filter = "alpha".into();
     app.mark_all_visible();
-    assert_eq!(app.marked.len(), 2, "only what the filter shows");
+    assert!(app.select_all_services, "V uses virtual select-all");
+    assert_eq!(app.service_bulk_count(), 2, "only what the filter shows");
+    assert!(
+        app.marked.is_empty(),
+        "select-all does not materialize every service id"
+    );
 
     // The set a bulk action would hit carries each service's CURRENT type,
     // resolved at dispatch, so the API group can't go stale.
@@ -470,6 +475,31 @@ fn marking_follows_the_filter_and_forgets_services_that_vanish() {
     // sent as a call for something that no longer exists.
     app.all_services.retain(|s| field(s, "/name") != "api");
     assert_eq!(app.bulk_targets().len(), 1);
+}
+
+#[test]
+fn regex_filter_and_virtual_select_all_work_on_services() {
+    let mut app = marking_app();
+    app.filter = r"^(alpha|beta)$".into();
+    let rows = app.visible_rows();
+    assert!(
+        rows.iter()
+            .any(|r| matches!(r, Line2::Project { name: "alpha", .. })),
+        "regex matches project headers"
+    );
+
+    app.filter = r"^(api|web)$".into();
+    app.mark_all_visible();
+    assert!(app.select_all_services);
+    assert_eq!(
+        app.bulk_targets(),
+        vec![
+            ("alpha".to_string(), "api".to_string(), "app".to_string()),
+            ("alpha".to_string(), "web".to_string(), "app".to_string()),
+        ]
+    );
+    assert!(app.service_is_selected_for_bulk("alpha", "api"));
+    assert!(!app.service_is_selected_for_bulk("beta", "db"));
 }
 
 #[test]
@@ -1302,6 +1332,7 @@ fn keep_matches_any_column_case_insensitively() {
     assert!(keep(&row, ""));
     assert!(keep(&row, "rezabelle"));
     assert!(keep(&row, "PROXY"));
+    assert!(keep(&row, r"^https://rezabelle\.com/$"));
     assert!(!keep(&row, "nothinghere"));
 }
 
@@ -1506,7 +1537,7 @@ fn filter_narrows_domains_and_actions_use_the_same_list() {
     ];
     assert_eq!(app.visible_domains().len(), 2);
 
-    app.filter = "two".into();
+    app.filter = r"two\.com".into();
     let vis = app.visible_domains();
     assert_eq!(vis.len(), 1);
     // Index 0 of the filtered list must be "two.com" — not "one.com".
@@ -2198,6 +2229,10 @@ fn the_monitor_table_indents_a_service_under_its_project_header() {
         json!({"projectName":"shop","serviceName":"webby","cpu":1.0,"memory":1048576.0,"networkIn":0.0,"networkOut":0.0}),
         json!({"projectName":"shop","serviceName":"dbase","cpu":2.0,"memory":2097152.0,"networkIn":0.0,"networkOut":0.0}),
     ];
+    app.filter = r"webby$".into();
+    assert_eq!(app.monitor_table().0.len(), 2);
+    app.filter.clear();
+
     let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
     term.draw(|f| super::render::ui(f, &mut app)).unwrap();
     let lines: Vec<String> = term
@@ -5206,6 +5241,11 @@ fn failures_only_hides_the_clean_successes_and_says_so() {
     // Off by default: everything shows.
     assert_eq!(app.visible_actions().len(), 5);
 
+    app.filter = r"^running$".into();
+    assert_eq!(app.visible_actions().len(), 1);
+    assert_eq!(field(app.visible_actions()[0], "/id"), "e");
+    app.filter.clear();
+
     // `f` keeps only what did not finish cleanly — killed, error, running — and
     // drops both `done` rows. A text search could not do this: "error" typed into
     // the filter also matches a commit message containing the word.
@@ -6830,6 +6870,11 @@ fn cf_filter_narrows_the_loaded_records() {
     assert_eq!(filter_records(&records, "api").len(), 1, "by name");
     assert_eq!(filter_records(&records, "cname").len(), 1, "by type");
     assert_eq!(filter_records(&records, "spf1").len(), 1, "by content");
+    assert_eq!(
+        filter_records(&records, r"^www\..*\.com$").len(),
+        1,
+        "regex by name"
+    );
 
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
@@ -6849,6 +6894,39 @@ fn cf_filter_narrows_the_loaded_records() {
     }
     assert_eq!(app.cf_records_shown().len(), 1);
     assert!(app.filter.is_empty(), "EasyPanel filter stays isolated");
+}
+
+#[test]
+fn cf_records_select_all_filter_executes_bulk_without_materializing_marks() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_zone = Some(cf_zone("z1", "example.com"));
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.screen = CfScreen::Records;
+    app.cf.records = vec![
+        cf_record("r1", "CNAME", "www.alpha.example.com", "example.com"),
+        cf_record("r2", "CNAME", "www.beta.example.com", "example.com"),
+        cf_record("r3", "A", "api.example.com", "1.1.1.1"),
+    ];
+    app.cf.filter = r"^www\.".into();
+
+    app.on_key(KeyCode::Char('V'), &tx);
+    assert!(app.cf.select_all);
+    assert!(app.cf.marked.is_empty(), "virtual selection stays compact");
+    assert_eq!(app.cf_bulk_count(), 2);
+    assert_eq!(
+        app.cf_record_targets(),
+        vec!["r1".to_string(), "r2".to_string()]
+    );
+
+    app.ask_cf_bulk_delete();
+    app.confirm_key(KeyCode::Char('y'), &tx);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::BulkDelete { ids, .. })) if ids == vec!["r1".to_string(), "r2".to_string()]
+    ));
+    assert!(!app.cf.select_all, "dispatch clears virtual selection");
 }
 
 #[test]
@@ -7792,6 +7870,31 @@ fn cf_objects_v_marks_a_file_and_space_opens_the_bulk_menu() {
         }),
         "Space with a mark opens the bulk menu (Download / Delete N marked)"
     );
+}
+
+#[test]
+fn cf_objects_select_all_filter_executes_bulk_download() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = cf_objects_app_with_a_file();
+    app.cf.r2_objects.push(crate::cloudflare::R2Object {
+        key: "skip.log".into(),
+        size: 10,
+        last_modified: "2026-07-24T00:00:00Z".into(),
+        storage_class: String::new(),
+    });
+    app.cf.filter = r"\.gz$".into();
+
+    app.on_key(KeyCode::Char('V'), &tx);
+    assert!(app.cf.select_all);
+    assert_eq!(app.cf_bulk_count(), 1);
+    assert_eq!(app.cf_object_targets(), vec!["dump.sql.gz".to_string()]);
+
+    app.cf_bulk_download(&tx);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::R2GetMany { keys, .. })) if keys == vec!["dump.sql.gz".to_string()]
+    ));
+    assert!(!app.cf.select_all);
 }
 
 #[test]

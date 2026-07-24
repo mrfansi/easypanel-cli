@@ -201,7 +201,7 @@ while dragging** to select/copy.)
 | `?` | every shortcut for the current screen |
 | `:` | **global search** — jump to any service or tab, or run an action on the selected row |
 | `1`–`8`, `Tab`, `←`/`→` | switch tabs (`2` = Hosts, `8` = Uptime) |
-| `/` | filter (Services, Domains, Actions, Monitor) · `Esc` clears |
+| `/` | filter (Services, Domains, Actions, Monitor) by text or regex · `Esc` clears |
 | `s` | server list: `Enter` switch · `n` add · `e` edit (name, URL, token) · `x` delete |
 | `r` · `q` | refresh · quit (`Esc` **cancels**, it does not quit) |
 
@@ -221,11 +221,13 @@ while dragging** to select/copy.)
 Inside a menu: `↑↓` select · `→` enter a submenu · `←` back · `Enter` run · `Esc` close.
 
 **Act on many services at once.** `v` marks the row under the cursor (a project header
-marks all its services); `V` marks every row the filter has left on screen. With anything
-marked, the action menu (`Space`) grows a bulk section: **deploy / force-rebuild / restart
-/ stop / start** the marked set, **set the same resource limits** (CPU/memory) across all
-of them in one form, or **compare** exactly two. Every bulk entry names its count, and the
-result reports each service that succeeded or failed — nothing is changed silently.
+marks all its services); `V` selects every service currently shown by the active filter,
+or the whole visible list when no filter is applied. The selection is virtual, so it stays
+fast on large tables instead of storing thousands of marks. With anything selected, the
+action menu (`Space`) grows a bulk section: **deploy / force-rebuild / restart / stop /
+start** the selected set, **set the same resource limits** (CPU/memory) across all of them
+in one form, or **compare** exactly two. Every bulk entry names its count, and the result
+reports each service that succeeded or failed — nothing is changed silently.
 
 **Services — direct keys**
 
@@ -627,8 +629,9 @@ that if it's missing) — the same API token lists buckets AND their objects, so
 **no separate R2 S3 credentials to set up**. Objects browse as a **folder tree** (subfolders
 then files, newest first) rather than one flat list; in the TUI, **Enter** descends into a
 folder, **Enter** on a file downloads it, **u** uploads into the current folder, **x**
-deletes the selected file, and `v`/`V` + **Space** bulk-downloads or bulk-deletes marked
-files. Uploads are capped at Cloudflare's 300 MB REST object limit; larger objects still
+deletes the selected file, and `v`/`V` + **Space** bulk-downloads or bulk-deletes selected
+files, including every file left by a regex filter. Uploads are capped at Cloudflare's 300
+MB REST object limit; larger objects still
 need a multipart S3-compatible flow outside this command.
 
 **Workers scripts:**
@@ -664,8 +667,9 @@ if the token lacks **Account Settings Read**, Domains still loads and those colu
 blank with a permission hint in the status bar.
 **`a`** opens an account picker (select / add / edit / delete, just like the server
 switcher), **Enter** on a domain drills into its DNS records, and records support
-add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a
-`Space` menu (`Space`/right-click also opens a per-zone or per-record action menu). On
+add/edit/delete, a regex-capable `/` filter, and bulk change by marking rows with `v` or
+selecting every shown row with `V` then a `Space` menu (`Space`/right-click also opens a
+per-zone or per-record action menu). On
 **Tunnels**, the list shows cloudflared tunnels with status, config source, created date,
 target, and id; **`n`** creates a remote-configured tunnel, **`i`** opens the cloudflared
 install commands/token for the selected tunnel, **`x`** deletes it with typed-name

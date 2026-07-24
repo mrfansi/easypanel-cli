@@ -139,8 +139,12 @@ impl App {
             // Marks outlive the filter that helped make them, so Esc clears them
             // too — after the filter, since a filtered view is usually the thing
             // the user wants out of first.
-            KeyCode::Esc if !self.marked.is_empty() && !self.screen_owns_esc() => {
+            KeyCode::Esc
+                if (!self.marked.is_empty() || self.select_all_services)
+                    && !self.screen_owns_esc() =>
+            {
                 self.marked.clear();
+                self.select_all_services = false;
                 self.status = "Marks cleared".into();
             }
             // Esc does NOT quit the app. Esc means "cancel": it closes a form,
@@ -203,6 +207,7 @@ impl App {
             KeyCode::Char('/') if self.filterable() => {
                 self.filter_input = true;
                 self.filter.clear();
+                self.select_all_services = false;
             }
             _ => match self.screen {
                 Screen::Projects => self.services_key(code, req),
@@ -723,6 +728,7 @@ impl App {
             KeyCode::Esc => self.clear_filter(),
             KeyCode::Enter => self.filter_input = false,
             KeyCode::Backspace => {
+                self.select_all_services = false;
                 self.filter.pop();
                 self.clamp_filtered();
             }
@@ -739,6 +745,7 @@ impl App {
             | KeyCode::Home
             | KeyCode::End => self.move_selection(code),
             KeyCode::Char(c) => {
+                self.select_all_services = false;
                 self.filter.push(c);
                 self.clamp_filtered();
             }
@@ -1067,13 +1074,15 @@ impl App {
             }
             // Delete every marked record — one call per id on the worker.
             "cf-bulk-delete" => {
-                let ids: Vec<String> = self.cf.marked.iter().cloned().collect();
+                let ids = self.cf_record_targets();
                 if let (Some(token), Some(zone)) = (self.cf_token(), self.cf.current_zone.clone()) {
                     let _ = req.send(Req::Cf(CfReq::BulkDelete {
                         token,
                         zone_id: zone.id,
                         ids,
                     }));
+                    self.cf.marked.clear();
+                    self.cf.select_all = false;
                     self.status = "Deleting marked records...".into();
                 }
                 return;
@@ -1099,7 +1108,7 @@ impl App {
             // Delete every marked object — one call per key on the worker. Marks are
             // cleared once dispatched (their job is done).
             "cf-object-bulk-delete" => {
-                let keys: Vec<String> = self.cf.marked.iter().cloned().collect();
+                let keys = self.cf_object_targets();
                 if let (Some(token), Some(account_id), Some(bucket)) = (
                     self.cf_token(),
                     self.cf_account_id(),
@@ -1112,6 +1121,7 @@ impl App {
                         keys,
                     }));
                     self.cf.marked.clear();
+                    self.cf.select_all = false;
                     self.status = "Deleting marked objects...".into();
                 }
                 return;
@@ -1433,6 +1443,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.cf.filter_input = true;
                 self.cf.filter.clear();
+                self.cf.select_all = false;
             }
             KeyCode::Char('r') => self.cf_reload(req),
             KeyCode::Char('n') => self.open_cf_tunnel_form(),
@@ -1465,6 +1476,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.cf.filter_input = true;
                 self.cf.filter.clear();
+                self.cf.select_all = false;
             }
             KeyCode::Char('r') => self.cf_reload(req),
             KeyCode::Char('n') => self.open_cf_tunnel_route_form(),
@@ -1489,6 +1501,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.cf.filter_input = true;
                 self.cf.filter.clear();
+                self.cf.select_all = false;
             }
             KeyCode::Char('r') => self.cf_reload(req),
             KeyCode::Char('n') => self.open_cf_worker_deploy_form(),
@@ -1521,6 +1534,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.cf.filter_input = true;
                 self.cf.filter.clear();
+                self.cf.select_all = false;
             }
             KeyCode::Char('r') => self.cf_reload(req),
             KeyCode::Char('s') | KeyCode::Char('S') => {
@@ -1553,6 +1567,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.cf.filter_input = true;
                 self.cf.filter.clear();
+                self.cf.select_all = false;
             }
             KeyCode::Char('r') => self.cf_reload(req),
             KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -1582,6 +1597,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.cf.filter_input = true;
                 self.cf.filter.clear();
+                self.cf.select_all = false;
             }
             KeyCode::Char('r') => self.cf_reload(req),
             KeyCode::Char('n') => self.open_cf_bucket_form(),
@@ -1607,8 +1623,9 @@ impl App {
                 self.cf.filter.clear();
                 self.cf_clamp_filtered();
             }
-            KeyCode::Esc if !self.cf.marked.is_empty() => {
+            KeyCode::Esc if !self.cf.marked.is_empty() || self.cf.select_all => {
                 self.cf.marked.clear();
+                self.cf.select_all = false;
                 self.status = "Marks cleared".into();
             }
             KeyCode::Esc if !self.cf.current_prefix.is_empty() => {
@@ -1623,12 +1640,14 @@ impl App {
                 self.cf.current_bucket = None;
                 self.cf.current_prefix.clear();
                 self.cf.marked.clear();
+                self.cf.select_all = false;
                 self.cf.error = None;
             }
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('/') => {
                 self.cf.filter_input = true;
                 self.cf.filter.clear();
+                self.cf.select_all = false;
             }
             KeyCode::Char('r') => self.cf_reload(req),
             KeyCode::Char('u') => self.open_cf_upload_form(),
@@ -1636,7 +1655,7 @@ impl App {
             KeyCode::Char('v') => self.cf_toggle_object_mark(),
             KeyCode::Char('V') => self.cf_mark_all_objects(),
             // Space: the bulk menu when something is marked, else the single-object menu.
-            KeyCode::Char(' ') if !self.cf.marked.is_empty() => self.open_cf_object_bulk_menu(),
+            KeyCode::Char(' ') if self.cf_bulk_count() > 0 => self.open_cf_object_bulk_menu(),
             KeyCode::Char(' ') => self.open_cf_object_menu(),
             KeyCode::Enter => self.cf_object_enter(req),
             _ => {
@@ -1659,6 +1678,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.cf.filter_input = true;
                 self.cf.filter.clear();
+                self.cf.select_all = false;
             }
             KeyCode::Char('r') => self.cf_reload(req),
             KeyCode::Char('n') => self.open_cf_zone_form(),
@@ -1735,8 +1755,9 @@ impl App {
                 self.cf.filter.clear();
                 self.cf_clamp_filtered();
             }
-            KeyCode::Esc if !self.cf.marked.is_empty() => {
+            KeyCode::Esc if !self.cf.marked.is_empty() || self.cf.select_all => {
                 self.cf.marked.clear();
+                self.cf.select_all = false;
                 self.status = "Marks cleared".into();
             }
             KeyCode::Esc => self.cf.screen = CfScreen::Zones,
@@ -1744,6 +1765,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.cf.filter_input = true;
                 self.cf.filter.clear();
+                self.cf.select_all = false;
             }
             KeyCode::Char('r') => self.cf_reload(req),
             KeyCode::Char('n') => self.open_cf_record_form(),
@@ -1751,7 +1773,7 @@ impl App {
             KeyCode::Char('x') => self.ask_cf_record_delete(),
             KeyCode::Char('v') => self.cf_toggle_mark(),
             KeyCode::Char('V') => self.cf_mark_all_shown(),
-            KeyCode::Char(' ') if !self.cf.marked.is_empty() => self.open_cf_bulk_menu(),
+            KeyCode::Char(' ') if self.cf_bulk_count() > 0 => self.open_cf_bulk_menu(),
             KeyCode::Char(' ') => self.open_cf_record_menu(),
             _ => {
                 let len = self.cf_records_shown().len();
@@ -1767,14 +1789,17 @@ impl App {
             KeyCode::Esc => {
                 self.cf.filter.clear();
                 self.cf.filter_input = false;
+                self.cf.select_all = false;
                 self.cf_clamp_filtered();
             }
             KeyCode::Enter => self.cf.filter_input = false,
             KeyCode::Backspace => {
+                self.cf.select_all = false;
                 self.cf.filter.pop();
                 self.cf_clamp_filtered();
             }
             KeyCode::Char(c) => {
+                self.cf.select_all = false;
                 self.cf.filter.push(c);
                 self.cf_clamp_filtered();
             }

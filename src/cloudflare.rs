@@ -1541,48 +1541,35 @@ pub fn resolve_zone<'a>(zones: &'a [Zone], needle: &str) -> Option<&'a Zone> {
 /// The zones whose name/status/id contains `needle` (case-insensitive). An empty
 /// needle keeps everything.
 pub fn filter_zones<'a>(zones: &'a [Zone], needle: &str) -> Vec<&'a Zone> {
-    let n = needle.to_ascii_lowercase();
+    let matcher = crate::filter::FilterMatcher::new(needle);
     zones
         .iter()
-        .filter(|z| {
-            n.is_empty()
-                || z.name.to_ascii_lowercase().contains(&n)
-                || z.status.to_ascii_lowercase().contains(&n)
-                || z.id.to_ascii_lowercase().contains(&n)
-        })
+        .filter(|z| matcher.matches_any([z.name.as_str(), z.status.as_str(), z.id.as_str()]))
         .collect()
 }
 
 /// The records whose type/name/content contains `needle` (case-insensitive). An
 /// empty needle keeps everything.
 pub fn filter_records<'a>(records: &'a [Record], needle: &str) -> Vec<&'a Record> {
-    let n = needle.to_ascii_lowercase();
+    let matcher = crate::filter::FilterMatcher::new(needle);
     records
         .iter()
-        .filter(|r| {
-            n.is_empty()
-                || r.kind.to_ascii_lowercase().contains(&n)
-                || r.name.to_ascii_lowercase().contains(&n)
-                || r.content.to_ascii_lowercase().contains(&n)
-        })
+        .filter(|r| matcher.matches_any([r.kind.as_str(), r.name.as_str(), r.content.as_str()]))
         .collect()
 }
 
 /// The R2 buckets whose name/class/location contains `needle` (case-insensitive).
 /// An empty needle keeps everything.
 pub fn filter_buckets<'a>(buckets: &'a [R2Bucket], needle: &str) -> Vec<&'a R2Bucket> {
-    let n = needle.to_ascii_lowercase();
+    let matcher = crate::filter::FilterMatcher::new(needle);
     buckets
         .iter()
         .filter(|b| {
-            n.is_empty()
-                || b.name.to_ascii_lowercase().contains(&n)
-                || b.storage_class.to_ascii_lowercase().contains(&n)
-                || b.location
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_ascii_lowercase()
-                    .contains(&n)
+            matcher.matches_any([
+                b.name.as_str(),
+                b.storage_class.as_str(),
+                b.location.as_deref().unwrap_or(""),
+            ])
         })
         .collect()
 }
@@ -1591,29 +1578,29 @@ pub fn filter_tunnels<'a>(
     tunnels: &'a [CloudflareTunnel],
     needle: &str,
 ) -> Vec<&'a CloudflareTunnel> {
-    let n = needle.to_ascii_lowercase();
+    let matcher = crate::filter::FilterMatcher::new(needle);
     tunnels
         .iter()
         .filter(|t| {
-            n.is_empty()
-                || t.name.to_ascii_lowercase().contains(&n)
-                || t.id.to_ascii_lowercase().contains(&n)
-                || t.status_label().to_ascii_lowercase().contains(&n)
-                || t.config_src.to_ascii_lowercase().contains(&n)
-                || t.tun_type.to_ascii_lowercase().contains(&n)
-                || t.target().to_ascii_lowercase().contains(&n)
+            let status = t.status_label();
+            let target = t.target();
+            matcher.matches_any([
+                t.name.as_str(),
+                t.id.as_str(),
+                status.as_str(),
+                t.config_src.as_str(),
+                t.tun_type.as_str(),
+                target.as_str(),
+            ])
         })
         .collect()
 }
 
 pub fn filter_tunnel_config_rows(rows: &[TunnelConfigRow], needle: &str) -> Vec<TunnelConfigRow> {
-    let n = needle.to_ascii_lowercase();
+    let matcher = crate::filter::FilterMatcher::new(needle);
     rows.iter()
         .filter(|r| {
-            n.is_empty()
-                || r.hostname.to_ascii_lowercase().contains(&n)
-                || r.service.to_ascii_lowercase().contains(&n)
-                || r.origin.to_ascii_lowercase().contains(&n)
+            matcher.matches_any([r.hostname.as_str(), r.service.as_str(), r.origin.as_str()])
         })
         .cloned()
         .collect()
@@ -1622,17 +1609,12 @@ pub fn filter_tunnel_config_rows(rows: &[TunnelConfigRow], needle: &str) -> Vec<
 /// The Worker scripts whose name/handler/usage/etag contains `needle`
 /// (case-insensitive). An empty needle keeps everything.
 pub fn filter_workers<'a>(workers: &'a [WorkerScript], needle: &str) -> Vec<&'a WorkerScript> {
-    let n = needle.to_ascii_lowercase();
+    let matcher = crate::filter::FilterMatcher::new(needle);
     workers
         .iter()
         .filter(|w| {
-            n.is_empty()
-                || w.id.to_ascii_lowercase().contains(&n)
-                || w.usage_model.to_ascii_lowercase().contains(&n)
-                || w.etag.to_ascii_lowercase().contains(&n)
-                || w.handlers
-                    .iter()
-                    .any(|h| h.to_ascii_lowercase().contains(&n))
+            matcher.matches_any([w.id.as_str(), w.usage_model.as_str(), w.etag.as_str()])
+                || w.handlers.iter().any(|h| matcher.matches(h))
         })
         .collect()
 }
@@ -1643,21 +1625,21 @@ pub fn filter_worker_deployments<'a>(
     deployments: &'a [WorkerDeployment],
     needle: &str,
 ) -> Vec<&'a WorkerDeployment> {
-    let n = needle.to_ascii_lowercase();
+    let matcher = crate::filter::FilterMatcher::new(needle);
     deployments
         .iter()
         .filter(|d| {
-            n.is_empty()
-                || d.id.to_ascii_lowercase().contains(&n)
-                || d.source.to_ascii_lowercase().contains(&n)
-                || d.strategy.to_ascii_lowercase().contains(&n)
-                || d.author_email.to_ascii_lowercase().contains(&n)
-                || d.message().to_ascii_lowercase().contains(&n)
-                || d.triggered_by().to_ascii_lowercase().contains(&n)
-                || d.versions.iter().any(|v| {
-                    v.version_id.to_ascii_lowercase().contains(&n)
-                        || trim_percent(v.percentage).contains(&n)
-                })
+            matcher.matches_any([
+                d.id.as_str(),
+                d.source.as_str(),
+                d.strategy.as_str(),
+                d.author_email.as_str(),
+                d.message(),
+                d.triggered_by(),
+            ]) || d.versions.iter().any(|v| {
+                let percentage = trim_percent(v.percentage);
+                matcher.matches_any([v.version_id.as_str(), percentage.as_str()])
+            })
         })
         .collect()
 }
@@ -1666,14 +1648,9 @@ pub fn filter_worker_settings_rows(
     rows: &[WorkerSettingsRow],
     needle: &str,
 ) -> Vec<WorkerSettingsRow> {
-    let n = needle.to_ascii_lowercase();
+    let matcher = crate::filter::FilterMatcher::new(needle);
     rows.iter()
-        .filter(|r| {
-            n.is_empty()
-                || r.section.to_ascii_lowercase().contains(&n)
-                || r.name.to_ascii_lowercase().contains(&n)
-                || r.value.to_ascii_lowercase().contains(&n)
-        })
+        .filter(|r| matcher.matches_any([r.section.as_str(), r.name.as_str(), r.value.as_str()]))
         .cloned()
         .collect()
 }

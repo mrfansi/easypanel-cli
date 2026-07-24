@@ -363,6 +363,11 @@ like one app. Concretely, replicate EasyPanel's patterns in the CF workspace:
   for destructive actions, the busy spinner, empty-vs-loading-vs-error states, mouse
   clicks where EasyPanel has them. When something works one way in EasyPanel, make CF
   work the same way.
+- As of v0.98.4, list filters are regex-capable in both workspaces while preserving
+  case-insensitive substring matching. **V** is virtual select-all over the rows currently
+  shown by that filter (or the whole visible list with no filter); do not materialize
+  thousands of marks. Bulk confirmation/dispatch must resolve targets from the same
+  filtered source the renderer uses.
 - **Verify by DRIVING it** (owner has 2 live CF accounts configured: `mrfansi-dev`,
   `pt-karya-kaya-bahagia` — the latter's token has DNS perms and real zones/records, so
   the read happy-path is verifiable live; `mrfansi-dev`'s token lacks the Zone:DNS perm,

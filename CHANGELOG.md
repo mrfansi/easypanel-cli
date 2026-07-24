@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.4] — 2026-07-25
+
+### Changed
+
+- TUI filters are now regex-capable across EasyPanel and Cloudflare tables while
+  keeping the old case-insensitive substring behavior for ordinary text.
+- Bulk selection is now virtual and scalable: **V** selects all rows currently shown
+  by the active filter, or the whole current list when no filter is applied, without
+  materializing thousands of marks.
+
+### Fixed
+
+- Bulk actions now execute correctly from select-all mode on Services, Cloudflare
+  DNS records, and R2 objects; confirmation and dispatch resolve the final targets
+  from the same filtered list the user sees.
+
 ## [0.98.3] — 2026-07-25
 
 ### Added

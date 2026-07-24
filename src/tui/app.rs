@@ -306,6 +306,9 @@ pub(super) struct CfUi {
     pub(super) error: Option<String>,
     /// Record ids marked for a bulk action.
     pub(super) marked: HashSet<String>,
+    /// Virtual select-all for the active markable CF list. Targets are resolved
+    /// from the current filtered Records/Objects view when the bulk action runs.
+    pub(super) select_all: bool,
 }
 
 /// Loading / empty / error / ready — the state a CF list is in, chosen from the
@@ -336,11 +339,8 @@ pub(super) fn cf_list_state(busy: bool, error: bool, is_empty: bool) -> CfListSt
 /// The R2 objects whose key contains `needle` (case-insensitive). An empty needle
 /// keeps everything — narrows the already-loaded page client-side, like `filter_records`.
 pub(super) fn filter_objects<'a>(objects: &'a [R2Object], needle: &str) -> Vec<&'a R2Object> {
-    let n = needle.to_ascii_lowercase();
-    objects
-        .iter()
-        .filter(|o| n.is_empty() || o.key.to_ascii_lowercase().contains(&n))
-        .collect()
+    let matcher = crate::filter::FilterMatcher::new(needle);
+    objects.iter().filter(|o| matcher.matches(&o.key)).collect()
 }
 
 /// The R2 subfolders whose next-segment name (the prefix stripped of `current`) contains
@@ -352,16 +352,10 @@ pub(super) fn filter_folders<'a>(
     current: &str,
     needle: &str,
 ) -> Vec<&'a String> {
-    let n = needle.to_ascii_lowercase();
+    let matcher = crate::filter::FilterMatcher::new(needle);
     folders
         .iter()
-        .filter(|f| {
-            n.is_empty()
-                || f.strip_prefix(current)
-                    .unwrap_or(f)
-                    .to_ascii_lowercase()
-                    .contains(&n)
-        })
+        .filter(|f| matcher.matches(f.strip_prefix(current).unwrap_or(f)))
         .collect()
 }
 
@@ -949,6 +943,9 @@ pub(super) struct App {
     /// for a service that has since disappeared simply finds nothing and is
     /// dropped — see `bulk_targets`.
     pub(super) marked: HashSet<(String, String)>,
+    /// Virtual select-all for the Services table. This keeps large filtered sets
+    /// scalable instead of inserting every service into `marked`.
+    pub(super) select_all_services: bool,
 
     /// The filter text for the active screen's table ("" = no filter).
     pub(super) filter: String,
@@ -1056,6 +1053,7 @@ impl App {
             viewer: super::viewer::ViewerUi::default(),
             backups: BackupUi::default(),
             marked: HashSet::new(),
+            select_all_services: false,
             filter: String::new(),
             filter_input: false,
             help: false,
@@ -1673,6 +1671,7 @@ impl App {
         self.cf.filter.clear();
         self.cf.filter_input = false;
         self.cf.marked.clear();
+        self.cf.select_all = false;
         self.cf.error = None;
         self.cf.analytics = None;
         let Some(account_id) = self.cf_account_id() else {
@@ -1704,6 +1703,7 @@ impl App {
         self.cf.filter.clear();
         self.cf.filter_input = false;
         self.cf.marked.clear();
+        self.cf.select_all = false;
         self.cf.error = None;
         self.cf.tunnels.clear();
         self.cf.tunnels_row.select(None);
@@ -1733,6 +1733,7 @@ impl App {
         self.cf.filter.clear();
         self.cf.filter_input = false;
         self.cf.marked.clear();
+        self.cf.select_all = false;
         self.cf.error = None;
         self.cf.workers.clear();
         self.cf.workers_row.select(None);
@@ -1773,6 +1774,7 @@ impl App {
         // product switch would show a stale "[Esc] to clear" message on a screen
         // whose Esc does something else entirely.
         self.cf.marked.clear();
+        self.cf.select_all = false;
         self.cf.product = product;
         self.cf_goto_home(req);
     }
@@ -1855,6 +1857,7 @@ impl App {
         self.cf.current_bucket = Some(name);
         self.cf.screen = CfScreen::Objects;
         self.cf.marked.clear();
+        self.cf.select_all = false;
         // Land at the bucket root; deeper levels come from Enter on a folder.
         self.cf_request_level(String::new(), req);
     }
@@ -2027,6 +2030,7 @@ impl App {
         self.cf.filter.clear();
         self.cf.filter_input = false;
         self.cf.marked.clear();
+        self.cf.select_all = false;
         self.cf.error = None;
         match self.cf.screen {
             CfScreen::Zones => {
@@ -2241,6 +2245,7 @@ impl App {
 
     /// Toggle the mark on the highlighted record.
     pub(super) fn cf_toggle_mark(&mut self) {
+        self.cf.select_all = false;
         if let Some(r) = self.selected_cf_record() {
             if !self.cf.marked.remove(&r.id) {
                 self.cf.marked.insert(r.id);
@@ -2250,17 +2255,53 @@ impl App {
 
     /// Mark every record currently shown; if all are already marked, clear them.
     pub(super) fn cf_mark_all_shown(&mut self) {
-        let ids: Vec<String> = self
-            .cf_records_shown()
-            .iter()
-            .map(|r| r.id.clone())
-            .collect();
-        if !ids.is_empty() && ids.iter().all(|id| self.cf.marked.contains(id)) {
-            for id in &ids {
-                self.cf.marked.remove(id);
+        let n = self.cf_records_shown().len();
+        if n == 0 {
+            self.status = "Nothing to select".into();
+            return;
+        }
+        if self.cf.select_all {
+            self.cf.select_all = false;
+            self.cf.marked.clear();
+            self.status = "Selection cleared".into();
+        } else {
+            self.cf.marked.clear();
+            self.cf.select_all = true;
+            self.status = format!("All {n} shown record(s) selected — [Space] to act");
+        }
+    }
+
+    pub(super) fn cf_record_targets(&self) -> Vec<String> {
+        if self.cf.select_all {
+            self.cf_records_shown()
+                .iter()
+                .map(|r| r.id.clone())
+                .collect()
+        } else {
+            self.cf.marked.iter().cloned().collect()
+        }
+    }
+
+    pub(super) fn cf_object_targets(&self) -> Vec<String> {
+        if self.cf.select_all {
+            self.cf_objects_shown()
+                .iter()
+                .map(|o| o.key.clone())
+                .collect()
+        } else {
+            self.cf.marked.iter().cloned().collect()
+        }
+    }
+
+    pub(super) fn cf_bulk_count(&self) -> usize {
+        if self.cf.select_all {
+            match self.cf.screen {
+                CfScreen::Objects => self.cf_objects_shown().len(),
+                CfScreen::Records => self.cf_records_shown().len(),
+                _ => 0,
             }
         } else {
-            self.cf.marked.extend(ids);
+            self.cf.marked.len()
         }
     }
 
@@ -2268,7 +2309,8 @@ impl App {
     /// EasyPanel wording comes from the domain (`cloudflare::marks_status`);
     /// this only picks the noun the current screen marks (records vs files).
     pub(super) fn cf_marks_status(&self) -> Option<String> {
-        if self.cf.marked.is_empty() {
+        let n = self.cf_bulk_count();
+        if n == 0 {
             return None;
         }
         let noun = if self.cf.screen == CfScreen::Objects {
@@ -2276,7 +2318,7 @@ impl App {
         } else {
             "record"
         };
-        Some(crate::cloudflare::marks_status(noun, self.cf.marked.len()))
+        Some(crate::cloudflare::marks_status(noun, n))
     }
 
     /// The add-record form. Type is a fixed choice (only v1 types are supported).
@@ -2758,6 +2800,7 @@ impl App {
     /// Toggle the mark on the selected FILE (by object key). Folders are not markable —
     /// a folder row is skipped.
     pub(super) fn cf_toggle_object_mark(&mut self) {
+        self.cf.select_all = false;
         if let Some(o) = self.cf_selected_object() {
             if !self.cf.marked.remove(&o.key) {
                 self.cf.marked.insert(o.key);
@@ -2768,17 +2811,19 @@ impl App {
     /// Mark every FILE shown at this level (folders excluded); if all are already marked,
     /// clear them. Mirrors `cf_mark_all_shown` for records.
     pub(super) fn cf_mark_all_objects(&mut self) {
-        let keys: Vec<String> = self
-            .cf_objects_shown()
-            .iter()
-            .map(|o| o.key.clone())
-            .collect();
-        if !keys.is_empty() && keys.iter().all(|k| self.cf.marked.contains(k)) {
-            for k in &keys {
-                self.cf.marked.remove(k);
-            }
+        let n = self.cf_objects_shown().len();
+        if n == 0 {
+            self.status = "Nothing to select".into();
+            return;
+        }
+        if self.cf.select_all {
+            self.cf.select_all = false;
+            self.cf.marked.clear();
+            self.status = "Selection cleared".into();
         } else {
-            self.cf.marked.extend(keys);
+            self.cf.marked.clear();
+            self.cf.select_all = true;
+            self.status = format!("All {n} shown file(s) selected — [Space] to act");
         }
     }
 
@@ -2799,7 +2844,7 @@ impl App {
     /// The bulk action menu for the marked objects: Download / Delete. Opened by Space
     /// when ≥1 is marked.
     pub(super) fn open_cf_object_bulk_menu(&mut self) {
-        let n = self.cf.marked.len();
+        let n = self.cf_bulk_count();
         if n == 0 {
             self.status = "No objects marked — v marks one, V marks all shown".into();
             return;
@@ -2814,7 +2859,7 @@ impl App {
 
     /// Ask before deleting the marked objects.
     pub(super) fn ask_cf_object_bulk_delete(&mut self) {
-        let n = self.cf.marked.len();
+        let n = self.cf_bulk_count();
         self.confirm = Some(Confirm {
             action: "cf-object-bulk-delete".into(),
             project: String::new(),
@@ -2827,7 +2872,7 @@ impl App {
     /// Download every marked object into the CWD under its basename (one worker job).
     /// Marks are cleared once dispatched — they have served their purpose.
     pub(super) fn cf_bulk_download(&mut self, req: &Sender<Req>) {
-        let keys: Vec<String> = self.cf.marked.iter().cloned().collect();
+        let keys = self.cf_object_targets();
         if keys.is_empty() {
             self.status = "No objects marked".into();
             return;
@@ -2847,12 +2892,13 @@ impl App {
             dir: ".".into(),
         }));
         self.cf.marked.clear();
+        self.cf.select_all = false;
         self.status = "Downloading marked objects…".into();
     }
 
     /// The bulk action menu for the marked records.
     pub(super) fn open_cf_bulk_menu(&mut self) {
-        let n = self.cf.marked.len();
+        let n = self.cf_bulk_count();
         if n == 0 {
             self.status = "No records marked — v marks one, V marks all shown".into();
             return;
@@ -2876,7 +2922,7 @@ impl App {
 
     /// The form for a bulk attribute set (content / proxied / ttl).
     pub(super) fn open_cf_bulk_form(&mut self, attr: CfBulkAttr) {
-        let n = self.cf.marked.len();
+        let n = self.cf_bulk_count();
         let field = match attr {
             CfBulkAttr::Content => Field::text("Content", ""),
             CfBulkAttr::Proxied => Field::boolean("Proxied", false),
@@ -2891,7 +2937,7 @@ impl App {
 
     /// Ask before deleting the marked records.
     pub(super) fn ask_cf_bulk_delete(&mut self) {
-        let n = self.cf.marked.len();
+        let n = self.cf_bulk_count();
         self.confirm = Some(Confirm {
             action: "cf-bulk-delete".into(),
             project: String::new(),
@@ -3292,6 +3338,7 @@ impl App {
             // half-truth this project keeps having to fix.
             Resp::BulkDone { action, ok, failed } => {
                 self.marked.clear();
+                self.select_all_services = false;
                 let _ = req.send(Req::AllServices);
                 if failed.is_empty() {
                     self.status = format!("{} done on {} services", cap(&action), ok.len());
@@ -3537,6 +3584,7 @@ impl App {
             }
             CfResp::BulkDone { ok, failed } => {
                 self.cf.marked.clear();
+                self.cf.select_all = false;
                 self.cf_reload(req);
                 if failed.is_empty() {
                     self.status = format!("{ok} record(s) done");
@@ -3612,6 +3660,7 @@ impl App {
     pub(super) fn clear_filter(&mut self) {
         self.filter.clear();
         self.filter_input = false;
+        self.select_all_services = false;
         self.clamp_filtered();
     }
 
@@ -3650,12 +3699,13 @@ impl App {
     }
 
     pub(super) fn visible_actions(&self) -> Vec<&Value> {
+        let matcher = crate::filter::FilterMatcher::new(&self.filter);
         self.actions
             .iter()
             .filter(|a| {
-                keep(
+                keep_with(
                     &commands::action_row(a, commands::ACTION_DESC_TUI),
-                    &self.filter,
+                    &matcher,
                 )
             })
             // "Failures only" keeps everything that is not a clean, finished
@@ -3674,9 +3724,10 @@ impl App {
     /// from the unfiltered list and the title never showed a count, so the filter
     /// was both inert and invisible.
     pub(super) fn visible_storage_rows(&self) -> Vec<Vec<String>> {
+        let matcher = crate::filter::FilterMatcher::new(&self.filter);
         crate::monitor::storage_rows(&self.storage)
             .into_iter()
-            .filter(|r| keep(r, &self.filter))
+            .filter(|r| keep_with(r, &matcher))
             .collect()
     }
 
@@ -3711,6 +3762,7 @@ impl App {
         if self.filter.is_empty() {
             return (all, total);
         }
+        let matcher = crate::filter::FilterMatcher::new(&self.filter);
         // Filtered PER PROJECT, not over a flat list. Filtering the rows
         // independently dropped the project headers — they rarely contain what
         // you typed — leaving orphaned service rows with no way to tell which
@@ -3722,11 +3774,11 @@ impl App {
         let mut out = Vec::new();
         let mut i = 0;
         while i < all.len() {
-            let project_matches = keep(&all[i], &self.filter);
+            let project_matches = keep_with(&all[i], &matcher);
             let mut kept = Vec::new();
             let mut j = i + 1;
             while j < all.len() && all[j].first().is_some_and(|c| c.starts_with("  ")) {
-                if project_matches || keep(&all[j], &self.filter) {
+                if project_matches || keep_with(&all[j], &matcher) {
                     kept.push(all[j].clone());
                 }
                 j += 1;
@@ -3815,7 +3867,7 @@ impl App {
     /// Render AND actions must both go through here. If render is filtered while
     /// actions use full-list indices, `x` would delete the wrong service.
     pub(super) fn visible_rows(&self) -> Vec<Line2<'_>> {
-        let f = self.filter.to_lowercase();
+        let matcher = crate::filter::FilterMatcher::new(&self.filter);
         let mut names: Vec<&String> = self.projects.iter().collect();
         names.sort();
 
@@ -3834,14 +3886,14 @@ impl App {
         for p in names {
             // A matching project name holds all its contents: searching for
             // "harisenin-net" must show its services, not an empty header.
-            let project_matches = f.is_empty() || p.to_lowercase().contains(&f);
+            let project_matches = matcher.matches(p);
             let mut kept: Vec<&Value> = by_project
                 .get(p.as_str())
                 .map(|v| v.as_slice())
                 .unwrap_or_default()
                 .iter()
                 .copied()
-                .filter(|s| project_matches || keep(&service_row(s, None, None), &self.filter))
+                .filter(|s| project_matches || keep_with(&service_row(s, None, None), &matcher))
                 .collect();
             kept.sort_by_key(|s| field(s, "/name"));
 
@@ -3873,9 +3925,10 @@ impl App {
     /// filter can be asserted directly, without reconstructing the grouped rows.
     #[cfg(test)]
     pub(super) fn visible_services(&self) -> Vec<&Value> {
+        let matcher = crate::filter::FilterMatcher::new(&self.filter);
         self.all_services
             .iter()
-            .filter(|s| keep(&service_row(s, None, None), &self.filter))
+            .filter(|s| keep_with(&service_row(s, None, None), &matcher))
             .collect()
     }
 
@@ -4143,9 +4196,10 @@ impl App {
     /// Render AND actions (e/x/P) must both go through here. If render is filtered
     /// while actions use full-list indices, `x` would delete the wrong domain.
     pub(super) fn visible_domains(&self) -> Vec<&Value> {
+        let matcher = crate::filter::FilterMatcher::new(&self.filter);
         self.domains
             .iter()
-            .filter(|d| keep(&crate::domains::domain_row(d), &self.filter))
+            .filter(|d| keep_with(&crate::domains::domain_row(d), &matcher))
             .collect()
     }
 
@@ -4548,6 +4602,7 @@ impl App {
         // presses and read as a dead end. Bulk actions clear their marks for the
         // same reason.
         self.marked.clear();
+        self.select_all_services = false;
         self.status = "Comparing...".into();
     }
 
@@ -4893,6 +4948,7 @@ impl App {
     /// — otherwise a second press on a fully marked project would do nothing and
     /// read as a dead key.
     pub(super) fn toggle_mark(&mut self) {
+        self.select_all_services = false;
         if let Some((project, service, _)) = self.selected_row() {
             if !self.marked.remove(&(project.clone(), service.clone())) {
                 self.marked.insert((project, service));
@@ -4923,32 +4979,57 @@ impl App {
     /// a set: narrow the table, then take what is left. Marks everything unless
     /// it is all marked already, so the same key clears it again.
     pub(super) fn mark_all_visible(&mut self) {
-        let shown: Vec<(String, String)> = self
+        let n = self
             .visible_rows()
             .iter()
-            .filter_map(|l| match l {
-                Line2::Service(s) => Some((field(s, "/projectName"), field(s, "/name"))),
-                Line2::Project { .. } => None,
-            })
-            .collect();
-        if shown.is_empty() {
+            .filter(|l| matches!(l, Line2::Service(_)))
+            .count();
+        if n == 0 {
             self.status = "Nothing to mark".into();
             return;
         }
-        if shown.iter().all(|k| self.marked.contains(k)) {
-            self.marked.retain(|k| !shown.contains(k));
-        } else {
-            self.marked.extend(shown);
+        if self.select_all_services {
+            self.select_all_services = false;
+            self.marked.clear();
+            self.status = "Selection cleared".into();
+            return;
         }
-        self.report_marks();
+        self.marked.clear();
+        self.select_all_services = true;
+        self.status = format!("All {n} shown service(s) selected — [Space] to act");
+    }
+
+    pub(super) fn service_bulk_count(&self) -> usize {
+        if self.select_all_services {
+            self.visible_rows()
+                .iter()
+                .filter(|l| matches!(l, Line2::Service(_)))
+                .count()
+        } else {
+            self.marked.len()
+        }
+    }
+
+    pub(super) fn service_is_selected_for_bulk(&self, project: &str, service: &str) -> bool {
+        self.select_all_services
+            && self.visible_rows().iter().any(|l| match l {
+                Line2::Service(s) => {
+                    field(s, "/projectName") == project && field(s, "/name") == service
+                }
+                Line2::Project { .. } => false,
+            })
+            || self.is_marked(project, service)
     }
 
     /// Say what is marked. A mark is a small ✓ far from the cursor, so a count in
     /// the status line is the only feedback that survives a long table.
     fn report_marks(&mut self) {
         self.status = match self.marked.len() {
-            0 => "No services marked".into(),
-            n => format!("{n} service(s) marked — [Space] to act on them, [Esc] to clear"),
+            0 if !self.select_all_services => "No services marked".into(),
+            _ => format!(
+                "{} service(s) marked — [Space] to act on them, [Esc] to clear",
+                self.service_bulk_count()
+            ),
         };
     }
 
@@ -4959,6 +5040,20 @@ impl App {
     /// out instead of sending a call for something that no longer exists.
     /// Sorted, so the confirmation lists them in the order the table shows.
     pub(super) fn bulk_targets(&self) -> Vec<(String, String, String)> {
+        if self.select_all_services {
+            return self
+                .visible_rows()
+                .into_iter()
+                .filter_map(|l| match l {
+                    Line2::Service(s) => Some((
+                        field(s, "/projectName"),
+                        field(s, "/name"),
+                        field(s, "/type"),
+                    )),
+                    Line2::Project { .. } => None,
+                })
+                .collect();
+        }
         let mut out: Vec<(String, String, String)> = self
             .all_services
             .iter()
@@ -5076,7 +5171,7 @@ impl App {
     /// resource form (values default to 0 = unlimited, NOT prefilled from any one
     /// service since the marked set differs), and submit applies it to all.
     pub(super) fn open_bulk_resource_form(&mut self) {
-        let n = self.marked.len();
+        let n = self.service_bulk_count();
         if n == 0 {
             self.status = "Mark some services first — [v] marks the row".into();
             return;
@@ -5707,7 +5802,7 @@ impl App {
                         }
                     },
                 };
-                let ids: Vec<String> = self.cf.marked.iter().cloned().collect();
+                let ids = self.cf_record_targets();
                 if ids.is_empty() {
                     self.status = "Nothing marked any more — cancelled".into();
                     return;
@@ -5723,6 +5818,8 @@ impl App {
                     ids,
                     body,
                 }));
+                self.cf.marked.clear();
+                self.cf.select_all = false;
             }
             FormKind::CfBucketCreate => {
                 let name = form.val(0).trim().to_string();

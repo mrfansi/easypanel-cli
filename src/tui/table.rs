@@ -194,12 +194,13 @@ pub(super) fn metric_cols(m: Option<&Value>) -> Vec<String> {
 ///
 /// Matched against the DISPLAYED text, not the raw JSON: what the user is looking
 /// for is what's on screen.
+#[cfg(test)]
 pub(super) fn keep(row: &[String], filter: &str) -> bool {
-    if filter.is_empty() {
-        return true;
-    }
-    let f = filter.to_lowercase();
-    row.iter().any(|c| c.to_lowercase().contains(&f))
+    keep_with(row, &crate::filter::FilterMatcher::new(filter))
+}
+
+pub(super) fn keep_with(row: &[String], matcher: &crate::filter::FilterMatcher<'_>) -> bool {
+    matcher.matches_any(row.iter().map(String::as_str))
 }
 
 /// Select the first row when the list is non-empty and nothing is selected yet.

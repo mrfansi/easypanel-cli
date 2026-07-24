@@ -161,7 +161,7 @@ impl App {
     /// single-service one: "Restart" acting on 12 services because of marks made
     /// several screens ago is precisely the silent action this UI refuses.
     fn bulk_items(&self) -> Vec<MenuItem> {
-        let n = self.marked.len();
+        let n = self.service_bulk_count();
         if n == 0 {
             return vec![];
         }
@@ -206,6 +206,7 @@ impl App {
         }
         items.extend([MenuItem::new(format!("Clear the {n} marks"), |a, _| {
             a.marked.clear();
+            a.select_all_services = false;
             a.status = "Marks cleared".into();
         })]);
         items
