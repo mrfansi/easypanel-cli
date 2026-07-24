@@ -397,6 +397,39 @@ pub(super) fn cf_record_patch(
     }
 }
 
+fn tunnel_origin_advanced_json(origin: Option<&Value>) -> String {
+    let Some(Value::Object(object)) = origin else {
+        return String::new();
+    };
+    let mut advanced = object.clone();
+    advanced.remove("noTLSVerify");
+    if advanced.is_empty() {
+        String::new()
+    } else {
+        Value::Object(advanced).to_string()
+    }
+}
+
+fn tunnel_origin_request_from_form(form: &Form) -> anyhow::Result<Option<Value>> {
+    let no_tls_verify = form.by_label("No TLS verify") == "yes";
+    let mut value = parse_tunnel_origin_request(&form.by_label("Advanced origin JSON"))?;
+    let mut object = match value.take() {
+        Some(Value::Object(map)) => map,
+        Some(_) => unreachable!("parse_tunnel_origin_request only returns JSON objects"),
+        None => serde_json::Map::new(),
+    };
+    if no_tls_verify {
+        object.insert("noTLSVerify".into(), Value::Bool(true));
+    } else {
+        object.remove("noTLSVerify");
+    }
+    if object.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(Value::Object(object)))
+    }
+}
+
 /// A Cloudflare account-list change: executed in event_loop, which holds the
 /// CloudflareConfig. Same shape as ServerAction — the App never writes the file.
 pub(super) enum CfAction {
@@ -2181,11 +2214,12 @@ impl App {
                     Field::text("Hostname", ""),
                     Field::text("Service", "http://localhost:3000"),
                     Field::text("Path", ""),
-                    Field::text("Origin request JSON", ""),
+                    Field::boolean("No TLS verify", false),
+                    Field::text("Advanced origin JSON", ""),
                 ],
             )
             .with_note(
-                "Service examples: http://localhost:3000, ssh://localhost:22, http_status:404",
+                "Service examples: http://localhost:3000, ssh://localhost:22, http_status:404. Advanced JSON is optional.",
             ),
         );
     }
@@ -2203,11 +2237,13 @@ impl App {
             self.status = "Catch-all route is managed automatically".into();
             return;
         }
-        let origin = rule
+        let no_tls_verify = rule
             .origin_request
             .as_ref()
-            .map(|v| v.to_string())
-            .unwrap_or_default();
+            .and_then(|v| v.get("noTLSVerify"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let advanced = tunnel_origin_advanced_json(rule.origin_request.as_ref());
         self.form = Some(
             Form::new(
                 FormKind::CfTunnelRouteEdit {
@@ -2218,12 +2254,13 @@ impl App {
                 format!(" Edit route {} ", rule.hostname_label()),
                 vec![
                     Field::text("Service", &rule.service),
-                    Field::text("Origin request JSON", &origin),
+                    Field::boolean("No TLS verify", no_tls_verify),
+                    Field::text("Advanced origin JSON", &advanced),
                     Field::boolean("Clear origin request", false),
                 ],
             )
             .with_note(
-                "Leave Origin request JSON empty to keep it empty; toggle clear to remove it.",
+                "No TLS verify maps to Cloudflare noTLSVerify. Advanced JSON preserves other originRequest keys.",
             ),
         );
     }
@@ -5417,17 +5454,16 @@ impl App {
                 }));
             }
             FormKind::CfTunnelRouteCreate { tunnel_id } => {
-                let (hostname, service, path, origin_raw) = (
+                let (hostname, service, path) = (
                     form.by_label("Hostname").trim().to_string(),
                     form.by_label("Service").trim().to_string(),
                     form.by_label("Path").trim().to_string(),
-                    form.by_label("Origin request JSON"),
                 );
                 if hostname.is_empty() || service.is_empty() {
                     self.status = "Hostname and service are required".into();
                     return;
                 }
-                let origin_request = match parse_tunnel_origin_request(&origin_raw) {
+                let origin_request = match tunnel_origin_request_from_form(form) {
                     Ok(v) => v,
                     Err(e) => {
                         self.status = e.to_string();
@@ -5460,13 +5496,10 @@ impl App {
                     return;
                 }
                 let clear = form.by_label("Clear origin request") == "yes";
-                let raw = form.by_label("Origin request JSON");
                 let origin_request = if clear {
                     Some(None)
-                } else if raw.trim().is_empty() {
-                    None
                 } else {
-                    match parse_tunnel_origin_request(&raw) {
+                    match tunnel_origin_request_from_form(form) {
                         Ok(v) => Some(v),
                         Err(e) => {
                             self.status = e.to_string();

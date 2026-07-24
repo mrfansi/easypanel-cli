@@ -7144,6 +7144,37 @@ fn cf_tunnel_enter_opens_config_and_esc_returns_to_tunnels() {
 }
 
 #[test]
+fn cf_tunnel_route_edit_shows_no_tls_verify_as_a_toggle() {
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::Tunnels;
+    app.cf.screen = CfScreen::TunnelConfig;
+    app.cf.current_tunnel = Some(cf_tunnel("tunnel-1", "edge-router"));
+    app.cf.tunnel_config = Some(crate::cloudflare::TunnelConfiguration {
+        config: crate::cloudflare::TunnelConfig {
+            ingress: vec![crate::cloudflare::TunnelIngressRule {
+                hostname: "ai-master.mrfansi.dev".into(),
+                service: "https://openclaw-master:18789".into(),
+                origin_request: Some(json!({"noTLSVerify": true})),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    app.cf.tunnel_config_row.select(Some(0));
+
+    app.open_cf_tunnel_route_edit_form();
+
+    let form = app.form.as_ref().expect("edit form should open");
+    assert!(matches!(form.kind, FormKind::CfTunnelRouteEdit { .. }));
+    assert_eq!(f_val(form, "No TLS verify"), "yes");
+    assert_eq!(f_val(form, "Advanced origin JSON"), "");
+    assert_eq!(f_val(form, "Service"), "https://openclaw-master:18789");
+}
+
+#[test]
 fn cf_worker_enter_opens_deployments_and_esc_returns_to_workers() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);

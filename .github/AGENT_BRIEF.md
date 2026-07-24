@@ -459,7 +459,9 @@ hint on the auth error, same pitfall as Zone:DNS).
   TUI list columns: name/status/config/created/target/id; **Enter** opens
   `CfScreen::TunnelConfig` with hostname/service/origin request rows; **n** adds a route,
   **e** edits the selected route, **x** deletes it behind typed-hostname confirmation,
-  and `Space`/right-click opens the route menu. **Esc** returns to the Tunnels list.
+  and `Space`/right-click opens the route menu. As of v0.98.1, the TUI route form maps
+  common `originRequest.noTLSVerify` to a **No TLS verify** boolean and leaves only less
+  common keys in **Advanced origin JSON**. **Esc** returns to the Tunnels list.
   Product shortcuts are now `1` Analytics, `2` Domains, `3` Tunnels, `4` R2, `5`
   Workers. Token needs account-level **Cloudflare Tunnel Read/Write** or **Cloudflare
   One Connectors Read/Write** for config writes, plus zone **DNS Write** for CNAME

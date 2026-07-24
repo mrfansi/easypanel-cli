@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.1] — 2026-07-24
+
+### Changed
+
+- Tunnel route forms now show `noTLSVerify` as a **No TLS verify** toggle instead of
+  forcing operators to edit raw `{"noTLSVerify":true}` JSON. Less common
+  `originRequest` keys remain available through **Advanced origin JSON**.
+
 ## [0.98.0] — 2026-07-24
 
 ### Added
