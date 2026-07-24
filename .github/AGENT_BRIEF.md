@@ -352,7 +352,7 @@ behaves exactly like the EasyPanel TUI.** The two workspaces (`W` toggles) must 
 like one app. Concretely, replicate EasyPanel's patterns in the CF workspace:
 
 - **Header = "Cloudflare — <account>"** (like "EasyPanel — <server>"); the second line
-  is a **product tab bar** (Analytics, Domains, R2, Workers today; D1/KV/Connectors later) styled like
+  is a **product tab bar** (Analytics, Domains, Tunnels, R2, Workers today; D1/KV/Connectors later) styled like
   EasyPanel's tab bar; per-screen **key hints live in the status bar**, not the header.
 - **Account switching is a PICKER (`a`), the analogue of the `s` server switcher — NOT a
   tab.** Do not turn accounts into tabs (owner was explicit, twice).
@@ -443,6 +443,23 @@ hint on the auth error, same pitfall as Zone:DNS).
   on settings vectors. The screen masks secret values and shows secret metadata only.
   Write/edit actions for variables/secrets/cron/runtime should be a separate guarded slice
   smoke-tested against `mrfansi-dev`, not guessed against production accounts.
+- **Cloudflare Tunnels — DONE v0.97.0.** `CfProduct::Tunnels` sits between Domains and
+  R2 because tunnel routing is domain-adjacent. Read-only endpoints:
+  `GET /accounts/{account_id}/cfd_tunnel` with `is_deleted=false` for the list, and
+  `GET /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations` for ingress/config
+  rows. Domain types `CloudflareTunnel`/`TunnelConfiguration`/`TunnelIngressRule` and
+  filters live in `cloudflare.rs`; client methods are `list_tunnels` and
+  `get_tunnel_config`. CLI is `cf tunnels list` and `cf tunnels config <tunnel>`.
+  TUI list columns: name/status/config/created/target/id; **Enter** opens
+  `CfScreen::TunnelConfig` with hostname/service/origin request rows; **Esc** returns
+  to the Tunnels list. Product shortcuts are now `1` Analytics, `2` Domains,
+  `3` Tunnels, `4` R2, `5` Workers. Token needs account-level **Cloudflare Tunnel Read**
+  or **Cloudflare One Connectors Read**; `tunnels_hint` surfaces that on auth errors.
+  Verified live against `mrfansi-dev`: list returned `macbook-docker`, `mrfansi-macbook`,
+  and `mrfansi.dev`; config for `mrfansi.dev` returned `awan.mrfansi.dev ->
+  http://localhost:3000`, apex `mrfansi.dev -> http://localhost:80`, and catch-all.
+  Create/delete/update tunnel, connector-token generation, and DNS CNAME automation are
+  deliberately future guarded write slices.
 - **D1 (serverless SQL database).** New `CfProduct::D1` tab. Databases via
   `/accounts/{account_id}/d1/database` (list/create/delete); run SQL via
   `POST /accounts/{account_id}/d1/database/{database_id}/query` (or `/raw`), which returns

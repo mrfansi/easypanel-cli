@@ -5681,6 +5681,17 @@ fn cf_zone(id: &str, name: &str) -> crate::cloudflare::Zone {
     }
 }
 
+fn cf_tunnel(id: &str, name: &str) -> crate::cloudflare::CloudflareTunnel {
+    crate::cloudflare::CloudflareTunnel {
+        id: id.into(),
+        name: name.into(),
+        status: "healthy".into(),
+        config_src: "cloudflare".into(),
+        created_at: "2026-07-24T00:00:00Z".into(),
+        ..Default::default()
+    }
+}
+
 fn expect_zones_and_web_analytics(rx: &std::sync::mpsc::Receiver<Req>) {
     assert!(
         matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Zones { .. }))),
@@ -5715,6 +5726,7 @@ fn cf_palette_lists_products_accounts_zones_buckets_and_jumps_by_identity() {
     app.cf.accounts = vec![cf_account()];
     app.set_workspace(Workspace::Cloudflare);
     app.cf.zones = vec![cf_zone("z1", "example.com"), cf_zone("z2", "other.com")];
+    app.cf.tunnels = vec![cf_tunnel("tunnel-1", "edge-router")];
     app.cf.r2_buckets = vec![cf_bucket("assets"), cf_bucket("backups")];
 
     app.on_key(KeyCode::Char(':'), &tx);
@@ -5728,10 +5740,12 @@ fn cf_palette_lists_products_accounts_zones_buckets_and_jumps_by_identity() {
         .collect();
     for want in [
         "⇥  Domains",
+        "⇥  Tunnels",
         "⇥  R2",
         "Account: prod  ·  active",
         "Zone: example.com",
         "Zone: other.com",
+        "Tunnel: edge-router",
         "Bucket: assets",
     ] {
         assert!(
@@ -5768,6 +5782,21 @@ fn cf_palette_lists_products_accounts_zones_buckets_and_jumps_by_identity() {
     );
     assert_eq!(app.cf.screen, CfScreen::Objects);
     assert_eq!(app.cf.current_bucket.as_deref(), Some("assets"));
+
+    // A tunnel entry jumps to its ingress/config rows.
+    app.cf.screen = CfScreen::Zones;
+    app.cf.product = CfProduct::Dns;
+    app.on_key(KeyCode::Char(':'), &tx);
+    for c in "edge-router".chars() {
+        app.on_key(KeyCode::Char(c), &tx);
+    }
+    app.on_key(KeyCode::Enter, &tx);
+    assert_eq!(app.cf.product, CfProduct::Tunnels);
+    assert_eq!(app.cf.screen, CfScreen::TunnelConfig);
+    assert_eq!(
+        app.cf.current_tunnel.as_ref().map(|t| t.name.as_str()),
+        Some("edge-router")
+    );
 }
 
 #[test]
@@ -6976,7 +7005,7 @@ fn clicking_cf_product_tabs_switches_products_like_easypanel_tabs() {
     let mut term = Terminal::new(TestBackend::new(90, 12)).unwrap();
     term.draw(|f| super::render::ui(f, &mut app)).unwrap();
     let _ = rx.try_recv(); // initial Analytics load
-    let (start, end) = app.cf_product_spans[2];
+    let (start, end) = app.cf_product_spans[3];
     app.on_mouse(
         MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -6996,40 +7025,43 @@ fn clicking_cf_product_tabs_switches_products_like_easypanel_tabs() {
 #[test]
 fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
     // CF_PRODUCTS is the single source the tab bar and the switch keys share:
-    // Analytics is tab 1, Domains tab 2, R2 tab 3, Workers tab 4.
-    assert_eq!(CF_PRODUCTS.len(), 4);
+    // Analytics is tab 1, Domains tab 2, Tunnels tab 3, R2 tab 4, Workers tab 5.
+    assert_eq!(CF_PRODUCTS.len(), 5);
     assert_eq!(CF_PRODUCTS[0], ("Analytics", CfProduct::Analytics));
     assert_eq!(CF_PRODUCTS[1], ("Domains", CfProduct::Dns));
-    assert_eq!(CF_PRODUCTS[2], ("R2", CfProduct::R2));
-    assert_eq!(CF_PRODUCTS[3], ("Workers", CfProduct::Workers));
+    assert_eq!(CF_PRODUCTS[2], ("Tunnels", CfProduct::Tunnels));
+    assert_eq!(CF_PRODUCTS[3], ("R2", CfProduct::R2));
+    assert_eq!(CF_PRODUCTS[4], ("Workers", CfProduct::Workers));
     assert_eq!(CfProduct::Analytics.index(), 0);
     assert_eq!(CfProduct::Dns.index(), 1);
-    assert_eq!(CfProduct::R2.index(), 2);
-    assert_eq!(CfProduct::Workers.index(), 3);
+    assert_eq!(CfProduct::Tunnels.index(), 2);
+    assert_eq!(CfProduct::R2.index(), 3);
+    assert_eq!(CfProduct::Workers.index(), 4);
     assert_eq!(CfProduct::Analytics.next(), CfProduct::Dns);
-    assert_eq!(CfProduct::Dns.next(), CfProduct::R2);
+    assert_eq!(CfProduct::Dns.next(), CfProduct::Tunnels);
+    assert_eq!(CfProduct::Tunnels.next(), CfProduct::R2);
     assert_eq!(CfProduct::R2.next(), CfProduct::Workers);
     assert_eq!(CfProduct::Workers.next(), CfProduct::Analytics);
     assert_eq!(CfProduct::Analytics.prev(), CfProduct::Workers);
 
     // In the workspace the tab keys act on the product, never on the EasyPanel
-    // Screen or the workspace. Selecting R2 loads the active account's buckets.
+    // Screen or the workspace. Selecting Tunnels/R2 loads the active account data.
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
     app.cf.accounts = vec![cf_account()];
     app.set_workspace(Workspace::Cloudflare);
     assert_eq!(app.cf.product, CfProduct::Dns);
 
-    // Tab → R2: Domains stays the landing product, and cycling follows the visual order.
+    // Tab → Tunnels: Domains stays the landing product, and cycling follows the visual order.
     app.on_key(KeyCode::Tab, &tx);
-    assert_eq!(app.cf.product, CfProduct::R2);
+    assert_eq!(app.cf.product, CfProduct::Tunnels);
     assert!(app.workspace == Workspace::Cloudflare);
     assert!(
-        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::R2Buckets { .. }))),
-        "switching to R2 loads the account's buckets"
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Tunnels { .. }))),
+        "switching to Tunnels loads the account's tunnels"
     );
 
-    // `1` jumps to Analytics; `2` selects Domains; `3` selects R2; `4` selects Workers.
+    // `1` jumps to Analytics; `2` Domains; `3` Tunnels; `4` R2; `5` Workers.
     app.on_key(KeyCode::Char('1'), &tx);
     assert_eq!(app.cf.product, CfProduct::Analytics);
     assert!(matches!(
@@ -7040,17 +7072,75 @@ fn cf_product_switch_keys_toggle_dns_and_r2_and_load_buckets() {
     assert_eq!(app.cf.product, CfProduct::Dns);
     expect_zones_and_web_analytics(&rx);
     app.on_key(KeyCode::Char('3'), &tx);
+    assert_eq!(app.cf.product, CfProduct::Tunnels);
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Tunnels { .. }))),
+        "switching to Tunnels loads account tunnels"
+    );
+    app.on_key(KeyCode::Char('4'), &tx);
     assert_eq!(app.cf.product, CfProduct::R2);
     assert!(
         matches!(rx.try_recv(), Ok(Req::Cf(CfReq::R2Buckets { .. }))),
         "switching to R2 loads the account's buckets"
     );
-    app.on_key(KeyCode::Char('4'), &tx);
+    app.on_key(KeyCode::Char('5'), &tx);
     assert_eq!(app.cf.product, CfProduct::Workers);
     assert!(
         matches!(rx.try_recv(), Ok(Req::Cf(CfReq::Workers { .. }))),
         "switching to Workers loads account scripts"
     );
+}
+
+#[test]
+fn cf_tunnel_enter_opens_config_and_esc_returns_to_tunnels() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::Tunnels;
+    app.cf.tunnels = vec![cf_tunnel("tunnel-1", "edge-router")];
+    app.cf.tunnels_row.select(Some(0));
+
+    app.on_key(KeyCode::Enter, &tx);
+    assert_eq!(app.cf.product, CfProduct::Tunnels);
+    assert_eq!(app.cf.screen, CfScreen::TunnelConfig);
+    assert_eq!(
+        app.cf.current_tunnel.as_ref().map(|t| t.name.as_str()),
+        Some("edge-router")
+    );
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::TunnelConfig { tunnel_id, .. })) if tunnel_id == "tunnel-1"
+    ));
+
+    app.handle(
+        Resp::Cf(CfResp::TunnelConfig {
+            tunnel_id: "tunnel-1".into(),
+            config: Box::new(crate::cloudflare::TunnelConfiguration {
+                config: crate::cloudflare::TunnelConfig {
+                    ingress: vec![crate::cloudflare::TunnelIngressRule {
+                        hostname: "app.example.com".into(),
+                        service: "http://localhost:3000".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        }),
+        &tx,
+    );
+    assert!(app.cf.tunnel_config.is_some());
+    assert_eq!(app.cf.tunnel_config_row.selected(), Some(0));
+    assert_eq!(
+        app.cf_tunnel_config_rows_shown()[0].hostname,
+        "app.example.com"
+    );
+
+    app.on_key(KeyCode::Esc, &tx);
+    assert_eq!(app.cf.screen, CfScreen::Zones);
+    assert!(app.cf.current_tunnel.is_none());
+    assert!(app.cf.tunnel_config.is_none());
 }
 
 #[test]
@@ -7239,7 +7329,7 @@ fn cf_buckets_key_handles_add_delete_and_filter() {
     let mut app = App::new("s".into(), vec![]);
     app.cf.accounts = vec![cf_account()];
     app.set_workspace(Workspace::Cloudflare);
-    app.on_key(KeyCode::Char('3'), &tx); // → R2 (Analytics is tab 1)
+    app.on_key(KeyCode::Char('4'), &tx); // → R2 (Analytics=1, Domains=2, Tunnels=3)
     assert_eq!(app.cf.product, CfProduct::R2);
 
     app.cf.r2_buckets = vec![cf_bucket("assets"), cf_bucket("backups")];
@@ -7284,7 +7374,7 @@ fn cf_bucket_enter_drills_into_objects_and_esc_walks_back() {
     let mut app = App::new("s".into(), vec![]);
     app.cf.accounts = vec![cf_account()];
     app.set_workspace(Workspace::Cloudflare);
-    app.on_key(KeyCode::Char('3'), &tx); // → R2 (Analytics is tab 1)
+    app.on_key(KeyCode::Char('4'), &tx); // → R2 (Analytics=1, Domains=2, Tunnels=3)
     assert_eq!(app.cf.product, CfProduct::R2);
     while rx.try_recv().is_ok() {} // drain Analytics + buckets load
 
@@ -7357,7 +7447,7 @@ fn cf_objects_folder_tree_enter_descends_and_esc_goes_up() {
     let mut app = App::new("s".into(), vec![]);
     app.cf.accounts = vec![cf_account()];
     app.set_workspace(Workspace::Cloudflare);
-    app.on_key(KeyCode::Char('3'), &tx); // → R2 (Analytics is tab 1)
+    app.on_key(KeyCode::Char('4'), &tx); // → R2 (Analytics=1, Domains=2, Tunnels=3)
     while rx.try_recv().is_ok() {} // drain Analytics + buckets load
 
     app.cf.r2_buckets = vec![cf_bucket("assets")];

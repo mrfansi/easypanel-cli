@@ -9,9 +9,9 @@ use serde_json::{json, Value};
 
 use crate::client::EasypanelClient;
 use crate::cloudflare::{
-    object_basename, upload_key, AnalyticsSummary, CloudflareClient, R2Bucket, R2Object, Record,
-    RecordFilter, WebAnalyticsSite, WorkerDeployment, WorkerScript, WorkerSettingsBundle,
-    WorkerUploadMode, Zone, MAX_REST_OBJECT_BYTES,
+    object_basename, upload_key, AnalyticsSummary, CloudflareClient, CloudflareTunnel, R2Bucket,
+    R2Object, Record, RecordFilter, TunnelConfiguration, WebAnalyticsSite, WorkerDeployment,
+    WorkerScript, WorkerSettingsBundle, WorkerUploadMode, Zone, MAX_REST_OBJECT_BYTES,
 };
 use crate::output::field;
 
@@ -505,6 +505,15 @@ pub(super) enum CfReq {
         token: String,
         account_id: String,
     },
+    Tunnels {
+        token: String,
+        account_id: String,
+    },
+    TunnelConfig {
+        token: String,
+        account_id: String,
+        tunnel_id: String,
+    },
     Workers {
         token: String,
         account_id: String,
@@ -776,6 +785,14 @@ pub(super) enum CfResp {
     WebAnalyticsErr(String),
     /// The R2 buckets for the active account.
     R2Buckets(Vec<R2Bucket>),
+    /// The Cloudflare Tunnels for the active account.
+    Tunnels(Vec<CloudflareTunnel>),
+    /// One tunnel's ingress/configuration. Tunnel id is echoed so stale replies can
+    /// be ignored when the user opens another tunnel before the first request returns.
+    TunnelConfig {
+        tunnel_id: String,
+        config: Box<TunnelConfiguration>,
+    },
     /// The Worker scripts for the active account.
     Workers(Vec<WorkerScript>),
     /// The deployments/version history for one Worker. The worker name is echoed so
@@ -2128,6 +2145,23 @@ fn handle_cf(req: CfReq) -> CfResp {
                 Err(e) => CfResp::Err(e.to_string()),
             }
         }
+        CfReq::Tunnels { token, account_id } => {
+            match CloudflareClient::new(&token).list_tunnels(&account_id) {
+                Ok(tunnels) => CfResp::Tunnels(tunnels),
+                Err(e) => CfResp::Err(e.to_string()),
+            }
+        }
+        CfReq::TunnelConfig {
+            token,
+            account_id,
+            tunnel_id,
+        } => match CloudflareClient::new(&token).get_tunnel_config(&account_id, &tunnel_id) {
+            Ok(config) => CfResp::TunnelConfig {
+                tunnel_id,
+                config: Box::new(config),
+            },
+            Err(e) => CfResp::Err(e.to_string()),
+        },
         CfReq::Workers { token, account_id } => {
             match CloudflareClient::new(&token).list_worker_scripts(&account_id) {
                 Ok(workers) => CfResp::Workers(workers),

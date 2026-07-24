@@ -158,7 +158,7 @@ pub(super) const MOUSE_KEYS: &[Key] = &[
 ];
 
 /// The "Anywhere" keys that actually act in the Cloudflare workspace. The product
-/// tab bar (Analytics · Domains · R2 …) switches with 1..=N / Tab / ←→ — the CF mirror of the
+/// tab bar (Analytics · Domains · Tunnels · R2 …) switches with 1..=N / Tab / ←→ — the CF mirror of the
 /// EasyPanel tab keys — so the help documents it (the header shows the tabs; nothing
 /// else told the reader how to reach them). `:` opens the CF command palette (the
 /// mirror of EasyPanel's `:`). The `s` server list stays inert here (the CF analogue
@@ -167,7 +167,7 @@ pub(super) const MOUSE_KEYS: &[Key] = &[
 pub(super) const CF_GLOBAL_KEYS: &[Key] = &[
     Key("W", "switch workspace (EasyPanel / Cloudflare)"),
     Key("?", "this help"),
-    Key("1-4 / Tab / ←→", "switch product tab"),
+    Key("1-5 / Tab / ←→", "switch product tab"),
     Key(
         ":",
         "command palette (jump to a product / account / zone / bucket)",
@@ -430,6 +430,7 @@ pub(super) fn cf_screen_keys(screen: CfScreen) -> &'static [Key] {
         // WorkerDeployments is rendered through the Workers product route.
         CfScreen::WorkerDeployments => cf_worker_deployments_keys(),
         CfScreen::WorkerSettings => cf_worker_settings_keys(),
+        CfScreen::TunnelConfig => cf_tunnel_config_keys(),
     }
 }
 
@@ -528,6 +529,32 @@ pub(super) fn cf_worker_settings_keys() -> &'static [Key] {
     ]
 }
 
+pub(super) fn cf_tunnels_keys() -> &'static [Key] {
+    &[
+        Key(
+            "a",
+            "switch Cloudflare account (a picker, like `s` switches servers)",
+        ),
+        Key("Enter", "open routes/config for the selected tunnel"),
+        Key("Space", "action menu for the selected tunnel"),
+        Key("/", "filter tunnels"),
+        Key("r", "refresh tunnels"),
+        Key("Esc", "back to EasyPanel"),
+    ]
+}
+
+pub(super) fn cf_tunnel_config_keys() -> &'static [Key] {
+    &[
+        Key(
+            "a",
+            "switch Cloudflare account (a picker, like `s` switches servers)",
+        ),
+        Key("/", "filter routes/config"),
+        Key("r", "refresh config"),
+        Key("Esc", "back to Tunnels"),
+    ]
+}
+
 pub(super) fn render_help(f: &mut Frame, app: &mut App) {
     // In the Cloudflare workspace the "this screen" section documents the CF screen's
     // keys, not the (stale) EasyPanel Screen's — the two workspaces are isolated.
@@ -539,6 +566,10 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
                 CfScreen::WorkerDeployments => cf_worker_deployments_keys(),
                 CfScreen::WorkerSettings => cf_worker_settings_keys(),
                 _ => cf_workers_keys(),
+            },
+            CfProduct::Tunnels => match app.cf.screen {
+                CfScreen::TunnelConfig => cf_tunnel_config_keys(),
+                _ => cf_tunnels_keys(),
             },
             CfProduct::R2 => match app.cf.screen {
                 CfScreen::Objects => cf_objects_keys(),
@@ -607,6 +638,10 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
                 CfScreen::WorkerSettings => "Cloudflare · Workers · settings",
                 _ => "Cloudflare · Workers",
             },
+            CfProduct::Tunnels => match app.cf.screen {
+                CfScreen::TunnelConfig => "Cloudflare · Tunnels · routes/config",
+                _ => "Cloudflare · Tunnels",
+            },
             CfProduct::R2 => match app.cf.screen {
                 CfScreen::Objects => "Cloudflare · R2 · objects",
                 _ => "Cloudflare · R2",
@@ -616,7 +651,8 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App) {
                 CfScreen::Records
                 | CfScreen::Objects
                 | CfScreen::WorkerDeployments
-                | CfScreen::WorkerSettings => "Cloudflare · Domains · records",
+                | CfScreen::WorkerSettings
+                | CfScreen::TunnelConfig => "Cloudflare · Domains · records",
             },
         }
     } else {
@@ -803,6 +839,10 @@ pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &m
     // (Zones home / Records drill-in). R2 has a single buckets screen for now.
     match app.cf.product {
         CfProduct::Analytics => render_cf_analytics(f, header, body, app),
+        CfProduct::Tunnels => match app.cf.screen {
+            CfScreen::TunnelConfig => render_cf_tunnel_config(f, header, body, app),
+            _ => render_cf_tunnels(f, header, body, app),
+        },
         CfProduct::Workers => match app.cf.screen {
             CfScreen::WorkerDeployments => render_cf_worker_deployments(f, header, body, app),
             CfScreen::WorkerSettings => render_cf_worker_settings(f, header, body, app),
@@ -813,7 +853,8 @@ pub(super) fn render_cloudflare(f: &mut Frame, header: Rect, body: Rect, app: &m
             CfScreen::Records
             | CfScreen::Objects
             | CfScreen::WorkerDeployments
-            | CfScreen::WorkerSettings => render_cf_records(f, header, body, app),
+            | CfScreen::WorkerSettings
+            | CfScreen::TunnelConfig => render_cf_records(f, header, body, app),
         },
         CfProduct::R2 => match app.cf.screen {
             CfScreen::Objects => render_cf_objects(f, header, body, app),
@@ -838,6 +879,7 @@ pub(super) fn cf_status_hints(screen: CfScreen) -> &'static str {
         CfScreen::WorkerSettings => {
             "a account · : palette · d deployments · / filter · r refresh · Esc Workers"
         }
+        CfScreen::TunnelConfig => CF_TUNNEL_CONFIG_HINTS,
     }
 }
 
@@ -853,6 +895,12 @@ pub(super) const CF_OBJECTS_HINTS: &str =
     "a account · : palette · u upload · Enter download · x delete · v/V mark · Space menu/bulk · / filter · r refresh · Esc up/buckets";
 
 pub(super) const CF_ANALYTICS_HINTS: &str = "a account · : palette · r refresh · Esc EasyPanel";
+
+pub(super) const CF_TUNNELS_HINTS: &str =
+    "a account · : palette · Enter routes/config · Space menu · / filter · r refresh · Esc EasyPanel";
+
+pub(super) const CF_TUNNEL_CONFIG_HINTS: &str =
+    "a account · : palette · / filter · r refresh · Esc Tunnels";
 
 pub(super) const CF_WORKERS_HINTS: &str =
     "a account · : palette · Enter deployments · s settings · n deploy · x delete · Space menu · / filter · r refresh · Esc EasyPanel";
@@ -1543,6 +1591,188 @@ fn render_cf_buckets(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
         &widths,
         rows,
         &mut app.cf.r2_row,
+        tint,
+        |_, _| None,
+    );
+}
+
+fn render_cf_tunnels(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    let acct = app.cf.active.as_ref().map(|a| a.name.clone());
+    let title = match &acct {
+        Some(name) => format!("Cloudflare — {name}"),
+        None => "Cloudflare".to_string(),
+    };
+    cf_header(
+        f,
+        header,
+        &title,
+        app,
+        app.cf_product_at.elapsed().as_millis() < 300,
+    );
+
+    if app.cf_empty() {
+        f.render_widget(
+            Paragraph::new(format!("  {CF_EMPTY_HINT}"))
+                .style(Style::default().fg(Color::DarkGray))
+                .block(pane("Tunnels".to_string(), cf_tint(app))),
+            body,
+        );
+        return;
+    }
+
+    let state = cf_list_state(
+        cf_loading(app, "Tunnels"),
+        app.cf.error.is_some(),
+        app.cf.tunnels.is_empty(),
+    );
+    if state != CfListState::Ready {
+        cf_placeholder(
+            f,
+            body,
+            "Tunnels",
+            &state,
+            app.cf.error.as_deref(),
+            cf_tint(app),
+        );
+        return;
+    }
+
+    let shown = app.cf_tunnels_shown();
+    let title = filter_count_title(
+        "Tunnels",
+        shown.len(),
+        app.cf.tunnels.len(),
+        &app.cf.filter,
+        app.cf.filter_input,
+    );
+    let rows: Vec<Vec<String>> = shown
+        .iter()
+        .map(|t| {
+            vec![
+                t.name.clone(),
+                t.status_label(),
+                dash_if_empty(&t.config_src),
+                short_cf_date(&t.created_at),
+                t.target(),
+                t.id.clone(),
+            ]
+        })
+        .collect();
+    let headers = ["Name", "Status", "Config", "Created", "Target", "ID"];
+    let widths = [
+        Constraint::Min(18),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(44),
+        Constraint::Length(36),
+    ];
+    app.table_area = body;
+    let tint = cf_tint(app);
+    render_table(
+        f,
+        body,
+        title,
+        &headers,
+        &widths,
+        rows,
+        &mut app.cf.tunnels_row,
+        tint,
+        |col, text| {
+            if col != 1 {
+                return None;
+            }
+            match text.to_ascii_lowercase().as_str() {
+                "healthy" | "active" => Some(Style::default().fg(Color::Indexed(2))),
+                "degraded" => Some(Style::default().fg(Color::Indexed(3))),
+                "down" | "inactive" | "deleted" => Some(Style::default().fg(Color::Indexed(196))),
+                _ => None,
+            }
+        },
+    );
+}
+
+fn render_cf_tunnel_config(f: &mut Frame, header: Rect, body: Rect, app: &mut App) {
+    let acct = app.cf.active.as_ref().map(|a| a.name.clone());
+    let tunnel = app
+        .cf
+        .current_tunnel
+        .as_ref()
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| "Tunnel".into());
+    let title = match &acct {
+        Some(name) => format!("Cloudflare — {name} — {tunnel}"),
+        None => format!("Cloudflare — {tunnel}"),
+    };
+    cf_header(
+        f,
+        header,
+        &title,
+        app,
+        app.cf_product_at.elapsed().as_millis() < 300,
+    );
+
+    if app.cf_empty() {
+        f.render_widget(
+            Paragraph::new(format!("  {CF_EMPTY_HINT}"))
+                .style(Style::default().fg(Color::DarkGray))
+                .block(pane("Tunnel config".to_string(), cf_tint(app))),
+            body,
+        );
+        return;
+    }
+
+    let state = cf_list_state(
+        cf_loading(app, "Tunnel config"),
+        app.cf.error.is_some(),
+        app.cf.tunnel_config.is_none(),
+    );
+    if state != CfListState::Ready {
+        cf_placeholder(
+            f,
+            body,
+            "Tunnel config",
+            &state,
+            app.cf.error.as_deref(),
+            cf_tint(app),
+        );
+        return;
+    }
+
+    let shown = app.cf_tunnel_config_rows_shown();
+    let total = app
+        .cf
+        .tunnel_config
+        .as_ref()
+        .map(|c| c.rows().len())
+        .unwrap_or(0);
+    let title = filter_count_title(
+        "Tunnel routes",
+        shown.len(),
+        total,
+        &app.cf.filter,
+        app.cf.filter_input,
+    );
+    let rows: Vec<Vec<String>> = shown
+        .iter()
+        .map(|r| vec![r.hostname.clone(), r.service.clone(), r.origin.clone()])
+        .collect();
+    let headers = ["Hostname", "Service", "Origin request"];
+    let widths = [
+        Constraint::Min(24),
+        Constraint::Min(24),
+        Constraint::Percentage(36),
+    ];
+    app.table_area = body;
+    let tint = cf_tint(app);
+    render_table(
+        f,
+        body,
+        title,
+        &headers,
+        &widths,
+        rows,
+        &mut app.cf.tunnel_config_row,
         tint,
         |_, _| None,
     );
@@ -3647,6 +3877,10 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
                     CfScreen::WorkerDeployments => CF_WORKER_DEPLOYMENTS_HINTS,
                     CfScreen::WorkerSettings => CF_WORKER_SETTINGS_HINTS,
                     _ => CF_WORKERS_HINTS,
+                },
+                CfProduct::Tunnels => match app.cf.screen {
+                    CfScreen::TunnelConfig => CF_TUNNEL_CONFIG_HINTS,
+                    _ => CF_TUNNELS_HINTS,
                 },
                 CfProduct::R2 => match app.cf.screen {
                     CfScreen::Objects => CF_OBJECTS_HINTS,

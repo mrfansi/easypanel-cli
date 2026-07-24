@@ -953,6 +953,80 @@ pub fn cf_workers_delete(
     Ok(())
 }
 
+// ---------- Cloudflare Tunnels (account-scoped) ----------
+
+pub fn cf_tunnels_list(cfg: &CloudflareConfig, account: Option<&str>) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let tunnels = client.list_tunnels(&account_id)?;
+    if output::json_output() {
+        output::print_json(&serde_json::to_value(&tunnels)?);
+        return Ok(());
+    }
+    if tunnels.is_empty() {
+        println!("No Cloudflare Tunnels on this account.");
+        return Ok(());
+    }
+    let rows = tunnels
+        .iter()
+        .map(|t| {
+            vec![
+                t.name.clone(),
+                t.status_label(),
+                empty_dash(&t.config_src),
+                t.created_at
+                    .split('T')
+                    .next()
+                    .unwrap_or(&t.created_at)
+                    .to_string(),
+                t.target(),
+                t.id.clone(),
+            ]
+        })
+        .collect();
+    table(
+        &["Name", "Status", "Config", "Created", "Target", "ID"],
+        rows,
+    );
+    Ok(())
+}
+
+pub fn cf_tunnels_config(
+    cfg: &CloudflareConfig,
+    account: Option<&str>,
+    tunnel: &str,
+) -> Result<()> {
+    let (client, acc) = cf_client(cfg, account)?;
+    let account_id = cf_account_id(&acc)?;
+    let tunnels = client.list_tunnels(&account_id)?;
+    let Some(found) = tunnels.iter().find(|t| t.id == tunnel || t.name == tunnel) else {
+        anyhow::bail!("No tunnel named or identified by '{tunnel}'");
+    };
+    let config = client.get_tunnel_config(&account_id, &found.id)?;
+    if output::json_output() {
+        output::print_json(&json!({
+            "tunnel": found,
+            "configuration": config,
+            "rows": config.rows(),
+        }));
+        return Ok(());
+    }
+    let rows = config
+        .rows()
+        .into_iter()
+        .map(|r| vec![r.hostname, r.service, r.origin])
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        println!(
+            "No published application routes configured for '{}'.",
+            found.name
+        );
+        return Ok(());
+    }
+    table(&["Hostname", "Service", "Origin request"], rows);
+    Ok(())
+}
+
 fn mask_token(token: &str) -> String {
     // Per CHARACTER, not byte: the token comes from a config file that can be
     // hand-edited. `&token[..6]` slices at a byte index, and a token with a

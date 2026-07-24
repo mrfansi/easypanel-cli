@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.97.0] — 2026-07-24
+
+### Added
+
+- Cloudflare Tunnels is now a product tab between Domains and R2. The TUI lists
+  account-scoped cloudflared tunnels with status, config source, created date,
+  target, and id; **Enter** opens the selected tunnel's published
+  routes/configuration table.
+- Added CLI Tunnels views:
+  `easypanel cf tunnels list` and `easypanel cf tunnels config <tunnel>`, with
+  normal table output and JSON output support.
+
+### Changed
+
+- Cloudflare product shortcuts are now `1` Analytics, `2` Domains, `3` Tunnels,
+  `4` R2, and `5` Workers.
+- Cloudflare permission hints now call out missing **Cloudflare Tunnel Read** /
+  **Cloudflare One Connectors Read** access for Tunnels errors.
+
 ## [0.96.0] — 2026-07-24
 
 ### Added

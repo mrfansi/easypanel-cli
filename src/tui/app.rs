@@ -7,11 +7,12 @@ use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
 
 use crate::cloudflare::{
-    apply_patch, filter_buckets, filter_records, filter_worker_deployments,
-    filter_worker_settings_rows, filter_workers, filter_zones, proxyable, record_body,
-    valid_record_type, AnalyticsSummary, CloudflareAccount, R2Bucket, R2Object, Record,
-    RecordFilter, RecordPatch, WebAnalyticsSite, WorkerDeployment, WorkerScript,
-    WorkerSettingsBundle, WorkerSettingsRow, WorkerUploadMode, Zone,
+    apply_patch, filter_buckets, filter_records, filter_tunnel_config_rows, filter_tunnels,
+    filter_worker_deployments, filter_worker_settings_rows, filter_workers, filter_zones,
+    proxyable, record_body, valid_record_type, AnalyticsSummary, CloudflareAccount,
+    CloudflareTunnel, R2Bucket, R2Object, Record, RecordFilter, RecordPatch, TunnelConfigRow,
+    TunnelConfiguration, WebAnalyticsSite, WorkerDeployment, WorkerScript, WorkerSettingsBundle,
+    WorkerSettingsRow, WorkerUploadMode, Zone,
 };
 use crate::commands;
 use crate::output::field;
@@ -193,6 +194,8 @@ pub(super) enum CfScreen {
     WorkerDeployments,
     /// The Workers settings/configuration drill-in from a selected Worker.
     WorkerSettings,
+    /// The Cloudflare Tunnel ingress/configuration drill-in from a selected Tunnel.
+    TunnelConfig,
 }
 
 /// A Cloudflare product section, shown as a tab in the CF workspace. DNS (zones +
@@ -204,6 +207,7 @@ pub(super) enum CfProduct {
     Analytics,
     #[default]
     Dns,
+    Tunnels,
     R2,
     Workers,
 }
@@ -213,6 +217,7 @@ pub(super) enum CfProduct {
 pub(super) const CF_PRODUCTS: &[(&str, CfProduct)] = &[
     ("Analytics", CfProduct::Analytics),
     ("Domains", CfProduct::Dns),
+    ("Tunnels", CfProduct::Tunnels),
     ("R2", CfProduct::R2),
     ("Workers", CfProduct::Workers),
 ];
@@ -276,6 +281,13 @@ pub(super) struct CfUi {
     /// account_id plus the Account Analytics:Read permission on the token.
     pub(super) analytics: Option<AnalyticsSummary>,
     pub(super) analytics_days: u16,
+    /// Cloudflare Tunnel product state — account-scoped tunnels plus a drill-in
+    /// showing the ingress/configuration rows for the selected tunnel.
+    pub(super) tunnels: Vec<CloudflareTunnel>,
+    pub(super) tunnels_row: TableState,
+    pub(super) current_tunnel: Option<CloudflareTunnel>,
+    pub(super) tunnel_config: Option<TunnelConfiguration>,
+    pub(super) tunnel_config_row: TableState,
     /// Workers scripts are account-scoped like R2. They are rendered as their own product
     /// tab and mutate through explicit deploy/delete actions.
     pub(super) workers: Vec<WorkerScript>,
@@ -773,6 +785,10 @@ impl App {
                     CfScreen::WorkerSettings => self.cf_worker_settings_shown().len(),
                     _ => self.cf_workers_shown().len(),
                 },
+                CfProduct::Tunnels => match self.cf.screen {
+                    CfScreen::TunnelConfig => self.cf_tunnel_config_rows_shown().len(),
+                    _ => self.cf_tunnels_shown().len(),
+                },
                 CfProduct::R2 => match self.cf.screen {
                     CfScreen::Objects => self.cf_level_len(),
                     _ => self.cf_buckets_shown().len(),
@@ -782,7 +798,8 @@ impl App {
                     CfScreen::Records
                     | CfScreen::Objects
                     | CfScreen::WorkerDeployments
-                    | CfScreen::WorkerSettings => self.cf_records_shown().len(),
+                    | CfScreen::WorkerSettings
+                    | CfScreen::TunnelConfig => self.cf_records_shown().len(),
                 },
             };
         }
@@ -810,6 +827,10 @@ impl App {
                     CfScreen::WorkerSettings => Some(&mut self.cf.worker_settings_row),
                     _ => Some(&mut self.cf.workers_row),
                 },
+                CfProduct::Tunnels => match self.cf.screen {
+                    CfScreen::TunnelConfig => Some(&mut self.cf.tunnel_config_row),
+                    _ => Some(&mut self.cf.tunnels_row),
+                },
                 CfProduct::R2 => match self.cf.screen {
                     CfScreen::Objects => Some(&mut self.cf.r2_objects_row),
                     _ => Some(&mut self.cf.r2_row),
@@ -819,7 +840,8 @@ impl App {
                     CfScreen::Records
                     | CfScreen::Objects
                     | CfScreen::WorkerDeployments
-                    | CfScreen::WorkerSettings => Some(&mut self.cf.records_row),
+                    | CfScreen::WorkerSettings
+                    | CfScreen::TunnelConfig => Some(&mut self.cf.records_row),
                 },
             };
         }
@@ -1116,6 +1138,29 @@ impl App {
             .find(|s| s.zone_name == zone.name || s.host == zone.name)
     }
 
+    /// The Cloudflare Tunnels shown right now (after the CF-local filter).
+    pub(super) fn cf_tunnels_shown(&self) -> Vec<&CloudflareTunnel> {
+        filter_tunnels(&self.cf.tunnels, &self.cf.filter)
+    }
+
+    /// The highlighted tunnel, indexing into the FILTERED list.
+    pub(super) fn selected_cf_tunnel(&self) -> Option<CloudflareTunnel> {
+        let shown = self.cf_tunnels_shown();
+        self.cf
+            .tunnels_row
+            .selected()
+            .and_then(|i| shown.get(i))
+            .map(|t| (*t).clone())
+    }
+
+    /// The selected tunnel's ingress/configuration rows shown right now.
+    pub(super) fn cf_tunnel_config_rows_shown(&self) -> Vec<TunnelConfigRow> {
+        let Some(config) = &self.cf.tunnel_config else {
+            return Vec::new();
+        };
+        filter_tunnel_config_rows(&config.rows(), &self.cf.filter)
+    }
+
     /// The R2 buckets shown right now (after the CF-local filter).
     pub(super) fn cf_buckets_shown(&self) -> Vec<&R2Bucket> {
         filter_buckets(&self.cf.r2_buckets, &self.cf.filter)
@@ -1310,6 +1355,36 @@ impl App {
         }
     }
 
+    /// Show the account-level Cloudflare Tunnels list. Tunnels are account-scoped
+    /// and are especially tied to domain routing, so this product lives between
+    /// Domains and R2.
+    pub(super) fn cf_goto_tunnels(&mut self, req: &Sender<Req>) {
+        let Some(name) = self.cf.active.as_ref().map(|a| a.name.clone()) else {
+            self.status = "No Cloudflare account yet — press a to add one".into();
+            return;
+        };
+        self.cf.screen = CfScreen::Zones;
+        self.cf.filter.clear();
+        self.cf.filter_input = false;
+        self.cf.marked.clear();
+        self.cf.error = None;
+        self.cf.tunnels.clear();
+        self.cf.tunnels_row.select(None);
+        self.cf.current_tunnel = None;
+        self.cf.tunnel_config = None;
+        self.cf.tunnel_config_row.select(None);
+        let Some(account_id) = self.cf_account_id() else {
+            self.status =
+                "This account has no account-id — Tunnels are account-scoped; edit it with a"
+                    .into();
+            return;
+        };
+        if let Some(token) = self.cf_token() {
+            let _ = req.send(Req::Cf(CfReq::Tunnels { token, account_id }));
+            self.status = format!("Loading Tunnels for {name}…");
+        }
+    }
+
     /// Show the account-level Workers scripts list. Workers is account-scoped, so it
     /// requires the account-id just like R2.
     pub(super) fn cf_goto_workers(&mut self, req: &Sender<Req>) {
@@ -1344,6 +1419,7 @@ impl App {
         match self.cf.product {
             CfProduct::Analytics => self.cf_goto_analytics(req),
             CfProduct::Dns => self.cf_goto_zones(req),
+            CfProduct::Tunnels => self.cf_goto_tunnels(req),
             CfProduct::R2 => self.cf_goto_buckets(req),
             CfProduct::Workers => self.cf_goto_workers(req),
         }
@@ -1444,6 +1520,42 @@ impl App {
         self.cf.marked.clear();
         // Land at the bucket root; deeper levels come from Enter on a folder.
         self.cf_request_level(String::new(), req);
+    }
+
+    /// Enter on a tunnel: open its Cloudflare-managed ingress/configuration rows,
+    /// i.e. the TUI equivalent of the dashboard's published applications/config view.
+    pub(super) fn cf_open_tunnel_config(&mut self, req: &Sender<Req>) {
+        let Some(tunnel) = self.selected_cf_tunnel() else {
+            self.status = "No tunnel selected".into();
+            return;
+        };
+        self.cf_open_tunnel_config_for(tunnel.id, req);
+    }
+
+    /// Open a tunnel's configuration by id — shared by Enter and palette.
+    pub(super) fn cf_open_tunnel_config_for(&mut self, tunnel_id: String, req: &Sender<Req>) {
+        let Some(tunnel) = self
+            .cf
+            .tunnels
+            .iter()
+            .find(|t| t.id == tunnel_id || t.name == tunnel_id)
+            .cloned()
+        else {
+            self.status = "Tunnel not found".into();
+            return;
+        };
+        self.cf.product = CfProduct::Tunnels;
+        self.cf.screen = CfScreen::TunnelConfig;
+        self.cf.current_tunnel = Some(tunnel.clone());
+        self.cf_enter_list();
+        if let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id()) {
+            let _ = req.send(Req::Cf(CfReq::TunnelConfig {
+                token,
+                account_id,
+                tunnel_id: tunnel.id.clone(),
+            }));
+            self.status = format!("Loading Tunnel config for {}…", tunnel.name);
+        }
     }
 
     /// Enter on a Worker: open its deployments/version history. This mirrors the
@@ -1583,6 +1695,10 @@ impl App {
                 self.cf.worker_settings = None;
                 self.cf.worker_settings_row.select(None);
             }
+            CfScreen::TunnelConfig => {
+                self.cf.tunnel_config = None;
+                self.cf.tunnel_config_row.select(None);
+            }
         }
     }
 
@@ -1624,6 +1740,25 @@ impl App {
                     }
                     _ => {
                         let _ = req.send(Req::Cf(CfReq::Workers { token, account_id }));
+                    }
+                }
+            }
+            return;
+        }
+        if self.cf.product == CfProduct::Tunnels {
+            if let Some(account_id) = self.cf_account_id() {
+                match self.cf.screen {
+                    CfScreen::TunnelConfig => {
+                        if let Some(tunnel) = self.cf.current_tunnel.clone() {
+                            let _ = req.send(Req::Cf(CfReq::TunnelConfig {
+                                token,
+                                account_id,
+                                tunnel_id: tunnel.id,
+                            }));
+                        }
+                    }
+                    _ => {
+                        let _ = req.send(Req::Cf(CfReq::Tunnels { token, account_id }));
                     }
                 }
             }
@@ -1671,9 +1806,11 @@ impl App {
                     }));
                 }
             }
-            // Objects and Worker detail screens are handled by their product branches above.
-            // both handled by their product branches above.
-            CfScreen::Objects | CfScreen::WorkerDeployments | CfScreen::WorkerSettings => {}
+            // Objects and product detail screens are handled by their product branches above.
+            CfScreen::Objects
+            | CfScreen::WorkerDeployments
+            | CfScreen::WorkerSettings
+            | CfScreen::TunnelConfig => {}
         }
     }
 
@@ -1713,6 +1850,21 @@ impl App {
             }
             return;
         }
+        if self.cf.product == CfProduct::Tunnels {
+            match self.cf.screen {
+                CfScreen::TunnelConfig => {
+                    let len = self.cf_tunnel_config_rows_shown().len();
+                    *self.cf.tunnel_config_row.offset_mut() = 0;
+                    self.cf.tunnel_config_row.select((len > 0).then_some(0));
+                }
+                _ => {
+                    let len = self.cf_tunnels_shown().len();
+                    *self.cf.tunnels_row.offset_mut() = 0;
+                    self.cf.tunnels_row.select((len > 0).then_some(0));
+                }
+            }
+            return;
+        }
         match self.cf.screen {
             CfScreen::Zones => {
                 let len = self.cf_zones_shown().len();
@@ -1724,8 +1876,11 @@ impl App {
                 *self.cf.records_row.offset_mut() = 0;
                 self.cf.records_row.select((len > 0).then_some(0));
             }
-            // Objects and Worker detail screens are handled by their product branches above.
-            CfScreen::Objects | CfScreen::WorkerDeployments | CfScreen::WorkerSettings => {}
+            // Objects and product detail screens are handled by their product branches above.
+            CfScreen::Objects
+            | CfScreen::WorkerDeployments
+            | CfScreen::WorkerSettings
+            | CfScreen::TunnelConfig => {}
         }
     }
 
@@ -1963,6 +2118,19 @@ impl App {
             MenuItem::new("Browse objects", |a, r| a.cf_open_objects(r)),
             MenuItem::new("Delete bucket…", |a, _| a.open_cf_bucket_delete_form()),
         ]);
+    }
+
+    /// The row action menu for the selected tunnel. Tunnel writes touch connector
+    /// lifecycle and secrets, so this first slice keeps the TUI read-only and makes
+    /// the high-frequency action — viewing published routes/config — one click away.
+    pub(super) fn open_cf_tunnel_menu(&mut self) {
+        if self.selected_cf_tunnel().is_none() {
+            self.status = "No tunnel selected".into();
+            return;
+        }
+        self.open_menu(vec![MenuItem::new("View routes/config", |a, r| {
+            a.cf_open_tunnel_config(r)
+        })]);
     }
 
     pub(super) fn open_cf_worker_deploy_form(&mut self) {
@@ -2779,6 +2947,23 @@ impl App {
                 self.cf.r2_buckets = buckets;
                 let len = self.cf_buckets_shown().len();
                 select_first(&mut self.cf.r2_row, len);
+            }
+            CfResp::Tunnels(tunnels) => {
+                self.cf.error = None;
+                self.cf.tunnels = tunnels;
+                let len = self.cf_tunnels_shown().len();
+                select_first(&mut self.cf.tunnels_row, len);
+            }
+            CfResp::TunnelConfig { tunnel_id, config } => {
+                // Discard a stale config reply if the user has already opened another tunnel.
+                if self.cf.current_tunnel.as_ref().map(|t| t.id.as_str())
+                    == Some(tunnel_id.as_str())
+                {
+                    self.cf.error = None;
+                    self.cf.tunnel_config = Some(*config);
+                    let len = self.cf_tunnel_config_rows_shown().len();
+                    select_first(&mut self.cf.tunnel_config_row, len);
+                }
             }
             CfResp::Workers(workers) => {
                 self.cf.error = None;

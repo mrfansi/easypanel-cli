@@ -90,7 +90,7 @@ pub(super) enum PaletteAction {
     Run(MenuRun),
     /// Switch to a tab.
     Tab(Screen),
-    /// Cloudflare: switch the product tab (Analytics/Domains/R2) — the CF analogue of `Tab`.
+    /// Cloudflare: switch the product tab (Analytics/Domains/Tunnels/R2/Workers) — the CF analogue of `Tab`.
     CfProduct(CfProduct),
     /// Cloudflare: open a zone's DNS records (switches to DNS first). Carries the
     /// zone's own id so the jump is by identity, never a filtered-row index that a
@@ -98,6 +98,8 @@ pub(super) enum PaletteAction {
     CfZone { id: String },
     /// Cloudflare: open a bucket's objects (switches to R2 first).
     CfBucket { name: String },
+    /// Cloudflare: open a tunnel's routes/config (switches to Tunnels first).
+    CfTunnel { id: String },
     /// Cloudflare: switch the active account (index into `cf.accounts`, a stable
     /// list the palette rebuilds from each time it opens).
     CfAccount(usize),
@@ -697,6 +699,14 @@ impl App {
             (CfProduct::Workers, _) => self
                 .selected_cf_worker()
                 .map(|w| format!("Worker: {}", w.id)),
+            (CfProduct::Tunnels, CfScreen::TunnelConfig) => self
+                .cf
+                .current_tunnel
+                .as_ref()
+                .map(|t| format!("Tunnel config: {}", t.name)),
+            (CfProduct::Tunnels, _) => self
+                .selected_cf_tunnel()
+                .map(|t| format!("Tunnel: {}", t.name)),
             (CfProduct::Dns, CfScreen::Zones) => {
                 self.selected_cf_zone().map(|z| format!("Zone: {}", z.name))
             }
@@ -705,7 +715,8 @@ impl App {
                 CfScreen::Records
                 | CfScreen::Objects
                 | CfScreen::WorkerDeployments
-                | CfScreen::WorkerSettings,
+                | CfScreen::WorkerSettings
+                | CfScreen::TunnelConfig,
             ) => self
                 .selected_cf_record()
                 .map(|r| format!("Record: {} {}", r.kind, r.name)),
@@ -802,6 +813,30 @@ impl App {
                     ));
                 }
             }
+            (CfProduct::Tunnels, CfScreen::TunnelConfig) => {
+                items.push((
+                    "Back to Tunnels".into(),
+                    "back tunnels list".into(),
+                    |a: &mut App, _r: &Sender<Req>| {
+                        a.cf.screen = CfScreen::Zones;
+                        a.cf.current_tunnel = None;
+                        a.cf.tunnel_config = None;
+                        a.cf.tunnel_config_row.select(None);
+                        a.cf.filter.clear();
+                        a.cf.error = None;
+                    },
+                ));
+            }
+            (CfProduct::Tunnels, _) => {
+                if let Some(tunnel) = self.selected_cf_tunnel() {
+                    let ctx = format!("tunnel {}", tunnel.name);
+                    items.push((
+                        "View routes/config".into(),
+                        format!("open routes ingress config published applications {ctx}"),
+                        App::cf_open_tunnel_config as MenuRun,
+                    ));
+                }
+            }
             (CfProduct::Dns, CfScreen::Zones) => {
                 if let Some(zone) = self.selected_cf_zone() {
                     let ctx = format!("zone {}", zone.name);
@@ -822,7 +857,8 @@ impl App {
                 CfScreen::Records
                 | CfScreen::Objects
                 | CfScreen::WorkerDeployments
-                | CfScreen::WorkerSettings,
+                | CfScreen::WorkerSettings
+                | CfScreen::TunnelConfig,
             ) => {
                 if let Some(record) = self.selected_cf_record() {
                     let ctx = format!("record {} {}", record.kind, record.name);
@@ -944,6 +980,14 @@ impl App {
                 },
             });
         }
+        // Tunnels → their Cloudflare-managed ingress/configuration rows.
+        for t in &self.cf.tunnels {
+            items.push(PaletteItem {
+                label: format!("Tunnel: {}", t.name),
+                search: format!("tunnel routes config ingress {} {}", t.name, t.id),
+                action: PaletteAction::CfTunnel { id: t.id.clone() },
+            });
+        }
         let mut state = ListState::default();
         state.select((!items.is_empty()).then_some(0));
         self.palette = Some(Palette {
@@ -982,6 +1026,10 @@ impl App {
             PaletteAction::CfBucket { name } => {
                 let name = name.clone();
                 self.cf_open_objects_for(name, req);
+            }
+            PaletteAction::CfTunnel { id } => {
+                let id = id.clone();
+                self.cf_open_tunnel_config_for(id, req);
             }
             PaletteAction::CfAccount(i) => {
                 if let Some(acc) = self.cf.accounts.get(*i).cloned() {

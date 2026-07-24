@@ -480,6 +480,8 @@ impl App {
                     (CfProduct::Workers, CfScreen::WorkerDeployments) => {}
                     (CfProduct::Workers, CfScreen::WorkerSettings) => {}
                     (CfProduct::Workers, _) => self.open_cf_worker_menu(),
+                    (CfProduct::Tunnels, CfScreen::TunnelConfig) => {}
+                    (CfProduct::Tunnels, _) => self.open_cf_tunnel_menu(),
                     // R2 Objects: a FILE row gets the per-object menu (Download / Delete);
                     // a FOLDER row has no actions, so `open_cf_object_menu` no-ops on it.
                     // NOT the bucket menu — that would offer to delete the very bucket you
@@ -1358,7 +1360,7 @@ impl App {
             self.open_cf_picker();
             return;
         }
-        // Product tabs (Analytics · Domains · R2; D1/KV/Workers/Connectors later): 1..=N jump,
+        // Product tabs (Analytics · Domains · Tunnels · R2 · Workers): 1..=N jump,
         // Tab/→ cycle forward, ← cycles back — the CF mirror of the EasyPanel tab
         // keys. Overlays/forms/the filter are handled above this dispatch, so they
         // can't be swallowed here. Switching products loads that product's home.
@@ -1386,6 +1388,10 @@ impl App {
                 CfScreen::WorkerSettings => self.cf_worker_settings_key(code, req),
                 _ => self.cf_workers_key(code, req),
             },
+            CfProduct::Tunnels => match self.cf.screen {
+                CfScreen::TunnelConfig => self.cf_tunnel_config_key(code, req),
+                _ => self.cf_tunnels_key(code, req),
+            },
             CfProduct::R2 => match self.cf.screen {
                 CfScreen::Objects => self.cf_objects_key(code, req),
                 _ => self.cf_buckets_key(code, req),
@@ -1395,7 +1401,8 @@ impl App {
                 CfScreen::Records
                 | CfScreen::Objects
                 | CfScreen::WorkerDeployments
-                | CfScreen::WorkerSettings => self.cf_records_key(code, req),
+                | CfScreen::WorkerSettings
+                | CfScreen::TunnelConfig => self.cf_records_key(code, req),
             },
         }
     }
@@ -1408,6 +1415,58 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('r') => self.cf_goto_analytics(req),
             _ => {}
+        }
+    }
+
+    /// The Cloudflare Tunnels home. Enter opens the selected tunnel's ingress/config
+    /// rows; the screen itself is read-only because Cloudflare tunnel lifecycle and
+    /// connector tokens are safer as a later explicit write slice.
+    fn cf_tunnels_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        match code {
+            KeyCode::Esc if !self.cf.filter.is_empty() => {
+                self.cf.filter.clear();
+                self.cf_clamp_filtered();
+            }
+            KeyCode::Esc => self.set_workspace(Workspace::Easypanel),
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('/') => {
+                self.cf.filter_input = true;
+                self.cf.filter.clear();
+            }
+            KeyCode::Char('r') => self.cf_reload(req),
+            KeyCode::Char(' ') => self.open_cf_tunnel_menu(),
+            KeyCode::Enter => self.cf_open_tunnel_config(req),
+            _ => {
+                let len = self.cf_tunnels_shown().len();
+                move_table(&mut self.cf.tunnels_row, code, len);
+            }
+        }
+    }
+
+    fn cf_tunnel_config_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        match code {
+            KeyCode::Esc if !self.cf.filter.is_empty() => {
+                self.cf.filter.clear();
+                self.cf_clamp_filtered();
+            }
+            KeyCode::Esc => {
+                self.cf.screen = CfScreen::Zones;
+                self.cf.current_tunnel = None;
+                self.cf.tunnel_config = None;
+                self.cf.tunnel_config_row.select(None);
+                self.cf.filter.clear();
+                self.cf.error = None;
+            }
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('/') => {
+                self.cf.filter_input = true;
+                self.cf.filter.clear();
+            }
+            KeyCode::Char('r') => self.cf_reload(req),
+            _ => {
+                let len = self.cf_tunnel_config_rows_shown().len();
+                move_table(&mut self.cf.tunnel_config_row, code, len);
+            }
         }
     }
 

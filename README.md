@@ -89,10 +89,11 @@ searchable table, and every domain on the box — without clicking through a hie
   run any action on the selected row from the same box (`deploy karir`, `logs api`). It
   knows every service from the moment the app starts, so it works before you have opened
   anything.
-- **Cloudflare beside EasyPanel** (`W`) — switch into account analytics, domains, R2 and Workers
-  without leaving the terminal. The Cloudflare workspace has clickable product tabs, an
-  account picker you can edit in place, row actions in the `:` palette, visible status
-  feedback, and the same mark-then-`Space` bulk flow used by EasyPanel tables.
+- **Cloudflare beside EasyPanel** (`W`) — switch into account analytics, domains,
+  Tunnels, R2 and Workers without leaving the terminal. The Cloudflare workspace has
+  clickable product tabs, an account picker you can edit in place, row actions in the
+  `:` palette, visible status feedback, and the same mark-then-`Space` bulk flow used
+  by EasyPanel tables.
 - **Mouse and keyboard** — click tabs and rows, right-click for a context menu, scroll,
   hover to highlight; every action also has a key.
 
@@ -547,8 +548,9 @@ Accounts are standalone (not tied to any EasyPanel server — you may have sever
 in their own `~/.config/easypanel/cloudflare.json` (`0600`). Use a **scoped API Token**:
 `Zone:DNS:Edit` + `Zone:Read` for DNS, **Account Settings Read** for the Web Analytics
 metadata shown on Domains, account-scoped **Workers R2 Storage** for R2,
-**Workers Scripts** for Workers, and **Account Analytics: Read** for the account analytics
-tab. The token is masked in every listing and never printed.
+**Cloudflare Tunnel Read** / **Cloudflare One Connectors Read** for Tunnels,
+**Workers Scripts** for Workers, and **Account Analytics: Read** for the account
+analytics tab. The token is masked in every listing and never printed.
 
 ```bash
 # accounts
@@ -575,6 +577,22 @@ easypanel cf record set example.com --where-content 203.0.113.10 --content 198.5
 the change to each with **PATCH** (so it never wipes fields you didn't name), and reports
 per-record pass/fail. Pass `--account <name>` on any zone/record command to target a
 non-default account.
+
+**Cloudflare Tunnels — published routes/config:**
+
+```bash
+easypanel cf tunnels list
+easypanel cf tunnels config my-tunnel
+```
+
+Tunnels uses Cloudflare's account-scoped cloudflared Tunnel API:
+`GET /accounts/{account_id}/cfd_tunnel` for the list and
+`GET /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations` for the ingress
+configuration. The list shows each tunnel's status, config source, created date, target
+`<tunnel-id>.cfargotunnel.com`, and id. The config view shows the hostnames/services
+published through that tunnel, including the catch-all rule. This slice is read-only in
+the TUI and CLI; lifecycle writes and connector-token handling should be a separate,
+guarded flow.
 
 **R2 (object storage) — buckets and objects:**
 
@@ -619,8 +637,9 @@ configuration rows from Cloudflare's Workers settings APIs. Deletes require type
 confirmation in both CLI and TUI.
 
 **In the TUI:** press **`W`** to switch into an isolated, Cloudflare-orange workspace with
-its own product tab bar (**Analytics │ Domains │ R2 │ Workers**). `1` opens Analytics,
-`2` Domains, `3` R2, `4` Workers; `Tab`/`←→` cycle and mouse clicks work too. On
+its own product tab bar (**Analytics │ Domains │ Tunnels │ R2 │ Workers**). `1` opens
+Analytics, `2` Domains, `3` Tunnels, `4` R2, `5` Workers; `Tab`/`←→` cycle and mouse
+clicks work too. On
 **Analytics**, the tab shows account-level
 requests, bandwidth, visits, top countries, and SSL/cache/status/protocol breakdowns
 from Cloudflare GraphQL. On **Domains**, the home is the active account's zones,
@@ -631,6 +650,9 @@ blank with a permission hint in the status bar.
 switcher), **Enter** on a domain drills into its DNS records, and records support
 add/edit/delete, a `/` filter, and bulk change by marking rows with `v`/`V` then a
 `Space` menu (`Space`/right-click also opens a per-zone or per-record action menu). On
+**Tunnels**, the list shows cloudflared tunnels with status, config source, created date,
+target, and id; **Enter** opens that tunnel's published routes/config table with
+hostname, service, and origin request columns. On
 **R2**, the same shape lists buckets with `n` create / `x` delete, and **Enter** drills
 into a bucket's objects. On **Workers**, the list shows scripts, handlers, usage model,
 modified date, and etag; **Enter** opens that Worker's deployments/version history with
@@ -638,9 +660,9 @@ an active deployment summary and filterable version-history table, **`s`** opens
 Worker settings/configuration table, `n` deploys/replaces from a local file, `x` deletes
 with typed confirmation, and `Space`/right-click opens the row menu. From settings,
 **`d`** jumps back to deployments. `:` opens the Cloudflare command
-palette: it jumps to products/accounts/zones/buckets/Workers and starts with the selected row's
-own actions, so "edit this record", "download this object", or "delete this Worker" is
-reachable from the same muscle memory as EasyPanel. The EasyPanel tabs and 1–8 keys are
+palette: it jumps to products/accounts/zones/tunnels/buckets/Workers and starts with the selected
+row's own actions, so "edit this record", "view this tunnel", "download this object", or
+"delete this Worker" is reachable from the same muscle memory as EasyPanel. The EasyPanel tabs and 1–8 keys are
 inert inside the Cloudflare workspace, and vice-versa.
 
 v1 covers the common record types (A, AAAA, CNAME, TXT, NS, MX). Endpoint shapes are kept

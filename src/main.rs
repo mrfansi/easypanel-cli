@@ -453,6 +453,25 @@ enum CfCmd {
     /// Manage Workers scripts on the active account
     #[command(subcommand)]
     Workers(CfWorkersCmd),
+    /// Manage Cloudflare Tunnels on the active account
+    #[command(subcommand)]
+    Tunnels(CfTunnelCmd),
+}
+
+#[derive(Subcommand)]
+enum CfTunnelCmd {
+    /// List Cloudflare Tunnels
+    List {
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Show a tunnel's published application routes / ingress config
+    Config {
+        /// Tunnel id or name
+        tunnel: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1207,6 +1226,14 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                         yes,
                         force,
                     } => commands::cf_workers_delete(&cf, account.as_deref(), &name, yes, force),
+                },
+                CfCmd::Tunnels(tunnels) => match tunnels {
+                    CfTunnelCmd::List { account } => {
+                        commands::cf_tunnels_list(&cf, account.as_deref())
+                    }
+                    CfTunnelCmd::Config { tunnel, account } => {
+                        commands::cf_tunnels_config(&cf, account.as_deref(), &tunnel)
+                    }
                 },
             }
         }

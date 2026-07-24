@@ -596,6 +596,149 @@ pub struct R2Level {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CloudflareTunnel {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+    #[serde(default)]
+    pub tun_type: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub config_src: String,
+    #[serde(default)]
+    pub conns_active_at: Option<String>,
+    #[serde(default)]
+    pub conns_inactive_at: Option<String>,
+    #[serde(default, deserialize_with = "vec_or_null")]
+    pub connections: Vec<TunnelConnection>,
+}
+
+impl CloudflareTunnel {
+    pub fn is_active(&self) -> bool {
+        self.deleted_at.is_none()
+            && (self.conns_active_at.is_some()
+                || self.status.eq_ignore_ascii_case("healthy")
+                || self.status.eq_ignore_ascii_case("active"))
+    }
+
+    pub fn status_label(&self) -> String {
+        if self.deleted_at.is_some() {
+            "deleted".into()
+        } else if !self.status.trim().is_empty() {
+            self.status.clone()
+        } else if self.is_active() {
+            "active".into()
+        } else {
+            "inactive".into()
+        }
+    }
+
+    pub fn target(&self) -> String {
+        format!("{}.cfargotunnel.com", self.id)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TunnelConnection {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_version: String,
+    #[serde(default)]
+    pub colo_name: String,
+    #[serde(default)]
+    pub origin_ip: String,
+    #[serde(default)]
+    pub opened_at: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TunnelConfiguration {
+    #[serde(default)]
+    pub account_id: String,
+    #[serde(default)]
+    pub tunnel_id: String,
+    #[serde(default)]
+    pub version: Option<u64>,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub config: TunnelConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TunnelConfig {
+    #[serde(default, deserialize_with = "vec_or_null")]
+    pub ingress: Vec<TunnelIngressRule>,
+    #[serde(default, rename = "originRequest")]
+    pub origin_request: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TunnelIngressRule {
+    #[serde(default)]
+    pub hostname: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub service: String,
+    #[serde(default, rename = "originRequest")]
+    pub origin_request: Option<Value>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+impl TunnelIngressRule {
+    pub fn hostname_label(&self) -> String {
+        if self.hostname.trim().is_empty() {
+            "catch-all".into()
+        } else if self.path.trim().is_empty() {
+            self.hostname.clone()
+        } else {
+            format!("{}{}", self.hostname, self.path)
+        }
+    }
+
+    pub fn origin_label(&self) -> String {
+        self.origin_request
+            .as_ref()
+            .map(short_json)
+            .unwrap_or_else(|| "-".into())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct TunnelConfigRow {
+    pub hostname: String,
+    pub service: String,
+    pub origin: String,
+}
+
+impl TunnelConfiguration {
+    pub fn rows(&self) -> Vec<TunnelConfigRow> {
+        self.config
+            .ingress
+            .iter()
+            .map(|rule| TunnelConfigRow {
+                hostname: rule.hostname_label(),
+                service: empty_or_dash(&rule.service),
+                origin: rule.origin_label(),
+            })
+            .collect()
+    }
+}
+
 /// Sort a level for display: folders alphabetically (ascending), files newest-first
 /// (by `last_modified`, ISO-8601 so a string compare is chronological). Pure, so the
 /// ordering is unit-tested from a fixture without a live call.
@@ -1039,6 +1182,17 @@ fn workers_hint(e: anyhow::Error) -> anyhow::Error {
     }
 }
 
+fn tunnels_hint(e: anyhow::Error) -> anyhow::Error {
+    let msg = e.to_string();
+    if msg.to_ascii_lowercase().contains("authentication error") {
+        anyhow::anyhow!(
+            "{msg} — the token may lack Cloudflare Tunnel Read or Cloudflare One Connectors Read"
+        )
+    } else {
+        e
+    }
+}
+
 /// Unwrap a Cloudflare v4 envelope, turning `success:false` into an error carrying the
 /// first `errors[].message` (Cloudflare's messages are human-readable), not the status.
 pub fn parse_envelope<T: DeserializeOwned>(body: &str) -> Result<T> {
@@ -1249,6 +1403,38 @@ pub fn filter_buckets<'a>(buckets: &'a [R2Bucket], needle: &str) -> Vec<&'a R2Bu
                     .to_ascii_lowercase()
                     .contains(&n)
         })
+        .collect()
+}
+
+pub fn filter_tunnels<'a>(
+    tunnels: &'a [CloudflareTunnel],
+    needle: &str,
+) -> Vec<&'a CloudflareTunnel> {
+    let n = needle.to_ascii_lowercase();
+    tunnels
+        .iter()
+        .filter(|t| {
+            n.is_empty()
+                || t.name.to_ascii_lowercase().contains(&n)
+                || t.id.to_ascii_lowercase().contains(&n)
+                || t.status_label().to_ascii_lowercase().contains(&n)
+                || t.config_src.to_ascii_lowercase().contains(&n)
+                || t.tun_type.to_ascii_lowercase().contains(&n)
+                || t.target().to_ascii_lowercase().contains(&n)
+        })
+        .collect()
+}
+
+pub fn filter_tunnel_config_rows(rows: &[TunnelConfigRow], needle: &str) -> Vec<TunnelConfigRow> {
+    let n = needle.to_ascii_lowercase();
+    rows.iter()
+        .filter(|r| {
+            n.is_empty()
+                || r.hostname.to_ascii_lowercase().contains(&n)
+                || r.service.to_ascii_lowercase().contains(&n)
+                || r.origin.to_ascii_lowercase().contains(&n)
+        })
+        .cloned()
         .collect()
 }
 
@@ -1695,6 +1881,45 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
             }
         }
         Ok(all)
+    }
+
+    // ---------- Cloudflare Tunnel (account-scoped) ----------
+
+    pub fn list_tunnels(&self, account_id: &str) -> Result<Vec<CloudflareTunnel>> {
+        let mut all = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let q: Vec<(String, String)> = vec![
+                ("page".into(), page.to_string()),
+                ("per_page".into(), "100".into()),
+                ("is_deleted".into(), "false".into()),
+            ];
+            let body = self
+                .get(&format!("/accounts/{account_id}/cfd_tunnel"), &q)
+                .map_err(tunnels_hint)?;
+            let (mut tunnels, info): (Vec<CloudflareTunnel>, ResultInfo) =
+                parse_envelope_paged(&body).map_err(tunnels_hint)?;
+            all.append(&mut tunnels);
+            if info.total_pages <= page || info.total_pages == 0 {
+                break;
+            }
+            page += 1;
+        }
+        Ok(all)
+    }
+
+    pub fn get_tunnel_config(
+        &self,
+        account_id: &str,
+        tunnel_id: &str,
+    ) -> Result<TunnelConfiguration> {
+        let body = self
+            .get(
+                &format!("/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations"),
+                &[],
+            )
+            .map_err(tunnels_hint)?;
+        parse_envelope(&body).map_err(tunnels_hint)
     }
 
     // ---------- Workers scripts (account-scoped) ----------
@@ -2537,6 +2762,100 @@ mod tests {
             "Cloudflare: The bucket you tried to delete is not empty"
         ));
         assert!(!other.to_string().contains("Workers R2 Storage"));
+    }
+
+    #[test]
+    fn tunnels_parser_accepts_null_connections_and_builds_target() {
+        let body = r#"{
+            "success":true,
+            "errors":[],
+            "messages":[],
+            "result":[{
+                "id":"6b351b2e-1111-2222-3333-444455556666",
+                "name":"mrfansi.dev",
+                "created_at":"2026-04-27T00:00:00Z",
+                "deleted_at":null,
+                "tun_type":"cfd_tunnel",
+                "status":"degraded",
+                "config_src":"cloudflare",
+                "conns_active_at":null,
+                "conns_inactive_at":"2026-07-24T00:00:00Z",
+                "connections":null
+            }],
+            "result_info":{"page":1,"per_page":100,"count":1,"total_count":1,"total_pages":1}
+        }"#;
+        let (tunnels, info): (Vec<CloudflareTunnel>, ResultInfo) =
+            parse_envelope_paged(body).unwrap();
+        assert_eq!(info.total_pages, 1);
+        assert_eq!(tunnels.len(), 1);
+        assert_eq!(tunnels[0].status_label(), "degraded");
+        assert_eq!(
+            tunnels[0].target(),
+            "6b351b2e-1111-2222-3333-444455556666.cfargotunnel.com"
+        );
+        assert!(tunnels[0].connections.is_empty());
+    }
+
+    #[test]
+    fn tunnel_config_rows_include_ingress_and_catch_all() {
+        let body = r#"{
+            "success":true,
+            "errors":[],
+            "messages":[],
+            "result":{
+                "account_id":"acc-1",
+                "tunnel_id":"tunnel-1",
+                "version":7,
+                "source":"cloudflare",
+                "created_at":"2026-07-24T00:00:00Z",
+                "config":{
+                    "ingress":[
+                        {"hostname":"app.example.com","service":"http://localhost:3000"},
+                        {"service":"http_status:404"}
+                    ],
+                    "originRequest":{"connectTimeout":30}
+                }
+            }
+        }"#;
+        let config: TunnelConfiguration = parse_envelope(body).unwrap();
+        let rows = config.rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].hostname, "app.example.com");
+        assert_eq!(rows[0].service, "http://localhost:3000");
+        assert_eq!(rows[1].hostname, "catch-all");
+        assert_eq!(rows[1].service, "http_status:404");
+        assert_eq!(rows[1].origin, "-");
+        assert_eq!(
+            config.config.origin_request.as_ref().unwrap()["connectTimeout"],
+            json!(30)
+        );
+    }
+
+    #[test]
+    fn tunnel_filters_match_names_targets_and_routes() {
+        let tunnels = vec![
+            CloudflareTunnel {
+                id: "abc".into(),
+                name: "edge-router".into(),
+                config_src: "cloudflare".into(),
+                ..Default::default()
+            },
+            CloudflareTunnel {
+                id: "def".into(),
+                name: "private".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(filter_tunnels(&tunnels, "edge").len(), 1);
+        assert_eq!(filter_tunnels(&tunnels, "abc.cfargotunnel").len(), 1);
+
+        let rows = vec![TunnelConfigRow {
+            hostname: "app.example.com".into(),
+            service: "http://localhost:3000".into(),
+            origin: "-".into(),
+        }];
+        assert_eq!(filter_tunnel_config_rows(&rows, "localhost").len(), 1);
+        assert!(filter_tunnel_config_rows(&rows, "missing").is_empty());
     }
 
     #[test]
