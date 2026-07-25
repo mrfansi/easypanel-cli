@@ -1545,6 +1545,31 @@ fn filter_narrows_domains_and_actions_use_the_same_list() {
 }
 
 #[test]
+fn domain_filter_matches_raw_hostname_for_anchored_regex() {
+    let mut app = App::new("s".into(), vec![]);
+    app.domains = vec![
+        json!({ "id": "a", "host": "one.viding.co", "https": true, "path": "/",
+                    "destinationType": "service",
+                    "serviceDestination": { "projectName": "p", "serviceName": "x",
+                                            "port": 80, "protocol": "http", "path": "/" } }),
+        json!({ "id": "b", "host": "two.deep.viding.co", "https": true, "path": "/",
+                    "destinationType": "service",
+                    "serviceDestination": { "projectName": "p", "serviceName": "y",
+                                            "port": 80, "protocol": "http", "path": "/" } }),
+        json!({ "id": "c", "host": "viding.co", "https": true, "path": "/",
+                    "destinationType": "service",
+                    "serviceDestination": { "projectName": "p", "serviceName": "z",
+                                            "port": 80, "protocol": "http", "path": "/" } }),
+    ];
+
+    app.filter = r"^[^.]+\.viding\.co$".into();
+
+    let vis = app.visible_domains();
+    assert_eq!(vis.len(), 1);
+    assert_eq!(vis[0]["id"], json!("a"));
+}
+
+#[test]
 fn clamp_keeps_selection_inside_filtered_list() {
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Domains;

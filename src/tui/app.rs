@@ -4205,7 +4205,7 @@ impl App {
         let matcher = crate::filter::FilterMatcher::new(&self.filter);
         self.domains
             .iter()
-            .filter(|d| keep_with(&crate::domains::domain_row(d), &matcher))
+            .filter(|d| keep_with(&crate::domains::domain_filter_row(d), &matcher))
             .collect()
     }
 

@@ -141,6 +141,27 @@ pub fn domain_row(d: &Value) -> Vec<String> {
     vec![domain_source(d), domain_destination(d), field(d, "/id")]
 }
 
+/// Text a domain row should be searchable by.
+///
+/// The rendered Source column includes scheme and path (`https://host/path`), but
+/// operators naturally type hostname regexes such as `^[^.]+\.example\.com$`.
+/// Keep the displayed cells searchable, and add the raw hostname so anchored
+/// hostname filters do not have to know about presentation details.
+pub fn domain_filter_row(d: &Value) -> Vec<String> {
+    let host = field(d, "/host");
+    let wildcard_host = d
+        .get("wildcard")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        .then(|| format!("*.{host}"));
+    let mut row = domain_row(d);
+    row.push(host);
+    if let Some(host) = wildcard_host {
+        row.push(host);
+    }
+    row
+}
+
 /// The rewrites `find` → `replace` would make across `domains`.
 ///
 /// Domains the search doesn't appear in are simply absent from the plan — the

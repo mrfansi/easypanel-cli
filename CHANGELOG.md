@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.6] — 2026-07-26
+
+### Fixed
+
+- EasyPanel Domains filters now match the raw hostname in addition to the
+  rendered `https://host/path` source text, so anchored regex filters such as
+  `^[^.]+\.viding\.co$` work as operators expect.
+
 ## [0.98.5] — 2026-07-25
 
 ### Changed
