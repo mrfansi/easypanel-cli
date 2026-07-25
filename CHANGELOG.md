@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.7] — 2026-07-26
+
+### Added
+
+- EasyPanel Domains now supports the same scalable mark/select-all workflow as
+  the rest of the TUI: `v` marks one domain, `V` selects every domain currently
+  shown by the active filter, and `Space` opens a bulk menu.
+- Marked Domains can now be bulk-edited or bulk-deleted from that menu. Bulk
+  delete requires typed confirmation (`DELETE N`) before sending any destructive
+  request.
+
 ## [0.98.6] — 2026-07-26
 
 ### Fixed

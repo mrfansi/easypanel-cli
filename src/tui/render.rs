@@ -76,6 +76,8 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("n", "new domain"),
             Key("e", "edit domain"),
             Key("E", "bulk edit shown"),
+            Key("v/V", "mark / select shown"),
+            Key("Space", "row menu / bulk"),
             Key("x", "delete domain"),
             Key("P", "set primary"),
             Key("↑↓", "select"),
@@ -3240,6 +3242,12 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .map(|d| {
             let mut cells = crate::domains::domain_row(d);
+            if let Some(source) = cells.get_mut(0) {
+                let id = field(d, "/id");
+                if app.domain_is_selected_for_bulk(&id) {
+                    *source = format!("✓ {source}");
+                }
+            }
             if crate::domains::is_orphan(d, live.as_ref()) {
                 gone += 1;
                 if let Some(dest) = cells.get_mut(1) {
@@ -3262,6 +3270,10 @@ pub(super) fn render_domains(f: &mut Frame, area: Rect, app: &mut App) {
     let widths: Vec<Constraint> = idx.iter().map(|i| domain_cols[*i]).collect();
 
     let mut title = count_title("Domains", rows.len(), app.domains.len(), app);
+    let n_marked = app.domain_bulk_count();
+    if n_marked > 0 {
+        title.push_str(&format!(" · ✓ {n_marked} marked"));
+    }
     if gone > 0 {
         // Only when there is something to say. A permanent "0 gone" is noise that
         // trains the eye to skip the whole title.
@@ -4187,6 +4199,7 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
         // marked services affects the whole host.
         let target = match (c.project.as_str(), c.service.as_str()) {
             _ if c.action.starts_with("bulk-") => "Affects only the marked services.".to_string(),
+            _ if c.action == "domain-bulk-delete" => "Affects only the marked domains.".to_string(),
             ("", _) => "Affects the ENTIRE host.".to_string(),
             (p, "") => format!("Target: {p}"),
             (p, s) => format!("Target: {p}/{s}"),
@@ -4196,7 +4209,7 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
         // dialog. It is the last thing read before pressing y, so it is on its own
         // line, in that server's colour, above the target it applies to.
         let tint = server_colour(server);
-        vec![
+        let mut v = vec![
             Line::from(""),
             Line::from(c.label.clone()),
             Line::from(""),
@@ -4206,8 +4219,17 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
             )),
             Line::from(target),
             Line::from(""),
-            Line::from("[y] Yes      [n] Cancel"),
-        ]
+        ];
+        if let Some(expected) = c.stype.strip_prefix("expect:") {
+            v.push(Line::from(format!("Type: {}", c.service)));
+            v.push(Line::from(format!(
+                "[Enter] confirm when it matches {expected}"
+            )));
+            v.push(Line::from("[Esc] Cancel"));
+        } else {
+            v.push(Line::from("[y] Yes      [n] Cancel"));
+        }
+        v
     };
     let body = Paragraph::new(lines);
     f.render_widget(

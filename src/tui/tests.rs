@@ -1570,6 +1570,81 @@ fn domain_filter_matches_raw_hostname_for_anchored_regex() {
 }
 
 #[test]
+fn domains_select_all_filter_executes_bulk_delete_without_materializing_marks() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = domain_app();
+    app.filter = r"old\.com$".into();
+
+    app.on_key(KeyCode::Char('V'), &tx);
+    assert!(app.select_all_domains);
+    assert!(
+        app.domain_marked.is_empty(),
+        "virtual select-all must not materialize every domain id"
+    );
+    assert_eq!(app.domain_bulk_count(), 2);
+    assert_eq!(
+        app.domain_bulk_targets()
+            .iter()
+            .map(|d| field(d, "/id"))
+            .collect::<Vec<_>>(),
+        vec!["d1".to_string(), "d2".to_string()]
+    );
+
+    app.ask_domain_bulk_delete();
+    for ch in "DELETE 2".chars() {
+        app.confirm_key(KeyCode::Char(ch), &tx);
+    }
+    app.confirm_key(KeyCode::Enter, &tx);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::DomainBulkDelete { domains })
+            if domains == vec![
+                ("d1".to_string(), "one.old.com".to_string()),
+                ("d2".to_string(), "two.old.com".to_string()),
+            ]
+    ));
+    assert!(!app.select_all_domains, "dispatch clears virtual selection");
+}
+
+#[test]
+fn domains_space_opens_bulk_menu_when_domains_are_marked() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = domain_app();
+
+    app.on_key(KeyCode::Char('v'), &tx);
+    assert_eq!(app.domain_bulk_count(), 1);
+    app.on_key(KeyCode::Char(' '), &tx);
+
+    let labels: Vec<String> = app
+        .menu
+        .as_ref()
+        .expect("Space opens a menu")
+        .items
+        .iter()
+        .map(|it| it.label.clone())
+        .collect();
+    assert!(labels.contains(&"Bulk edit 1 marked domains".to_string()));
+    assert!(labels.contains(&"Delete 1 marked domains".to_string()));
+}
+
+#[test]
+fn domain_bulk_edit_marked_uses_marks_not_the_whole_filter() {
+    let mut app = domain_app();
+    app.filter = r"old\.com$".into();
+    app.domain_marked.insert("d1".into());
+    app.domain_bulk_marked = true;
+
+    app.preview_domain_edits("host", "old.com", "new.com");
+
+    assert_eq!(app.domain_edits.len(), 1);
+    assert_eq!(app.domain_edits[0].id, "d1");
+}
+
+#[test]
 fn clamp_keeps_selection_inside_filtered_list() {
     let mut app = App::new("s".into(), vec![]);
     app.screen = Screen::Domains;

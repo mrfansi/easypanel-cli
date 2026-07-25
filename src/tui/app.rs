@@ -902,6 +902,15 @@ pub(super) struct App {
     /// there is nothing armed — so Enter in the viewer cannot fire a rewrite the
     /// user has already walked away from.
     pub(super) domain_edits: Vec<crate::domains::Change>,
+    /// Domain ids marked for a bulk action. The host/body is resolved at dispatch
+    /// time from `domains`, so stale marks from a refresh simply drop out.
+    pub(super) domain_marked: HashSet<String>,
+    /// Virtual select-all for the Domains table. This keeps large filtered domain
+    /// lists scalable instead of copying hundreds of ids into `domain_marked`.
+    pub(super) select_all_domains: bool,
+    /// Whether the open DomainBulkEdit form should hit marked domains. False
+    /// preserves the older `E` behavior: rewrite every domain currently shown.
+    pub(super) domain_bulk_marked: bool,
     /// The domains enrolled for uptime checks on THIS server, as loaded from
     /// checks.json. Only what the operator chose — never the whole domain list.
     pub(super) watch: Vec<crate::uptime::Check>,
@@ -1041,6 +1050,9 @@ impl App {
             domains_error: None,
             domain_scope: None,
             domain_edits: Vec::new(),
+            domain_marked: HashSet::new(),
+            select_all_domains: false,
+            domain_bulk_marked: false,
             watch: Vec::new(),
             probes: Vec::new(),
             uptime_state: TableState::default(),
@@ -3372,6 +3384,8 @@ impl App {
             // failure opens the list, because "9 of 12" without the missing three
             // leaves the user to hunt for them by eye.
             Resp::DomainsEdited { ok, failed } => {
+                self.domain_marked.clear();
+                self.select_all_domains = false;
                 self.apply_refresh(Refresh::Domains, req);
                 if failed.is_empty() {
                     self.status = format!("{ok} domain(s) rewritten");
@@ -3384,6 +3398,26 @@ impl App {
                 lines.extend(failed.iter().map(|(name, why)| format!("✗ {name} — {why}")));
                 self.show_viewer(
                     format!(" Bulk domain edit — {} failed ", failed.len()),
+                    lines,
+                );
+                self.viewer.ctx = None;
+                self.status = format!("⚠ {} of {} failed", failed.len(), failed.len() + ok);
+            }
+            Resp::DomainsDeleted { ok, failed } => {
+                self.domain_marked.clear();
+                self.select_all_domains = false;
+                self.apply_refresh(Refresh::Domains, req);
+                if failed.is_empty() {
+                    self.status = format!("{ok} domain(s) deleted");
+                    return;
+                }
+                let mut lines = vec![
+                    format!("{ok} deleted, {} FAILED", failed.len()),
+                    String::new(),
+                ];
+                lines.extend(failed.iter().map(|(name, why)| format!("✗ {name} — {why}")));
+                self.show_viewer(
+                    format!(" Bulk domain delete — {} failed ", failed.len()),
                     lines,
                 );
                 self.viewer.ctx = None;
@@ -3667,6 +3701,7 @@ impl App {
         self.filter.clear();
         self.filter_input = false;
         self.select_all_services = false;
+        self.select_all_domains = false;
         self.clamp_filtered();
     }
 
@@ -3804,6 +3839,7 @@ impl App {
         // screen would hide rows for no visible reason.
         self.filter.clear();
         self.filter_input = false;
+        self.select_all_domains = false;
         // The domain scope only applies to an `o` visit from a service; ordinary
         // navigation clears it (open_service_domains sets it again after goto).
         self.domain_scope = None;
@@ -4216,7 +4252,16 @@ impl App {
     /// preview names them one per line — a count alone ("rewrite 12 domains?")
     /// asks the user to approve a list they cannot see.
     pub(super) fn preview_domain_edits(&mut self, target: &str, find: &str, replace: &str) {
-        let plan = match crate::domains::plan(&self.visible_domains(), target, find, replace) {
+        let marked_scope = self.domain_bulk_marked;
+        let plan = {
+            let domains = if marked_scope {
+                self.domain_bulk_targets()
+            } else {
+                self.visible_domains()
+            };
+            crate::domains::plan(&domains, target, find, replace)
+        };
+        let plan = match plan {
             // The form STAYS open on a rejected rewrite: the fix is one character
             // in a box the user has already filled in, not a form to retype.
             Err(msg) => {
@@ -4226,8 +4271,14 @@ impl App {
             Ok(plan) => plan,
         };
         self.form = None;
+        self.domain_bulk_marked = false;
         if plan.is_empty() {
-            self.status = format!("No domain on screen has '{find}' in its {target}");
+            let scope = if marked_scope {
+                "marked domain"
+            } else {
+                "domain on screen"
+            };
+            self.status = format!("No {scope} has '{find}' in its {target}");
             return;
         }
         let mut lines = vec![
@@ -4262,6 +4313,102 @@ impl App {
         let _ = req.send(Req::DomainBulkEdit { changes });
         self.screen = Screen::Domains;
         self.status = "Sending...".into();
+    }
+
+    pub(super) fn domain_bulk_targets(&self) -> Vec<&Value> {
+        if self.select_all_domains {
+            return self.visible_domains();
+        }
+        self.domains
+            .iter()
+            .filter(|d| self.domain_marked.contains(&field(d, "/id")))
+            .collect()
+    }
+
+    pub(super) fn domain_bulk_count(&self) -> usize {
+        if self.select_all_domains {
+            self.visible_domains().len()
+        } else {
+            self.domains
+                .iter()
+                .filter(|d| self.domain_marked.contains(&field(d, "/id")))
+                .count()
+        }
+    }
+
+    pub(super) fn domain_is_selected_for_bulk(&self, id: &str) -> bool {
+        (self.select_all_domains && self.visible_domains().iter().any(|d| field(d, "/id") == id))
+            || self.domain_marked.contains(id)
+    }
+
+    pub(super) fn toggle_domain_mark(&mut self) {
+        self.select_all_domains = false;
+        let Some(d) = self
+            .domains_state
+            .selected()
+            .and_then(|i| self.visible_domains().get(i).map(|d| (*d).clone()))
+        else {
+            self.status = "Select a domain first".into();
+            return;
+        };
+        let id = field(&d, "/id");
+        if !self.domain_marked.remove(&id) {
+            self.domain_marked.insert(id);
+        }
+        self.report_domain_marks();
+    }
+
+    pub(super) fn mark_all_visible_domains(&mut self) {
+        let n = self.visible_domains().len();
+        if n == 0 {
+            self.status = "Nothing to mark".into();
+            return;
+        }
+        if self.select_all_domains {
+            self.select_all_domains = false;
+            self.domain_marked.clear();
+            self.status = "Selection cleared".into();
+            return;
+        }
+        self.domain_marked.clear();
+        self.select_all_domains = true;
+        self.status = format!("All {n} shown domain(s) selected — [Space] to act");
+    }
+
+    pub(super) fn report_domain_marks(&mut self) {
+        self.status = match self.domain_bulk_count() {
+            0 => "No domains marked".into(),
+            n => format!("{n} domain(s) marked — [Space] to act on them, [Esc] to clear"),
+        };
+    }
+
+    pub(super) fn open_domain_bulk_form(&mut self) {
+        let n = self.domain_bulk_count();
+        if n == 0 {
+            self.status = "No domains marked — v marks one, V marks all shown".into();
+            return;
+        }
+        self.domain_bulk_marked = true;
+        self.form = Some(Form::new(
+            FormKind::DomainBulkEdit,
+            format!(" Bulk edit: {n} marked domain(s) "),
+            domain_bulk_fields(),
+        ));
+    }
+
+    pub(super) fn ask_domain_bulk_delete(&mut self) {
+        let n = self.domain_bulk_count();
+        if n == 0 {
+            self.status = "No domains marked — v marks one, V marks all shown".into();
+            return;
+        }
+        self.confirm = Some(Confirm {
+            action: "domain-bulk-delete".into(),
+            project: String::new(),
+            service: String::new(),
+            stype: format!("expect:DELETE {n}"),
+            label: format!("Delete {n} marked domain(s)? Type DELETE {n} to confirm."),
+        });
     }
 
     /// Load the list of services for the project currently selected in the form, so

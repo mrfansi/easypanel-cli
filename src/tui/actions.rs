@@ -212,12 +212,38 @@ impl App {
         items
     }
 
+    fn domain_bulk_items(&self) -> Vec<MenuItem> {
+        let n = self.domain_bulk_count();
+        if n == 0 {
+            return vec![];
+        }
+        vec![
+            MenuItem::new(format!("Bulk edit {n} marked domains"), |a, _| {
+                a.open_domain_bulk_form()
+            }),
+            MenuItem::new(format!("Delete {n} marked domains"), |a, _| {
+                a.ask_domain_bulk_delete()
+            }),
+            MenuItem::new(format!("Clear the {n} domain marks"), |a, _| {
+                a.domain_marked.clear();
+                a.select_all_domains = false;
+                a.status = "Domain marks cleared".into();
+            }),
+        ]
+    }
+
     pub(super) fn context_items(&self) -> Vec<MenuItem> {
         let bulk = self.bulk_items();
         if !bulk.is_empty() && self.screen == Screen::Projects {
             // The single-service actions stay reachable underneath: marking some
             // rows must not lock you out of acting on the one under the cursor.
             let mut items = bulk;
+            items.extend(self.single_context_items());
+            return items;
+        }
+        let domain_bulk = self.domain_bulk_items();
+        if !domain_bulk.is_empty() && self.screen == Screen::Domains {
+            let mut items = domain_bulk;
             items.extend(self.single_context_items());
             return items;
         }

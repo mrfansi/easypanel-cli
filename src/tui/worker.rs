@@ -358,6 +358,10 @@ pub(super) enum Req {
     DomainBulkEdit {
         changes: Vec<(String, String, Value)>,
     },
+    /// Delete many domains by id, reporting per-domain failures.
+    DomainBulkDelete {
+        domains: Vec<(String, String)>,
+    },
     /// Ask every watched domain whether it answers, and how fast. Not an
     /// EasyPanel call at all — it goes to the domains themselves, which is the
     /// whole point: the panel can only tell you what it INTENDED to serve.
@@ -763,6 +767,10 @@ pub(super) enum Resp {
     /// domain read, with the reason — a routing change that half-landed is
     /// exactly when the names matter.
     DomainsEdited {
+        ok: usize,
+        failed: Vec<(String, String)>,
+    },
+    DomainsDeleted {
         ok: usize,
         failed: Vec<(String, String)>,
     },
@@ -1799,6 +1807,16 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 }
             }
             Resp::DomainsEdited { ok, failed }
+        }
+        Req::DomainBulkDelete { domains } => {
+            let (mut ok, mut failed) = (0usize, Vec::new());
+            for (id, host) in domains {
+                match client.call("domains", "deleteDomain", json!({ "id": id })) {
+                    Ok(_) => ok += 1,
+                    Err(e) => failed.push((host, e.to_string())),
+                }
+            }
+            Resp::DomainsDeleted { ok, failed }
         }
         Req::DomainSave { id, body } => {
             // createDomain requires `id` but the server ignores it and makes its own

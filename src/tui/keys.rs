@@ -147,6 +147,14 @@ impl App {
                 self.select_all_services = false;
                 self.status = "Marks cleared".into();
             }
+            KeyCode::Esc
+                if (!self.domain_marked.is_empty() || self.select_all_domains)
+                    && !self.screen_owns_esc() =>
+            {
+                self.domain_marked.clear();
+                self.select_all_domains = false;
+                self.status = "Domain marks cleared".into();
+            }
             // Esc does NOT quit the app. Esc means "cancel": it closes a form,
             // dropdown, confirmation, or filter — and when there's nothing to
             // cancel, it does nothing. Closing the TUI on a single reflexive Esc
@@ -208,6 +216,7 @@ impl App {
                 self.filter_input = true;
                 self.filter.clear();
                 self.select_all_services = false;
+                self.select_all_domains = false;
             }
             _ => match self.screen {
                 Screen::Projects => self.services_key(code, req),
@@ -729,6 +738,7 @@ impl App {
             KeyCode::Enter => self.filter_input = false,
             KeyCode::Backspace => {
                 self.select_all_services = false;
+                self.select_all_domains = false;
                 self.filter.pop();
                 self.clamp_filtered();
             }
@@ -746,6 +756,7 @@ impl App {
             | KeyCode::End => self.move_selection(code),
             KeyCode::Char(c) => {
                 self.select_all_services = false;
+                self.select_all_domains = false;
                 self.filter.push(c);
                 self.clamp_filtered();
             }
@@ -863,11 +874,14 @@ impl App {
                     self.open_check_form(&crate::domains::domain_source(&d));
                 }
             }
+            KeyCode::Char('v') => self.toggle_domain_mark(),
+            KeyCode::Char('V') => self.mark_all_visible_domains(),
             // Rewrite one part of every domain ON SCREEN — so `/` narrows the set
             // first, using the filter the user already knows, rather than a
             // second way of choosing things that exists only here.
             KeyCode::Char('E') => {
                 let n = self.visible_domains().len();
+                self.domain_bulk_marked = false;
                 self.form = Some(Form::new(
                     FormKind::DomainBulkEdit,
                     format!(" Bulk edit: {n} domain(s) on screen "),
@@ -1049,6 +1063,21 @@ impl App {
                 force: false,
             }),
             "domain-delete" => req.send(Req::DomainDelete(c.project.clone())),
+            "domain-bulk-delete" => {
+                let domains = self.domain_bulk_targets();
+                if domains.is_empty() {
+                    self.status = "Nothing marked any more — cancelled".into();
+                    return;
+                }
+                let domains = domains
+                    .iter()
+                    .map(|d| (field(d, "/id"), field(d, "/host")))
+                    .collect();
+                self.domain_marked.clear();
+                self.select_all_domains = false;
+                self.status = "Deleting marked domains...".into();
+                req.send(Req::DomainBulkDelete { domains })
+            }
             // The port index is stashed in `stype` (same pattern as a domain id
             // stashed in `project`).
             "port-delete" => req.send(Req::PortDelete {
