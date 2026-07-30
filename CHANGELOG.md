@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.8] — 2026-07-30
+
+### Added
+
+- Cloudflare Workers version history now has a `Status` column, so a list of
+  rows all reading `100%` no longer hides which deployment is serving traffic:
+  `live` for the active one, `rolling out` while a gradual deployment still
+  splits traffic across versions, `superseded` for everything below it. The
+  active-deployment pane and `easypanel cf workers deployments` (table and
+  `--json`) report the same status.
+
+  Cloudflare only lists deployments that already exist, so there is no
+  "uploading" state to show — an unfinished deployment is a rollout that has
+  not landed on one version at 100%.
+
 ## [0.98.7] — 2026-07-26
 
 ### Added
@@ -3718,7 +3733,7 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.96.0...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.8...HEAD
 [0.96.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.96.0
 [0.95.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.95.0
 [0.94.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.94.0
