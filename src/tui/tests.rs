@@ -7581,7 +7581,7 @@ fn cf_worker_enter_opens_deployments_and_esc_returns_to_workers() {
 }
 
 #[test]
-fn the_version_history_says_which_deployment_is_live() {
+fn the_version_history_says_which_deployment_is_live_and_whether_it_settled() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -7592,36 +7592,66 @@ fn the_version_history_says_which_deployment_is_live() {
     app.cf.product = CfProduct::Workers;
     app.cf.current_worker = Some("siakad".into());
     app.cf.screen = CfScreen::WorkerDeployments;
-    let dep = |id: &str| crate::cloudflare::WorkerDeployment {
+    let dep = |id: &str, split: &[f64]| crate::cloudflare::WorkerDeployment {
         id: id.into(),
         created_on: "2026-07-23T04:05:06Z".into(),
+        versions: split
+            .iter()
+            .map(|p| crate::cloudflare::WorkerDeploymentVersion {
+                version_id: "abc123456789".into(),
+                percentage: *p,
+            })
+            .collect(),
         ..Default::default()
     };
+    // A gradual rollout still splitting traffic is the one case Cloudflare calls
+    // unfinished; everything below it is history.
     app.handle(
         Resp::Cf(CfResp::WorkerDeployments {
             worker: "siakad".into(),
-            deployments: vec![dep("ef1277de00"), dep("a72e3b6400")],
+            deployments: vec![
+                dep("ef1277de00", &[20.0, 80.0]),
+                dep("a72e3b6400", &[100.0]),
+            ],
         }),
         &tx,
     );
 
-    let mut t = Terminal::new(TestBackend::new(140, 20)).unwrap();
-    t.draw(|f| ui(f, &mut app)).unwrap();
-    let text: String = t
-        .backend()
-        .buffer()
-        .content()
-        .chunks(140)
-        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>() + "\n")
-        .collect();
-    // The history repeats the active deployment; without a mark it reads as just
-    // another old row.
-    let marked: Vec<&str> = text.lines().filter(|l| l.contains('●')).collect();
-    assert_eq!(marked.len(), 1, "expected one marked row in:\n{text}");
-    assert!(
-        marked[0].contains("ef1277de"),
-        "wrong row marked: {marked:?}"
+    let history = |app: &mut App| {
+        let mut t = Terminal::new(TestBackend::new(160, 20)).unwrap();
+        t.draw(|f| ui(f, app)).unwrap();
+        let text: String = t
+            .backend()
+            .buffer()
+            .content()
+            .chunks(160)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>() + "\n")
+            .collect();
+        // Skip the "Active deployment" pane, which repeats the same row.
+        let start = text.find("Version history").unwrap_or(0);
+        text[start..].to_string()
+    };
+
+    let text = history(&mut app);
+    let row = |text: &str, id: &str| {
+        text.lines()
+            .find(|l| l.contains(id))
+            .unwrap_or_else(|| panic!("no row for {id} in:\n{text}"))
+            .to_string()
+    };
+    assert!(row(&text, "ef1277de").contains("rolling out"), "{text}");
+    assert!(row(&text, "a72e3b64").contains("superseded"), "{text}");
+
+    // Once the rollout lands on one version, the same row must read as done.
+    app.handle(
+        Resp::Cf(CfResp::WorkerDeployments {
+            worker: "siakad".into(),
+            deployments: vec![dep("ef1277de00", &[100.0])],
+        }),
+        &tx,
     );
+    let text = history(&mut app);
+    assert!(row(&text, "ef1277de").contains("live"), "{text}");
 }
 
 #[test]

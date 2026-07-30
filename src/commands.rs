@@ -804,9 +804,11 @@ pub fn cf_workers_deployments(
         output::print_json(&serde_json::to_value(
             deployments
                 .iter()
-                .map(|d| {
+                .enumerate()
+                .map(|(i, d)| {
                     json!({
                         "id": d.id,
+                        "status": d.status(i == 0),
                         "created_on": d.created_on,
                         "source": d.source,
                         "strategy": d.strategy,
@@ -832,13 +834,9 @@ pub fn cf_workers_deployments(
         .enumerate()
         .map(|(i, d)| {
             vec![
-                // Cloudflare returns the active deployment first; mark it so the
-                // list says which one is live.
-                if i == 0 {
-                    format!("● {}", d.short_id())
-                } else {
-                    format!("  {}", d.short_id())
-                },
+                d.short_id(),
+                // Cloudflare returns the active deployment first.
+                d.status(i == 0).to_string(),
                 d.versions_label(),
                 d.created_on
                     .split('T')
@@ -855,6 +853,7 @@ pub fn cf_workers_deployments(
     table(
         &[
             "Deployment",
+            "Status",
             "Versions / traffic",
             "Created",
             "Source",

@@ -149,6 +149,21 @@ impl WorkerDeployment {
             .unwrap_or("")
     }
 
+    /// What this row is doing right now. Cloudflare only lists deployments that
+    /// already exist, so nothing here is "uploading" — a deployment is still in
+    /// progress only while a gradual rollout splits traffic across versions.
+    /// `active` is positional: Cloudflare returns the serving deployment first.
+    pub fn status(&self, active: bool) -> &'static str {
+        if !active {
+            return "superseded";
+        }
+        match self.versions.as_slice() {
+            [v] if v.percentage >= 100.0 => "live",
+            [] => "live",
+            _ => "rolling out",
+        }
+    }
+
     pub fn versions_label(&self) -> String {
         if self.versions.is_empty() {
             return "-".into();

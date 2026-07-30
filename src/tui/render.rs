@@ -1938,6 +1938,13 @@ fn render_cf_worker_deployments(f: &mut Frame, header: Rect, body: Rect, app: &m
         .map(|d| {
             vec![Row::new(vec![
                 Cell::from(d.short_id()),
+                Cell::from(d.status(true)).style(Style::default().fg(
+                    if d.status(true) == "live" {
+                        Color::Indexed(2)
+                    } else {
+                        Color::Indexed(3)
+                    },
+                )),
                 Cell::from(d.versions_label()),
                 Cell::from(short_cf_date(&d.created_on)),
                 Cell::from(dash_if_empty(&d.source)),
@@ -1950,6 +1957,7 @@ fn render_cf_worker_deployments(f: &mut Frame, header: Rect, body: Rect, app: &m
         active_rows,
         [
             Constraint::Length(12),
+            Constraint::Length(12),
             Constraint::Min(24),
             Constraint::Length(12),
             Constraint::Length(14),
@@ -1960,6 +1968,7 @@ fn render_cf_worker_deployments(f: &mut Frame, header: Rect, body: Rect, app: &m
     .header(
         Row::new([
             "Deployment",
+            "Status",
             "Versions / traffic",
             "Deployed",
             "Source",
@@ -1980,17 +1989,14 @@ fn render_cf_worker_deployments(f: &mut Frame, header: Rect, body: Rect, app: &m
         app.cf.filter_input,
     );
     // The active deployment is the first one Cloudflare returns, but the filter
-    // can hide or reorder rows — mark it by id so the history says which one is live.
+    // can hide or reorder rows — match it by id so the status column cannot lie.
     let active_id = active.map(|d| d.id.clone()).unwrap_or_default();
     let rows: Vec<Vec<String>> = shown
         .iter()
         .map(|d| {
             vec![
-                if d.id == active_id {
-                    format!("● {}", d.short_id())
-                } else {
-                    format!("  {}", d.short_id())
-                },
+                d.short_id(),
+                d.status(d.id == active_id).to_string(),
                 d.versions_label(),
                 short_cf_date(&d.created_on),
                 dash_if_empty(&d.source),
@@ -2002,6 +2008,7 @@ fn render_cf_worker_deployments(f: &mut Frame, header: Rect, body: Rect, app: &m
         .collect();
     let headers = [
         "Deployment",
+        "Status",
         "Versions / traffic",
         "Created",
         "Source",
@@ -2010,7 +2017,8 @@ fn render_cf_worker_deployments(f: &mut Frame, header: Rect, body: Rect, app: &m
         "Message",
     ];
     let widths = [
-        Constraint::Length(14),
+        Constraint::Length(12),
+        Constraint::Length(12),
         Constraint::Length(26),
         Constraint::Length(12),
         Constraint::Length(14),
@@ -2030,11 +2038,14 @@ fn render_cf_worker_deployments(f: &mut Frame, header: Rect, body: Rect, app: &m
         &mut app.cf.worker_deployments_row,
         tint,
         |col, text| {
-            (col == 0 && text.starts_with('●')).then(|| {
-                Style::default()
-                    .fg(Color::Indexed(2))
-                    .add_modifier(Modifier::BOLD)
-            })
+            if col != 1 {
+                return None;
+            }
+            match text {
+                "live" => Some(Style::default().fg(Color::Indexed(2))),
+                "rolling out" => Some(Style::default().fg(Color::Indexed(3))),
+                _ => Some(Style::default().fg(Color::Indexed(8))),
+            }
         },
     );
 }
