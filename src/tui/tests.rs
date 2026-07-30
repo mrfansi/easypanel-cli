@@ -7581,6 +7581,50 @@ fn cf_worker_enter_opens_deployments_and_esc_returns_to_workers() {
 }
 
 #[test]
+fn the_version_history_says_which_deployment_is_live() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.accounts = vec![cf_account()];
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.product = CfProduct::Workers;
+    app.cf.current_worker = Some("siakad".into());
+    app.cf.screen = CfScreen::WorkerDeployments;
+    let dep = |id: &str| crate::cloudflare::WorkerDeployment {
+        id: id.into(),
+        created_on: "2026-07-23T04:05:06Z".into(),
+        ..Default::default()
+    };
+    app.handle(
+        Resp::Cf(CfResp::WorkerDeployments {
+            worker: "siakad".into(),
+            deployments: vec![dep("ef1277de00"), dep("a72e3b6400")],
+        }),
+        &tx,
+    );
+
+    let mut t = Terminal::new(TestBackend::new(140, 20)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let text: String = t
+        .backend()
+        .buffer()
+        .content()
+        .chunks(140)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>() + "\n")
+        .collect();
+    // The history repeats the active deployment; without a mark it reads as just
+    // another old row.
+    let marked: Vec<&str> = text.lines().filter(|l| l.contains('●')).collect();
+    assert_eq!(marked.len(), 1, "expected one marked row in:\n{text}");
+    assert!(
+        marked[0].contains("ef1277de"),
+        "wrong row marked: {marked:?}"
+    );
+}
+
+#[test]
 fn cf_worker_s_opens_settings_and_d_returns_to_deployments() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);

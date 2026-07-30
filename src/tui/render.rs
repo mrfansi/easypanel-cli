@@ -1979,11 +1979,18 @@ fn render_cf_worker_deployments(f: &mut Frame, header: Rect, body: Rect, app: &m
         &app.cf.filter,
         app.cf.filter_input,
     );
+    // The active deployment is the first one Cloudflare returns, but the filter
+    // can hide or reorder rows — mark it by id so the history says which one is live.
+    let active_id = active.map(|d| d.id.clone()).unwrap_or_default();
     let rows: Vec<Vec<String>> = shown
         .iter()
         .map(|d| {
             vec![
-                d.short_id(),
+                if d.id == active_id {
+                    format!("● {}", d.short_id())
+                } else {
+                    format!("  {}", d.short_id())
+                },
                 d.versions_label(),
                 short_cf_date(&d.created_on),
                 dash_if_empty(&d.source),
@@ -2003,7 +2010,7 @@ fn render_cf_worker_deployments(f: &mut Frame, header: Rect, body: Rect, app: &m
         "Message",
     ];
     let widths = [
-        Constraint::Length(12),
+        Constraint::Length(14),
         Constraint::Length(26),
         Constraint::Length(12),
         Constraint::Length(14),
@@ -2022,7 +2029,13 @@ fn render_cf_worker_deployments(f: &mut Frame, header: Rect, body: Rect, app: &m
         rows,
         &mut app.cf.worker_deployments_row,
         tint,
-        |_, _| None,
+        |col, text| {
+            (col == 0 && text.starts_with('●')).then(|| {
+                Style::default()
+                    .fg(Color::Indexed(2))
+                    .add_modifier(Modifier::BOLD)
+            })
+        },
     );
 }
 

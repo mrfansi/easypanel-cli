@@ -829,9 +829,16 @@ pub fn cf_workers_deployments(
     }
     let rows = deployments
         .iter()
-        .map(|d| {
+        .enumerate()
+        .map(|(i, d)| {
             vec![
-                d.short_id(),
+                // Cloudflare returns the active deployment first; mark it so the
+                // list says which one is live.
+                if i == 0 {
+                    format!("● {}", d.short_id())
+                } else {
+                    format!("  {}", d.short_id())
+                },
                 d.versions_label(),
                 d.created_on
                     .split('T')
