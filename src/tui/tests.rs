@@ -551,11 +551,13 @@ fn context_menu_items_match_screen_and_selection() {
     // Domains screen with no row selected -> no menu.
     app.screen = Screen::Domains;
     assert!(app.context_items().is_empty());
-    // A domain row selected -> domain actions (edit/primary/delete).
+    // A domain row selected -> domain actions (copy source/destination, edit,
+    // primary, delete).
     app.domains_state.select(Some(0));
     let items = app.context_items();
-    assert_eq!(items.len(), 3);
+    assert_eq!(items.len(), 5);
     assert!(items.iter().any(|i| i.label == "Delete"));
+    assert!(items.iter().any(|i| i.label == "Copy destination"));
     // A screen with no row actions (Dashboard) -> always empty.
     app.screen = Screen::Dashboard;
     assert!(app.context_items().is_empty());
@@ -4393,6 +4395,33 @@ fn domain_app() -> App {
     ];
     app.domains_state.select(Some(0));
     app
+}
+
+#[test]
+fn copying_a_domain_takes_the_filtered_row_not_the_unfiltered_one() {
+    use ratatui::crossterm::event::KeyCode;
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = domain_app();
+    // Row 0 of the FILTERED list is d2 — copying by unfiltered index would put
+    // the wrong domain on the clipboard, the same bug class as `x` deleting it.
+    app.filter = "two.old".into();
+    app.domains_state.select(Some(0));
+
+    app.on_key(KeyCode::Char(' '), &tx);
+    let menu = app.menu.take().expect("Space opens the domain menu");
+    let copy = |label: &str| {
+        menu.items
+            .iter()
+            .find(|it| it.label == label)
+            .unwrap_or_else(|| panic!("no {label} item"))
+            .run
+    };
+
+    (copy("Copy source"))(&mut app, &tx);
+    assert_eq!(app.clipboard.as_deref(), Some("http://two.old.com/"));
+
+    (copy("Copy destination"))(&mut app, &tx);
+    assert_eq!(app.clipboard.as_deref(), Some("http://p_api:80/"));
 }
 
 #[test]

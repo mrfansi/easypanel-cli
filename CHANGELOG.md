@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Domains row menu (`Space`, or a right click) can now copy the selected
+  domain's Source or Destination to the clipboard. The copy is the value the
+  API returned, not the cell as rendered — the columns are cut to fit the pane,
+  and a silently truncated URL on the clipboard is worse than none. Like every
+  other domain action it indexes the filtered list, so a copy under an active
+  filter takes the row the user is looking at.
+
 ## [0.98.8] — 2026-07-30
 
 ### Added

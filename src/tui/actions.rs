@@ -232,6 +232,27 @@ impl App {
         ]
     }
 
+    /// Copy one column of the selected domain. The columns are cut to fit the
+    /// pane, so copy what the API returned rather than the truncated cell — and
+    /// index the FILTERED list, like every other domain action.
+    pub(super) fn copy_domain_field(&mut self, destination: bool) {
+        let picked = self
+            .domains_state
+            .selected()
+            .and_then(|i| self.visible_domains().get(i).map(|d| (*d).clone()));
+        let Some(d) = picked else {
+            self.status = "Nothing selected".into();
+            return;
+        };
+        let (label, value) = if destination {
+            ("Destination", crate::domains::domain_destination(&d))
+        } else {
+            ("Source", crate::domains::domain_source(&d))
+        };
+        self.status = format!("{label} copied to clipboard: {value}");
+        self.clipboard = Some(value);
+    }
+
     pub(super) fn context_items(&self) -> Vec<MenuItem> {
         let bulk = self.bulk_items();
         if !bulk.is_empty() && self.screen == Screen::Projects {
@@ -268,6 +289,8 @@ impl App {
                 MenuItem::new("Destroy project", |a, r| a.on_key(KeyCode::Char('X'), r)),
             ],
             Screen::Domains if self.domains_state.selected().is_some() => vec![
+                MenuItem::new("Copy source", |a, _| a.copy_domain_field(false)),
+                MenuItem::new("Copy destination", |a, _| a.copy_domain_field(true)),
                 MenuItem::new("Edit", |a, r| a.on_key(KeyCode::Char('e'), r)),
                 MenuItem::new("Set primary", |a, r| a.on_key(KeyCode::Char('P'), r)),
                 MenuItem::new("Delete", |a, r| a.on_key(KeyCode::Char('x'), r)),
