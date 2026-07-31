@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.10] — 2026-07-31
+
 ### Fixed
 
 - Releases now publish with notes. Every release page up to v0.98.9 carried the
@@ -3756,7 +3758,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.9...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.10...HEAD
+[0.98.10]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.10
 [0.98.9]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.9
 [0.98.8]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.8
 [0.98.7]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.7
