@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.9] — 2026-07-31
+
 ### Added
 
 - The Domains row menu (`Space`, or a right click) can now copy the selected
@@ -3742,7 +3744,7 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.8...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.9...HEAD
 [0.96.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.96.0
 [0.95.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.95.0
 [0.94.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.94.0
