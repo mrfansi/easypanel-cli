@@ -71,10 +71,27 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      # Needed for the CHANGELOG; the artifacts alone carry no release notes.
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Release notes from CHANGELOG
+        # Every release up to v0.98.9 published with an empty body: the workflow
+        # only ever uploaded binaries, so the one place that says what changed
+        # never reached the release page. Take the section for this tag, and fail
+        # rather than publish an empty one — a silent blank release is how this
+        # went unnoticed for 170 of them.
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '
+            $0 == "## [" v "]" || index($0, "## [" v "] ") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "::error::CHANGELOG has no section for $v"; exit 1; }
+          cat notes.md
       - name: Cek semua target ikut sebelum menerbitkan
         # Rilis yang kehilangan satu platform lebih buruk daripada rilis yang
         # gagal: ia terlihat berhasil sampai ada yang mengunduh dan tak menemukan
@@ -86,4 +103,5 @@ jobs:
           done
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: notes.md
           files: dist/*.tar.gz

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Releases now publish with notes. Every release page up to v0.98.9 carried the
+  three binaries and an empty body: the workflow only ever uploaded artifacts,
+  so the file that says what changed never reached the place people read before
+  upgrading. `release.yml` now takes this tag's section out of `CHANGELOG.md`
+  and fails the publish if that section is missing, rather than shipping
+  another blank one.
+- Restored the version links at the foot of this file. They stopped being
+  maintained after 0.96.0, leaving 136 of 173 version headings as plain
+  bracketed text that linked nowhere.
+
 ## [0.98.9] — 2026-07-31
 
 ### Added
@@ -3745,6 +3757,17 @@ tests:
   themes; palette indices are not).
 
 [Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.9...HEAD
+[0.98.9]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.9
+[0.98.8]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.8
+[0.98.7]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.7
+[0.98.6]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.6
+[0.98.5]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.5
+[0.98.4]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.4
+[0.98.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.3
+[0.98.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.2
+[0.98.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.1
+[0.98.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.0
+[0.97.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.97.0
 [0.96.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.96.0
 [0.95.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.95.0
 [0.94.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.94.0
@@ -3771,6 +3794,131 @@ tests:
 [0.86.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.86.1
 [0.86.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.86.0
 [0.85.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.85.0
+[0.83.4]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.83.4
+[0.83.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.83.3
+[0.83.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.83.2
+[0.83.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.83.1
+[0.83.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.83.0
+[0.82.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.82.2
+[0.82.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.82.1
+[0.82.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.82.0
+[0.81.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.81.0
+[0.80.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.80.0
+[0.79.4]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.79.4
+[0.79.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.79.3
+[0.79.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.79.2
+[0.77.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.77.0
+[0.75.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.75.0
+[0.74.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.74.0
+[0.73.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.73.0
+[0.72.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.72.0
+[0.71.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.71.0
+[0.70.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.70.0
+[0.69.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.69.0
+[0.68.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.68.0
+[0.67.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.67.0
+[0.66.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.66.0
+[0.65.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.65.2
+[0.65.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.65.1
+[0.65.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.65.0
+[0.64.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.64.1
+[0.64.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.64.0
+[0.63.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.63.0
+[0.62.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.62.0
+[0.61.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.61.0
+[0.60.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.60.1
+[0.60.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.60.0
+[0.59.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.59.2
+[0.59.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.59.1
+[0.59.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.59.0
+[0.58.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.58.0
+[0.57.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.57.2
+[0.57.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.57.1
+[0.57.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.57.0
+[0.56.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.56.0
+[0.55.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.55.1
+[0.55.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.55.0
+[0.54.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.54.1
+[0.54.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.54.0
+[0.53.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.53.0
+[0.52.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.52.1
+[0.52.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.52.0
+[0.51.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.51.1
+[0.51.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.51.0
+[0.50.5]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.50.5
+[0.50.4]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.50.4
+[0.50.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.50.3
+[0.50.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.50.2
+[0.50.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.50.1
+[0.50.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.50.0
+[0.49.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.49.2
+[0.49.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.49.1
+[0.49.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.49.0
+[0.48.11]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.11
+[0.48.10]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.10
+[0.48.9]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.9
+[0.48.8]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.8
+[0.48.7]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.7
+[0.48.6]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.6
+[0.48.5]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.5
+[0.48.4]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.4
+[0.48.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.3
+[0.48.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.2
+[0.48.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.1
+[0.48.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.48.0
+[0.47.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.47.1
+[0.47.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.47.0
+[0.46.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.46.1
+[0.46.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.46.0
+[0.45.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.45.1
+[0.45.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.45.0
+[0.44.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.44.0
+[0.43.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.43.3
+[0.43.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.43.2
+[0.43.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.43.1
+[0.43.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.43.0
+[0.42.3]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.42.3
+[0.42.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.42.2
+[0.42.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.42.1
+[0.42.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.42.0
+[0.41.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.41.0
+[0.40.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.40.0
+[0.39.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.39.0
+[0.38.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.38.0
+[0.37.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.37.0
+[0.36.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.36.0
+[0.35.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.35.0
+[0.34.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.34.0
+[0.30.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.30.1
+[0.30.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.30.0
+[0.29.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.29.0
+[0.28.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.28.1
+[0.28.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.28.0
+[0.27.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.27.0
+[0.26.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.26.0
+[0.25.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.25.0
+[0.24.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.24.0
+[0.23.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.23.0
+[0.22.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.22.0
+[0.21.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.21.0
+[0.20.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.20.0
+[0.19.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.19.2
+[0.19.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.19.1
+[0.19.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.19.0
+[0.18.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.18.0
+[0.17.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.17.0
+[0.16.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.16.0
+[0.15.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.15.0
+[0.14.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.14.1
+[0.14.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.14.0
+[0.13.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.13.0
+[0.12.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.12.1
+[0.12.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.12.0
+[0.11.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.11.1
+[0.11.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.11.0
+[0.10.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.10.0
+[0.9.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.9.0
+[0.8.2]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.8.2
 [0.8.1]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.8.1
 [0.8.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.8.0
 [0.7.0]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.7.0
