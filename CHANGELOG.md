@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.12] — 2026-08-10
+
 ### Added
 
 - `db dump` and `db download` now say how far they have got instead of spinning
@@ -3779,7 +3781,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.11...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.12...HEAD
+[0.98.12]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.12
 [0.98.11]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.11
 [0.98.10]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.10
 [0.98.9]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.9
