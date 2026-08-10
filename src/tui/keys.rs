@@ -2026,6 +2026,10 @@ impl App {
             KeyCode::Enter if self.backups.restore_into.is_some() => self.ask_restore(),
             // …in the object-storage dump picker, on the selected dump.
             KeyCode::Enter if self.backups.r2_restore_into.is_some() => self.ask_r2_restore(),
+            // The other thing to do with a dump you can see: keep a local copy.
+            KeyCode::Char('d') if self.backups.r2_restore_into.is_some() => {
+                self.download_r2_dump(req)
+            }
             // …and in the database picker, on the selected database.
             KeyCode::Enter if self.backups.backup_from.is_some() => self.ask_backup(),
             // `v` ticks, exactly as it marks a service in the table.

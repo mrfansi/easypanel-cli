@@ -3214,7 +3214,7 @@ impl App {
                 service,
                 keys,
             } => {
-                let title = format!("Restore {project}/{service} from an object-storage dump");
+                let title = format!("Dumps of {project}/{service} in object storage");
                 let lines = if keys.is_empty() {
                     vec![
                         "No dumps found for this service.".into(),
@@ -3233,7 +3233,7 @@ impl App {
                 self.status = if self.backups.r2_dumps.is_empty() {
                     "No dumps yet".into()
                 } else {
-                    "[Enter] restore the selected dump · [Esc] back".into()
+                    "[Enter] restore the selected dump · [d] download it here · [Esc] back".into()
                 };
             }
             Resp::BackupHistoryFrom {
@@ -5085,6 +5085,25 @@ impl App {
                 "Restore dump '{key}'? It recreates and OVERWRITES the databases in it."
             ),
         });
+    }
+
+    /// Download the dump under the cursor to the directory the TUI was started in.
+    /// No confirmation: it only writes a new local file (an existing one is refused
+    /// by the worker), unlike the restore this picker's Enter fires.
+    pub(super) fn download_r2_dump(&mut self, req: &Sender<Req>) {
+        let Some((project, service)) = self.backups.r2_restore_into.clone() else {
+            return;
+        };
+        let Some(key) = self.picker_row().and_then(|i| self.backups.r2_dumps.get(i)) else {
+            self.status = "Select a dump row first".into();
+            return;
+        };
+        let _ = req.send(Req::DownloadR2 {
+            project,
+            service,
+            path: key.clone(),
+        });
+        self.status = format!("Downloading {key}...");
     }
 
     /// Is this service marked for a bulk action?

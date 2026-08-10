@@ -2765,6 +2765,93 @@ pub fn db_list(
     Ok(())
 }
 
+/// Where a downloaded dump lands: the `--out` path as given, the key's file name
+/// inside it when it names an existing DIRECTORY, or that file name in the current
+/// directory when no `--out` was passed.
+fn dump_dest(out: Option<&str>, key: &str) -> std::path::PathBuf {
+    let name = key.rsplit('/').next().unwrap_or("dump.sql.gz");
+    match out {
+        Some(o) if std::path::Path::new(o).is_dir() => std::path::Path::new(o).join(name),
+        Some(o) => std::path::PathBuf::from(o),
+        None => std::path::PathBuf::from(name),
+    }
+}
+
+/// Download a dump this tool wrote to a local file. The container is not involved:
+/// the object already sits in the remote storage, so a presigned GET streamed
+/// straight to disk is the whole job (a multi-GB dump never enters memory).
+/// `path` defaults to the NEWEST dump of the service. Shared by the CLI
+/// `db download` and the TUI. Returns (object key, local path, bytes).
+pub(crate) fn download_r2_dump(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    path: Option<&str>,
+    out: Option<&str>,
+    provider: Option<&str>,
+) -> Result<(String, std::path::PathBuf, u64)> {
+    // `list_r2_dumps` sorts by key, and the key ends in a `%Y%m%d-%H%M%S` stamp,
+    // so the last one is the newest.
+    let key = match path {
+        Some(p) => p.to_string(),
+        None => list_r2_dumps(client, project, service, provider)?
+            .pop()
+            .ok_or_else(|| {
+                anyhow!(
+                    "No dumps found for {project}/{service}. \
+                     Make one with: easypanel db dump {project} {service} --all"
+                )
+            })?,
+    };
+    let dest = dump_dest(out, &key);
+    // Never write over a file that is already there: the caller may have edited or
+    // already restored from it, and `--out` makes choosing another path trivial.
+    if dest.exists() {
+        anyhow::bail!(
+            "{} already exists; pass --out to write elsewhere.",
+            dest.display()
+        );
+    }
+    let store = pick_remote_provider(client, provider)?;
+    let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let url = crate::s3::presign(
+        "GET",
+        &store.endpoint,
+        &store.bucket,
+        &key,
+        &store.access_key,
+        &store.secret_key,
+        &store.region,
+        &amz_date,
+        3600,
+    );
+    let mut resp = reqwest::blocking::Client::new()
+        .get(&url)
+        .send()?
+        .error_for_status()
+        .map_err(|e| anyhow!("Cannot read {key} from {}: {e}", store.name))?;
+    let mut file = std::fs::File::create(&dest)?;
+    let bytes = std::io::copy(&mut resp, &mut file)?;
+    Ok((key, dest, bytes))
+}
+
+pub fn db_download(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    path: Option<&str>,
+    out: Option<&str>,
+    provider: Option<&str>,
+) -> Result<()> {
+    let (key, dest, bytes) = download_r2_dump(client, project, service, path, out, provider)?;
+    println!(
+        "Downloaded {key} → {} ({:.1} MB).",
+        dest.display(),
+        bytes as f64 / 1_048_576.0
+    );
+    Ok(())
+}
+
 pub fn db_restore(
     client: &EasypanelClient,
     project: &str,
@@ -2792,6 +2879,25 @@ pub fn db_restore(
 mod tests {
     use super::*;
     use httpmock::prelude::*;
+
+    /// A downloaded dump keeps its own name unless a file path is given, and an
+    /// `--out` that is a DIRECTORY must not be written to as if it were a file.
+    #[test]
+    fn a_download_lands_on_the_dumps_own_name_unless_told_otherwise() {
+        use std::path::Path;
+        let key = "shop/db-20260101-101010.sql.gz";
+        assert_eq!(dump_dest(None, key), Path::new("db-20260101-101010.sql.gz"));
+        assert_eq!(
+            dump_dest(Some("/tmp/mine.gz"), key),
+            Path::new("/tmp/mine.gz")
+        );
+        // An existing directory keeps the dump's file name inside it.
+        let dir = std::env::temp_dir();
+        assert_eq!(
+            dump_dest(Some(dir.to_str().unwrap()), key),
+            dir.join("db-20260101-101010.sql.gz")
+        );
+    }
 
     /// A mysql service has no updateEnv endpoint — its env lives in the Advanced
     /// block. Sending updateEnv there returned 404; save_env must route by type and

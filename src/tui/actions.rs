@@ -479,8 +479,10 @@ impl App {
                     "Dump now (non-locking) → object storage",
                     |a, r| a.dump_r2_now(r),
                 ));
+                // One entry for the dumps themselves: the picker restores one or
+                // downloads it locally, so this is not two near-identical rows.
                 v.push(MenuItem::new(
-                    "Restore from an object-storage dump",
+                    "Object-storage dumps (restore / download)",
                     |a, r| a.open_r2_restore(r),
                 ));
             }

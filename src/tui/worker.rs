@@ -207,6 +207,12 @@ pub(super) enum Req {
         project: String,
         service: String,
     },
+    /// Download one of those dumps (by object key) to the current directory.
+    DownloadR2 {
+        project: String,
+        service: String,
+        path: String,
+    },
     /// Restore one of those dumps (by object key) back INTO the service.
     RestoreR2 {
         project: String,
@@ -1443,6 +1449,28 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
+        Req::DownloadR2 {
+            project,
+            service,
+            path,
+        } => match crate::commands::download_r2_dump(
+            client,
+            &project,
+            &service,
+            Some(&path),
+            None,
+            None,
+        ) {
+            Ok((_, dest, bytes)) => Resp::Done(
+                format!(
+                    "Downloaded {path} → {} ({:.1} MB)",
+                    dest.display(),
+                    bytes as f64 / 1_048_576.0
+                ),
+                Refresh::None,
+            ),
+            Err(e) => Resp::Err(e.to_string()),
+        },
         Req::RestoreR2 {
             project,
             service,

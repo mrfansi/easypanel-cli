@@ -419,6 +419,22 @@ enum DbCmd {
         #[arg(long)]
         provider: Option<String>,
     },
+    /// Download a dump written by `db dump` to this machine, straight from object
+    /// storage. Without --path it takes the newest dump of the service.
+    Download {
+        project: String,
+        service: String,
+        /// Object key (path) of the dump. Omit for the newest one (see: db list).
+        #[arg(long)]
+        path: Option<String>,
+        /// Where to write it: a file path, or a directory to keep the dump's name.
+        /// Default: the dump's file name in the current directory.
+        #[arg(long)]
+        out: Option<String>,
+        /// Storage provider id or name (optional when one remote provider exists).
+        #[arg(long)]
+        provider: Option<String>,
+    },
     /// Restore a dump written by `db dump`. It recreates the databases, so it works
     /// on a host where they never existed — the cross-server case EasyPanel can't do.
     Restore {
@@ -1138,6 +1154,20 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     &service,
                     &databases,
                     all,
+                    provider.as_deref(),
+                ),
+                DbCmd::Download {
+                    project,
+                    service,
+                    path,
+                    out,
+                    provider,
+                } => commands::db_download(
+                    &client,
+                    &project,
+                    &service,
+                    path.as_deref(),
+                    out.as_deref(),
                     provider.as_deref(),
                 ),
                 DbCmd::Restore {

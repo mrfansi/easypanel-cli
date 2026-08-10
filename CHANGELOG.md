@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `easypanel db download <project> <service>` fetches a dump written by `db dump`
+  onto this machine, streamed straight from object storage (the container is not
+  involved). Without `--path` it takes the newest dump of the service; `--out`
+  accepts a file path or a directory, and an existing file is never overwritten.
+- In the TUI, the object-storage dump list (Storage ▸ *Object-storage dumps*) now
+  downloads the selected dump with `d`, next to the `Enter` that restores it.
+
 ## [0.98.10] — 2026-07-31
 
 ### Fixed
