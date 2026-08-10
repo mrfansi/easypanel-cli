@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `db dump` and `db download` now say how far they have got instead of spinning
+  silently. A dump reports its phase and byte count — `dumping — 25.3 GB written`,
+  `compressing — 2.9 GB of 23.6 GB`, `uploading — 3.6 GB` — read from the sizes of
+  the two temp files it writes, sampled by the poll that was already asking the
+  container whether the job had finished. A download reports `1.9 GB of 3.8 GB
+  (50%)`. Shown on the TUI status line, and in place on the CLI when stderr is a
+  terminal (silent when redirected, so logs stay clean).
+
 ## [0.98.11] — 2026-08-10
 
 ### Added

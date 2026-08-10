@@ -3493,6 +3493,7 @@ impl App {
                     self.status = format!("Terminal {} closed", self.term.title);
                 }
             }
+            Resp::Progress(msg) => self.status = msg,
             Resp::Done(msg, what) => {
                 self.status = msg;
                 self.apply_refresh(what, req);

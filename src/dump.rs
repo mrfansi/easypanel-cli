@@ -90,6 +90,22 @@ pub fn dump_command(
     Some(cleanup(&work, sql_file, tmp_file))
 }
 
+/// Where a running dump has got to, read from the sizes of its two temp files.
+///
+/// The command writes `.sql`, then `gzip -f` turns it into `.sql.gz` and REMOVES
+/// the `.sql`, then `curl` uploads. So the pair is an exact three-phase signal and
+/// costs nothing to sample: `.sql` alone = still dumping, both = compressing,
+/// `.sql.gz` alone = uploading. Neither yet means the dump has only just started.
+pub fn dump_phase(sql: Option<u64>, gz: Option<u64>) -> String {
+    let mb = |b: u64| crate::output::format_bytes(b as f64);
+    match (sql, gz) {
+        (Some(s), None) => format!("dumping — {} written", mb(s)),
+        (Some(s), Some(g)) => format!("compressing — {} of {}", mb(g), mb(s)),
+        (None, Some(g)) => format!("uploading — {}", mb(g)),
+        (None, None) => "starting…".to_string(),
+    }
+}
+
 /// Wrap an in-container command so its temp files are removed WHATEVER happens —
 /// on a failed upload the gzip (~the dump's compressed size) would otherwise sit in
 /// the container's `/tmp` forever. The command's real exit status is preserved so
@@ -195,6 +211,18 @@ mod tests {
         assert!(!cmd.contains("&& rm"), "cleanup must not depend on success");
         // The password is single-quote-escaped, not raw.
         assert!(cmd.contains("MYSQL_PWD='p@ss'\\''w'"));
+    }
+
+    /// The three phases a 25 GB dump walks through, told apart by which temp files
+    /// exist — the only progress a detached in-container job gives away.
+    #[test]
+    fn the_two_temp_files_say_which_phase_a_dump_is_in() {
+        assert!(dump_phase(Some(25_298_331_739), None).starts_with("dumping"));
+        let mid = dump_phase(Some(25_298_331_739), Some(3_084_386_304));
+        assert!(mid.starts_with("compressing"), "{mid}");
+        assert!(mid.contains("2.9 GB") && mid.contains("23.6 GB"), "{mid}");
+        assert!(dump_phase(None, Some(3_901_300_000)).starts_with("uploading"));
+        assert_eq!(dump_phase(None, None), "starting…");
     }
 
     #[test]

@@ -2574,6 +2574,7 @@ pub(crate) fn dump_to_r2(
     databases: &[String],
     all: bool,
     provider: Option<&str>,
+    mut on_progress: impl FnMut(&str),
 ) -> Result<R2Dump> {
     let stype = resolve_db_engine(client, project, service)?;
     let root_password = service_root_password(client, &stype, project, service)?;
@@ -2599,12 +2600,21 @@ pub(crate) fn dump_to_r2(
     let cmd = crate::dump::dump_command(&stype, &root_password, &dbs, &tmp, &url)
         .ok_or_else(|| anyhow!("db dump supports mysql/mariadb only"))?;
 
+    // The dump writes `{tmp}` minus its `.gz` first; watching both files is what
+    // turns a silent twenty-minute job into a phase and a byte count.
+    let sql = tmp.strip_suffix(".gz").unwrap_or(&tmp).to_string();
+    let watch = [sql.clone(), tmp.clone()];
     let run = crate::container::run_until_done(
         client,
         project,
         service,
         &cmd,
         std::time::Duration::from_secs(3600),
+        &watch,
+        |sizes| {
+            let of = |p: &str| sizes.iter().find(|(f, _)| f == p).map(|(_, b)| *b);
+            on_progress(&crate::dump::dump_phase(of(&sql), of(&tmp)));
+        },
     )?;
     let redact = |s: &str| {
         s.replace(&url, "<presigned-url>")
@@ -2627,6 +2637,28 @@ pub(crate) fn dump_to_r2(
     }
 }
 
+/// Repaint one status line in place on a terminal, and stay silent when stderr is
+/// redirected — a log file full of `\r` fragments helps nobody. Progress belongs on
+/// stderr so `easypanel db dump … > out` keeps its stdout clean.
+fn progress_line(text: &str) {
+    use std::io::{IsTerminal, Write};
+    if std::io::stderr().is_terminal() {
+        // Pad to overwrite a longer previous line, which would otherwise leave its
+        // tail behind ("uploading" under "compressing — 2.9 GB of 23.6 GB").
+        eprint!("\r  {text:<60}");
+        let _ = std::io::stderr().flush();
+    }
+}
+
+/// Clear the in-place progress line before printing anything final over it.
+fn progress_done() {
+    use std::io::{IsTerminal, Write};
+    if std::io::stderr().is_terminal() {
+        eprint!("\r{:<64}\r", "");
+        let _ = std::io::stderr().flush();
+    }
+}
+
 pub fn db_dump(
     client: &EasypanelClient,
     project: &str,
@@ -2636,7 +2668,15 @@ pub fn db_dump(
     provider: Option<&str>,
 ) -> Result<()> {
     println!("Dumping {project}/{service} to object storage (non-locking)…");
-    let d = dump_to_r2(client, project, service, databases, all, provider)?;
+    let started = std::time::Instant::now();
+    let d = dump_to_r2(client, project, service, databases, all, provider, |p| {
+        progress_line(&format!(
+            "{p}  [{}]",
+            crate::output::human_duration(started.elapsed().as_secs() as i64)
+        ));
+    });
+    progress_done();
+    let d = d?;
     println!(
         "Done → {}/{} ({}) — {} database(s): {}.",
         d.bucket,
@@ -2689,6 +2729,8 @@ pub(crate) fn restore_from_r2(
         service,
         &cmd,
         std::time::Duration::from_secs(3600),
+        &[],
+        |_| {},
     )?;
     let redact = |s: &str| {
         s.replace(&url, "<presigned-url>")
@@ -2789,6 +2831,7 @@ pub(crate) fn download_r2_dump(
     path: Option<&str>,
     out: Option<&str>,
     provider: Option<&str>,
+    mut on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<(String, std::path::PathBuf, u64)> {
     // `list_r2_dumps` sorts by key, and the key ends in a `%Y%m%d-%H%M%S` stamp,
     // so the last one is the newest.
@@ -2830,9 +2873,40 @@ pub(crate) fn download_r2_dump(
         .send()?
         .error_for_status()
         .map_err(|e| anyhow!("Cannot read {key} from {}: {e}", store.name))?;
+    let total = resp.content_length();
     let mut file = std::fs::File::create(&dest)?;
-    let bytes = std::io::copy(&mut resp, &mut file)?;
+    // Copied by hand rather than with `std::io::copy` only so the caller can be told
+    // how far a multi-GB download has got. Reported at most twice a second: the
+    // reader loop runs thousands of times a second and the TUI would drown in ticks.
+    use std::io::{Read, Write};
+    let mut buf = vec![0u8; 128 * 1024];
+    let (mut bytes, mut last) = (0u64, std::time::Instant::now());
+    loop {
+        let n = resp.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])?;
+        bytes += n as u64;
+        if last.elapsed() >= std::time::Duration::from_millis(500) {
+            on_progress(bytes, total);
+            last = std::time::Instant::now();
+        }
+    }
     Ok((key, dest, bytes))
+}
+
+/// "1.2 GB of 3.9 GB (31%)", or just the bytes when the server sent no length.
+pub(crate) fn download_progress(bytes: u64, total: Option<u64>) -> String {
+    let done = crate::output::format_bytes(bytes as f64);
+    match total.filter(|t| *t > 0) {
+        Some(t) => format!(
+            "{done} of {} ({}%)",
+            crate::output::format_bytes(t as f64),
+            bytes * 100 / t
+        ),
+        None => done,
+    }
 }
 
 pub fn db_download(
@@ -2843,11 +2917,15 @@ pub fn db_download(
     out: Option<&str>,
     provider: Option<&str>,
 ) -> Result<()> {
-    let (key, dest, bytes) = download_r2_dump(client, project, service, path, out, provider)?;
+    let got = download_r2_dump(client, project, service, path, out, provider, |b, t| {
+        progress_line(&download_progress(b, t));
+    });
+    progress_done();
+    let (key, dest, bytes) = got?;
     println!(
-        "Downloaded {key} → {} ({:.1} MB).",
+        "Downloaded {key} → {} ({}).",
         dest.display(),
-        bytes as f64 / 1_048_576.0
+        crate::output::format_bytes(bytes as f64)
     );
     Ok(())
 }

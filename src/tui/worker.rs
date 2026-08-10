@@ -829,6 +829,10 @@ pub(super) enum Resp {
     /// The terminal session ended (shell exited / socket closed).
     TermClosed,
     /// A mutation succeeded: a status message + which data needs reloading.
+    /// A long job saying where it has got to. Only the status line moves; the
+    /// spinner keeps running because `busy` counts requests, not replies, so a
+    /// dump can report for twenty minutes without ever looking finished.
+    Progress(String),
     Done(String, Refresh),
     Err(String),
     /// A Cloudflare reply. Kept apart from the EasyPanel variants so the two
@@ -1425,8 +1429,19 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             project,
             service,
             databases,
-        } => match crate::commands::dump_to_r2(client, &project, &service, &databases, false, None)
-        {
+        } => match crate::commands::dump_to_r2(
+            client,
+            &project,
+            &service,
+            &databases,
+            false,
+            None,
+            |p| {
+                // The phase word comes from `dump_phase` ("dumping — 319.7 MB
+                // written"), so the prefix must not say it again.
+                let _ = resp_tx.send(Resp::Progress(format!("{project}/{service}: {p}")));
+            },
+        ) {
             Ok(d) => Resp::Done(
                 format!(
                     "Dumped {} database(s) → {}/{} ({}), non-locking",
@@ -1460,6 +1475,12 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             Some(&path),
             None,
             None,
+            |b, t| {
+                let _ = resp_tx.send(Resp::Progress(format!(
+                    "Downloading {path} — {}",
+                    crate::commands::download_progress(b, t)
+                )));
+            },
         ) {
             Ok((_, dest, bytes)) => Resp::Done(
                 format!(

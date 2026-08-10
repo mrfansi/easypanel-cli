@@ -177,6 +177,27 @@ fn parse_done(cat_output: &str) -> Option<i32> {
         .find_map(|l| l.trim().parse::<i32>().ok())
 }
 
+/// The bytes each watched file holds right now — only the ones that exist. A
+/// detached job says nothing while it runs, so the size of what it is writing is
+/// the only honest progress signal there is.
+pub(crate) type Sizes = Vec<(String, u64)>;
+
+/// The `wc -c` lines of a poll, as `(path, bytes)` for the watched files only —
+/// which also drops `wc`'s own `total` line, since "total" is never a watched path.
+fn parse_sizes(out: &str, watch: &[String]) -> Sizes {
+    out.lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let bytes = f.next()?.parse::<u64>().ok()?;
+            let path = f.next()?;
+            watch
+                .iter()
+                .find(|w| *w == path)
+                .map(|w| (w.clone(), bytes))
+        })
+        .collect()
+}
+
 /// Run ONE command that may take much longer than [`run_once`]'s 20 s cap — a
 /// database dump/restore gzipped through object storage — WITHOUT holding a single
 /// socket open for its whole duration.
@@ -186,12 +207,19 @@ fn parse_done(cat_output: &str) -> Option<i32> {
 /// `cap` elapses. A socket that drops mid-run no longer aborts anything — the next
 /// poll just reconnects. Returns `exit_code: None` only if the sentinel never shows
 /// within `cap`, in which case the job is most likely still running.
+///
+/// Each poll also sizes the `watch` files in the SAME exec (the sentinel `cat` was
+/// a round trip already; `wc -c` rides along for free) and hands them to
+/// `on_progress`, so a caller can say how far a 25 GB dump has got instead of
+/// spinning silently for twenty minutes. Pass `&[]` to want none of it.
 pub(crate) fn run_until_done(
     client: &EasypanelClient,
     project: &str,
     service: &str,
     command: &str,
     cap: Duration,
+    watch: &[String],
+    mut on_progress: impl FnMut(&Sizes),
 ) -> Result<Run> {
     let rid = chrono::Utc::now().format("%Y%m%d%H%M%S%6f").to_string();
     let done = format!("/tmp/ezp-run-{rid}.done");
@@ -199,14 +227,21 @@ pub(crate) fn run_until_done(
 
     fire(client, project, service, &fire_line(command, &done, &log))?;
 
+    let sizes = if watch.is_empty() {
+        String::new()
+    } else {
+        let files = watch
+            .iter()
+            .map(|f| format!("'{f}'"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("; wc -c {files} 2>/dev/null")
+    };
+    let poll = format!("cat '{done}' 2>/dev/null{sizes}");
+
     let start = std::time::Instant::now();
     loop {
-        let seen = run_once(
-            client,
-            project,
-            service,
-            &format!("cat '{done}' 2>/dev/null"),
-        )?;
+        let seen = run_once(client, project, service, &poll)?;
         if let Some(code) = parse_done(&seen) {
             let output = run_once(
                 client,
@@ -220,6 +255,9 @@ pub(crate) fn run_until_done(
                 exit_code: Some(code),
                 output: output.trim().to_string(),
             });
+        }
+        if !watch.is_empty() {
+            on_progress(&parse_sizes(&seen, watch));
         }
         if start.elapsed() >= cap {
             // Sentinel never showed: the job is most likely still running. Leave the
@@ -303,6 +341,29 @@ mod tests {
         assert_eq!(parse_done("\n"), None);
         // A stray prompt line before the number must not fool it.
         assert_eq!(parse_done("$ \n3\n"), Some(3));
+    }
+
+    #[test]
+    fn poll_sizes_only_the_watched_files() {
+        let watch = vec!["/tmp/d.sql".to_string(), "/tmp/d.sql.gz".to_string()];
+        let out = "0\n 25298331739 /tmp/d.sql\n  3084386304 /tmp/d.sql.gz\n 28382718043 total\n";
+        assert_eq!(
+            parse_sizes(out, &watch),
+            vec![
+                ("/tmp/d.sql".to_string(), 25298331739),
+                ("/tmp/d.sql.gz".to_string(), 3084386304),
+            ],
+            "wc's own 'total' line is not a watched path"
+        );
+        // A file gzip has already removed simply isn't there — that absence is what
+        // tells the caller which phase the job is in.
+        assert_eq!(
+            parse_sizes(" 3901300000 /tmp/d.sql.gz\n", &watch),
+            vec![("/tmp/d.sql.gz".to_string(), 3901300000)]
+        );
+        assert!(parse_sizes("", &watch).is_empty());
+        // The sentinel's exit code shares the output and must not read as a size.
+        assert!(parse_sizes("0\n", &watch).is_empty());
     }
 
     #[test]
