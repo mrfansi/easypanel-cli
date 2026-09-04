@@ -141,6 +141,8 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
                 "Shift+PgUp/PgDn · wheel",
                 "scroll back through this session's output",
             ),
+            Key("drag", "select text — releasing copies it to the clipboard"),
+            Key("Esc", "clear the selection (only while one is marked)"),
         ],
         Screen::Credentials => &[
             Key("↑↓", "select a field"),
@@ -3683,6 +3685,9 @@ pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
+    // Record the pane's inner Rect so a click/drag maps to a cell of the grid,
+    // exactly as the table render paths record table_area.
+    app.term_area = inner;
 
     let (cols, rows) = (inner.width.max(1), inner.height.max(1));
     let Some(parser) = app.term.parser.as_mut() else {
@@ -3696,7 +3701,9 @@ pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 
+    let sel = app.term.sel;
     let screen = parser.screen();
+    let scrollback = screen.scrollback();
     let buf = f.buffer_mut();
     for r in 0..rows {
         for c in 0..cols {
@@ -3721,6 +3728,17 @@ pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
             }
             if cell.inverse() {
                 style = style.add_modifier(Modifier::REVERSED);
+            }
+            // The selection highlight TOGGLES the reverse attribute rather than
+            // setting it: a cell the shell already drew inverse (a highlighted
+            // menu line, vim's visual mode) must still change visibly when the
+            // user drags over it.
+            if sel.is_some_and(|s| s.contains(r, c, scrollback)) {
+                style = if style.add_modifier.contains(Modifier::REVERSED) {
+                    style.remove_modifier(Modifier::REVERSED)
+                } else {
+                    style.add_modifier(Modifier::REVERSED)
+                };
             }
             if let Some(target) = buf.cell_mut((x, y)) {
                 target.set_symbol(ch).set_style(style);

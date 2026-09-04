@@ -3616,6 +3616,170 @@ fn a_terminal_keeps_history_you_can_scroll_back_to() {
 }
 
 #[test]
+fn dragging_over_the_terminal_copies_the_selected_text() {
+    // The pane paints the vt100 grid cell by cell and mouse capture is on for the
+    // whole session, so the host terminal has nothing to select: the selection has
+    // to be the app's own. A drag marks the grid, the release puts the text on the
+    // clipboard through the same OSC 52 path Credentials uses.
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Terminal;
+    let mut parser = vt100::Parser::new(4, 20, super::TERM_SCROLLBACK);
+    // Trailing blanks on every line — what a shell leaves behind, and what must
+    // never reach the clipboard.
+    parser.process(b"total 3   \r\nabc   \r\nde\r\n");
+    app.term.parser = Some(parser);
+    // Nothing is painted here, so seed the pane's inner area the way render does.
+    app.term_area = Rect::new(2, 3, 20, 4);
+
+    let ev = |kind, col, row| MouseEvent {
+        kind,
+        column: col,
+        row,
+        modifiers: KeyModifiers::empty(),
+    };
+    // Press on the first cell of the first row, drag to the `e` of `de` two rows
+    // down, release.
+    app.term_mouse(ev(MouseEventKind::Down(MouseButton::Left), 2, 3));
+    app.term_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 3, 5));
+    app.term_mouse(ev(MouseEventKind::Up(MouseButton::Left), 3, 5));
+
+    assert_eq!(
+        app.clipboard.as_deref(),
+        Some("total 3\nabc\nde"),
+        "rows join with a newline and each one loses its trailing blanks"
+    );
+    assert!(app.status.contains("copied"), "status: {}", app.status);
+
+    // A press with no drag selects one cell — nobody means to copy that, so it
+    // copies nothing and clears the previous selection instead.
+    app.clipboard = None;
+    app.term_mouse(ev(MouseEventKind::Down(MouseButton::Left), 4, 4));
+    app.term_mouse(ev(MouseEventKind::Up(MouseButton::Left), 4, 4));
+    assert!(app.clipboard.is_none(), "a bare click must not copy");
+    assert!(app.term.sel.is_none());
+
+    // A press outside the grid (the pane border) dismisses the selection rather
+    // than anchoring one nowhere.
+    app.term_mouse(ev(MouseEventKind::Down(MouseButton::Left), 2, 3));
+    app.term_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 6, 4));
+    assert!(app.term.sel.is_some());
+    app.term_mouse(ev(MouseEventKind::Down(MouseButton::Left), 0, 0));
+    assert!(app.term.sel.is_none());
+
+    // And a keystroke, which goes to the shell, drops it too: the highlight would
+    // be marking output the shell is about to overwrite.
+    app.term_mouse(ev(MouseEventKind::Down(MouseButton::Left), 2, 3));
+    app.term_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 6, 4));
+    app.term_sel_clear();
+    assert!(app.term.sel.is_none());
+}
+
+#[test]
+fn a_terminal_selection_stays_on_its_text_while_the_history_scrolls() {
+    // A selection stored in raw viewport rows would slide onto whatever line
+    // happens to occupy that row after a scroll, and copy the wrong output. The
+    // rows are kept in the frame of the scrollback offset they were marked at.
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Terminal;
+    let mut parser = vt100::Parser::new(4, 20, super::TERM_SCROLLBACK);
+    for i in 1..=40 {
+        parser.process(format!("line-{i}\r\n").as_bytes());
+    }
+    app.term.parser = Some(parser);
+    app.term_area = Rect::new(0, 0, 20, 4);
+
+    let ev = |kind, col, row| MouseEvent {
+        kind,
+        column: col,
+        row,
+        modifiers: KeyModifiers::empty(),
+    };
+    // The last `\r\n` leaves the cursor on a fresh blank row, so the visible rows
+    // are line-38, line-39, line-40, ``. Select the second of them.
+    app.term_mouse(ev(MouseEventKind::Down(MouseButton::Left), 0, 1));
+    app.term_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 6, 1));
+    app.term_mouse(ev(MouseEventKind::Up(MouseButton::Left), 6, 1));
+    assert_eq!(app.clipboard.as_deref(), Some("line-39"));
+
+    // Scroll two lines back: line-39 is now the LAST visible row. The selection
+    // must still name line-39, not whatever moved into row 1 (line-37).
+    app.term_scroll(2);
+    let sel = app.term.sel.expect("the selection outlives the scroll");
+    let text = super::terminal::selection_text(app.term.parser.as_ref().unwrap().screen(), &sel);
+    assert_eq!(
+        text, "line-39",
+        "the selection followed the viewport, not its text"
+    );
+}
+
+#[test]
+fn the_terminal_pane_shows_which_cells_are_selected() {
+    // Without a highlight the user is dragging blind — and the copy that follows
+    // is a guess. The selected cells are drawn reversed; the rest are untouched.
+    use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::style::Modifier;
+    use ratatui::Terminal;
+
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Terminal;
+    app.term.title = "p/api".into();
+    app.term.parser = Some(vt100::Parser::new(4, 20, super::TERM_SCROLLBACK));
+    let mut term = Terminal::new(TestBackend::new(60, 14)).unwrap();
+    // The first paint records the pane's inner area and sizes the emulator to it.
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let area = app.term_area;
+    assert!(area.width > 12 && area.height > 1, "pane area: {area:?}");
+    app.term
+        .parser
+        .as_mut()
+        .unwrap()
+        .process(b"hello world\r\n");
+
+    // Drag across `hello` only.
+    let ev = |kind, col, row| MouseEvent {
+        kind,
+        column: col,
+        row,
+        modifiers: KeyModifiers::empty(),
+    };
+    app.term_mouse(ev(MouseEventKind::Down(MouseButton::Left), area.x, area.y));
+    app.term_mouse(ev(
+        MouseEventKind::Drag(MouseButton::Left),
+        area.x + 4,
+        area.y,
+    ));
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+
+    let buf = term.backend().buffer().clone();
+    let cell = |dx: u16| buf.cell((area.x + dx, area.y)).unwrap().clone();
+    for dx in 0..5 {
+        let c = cell(dx);
+        assert!(
+            c.modifier.contains(Modifier::REVERSED),
+            "cell {dx} ({}) should be highlighted",
+            c.symbol()
+        );
+    }
+    for dx in 5..11 {
+        let c = cell(dx);
+        assert!(
+            !c.modifier.contains(Modifier::REVERSED),
+            "cell {dx} ({}) is outside the selection",
+            c.symbol()
+        );
+    }
+    assert_eq!(cell(0).symbol(), "h");
+    assert_eq!(cell(4).symbol(), "o");
+}
+
+#[test]
 fn monitor_navigation_and_filter_agree_with_what_is_drawn() {
     // Three call sites worked the row count out independently and disagreed.
     // Navigation counted raw metric entries, which excludes the project header

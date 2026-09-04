@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
+use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
@@ -22,6 +23,7 @@ use super::backup_ui::BackupUi;
 use super::form::*;
 use super::render::cap;
 use super::table::*;
+use super::terminal::TermSel;
 use super::worker::{CfReq, CfResp, Refresh, Req, Resp, View};
 use super::LOG_BUFFER;
 
@@ -996,6 +998,10 @@ pub(super) struct App {
     /// The active screen's table area, filled in during render — maps a click to a
     /// row. Only one screen renders per frame, so one field covers every table.
     pub(super) table_area: Rect,
+    /// The embedded terminal's inner (inside-the-border) area, filled in during
+    /// render_terminal — maps a click/drag to a cell of the vt100 grid. Same
+    /// pattern as `table_area`.
+    pub(super) term_area: Rect,
     /// The context menu (right click). Each item = (label, action).
     pub(super) menu: Option<Menu>,
     /// The command palette (global search) — quick navigation to a service/tab.
@@ -1087,6 +1093,7 @@ impl App {
             cf_product_spans: Vec::new(),
             cf_product_row: 0,
             table_area: Rect::default(),
+            term_area: Rect::default(),
             menu: None,
             palette: None,
         }
@@ -1325,6 +1332,7 @@ impl App {
         }
         self.term.input = None;
         self.term.parser = None;
+        self.term.sel = None;
         self.stats = None;
         self.stats_error = None;
         self.nodes.clear();
@@ -3487,6 +3495,7 @@ impl App {
             Resp::TermClosed => {
                 // Shell exited / socket closed: back to Services.
                 self.term.parser = None;
+                self.term.sel = None;
                 self.term.input = None;
                 if self.screen == Screen::Terminal {
                     self.screen = Screen::Projects;
@@ -4105,9 +4114,96 @@ impl App {
         p.set_scrollback((at + delta).max(0) as usize);
     }
 
+    /// Clicks, drags and the wheel inside the terminal pane.
+    ///
+    /// Handled here rather than in the event loop so it is state, not an escape
+    /// sequence: a drag marks a selection, releasing copies it (the loop drains
+    /// `clipboard` through OSC 52), and the wheel keeps scrolling the session's
+    /// own history as it always did.
+    pub(super) fn term_mouse(&mut self, m: MouseEvent) {
+        match m.kind {
+            MouseEventKind::ScrollUp => self.term_scroll(3),
+            MouseEventKind::ScrollDown => self.term_scroll(-3),
+            MouseEventKind::Down(MouseButton::Left) => match self.term_cell_at(m.column, m.row) {
+                // A press outside the grid (on the border, or a stray click)
+                // dismisses whatever was selected instead of anchoring nowhere.
+                None => self.term.sel = None,
+                Some((row, col)) => {
+                    let sb = self.term_scrollback();
+                    self.term.sel = Some(TermSel::new(row, col, sb));
+                }
+            },
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let sb = self.term_scrollback();
+                let at = self.term_cell_clamped(m.column, m.row);
+                if let (Some(sel), Some((row, col))) = (self.term.sel.as_mut(), at) {
+                    sel.extend(row, col, sb);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.term_copy_selection(),
+            _ => {}
+        }
+    }
+
+    /// Put the selection on the clipboard (the event loop writes OSC 52). A
+    /// selection with no text in it — a click that never became a drag, or a drag
+    /// across blank screen — just clears.
+    fn term_copy_selection(&mut self) {
+        let Some(sel) = self.term.sel else {
+            return;
+        };
+        let Some(p) = self.term.parser.as_ref() else {
+            self.term.sel = None;
+            return;
+        };
+        let text = super::terminal::selection_text(p.screen(), &sel);
+        if text.trim().is_empty() {
+            self.term.sel = None;
+            return;
+        }
+        let lines = text.lines().count();
+        self.status = if lines > 1 {
+            format!("{lines} lines copied to clipboard")
+        } else {
+            format!("Copied to clipboard: {text}")
+        };
+        self.clipboard = Some(text);
+    }
+
+    /// Drop an active selection (Esc, or any key that reaches the shell).
+    pub(super) fn term_sel_clear(&mut self) {
+        self.term.sel = None;
+    }
+
+    fn term_scrollback(&self) -> usize {
+        self.term
+            .parser
+            .as_ref()
+            .map_or(0, |p| p.screen().scrollback())
+    }
+
+    /// Screen (column, row) → a cell of the vt100 grid, or None outside the pane.
+    fn term_cell_at(&self, col: u16, row: u16) -> Option<(u16, u16)> {
+        let a = self.term_area;
+        (col >= a.x && col < a.x + a.width && row >= a.y && row < a.y + a.height)
+            .then(|| (row - a.y, col - a.x))
+    }
+
+    /// The same, but a drag that leaves the pane keeps extending along its edge
+    /// instead of stopping dead. None only when the pane has never been drawn.
+    fn term_cell_clamped(&self, col: u16, row: u16) -> Option<(u16, u16)> {
+        let a = self.term_area;
+        if a.width == 0 || a.height == 0 {
+            return None;
+        }
+        let clamp = |v: u16, lo: u16, len: u16| v.clamp(lo, lo + len - 1) - lo;
+        Some((clamp(row, a.y, a.height), clamp(col, a.x, a.width)))
+    }
+
     pub(super) fn close_terminal(&mut self) {
         self.term.input = None;
         self.term.parser = None;
+        self.term.sel = None;
         self.screen = Screen::Projects;
         self.status = format!("Terminal {} closed", self.term.title);
     }

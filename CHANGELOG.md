@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The embedded container terminal is selectable — drag to select, release to
+  copy.** The pane paints the shell's screen cell by cell, and mouse capture is on
+  for the whole session, so there was nothing there for the host terminal to
+  select: the text you were looking at could not be copied at all. A left drag now
+  marks the *shell's own grid* (highlighted as you drag) and releasing puts it on
+  the clipboard over OSC 52 — the same path Credentials and the Domains menu use,
+  so it reaches the real clipboard over SSH and through tmux. Because the
+  selection is the app's, it copies characters rather than screen: no pane border,
+  no tab bar, and it can mark output from the 5,000-line scrollback the host
+  terminal cannot see. Rows join with a newline, each is trimmed of the blanks the
+  shell padded it with, and a line the shell *wrapped* is copied back as one line,
+  so a long command pastes as a command. A selection is anchored to its content,
+  not to a screen row, so scrolling (or new output arriving) leaves it on the same
+  text. `Esc` clears it — but only while something is selected, so vi still gets
+  its `Esc` — and any key sent to the shell clears it too. Listed in `?`.
+
 ## [0.98.12] — 2026-08-10
 
 ### Added

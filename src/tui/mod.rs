@@ -181,13 +181,9 @@ fn event_loop(
         };
         if event::poll(Duration::from_millis(poll))? {
             match event::read()? {
-                // The wheel scrolls the terminal's own history; everywhere else
-                // it belongs to the tables.
-                Event::Mouse(m) if app.screen == Screen::Terminal => match m.kind {
-                    event::MouseEventKind::ScrollUp => app.term_scroll(3),
-                    event::MouseEventKind::ScrollDown => app.term_scroll(-3),
-                    _ => {}
-                },
+                // Inside the terminal the mouse selects text and the wheel walks
+                // the session's history; everywhere else it belongs to the tables.
+                Event::Mouse(m) if app.screen == Screen::Terminal => app.term_mouse(m),
                 Event::Mouse(m) => app.on_mouse(m, &w.user),
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if app.screen == Screen::Terminal {
@@ -199,10 +195,17 @@ fn event_loop(
                         // every terminal emulator uses for exactly this. Held by
                         // the UI rather than forwarded: a shell has no idea what
                         // scrolled off ITS output, so nothing downstream can serve
-                        // this.
+                        // this. A selection is anchored to its content, so it
+                        // survives the scroll.
                         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                        // Esc dismisses a selection instead of reaching the shell —
+                        // but ONLY while one exists, so vi's Esc is never swallowed.
+                        let esc = key.code == KeyCode::Esc && app.term.sel.is_some();
                         if ctrl_q {
                             app.close_terminal();
+                        } else if esc {
+                            app.term_sel_clear();
+                            app.status = "Selection cleared".into();
                         } else if shift && key.code == KeyCode::PageUp {
                             app.term_scroll(TERM_PAGE);
                         } else if shift && key.code == KeyCode::PageDown {
@@ -214,7 +217,10 @@ fn event_loop(
                                 String::from_utf8_lossy(&bytes).into_owned(),
                             ));
                             // Typing returns to the live view: otherwise the keys
-                            // go to a shell you cannot see answering them.
+                            // go to a shell you cannot see answering them. It also
+                            // drops the selection — the highlight would be marking
+                            // output the shell is about to overwrite.
+                            app.term_sel_clear();
                             app.term_scroll(isize::MIN / 2);
                         }
                     } else {
@@ -516,9 +522,11 @@ fn event_loop(
             }
         }
 
-        // A copy request (from the Credentials screen): put it on the system
-        // clipboard with OSC 52, which reaches the real clipboard even over SSH and
-        // through tmux (set-clipboard on) — the terminals this tool lives in.
+        // A copy request (Credentials, a domain row menu, or a drag-selection in
+        // the embedded terminal): put it on the system clipboard with OSC 52,
+        // which reaches the real clipboard even over SSH and through tmux
+        // (set-clipboard on) — the terminals this tool lives in. Screen-agnostic
+        // on purpose: the loop drains whatever any handler set.
         if let Some(text) = app.clipboard.take() {
             use std::io::Write;
             let seq = format!(

@@ -177,8 +177,9 @@ run an action on the row you're on.
 
 The TUI is also **mouse-driven**: click a tab to switch, click any table row to select it,
 **right-click a row for a context menu** of its actions, and scroll to move through tables
-or the viewer. (Mouse capture disables the terminal's own text selection — hold **Shift
-while dragging** to select/copy.)
+or the viewer. Mouse capture disables the host terminal's own text selection (hold **Shift
+while dragging** to select the screen as your terminal sees it) — but **the embedded
+container terminal has its own selection**, see below.
 
 | Screen | What it is |
 |---|---|
@@ -263,7 +264,17 @@ row (ports/mounts/redirects) · `Esc` back.
 destination URL — across every domain currently on screen, so `/` narrows the
 set first. It is a plain find-and-replace, not a regex, and it shows the full
 before → after list for approval before anything is sent.
-**Terminal** — `Ctrl-Q` to leave (or type `exit`).
+**Terminal** — `Ctrl-Q` to leave (or type `exit`) · `Shift+PgUp`/`Shift+PgDn` and the
+wheel scroll this session's output · **drag to select text, and releasing copies it** ·
+`Esc` clears the selection (and only then — otherwise `Esc` goes to the shell).
+
+The selection is the app's own, not the host terminal's: the pane paints the shell's
+screen cell by cell, so a drag marks the *shell's* grid and copies exactly those
+characters — no pane border, no tab bar, and it reaches back into the 5,000 lines of
+scrollback the host cannot see. Each copied row is trimmed of trailing blanks, rows the
+shell wrapped are re-joined into one line, and the copy goes out over OSC 52, so it lands
+on your real clipboard over SSH and through tmux. A selection stays on the text it marked
+while you scroll; any key you send to the shell clears it.
 
 **Dockerfile sources open in `$EDITOR`.** Pick `dockerfile` as the source and the field
 shows how many lines it holds; `Space` opens the content in `$VISUAL`/`$EDITOR` (the
