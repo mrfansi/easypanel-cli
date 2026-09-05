@@ -289,6 +289,19 @@ pub(crate) fn run_capture(
 /// the literal `%s`, not `ok`) — so seeing it means the launch actually ran.
 const FIRED: &str = "__EZP_FIRED_ok__";
 
+/// The SAME marker as it comes back in the shell's ECHO of our own input line: a
+/// PTY reflects what we typed, so the `printf` placeholder is still unresolved
+/// there. Finding it locates the END of the echo — and the echo is the one part
+/// of this stream that carries credentials (the launch line contains
+/// `MYSQL_PWD='…'` and a presigned URL), so everything up to it is dropped before
+/// a launch failure is put into words.
+const FIRED_ECHO: &str = "__EZP_FIRED_%";
+
+/// How long a launch is given to confirm itself. A launch is `nohup … &` plus one
+/// `printf` — seconds, not minutes. Named rather than inlined so the failure
+/// message cannot drift from the wait it describes.
+const FIRE_CAP: Duration = Duration::from_secs(30);
+
 /// The result of a long-running one-shot: the exit status (None if the sentinel
 /// never appeared within `cap` — the job is likely still running) and, on failure,
 /// what the command printed.
@@ -355,6 +368,19 @@ fn parse_sizes(out: &str, watch: &[String]) -> Sizes {
 /// a round trip already; `wc -c` rides along for free) and hands them to
 /// `on_progress`, so a caller can say how far a 25 GB dump has got instead of
 /// spinning silently for twenty minutes. Pass `&[]` to want none of it.
+///
+/// `redact` is the caller's own secret-masking closure, and it is here for one
+/// reason: a launch failure has to be able to quote what the container shell
+/// said, and that stream contains the shell's ECHO of `command` — which for a
+/// dump/restore carries `MYSQL_PWD='…'` and a presigned URL. Only the caller
+/// knows what those values are, so only the caller can mask them; passing the
+/// closure it ALREADY builds for [`Run::output`] keeps one definition of "what is
+/// secret here" instead of two that can drift apart. It is not applied to
+/// `Run::output`: the caller does that itself, in the sentence it words around it.
+// Every one of these is a distinct thing the caller alone knows (where to run, what
+// to run, how long to allow, what to watch, what is secret, where to report); a
+// params struct would be ceremony, the same call `s3::presign` makes.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_until_done(
     client: &EasypanelClient,
     project: &str,
@@ -362,13 +388,20 @@ pub(crate) fn run_until_done(
     command: &str,
     cap: Duration,
     watch: &[String],
+    redact: &dyn Fn(&str) -> String,
     mut on_progress: impl FnMut(&Sizes),
 ) -> Result<Run> {
     let rid = chrono::Utc::now().format("%Y%m%d%H%M%S%6f").to_string();
     let done = format!("/tmp/ezp-run-{rid}.done");
     let log = format!("/tmp/ezp-run-{rid}.log");
 
-    fire(client, project, service, &fire_line(command, &done, &log))?;
+    fire(
+        client,
+        project,
+        service,
+        &fire_line(command, &done, &log),
+        redact,
+    )?;
 
     let sizes = if watch.is_empty() {
         String::new()
@@ -414,9 +447,158 @@ pub(crate) fn run_until_done(
     }
 }
 
+/// The longest input line the container shell accepts. MEASURED against a live
+/// panel rather than assumed: a 4096-byte line (its trailing newline included) runs
+/// and answers, 4097 is silently discarded and nothing ever comes back — the tty
+/// line discipline's canonical buffer, which a `docker exec -it` shell sits behind.
+///
+/// A launch line longer than this can therefore only ever time out, so it is
+/// refused HERE, where the reason can be named, instead of after a 30 s silence
+/// that says nothing. For scale: a five-database dump with a presigned URL is
+/// ~1.1 kB, so this is a ceiling on very large runs, not on ordinary ones.
+const MAX_INPUT_LINE: usize = 4096;
+
+/// Why a launch line cannot be delivered, or `None` when it fits.
+///
+/// Pure so the refusal can be tested without a panel, and separate from `fire` so
+/// the number and the sentence that explains it live together.
+fn too_long(line: &str) -> Option<String> {
+    (line.len() > MAX_INPUT_LINE).then(|| {
+        format!(
+            "the command is too long to launch: {} bytes on one line, and the \
+             container shell accepts at most {MAX_INPUT_LINE} — it would be \
+             discarded unrun. Fewer databases in one run makes it shorter.",
+            line.len()
+        )
+    })
+}
+
+/// What the socket DID while a launch was waited for, apart from the text it
+/// carried. Kept as facts and not as a verdict: a socket that attached and then
+/// said nothing at all is a different fault from a shell that answered and never
+/// reached the marker, and the two send an operator to different places.
+#[derive(Clone, Copy, Default)]
+struct Heard {
+    /// Any frame arrived at all — output, ping, or close.
+    frames: bool,
+    /// The session was closed before the marker: the exec itself ended.
+    closed: bool,
+}
+
+/// How much of the shell's own words a launch failure carries: the last few
+/// non-empty lines, capped. This lands in a one-line TUI status bar or on one line
+/// of stderr, so a paragraph would push everything else off it — and a shell puts
+/// what went wrong LAST.
+const SAID_LINES: usize = 3;
+const SAID_BYTES: usize = 240;
+
+/// A cut-off echo has no trailing marker to find, so it is recognised the only
+/// other honest way: by being a PREFIX of the line we sent. A handful of
+/// coincidental characters is not an echo, hence a minimum — and below it nothing
+/// is dropped, because a fragment the operator can read beats a blank.
+const ECHO_PREFIX_MIN: usize = 16;
+
+/// What the shell said, with the echo of our own input line dropped — and whether
+/// there was an echo there to drop.
+///
+/// Dropping it is not cosmetic: the echo is the ONE part of this stream that can
+/// carry credentials (`MYSQL_PWD='…'`, a presigned URL), and it can be spotted
+/// exactly. The resolved [`FIRED`] marker can only come from the shell having run
+/// the line, so the copy carrying the unresolved [`FIRED_ECHO`] is ours, and the
+/// echo ends with it — everything up to the end of that line is ours to discard.
+fn shell_said(raw: &str, line: &str) -> (String, bool) {
+    let clean = raw.replace('\r', "");
+    if let Some(at) = clean.rfind(FIRED_ECHO) {
+        let end = clean[at..].find('\n').map_or(clean.len(), |i| at + i + 1);
+        return (clean[end..].to_string(), true);
+    }
+    // No marker in the echo means the line did not arrive whole — the marker is the
+    // last thing on it — so what came back is a plain prefix of what we sent.
+    let shared = common_prefix(&clean, line);
+    if shared >= ECHO_PREFIX_MIN {
+        return (clean[shared..].to_string(), true);
+    }
+    (clean, false)
+}
+
+/// How many bytes two strings share from the start, never splitting a character.
+fn common_prefix(a: &str, b: &str) -> usize {
+    let mut n = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+    while n > 0 && !a.is_char_boundary(n) {
+        n -= 1;
+    }
+    n
+}
+
+/// The tail of some shell output as ONE capped line, fit to sit in a status bar.
+fn one_line(text: &str) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let said = lines[lines.len().saturating_sub(SAID_LINES)..].join(" | ");
+    if said.len() <= SAID_BYTES {
+        return said;
+    }
+    let mut end = SAID_BYTES;
+    while end > 0 && !said.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &said[..end])
+}
+
+/// Why a launch could not be confirmed, in one line, in the shell's words and not
+/// ours.
+///
+/// This message used to be the bare "could not launch the command in the
+/// container" with the captured stream thrown away, so every cause reached the
+/// operator identical and undiagnosable. The marker's `printf` sits after the `&`
+/// in [`fire_line`], so it runs whatever the launched job does — which means its
+/// ABSENCE is never about the dump itself. It is one of: the line never arrived or
+/// was discarded (see [`MAX_INPUT_LINE`]), the shell is still waiting on an
+/// unterminated quote and has executed nothing, the shell or the exec died before
+/// parsing it, or nothing it printed reached us inside [`FIRE_CAP`]. Those look
+/// very different in the stream, and this is what says which one it was.
+///
+/// The order here is load-bearing: `redact` runs BEFORE the length cap, because a
+/// secret cut in half by the cap would no longer match the caller's replacement and
+/// would leak its first half.
+fn launch_failure(raw: &str, line: &str, heard: Heard, redact: &dyn Fn(&str) -> String) -> String {
+    const HEAD: &str = "could not launch the command in the container";
+    let secs = FIRE_CAP.as_secs();
+    let (said, echoed) = shell_said(raw, line);
+    let said = one_line(&redact(&said));
+    if !said.is_empty() {
+        return format!("{HEAD} — the shell said: {said}");
+    }
+    // Nothing to quote. Which KIND of nothing it was is the whole diagnosis, so
+    // each is named separately rather than folded into one shrug.
+    if !heard.frames {
+        format!(
+            "{HEAD} — the shell sent nothing back at all in {secs}s; check the service is running"
+        )
+    } else if heard.closed {
+        format!("{HEAD} — the shell printed nothing and the session closed before it started")
+    } else if echoed {
+        format!("{HEAD} — the shell echoed the command but printed nothing else in {secs}s")
+    } else {
+        format!("{HEAD} — the shell printed nothing in {secs}s")
+    }
+}
+
 /// Open a shell, send the detached-launch line, and wait only until the resolved
-/// [`FIRED`] marker confirms it started (or a short cap — a launch takes seconds).
-fn fire(client: &EasypanelClient, project: &str, service: &str, line: &str) -> Result<()> {
+/// [`FIRED`] marker confirms it started (or [`FIRE_CAP`] — a launch takes seconds).
+fn fire(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    line: &str,
+    redact: &dyn Fn(&str) -> String,
+) -> Result<()> {
+    if let Some(why) = too_long(line) {
+        anyhow::bail!("{why}");
+    }
     let url = ws_url(client, project, service, "sh")?;
     let (mut ws, _) = tungstenite::connect(&url)?;
     set_read_timeout(&mut ws, Duration::from_millis(500));
@@ -426,9 +608,11 @@ fn fire(client: &EasypanelClient, project: &str, service: &str, line: &str) -> R
     let start = std::time::Instant::now();
     let mut out = String::new();
     let mut fired = false;
-    while start.elapsed() < Duration::from_secs(30) {
+    let mut heard = Heard::default();
+    while start.elapsed() < FIRE_CAP {
         match ws.read() {
             Ok(Message::Text(t)) => {
+                heard.frames = true;
                 if let Some(o) = serde_json::from_str::<Value>(&t)
                     .ok()
                     .and_then(|v| v.get("output").and_then(Value::as_str).map(String::from))
@@ -440,8 +624,12 @@ fn fire(client: &EasypanelClient, project: &str, service: &str, line: &str) -> R
                     }
                 }
             }
-            Ok(Message::Close(_)) => break,
-            Ok(_) => {}
+            Ok(Message::Close(_)) => {
+                heard.frames = true;
+                heard.closed = true;
+                break;
+            }
+            Ok(_) => heard.frames = true,
             Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(_) => break,
@@ -451,7 +639,7 @@ fn fire(client: &EasypanelClient, project: &str, service: &str, line: &str) -> R
     if fired {
         Ok(())
     } else {
-        anyhow::bail!("could not launch the command in the container")
+        anyhow::bail!("{}", launch_failure(&out, line, heard, redact));
     }
 }
 
@@ -588,5 +776,253 @@ mod tests {
         // The command is passed through untouched — it is already a shell line.
         assert!(line.contains("mysql -e 'SELECT 1'"), "{line}");
         assert!(line.ends_with('\n'), "the line must be submitted");
+    }
+
+    /// A presigned PUT of the shape `s3::presign` produces, and the password that
+    /// travels beside it: the two secrets a dump's launch line carries.
+    const FAKE_URL: &str = "https://acct.r2.cloudflarestorage.com/backups/proj/mysql-20260906-051500.sql.gz?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAEXAMPLE%2F20260906%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260906T051500Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=1f2e3d4c5b6a7988990a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60";
+    const FAKE_PW: &str = "s3cret";
+
+    /// The launch line a one-database dump really sends, secrets and all.
+    fn dump_launch_line() -> String {
+        let cmd = crate::dump::dump_command(
+            "mysql",
+            FAKE_PW,
+            &["shop".to_string()],
+            "/tmp/ezp-dump-20260906-051500.sql.gz",
+            FAKE_URL,
+        )
+        .expect("mysql is supported");
+        fire_line(&cmd, "/tmp/ezp-run-1.done", "/tmp/ezp-run-1.log")
+    }
+
+    /// The caller's own masking, as `commands::dump_to_r2` builds it.
+    fn caller_redact(s: &str) -> String {
+        s.replace(FAKE_URL, "<presigned-url>")
+            .replace(FAKE_PW, "<redacted>")
+            .trim()
+            .to_string()
+    }
+
+    fn heard() -> Heard {
+        Heard {
+            frames: true,
+            closed: false,
+        }
+    }
+
+    #[test]
+    fn a_failed_launch_quotes_the_shell_and_never_the_credentials() {
+        let line = dump_launch_line();
+        // What a PTY really returns: our own line echoed back (CRLF, `%s` still
+        // unresolved), then the shell's own words.
+        let raw = format!("{}sh: 1: nohup: not found\r\n", line.replace('\n', "\r\n"));
+        let msg = launch_failure(&raw, &line, heard(), &caller_redact);
+
+        assert!(
+            msg.contains("sh: 1: nohup: not found"),
+            "the shell's complaint is the whole point: {msg}"
+        );
+        // The echo is where the secrets are, and it is gone — command and all.
+        assert!(!msg.contains(FAKE_PW), "the root password leaked: {msg}");
+        assert!(!msg.contains("MYSQL_PWD"), "the echoed line leaked: {msg}");
+        assert!(
+            !msg.contains("X-Amz-Signature") && !msg.contains("r2.cloudflarestorage.com"),
+            "the presigned URL leaked: {msg}"
+        );
+        assert!(!msg.contains("mysqldump"), "our own command leaked: {msg}");
+        assert!(
+            !msg.contains('\n'),
+            "this has to fit one status line: {msg}"
+        );
+
+        // And when the SHELL is the one repeating a secret — a `sh` that quotes the
+        // offending word back, a `curl` that names the URL it rejected — dropping the
+        // echo cannot help: only the caller's masking can, so it is applied to
+        // whatever is left.
+        let echoed_back = format!(
+            "{}curl: (3) URL rejected: {FAKE_URL}\r\nsh: 1: MYSQL_PWD={FAKE_PW}: not found\r\n",
+            line.replace('\n', "\r\n")
+        );
+        let msg = launch_failure(&echoed_back, &line, heard(), &caller_redact);
+        assert!(msg.contains("curl: (3) URL rejected"), "{msg}");
+        assert!(
+            msg.contains("<presigned-url>"),
+            "masked, not dropped: {msg}"
+        );
+        assert!(msg.contains("<redacted>"), "masked, not dropped: {msg}");
+        assert!(!msg.contains(FAKE_PW), "the root password leaked: {msg}");
+        assert!(
+            !msg.contains("X-Amz-Signature"),
+            "the presigned URL leaked: {msg}"
+        );
+    }
+
+    #[test]
+    fn only_the_last_few_lines_of_a_talkative_shell_are_quoted() {
+        let line = dump_launch_line();
+        let raw = format!(
+            "{}one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n",
+            line.replace('\n', "\r\n")
+        );
+        let msg = launch_failure(&raw, &line, heard(), &caller_redact);
+        assert!(msg.ends_with("three | four | five"), "{msg}");
+        assert!(
+            !msg.contains("one"),
+            "an old banner is not the failure: {msg}"
+        );
+
+        // A single very long line is cut, and says it was.
+        let long = format!("{}{}\r\n", line.replace('\n', "\r\n"), "e".repeat(600));
+        let cut = launch_failure(&long, &line, heard(), &caller_redact);
+        assert!(cut.ends_with('…'), "{cut}");
+        assert!(
+            cut.len() < 400,
+            "still one status line: {} bytes",
+            cut.len()
+        );
+    }
+
+    #[test]
+    fn a_launch_that_said_nothing_says_which_kind_of_nothing() {
+        let line = dump_launch_line();
+        let nop = |s: &str| s.trim().to_string();
+
+        // Not one frame: the socket attached and the container never spoke.
+        let silent = launch_failure("", &line, Heard::default(), &nop);
+        assert!(silent.contains("sent nothing back at all"), "{silent}");
+
+        // Frames arrived carrying nothing — not the same fault as silence.
+        let quiet = launch_failure("", &line, heard(), &nop);
+        assert!(quiet.contains("printed nothing in 30s"), "{quiet}");
+
+        // The echo came back and nothing else: the shell HAS the line.
+        let echoed = launch_failure(&line.replace('\n', "\r\n"), &line, heard(), &nop);
+        assert!(
+            echoed.contains("echoed the command but printed nothing else"),
+            "{echoed}"
+        );
+
+        // The session ended before the marker could arrive.
+        let closed = launch_failure(
+            "",
+            &line,
+            Heard {
+                frames: true,
+                closed: true,
+            },
+            &nop,
+        );
+        assert!(closed.contains("session closed"), "{closed}");
+    }
+
+    #[test]
+    fn an_echo_behind_a_prompt_is_dropped_by_its_unresolved_marker() {
+        let line = dump_launch_line();
+        // The echo is not always byte-identical to what we sent: a shell may print a
+        // prompt first, and a PTY wraps a 1 kB line. Neither can be matched as a
+        // prefix, so the unresolved marker at the END of the echo is what identifies
+        // it. No redaction here either — the drop has to stand on its own.
+        let (a, b) = line.trim_end().split_at(400);
+        let raw = format!("# {a}\r\n{b}\r\nsh: 1: nohup: not found\r\n");
+        let msg = launch_failure(&raw, &line, heard(), &|s: &str| s.trim().to_string());
+        assert_eq!(
+            msg,
+            "could not launch the command in the container — the shell said: sh: 1: nohup: not found"
+        );
+    }
+
+    #[test]
+    fn an_echo_cut_short_is_still_recognised_by_its_prefix() {
+        let line = dump_launch_line();
+        // A line that never arrived whole has no trailing marker to find, so the
+        // fragment is spotted by being a prefix of what we sent. Redaction is NOT
+        // used here: this proves the structural drop on its own.
+        let fragment = &line[..300];
+        assert!(
+            fragment.contains(FAKE_PW),
+            "the fragment really does carry the password"
+        );
+        let raw = format!("{fragment}\r\nsh: syntax error: unterminated quoted string\r\n");
+        let msg = launch_failure(&raw, &line, heard(), &|s: &str| s.trim().to_string());
+        assert!(msg.contains("unterminated quoted string"), "{msg}");
+        assert!(!msg.contains(FAKE_PW), "the fragment leaked: {msg}");
+        assert!(!msg.contains("mysqldump"), "the fragment leaked: {msg}");
+    }
+
+    #[test]
+    fn a_line_over_the_shells_input_limit_is_refused_before_it_is_sent() {
+        assert_eq!(too_long(&"x".repeat(MAX_INPUT_LINE)), None, "4096 runs");
+        let why = too_long(&"x".repeat(MAX_INPUT_LINE + 1)).expect("4097 cannot be delivered");
+        assert!(why.contains("4097 bytes"), "names the size: {why}");
+        assert!(why.contains("4096"), "names the limit: {why}");
+    }
+
+    #[test]
+    fn a_realistic_multi_database_launch_line_fits_the_shells_input_limit() {
+        // Five schemas plus a presigned URL — the shape of a real copy. ~1.1 kB
+        // against a measured 4096-byte ceiling, so the headroom is real; this test
+        // is what notices if the line ever grows towards it.
+        // Five schema names and a URL of the lengths a real copy has (~90 bytes of
+        // names, a ~400-byte presigned URL).
+        let dbs: Vec<String> = [
+            "acme_db_my_eu1",
+            "acme_db_production_eu1",
+            "acme_db_staging_eu1",
+            "acme_studio_eu1",
+            "acme_seating_eu1",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let cmd = crate::dump::dump_command(
+            "mysql",
+            "S0me-Long-Root-Password-42",
+            &dbs,
+            "/tmp/ezp-dump-20260906-051500.sql.gz",
+            FAKE_URL,
+        )
+        .expect("mysql is supported");
+        let line = fire_line(&cmd, "/tmp/ezp-run-1.done", "/tmp/ezp-run-1.log");
+        assert_eq!(too_long(&line), None, "{} bytes", line.len());
+        assert!(
+            line.len() < MAX_INPUT_LINE / 2,
+            "a five-database dump should sit far below the ceiling, not near it: {} bytes",
+            line.len()
+        );
+    }
+
+    /// A launch that CANNOT confirm, against a live container: the failure has to
+    /// arrive carrying the shell's own words and none of ours. `&&` after a command
+    /// that does not exist is the cheapest way to reach that state on purpose — the
+    /// marker's `printf` never runs, which is exactly the shape of the real failure.
+    ///
+    /// Needs a running service, hence `#[ignore]`: run it with `--ignored`, and
+    /// point it somewhere with `EZP_LIVE_PROJECT` / `EZP_LIVE_SERVICE`.
+    #[test]
+    #[ignore = "live: needs a running service on the default server"]
+    fn a_live_launch_failure_reports_what_the_shell_said() {
+        let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
+        let srv = cfg.default().expect("a default server exists");
+        let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
+        let project = std::env::var("EZP_LIVE_PROJECT").unwrap_or_else(|_| "zzz-emb".into());
+        let service = std::env::var("EZP_LIVE_SERVICE").unwrap_or_else(|_| "zzz-redis".into());
+
+        let line = "ezp_no_such_launcher_zzz sh -c 'MYSQL_PWD='\\''zzzFAKEzzz'\\'' true' \
+                    && printf '__EZP_FIRED_%s__\\n' ok\n";
+        let redact = |s: &str| s.replace("zzzFAKEzzz", "<redacted>").trim().to_string();
+        let err =
+            fire(&client, &project, &service, line, &redact).expect_err("the marker cannot arrive");
+        let msg = err.to_string();
+        println!("LIVE MESSAGE: {msg}");
+
+        assert!(
+            msg.starts_with("could not launch the command in the container — the shell said:"),
+            "{msg}"
+        );
+        assert!(msg.contains("not found"), "the shell's own words: {msg}");
+        assert!(!msg.contains("zzzFAKEzzz"), "a secret leaked: {msg}");
+        assert!(!msg.contains("MYSQL_PWD"), "the echoed line leaked: {msg}");
+        assert!(!msg.contains('\n'), "one status line: {msg}");
     }
 }

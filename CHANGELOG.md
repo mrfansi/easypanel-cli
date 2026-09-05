@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **"could not launch the command in the container" now says what the container
+  said.** A dump, restore or copy that could not start printed exactly that
+  sentence and nothing else, while throwing away every byte the container shell had
+  actually produced — so a shell still waiting on an unterminated quote, a session
+  that died before it parsed anything, a container that never answered at all, and
+  an input line the shell discarded unrun all reached the status bar looking
+  identical. The failure now leads with the shell's own last few lines
+  (`… — the shell said: sh: …: command not found`), and when there was nothing to
+  quote it says WHICH nothing it was: no frame ever arrived, the session closed
+  before the command started, the command was echoed and nothing else came back, or
+  nothing was printed inside the 30 s wait. Those are four different faults and
+  they used to be one sentence.
+
+  The reason it had been left empty was real: that stream contains the shell's echo
+  of our own launch line, which carries `MYSQL_PWD='…'` and a presigned URL with its
+  signature. Two things now keep them out. The echo is IDENTIFIED and dropped — it
+  is the copy carrying the unresolved `printf` placeholder, where the shell's own
+  answer carries the resolved marker, the same discrimination the launch confirmation
+  already rests on — and a line cut short, which has no trailing marker to find, is
+  recognised by being a prefix of what was sent. Whatever survives that is then run
+  through the CALLER's own masking closure (`dump`/`restore` already build one),
+  because only the caller knows what its secrets are; masking runs before the
+  length cap, so a credential cannot be cut in half into something no longer
+  maskable. A shell that repeats a secret back at us is therefore masked, not
+  merely truncated.
+
+### Added
+
+- **A launch line too long for the container shell is refused with the numbers,
+  instead of timing out.** Measured against a live panel, not assumed: a 4096-byte
+  input line (its newline included) runs and answers, 4097 is discarded and nothing
+  ever comes back — the tty line discipline's canonical buffer, which is silent
+  about it. A launch that cannot be delivered is now refused before the socket is
+  opened, naming its size, the limit, and that fewer databases per run makes it
+  shorter. For scale, a five-database dump with a presigned URL is ~1.1 kB, so this
+  is a ceiling on very large runs and not on ordinary ones.
+
 ## [0.98.15] — 2026-09-06
 
 ### Fixed

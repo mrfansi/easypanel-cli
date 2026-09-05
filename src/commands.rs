@@ -2639,6 +2639,16 @@ pub(crate) fn dump_to_r2(
     // turns a silent twenty-minute job into a phase and a byte count.
     let sql = tmp.strip_suffix(".gz").unwrap_or(&tmp).to_string();
     let watch = [sql.clone(), tmp.clone()];
+    // Built BEFORE the run, not after it: `run_until_done` needs it too, because a
+    // launch that never confirms quotes what the container shell said and that
+    // stream contains the shell's echo of `cmd` — password and presigned URL and
+    // all. One definition of "what is secret here", used by both.
+    let redact = |s: &str| {
+        s.replace(&url, "<presigned-url>")
+            .replace(&root_password, "<redacted>")
+            .trim()
+            .to_string()
+    };
     let run = crate::container::run_until_done(
         client,
         project,
@@ -2646,17 +2656,12 @@ pub(crate) fn dump_to_r2(
         &cmd,
         std::time::Duration::from_secs(3600),
         &watch,
+        &redact,
         |sizes| {
             let of = |p: &str| sizes.iter().find(|(f, _)| f == p).map(|(_, b)| *b);
             on_progress(&crate::dump::dump_phase(of(&sql), of(&tmp)));
         },
     )?;
-    let redact = |s: &str| {
-        s.replace(&url, "<presigned-url>")
-            .replace(&root_password, "<redacted>")
-            .trim()
-            .to_string()
-    };
     match run.exit_code {
         Some(0) => Ok(R2Dump {
             bucket: store.bucket,
@@ -2772,6 +2777,15 @@ pub(crate) fn restore_from_r2(
     let sql = tmp.strip_suffix(".gz").unwrap_or(&tmp).to_string();
     let watch = [sql.clone(), tmp.clone()];
     let mut loading = false;
+    // Built BEFORE the run, for the same reason the dump builds it early: a launch
+    // that never confirms quotes the container shell, whose stream contains the
+    // echo of `cmd` — the presigned GET URL and the root password with it.
+    let redact = |s: &str| {
+        s.replace(&url, "<presigned-url>")
+            .replace(&root_password, "<redacted>")
+            .trim()
+            .to_string()
+    };
     let run = crate::container::run_until_done(
         client,
         project,
@@ -2779,6 +2793,7 @@ pub(crate) fn restore_from_r2(
         &cmd,
         std::time::Duration::from_secs(3600),
         &watch,
+        &redact,
         |sizes| {
             let of = |p: &str| sizes.iter().find(|(f, _)| f == p).map(|(_, b)| *b);
             let (s, g) = (of(&sql), of(&tmp));
@@ -2788,12 +2803,6 @@ pub(crate) fn restore_from_r2(
             on_progress(&crate::dump::restore_phase(s, g));
         },
     )?;
-    let redact = |s: &str| {
-        s.replace(&url, "<presigned-url>")
-            .replace(&root_password, "<redacted>")
-            .trim()
-            .to_string()
-    };
     match run.exit_code {
         Some(0) => Ok(()),
         // A load that had started can have replaced some tables and not others:
