@@ -2160,6 +2160,13 @@ impl App {
             KeyCode::Char('d') if self.backups.r2_restore_into.is_some() => {
                 self.download_r2_dump(req)
             }
+            // Widen the dump list to every service on the host, or narrow it back.
+            // The dump you need may have been taken from ANOTHER service — the
+            // engine has never refused that (`db restore --path` takes any key),
+            // only this picker did.
+            KeyCode::Char('a') if self.backups.r2_restore_into.is_some() => {
+                self.toggle_r2_scope(req)
+            }
             // …and in the database picker, on the selected database.
             KeyCode::Enter if self.backups.backup_from.is_some() => self.ask_backup(),
             // `v` ticks, exactly as it marks a service in the table.

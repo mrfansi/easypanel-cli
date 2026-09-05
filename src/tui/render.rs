@@ -4029,11 +4029,6 @@ pub(super) fn render_viewer(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-/// What you can DO to what this viewer is showing.
-///
-/// Each collection is one screen — see it, add to it, delete from it — so the
-/// screen says which keys do that. These were separate menu entries: findable,
-/// but disconnected from the thing they act on.
 /// Is any viewer line wider than the pane? Then content is cut at the right edge
 /// and horizontal scroll is worth advertising.
 ///
@@ -4046,8 +4041,22 @@ pub(super) fn viewer_overflows(app: &App, area_width: u16) -> bool {
     app.viewer.lines.iter().any(|l| l.chars().count() > reach)
 }
 
+/// What you can DO to what this viewer is showing.
+///
+/// Each collection is one screen — see it, add to it, delete from it — so the
+/// screen says which keys do that. These were separate menu entries: findable,
+/// but disconnected from the thing they act on.
 pub(super) fn viewer_actions(app: &App) -> String {
     use super::worker::View;
+    // A picker's keys belong on its OWN border, the convention `render_dbms` and
+    // the viewer's collections already use. They used to be written to the status
+    // line only, which the next reply to arrive (a metrics tick, any result)
+    // overwrites — leaving the one screen whose Enter OVERWRITES a database with
+    // no instructions at all, and `d` undiscoverable. `r2_hint` names only the
+    // keys the picker can act on right now.
+    if app.backups.r2_restore_into.is_some() {
+        return app.backups.r2_hint();
+    }
     match app.viewer.ctx.as_ref().map(|(v, ..)| *v) {
         Some(View::Env) => " e edit ".into(),
         Some(View::Ports) | Some(View::Mounts) | Some(View::Redirects) => {

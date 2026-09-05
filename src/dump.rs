@@ -58,6 +58,111 @@ pub fn dump_key(project: &str, service: &str, ts: &str) -> String {
     format!("{}{ts}.sql.gz", dump_prefix(project, service))
 }
 
+/// A dump key read back apart: which service wrote it, and when.
+///
+/// The wide "every service on this host" listing exists for the same reason
+/// `backup::history_all` does — a dump of `shop/db` is a perfectly good thing to
+/// load into `shop-staging/db` — and for the same reason it must carry WHERE it
+/// came from: once a row can name a service other than the destination, a row
+/// that does not say so is ambiguous about what is being overwritten with what.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DumpKey {
+    pub project: String,
+    pub service: String,
+    /// The stamp exactly as `dump_key` wrote it: `%Y%m%d-%H%M%S`.
+    pub ts: String,
+    /// The whole object key, which is what a restore is actually aimed at.
+    pub key: String,
+}
+
+impl DumpKey {
+    /// The stamp as a human reads a clock: `20260905-101010` → `2026-09-05 10:10:10`.
+    /// Kept a pure reformat of the stamp rather than a parsed datetime: the stamp is
+    /// UTC by construction (`dump_to_r2` formats `Utc::now()`) and re-parsing it
+    /// could only fail on a key `parse_dump_key` has already accepted.
+    pub fn when(&self) -> String {
+        let (d, t) = self.ts.split_once('-').unwrap_or((&self.ts, ""));
+        format!(
+            "{}-{}-{} {}:{}:{}",
+            &d[0..4],
+            &d[4..6],
+            &d[6..8],
+            &t[0..2],
+            &t[2..4],
+            &t[4..6]
+        )
+    }
+
+    /// `{project}/{service}` — how every row and every confirmation names an origin.
+    pub fn origin(&self) -> String {
+        format!("{}/{}", self.project, self.service)
+    }
+}
+
+/// Read a dump key back into the three things it was built from, or `None` when
+/// the object is not one of ours.
+///
+/// The inverse of [`dump_key`], living beside it so the shape has ONE definition
+/// for the writer and for every reader. A host-wide listing sees whatever else
+/// shares the bucket (EasyPanel's own backups, unrelated files), and a key that
+/// does not match this shape is SKIPPED rather than rendered half-parsed: a row
+/// with a blank service is exactly the ambiguity the origin column exists to
+/// remove.
+pub fn parse_dump_key(key: &str) -> Option<DumpKey> {
+    let (project, rest) = key.split_once('/')?;
+    // One level only: `{project}/{service}-{ts}.sql.gz` never nests deeper, so a
+    // deeper key belongs to something else.
+    if project.is_empty() || rest.contains('/') {
+        return None;
+    }
+    let stem = rest.strip_suffix(".sql.gz")?;
+    // The stamp itself holds a `-` (`%Y%m%d-%H%M%S`), so the two right-most
+    // fields are the stamp and everything left of them is the service name —
+    // which may itself contain dashes (`mysql-r2` does).
+    let mut parts = stem.rsplitn(3, '-');
+    let time = parts.next()?;
+    let date = parts.next()?;
+    let service = parts.next()?;
+    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    if service.is_empty() || !digits(date, 8) || !digits(time, 6) {
+        return None;
+    }
+    Some(DumpKey {
+        project: project.to_string(),
+        service: service.to_string(),
+        ts: format!("{date}-{time}"),
+        key: key.to_string(),
+    })
+}
+
+/// One page of an S3 `ListObjectsV2` body: the `.sql.gz` keys on it, and the
+/// token for the NEXT page when the answer was truncated.
+///
+/// Pure and here rather than in the caller so a truncated listing can be tested
+/// without a bucket — reading only the first page is what made a host-wide
+/// listing report "no dumps" while the dumps were sitting past key 1000. One tag
+/// each, scraped rather than parsed, for the same reason the key scan is: an XML
+/// dependency for three tags is not worth its weight.
+pub fn parse_key_page(body: &str) -> (Vec<String>, Option<String>) {
+    let tag = |name: &str| {
+        body.split_once(&format!("<{name}>"))
+            .and_then(|(_, rest)| rest.split_once(&format!("</{name}>")))
+            .map(|(v, _)| v.to_string())
+    };
+    let keys: Vec<String> = body
+        .split("<Key>")
+        .skip(1)
+        .filter_map(|s| s.split("</Key>").next())
+        .filter(|k| k.ends_with(".sql.gz"))
+        .map(String::from)
+        .collect();
+    // The token is only meaningful while truncated: S3 may echo one on the last
+    // page, and following it would loop over the tail forever.
+    let truncated = tag("IsTruncated").as_deref() == Some("true");
+    let next = truncated.then(|| tag("NextContinuationToken")).flatten();
+    (keys, next)
+}
+
 /// Single-quote a value for `sh`: `'` → `'\''`, so a credential is safe inside a
 /// single-quoted argument.
 fn sh_quote(s: &str) -> String {
@@ -445,6 +550,118 @@ mod tests {
         assert!(!key.starts_with(&dump_prefix("shop-staging", "mysql")));
     }
 
+    /// Reading a key back is the inverse of writing one, and a wide listing sees
+    /// objects that are NOT ours — EasyPanel's own backups share the bucket. A
+    /// key that does not match the shape must be skipped, never half-parsed into
+    /// a row with a blank origin, because the origin is the only thing telling
+    /// the operator whose data a cross-service restore would load.
+    #[test]
+    fn a_dump_key_reads_back_as_its_source_and_a_foreign_key_is_refused() {
+        // A service name with a dash of its own ("mysql-r2" exists on this host),
+        // so the stamp's own dash cannot be mistaken for the name's.
+        for (project, service) in [("shop", "mysql"), ("viding-co-db", "mysql-r2")] {
+            let key = dump_key(project, service, "20260905-101010");
+            let d = parse_dump_key(&key).expect("our own key parses");
+            assert_eq!((d.project.as_str(), d.service.as_str()), (project, service));
+            assert_eq!(d.ts, "20260905-101010");
+            assert_eq!(dump_key(&d.project, &d.service, &d.ts), key, "round trip");
+            assert_eq!(d.origin(), format!("{project}/{service}"));
+            assert_eq!(d.when(), "2026-09-05 10:10:10");
+        }
+        for foreign in [
+            "shop/mysql-20260905-101010.sql",           // not gzipped: not ours
+            "shop/mysql.sql.gz",                        // no stamp
+            "shop/mysql-2026095-101010.sql.gz",         // 7-digit date
+            "shop/mysql-20260905-10101.sql.gz",         // 5-digit time
+            "shop/nested/mysql-20260905-101010.sql.gz", // a deeper key is someone else's
+            "backups/shop/db/2026-09-05.sql.gz",        // EasyPanel's own layout
+            "mysql-20260905-101010.sql.gz",             // no project
+        ] {
+            assert!(
+                parse_dump_key(foreign).is_none(),
+                "a foreign key must be skipped: {foreign}"
+            );
+        }
+    }
+
+    /// A `ListObjectsV2` answer, shaped like the real one.
+    fn list_page(keys: &[&str], truncated: bool, token: Option<&str>) -> String {
+        let objects: String = keys
+            .iter()
+            .map(|k| format!("<Contents><Key>{k}</Key><Size>1</Size></Contents>"))
+            .collect();
+        let next = token
+            .map(|t| format!("<NextContinuationToken>{t}</NextContinuationToken>"))
+            .unwrap_or_default();
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+             <ListBucketResult><Name>viding-db</Name>\
+             <IsTruncated>{truncated}</IsTruncated>{next}{objects}</ListBucketResult>"
+        )
+    }
+
+    /// A listing answers at most 1000 keys, so the page's token is the ONLY way
+    /// to reach the rest. Reading one page reported "no dumps" against the real
+    /// bucket, whose first thousand keys are another service's rotated logs.
+    #[test]
+    fn a_truncated_listing_hands_back_the_token_for_the_next_page() {
+        let first = dump_key("viding-co-db", "mysql", "20260905-101010");
+        let second = dump_key("viding-co-db", "mysql", "20260904-070707");
+        let (keys, next) = parse_key_page(&list_page(
+            &[&first, &second],
+            true,
+            Some("1ueGcxLPRx1Tr/XYExHnhbYLgveDs2J/wm36Hy4vbOwM="),
+        ));
+        assert_eq!(keys, vec![first, second], "both keys on the page");
+        assert_eq!(
+            next.as_deref(),
+            Some("1ueGcxLPRx1Tr/XYExHnhbYLgveDs2J/wm36Hy4vbOwM="),
+            "and the token that reaches the rest"
+        );
+    }
+
+    /// The last page can still carry a token. Following it re-asks for the same
+    /// tail forever, so `IsTruncated` — not the token's presence — is what says
+    /// there is more.
+    #[test]
+    fn a_finished_listing_hands_back_no_token_even_when_it_echoes_one() {
+        let key = dump_key("viding-co-db", "mysql", "20260905-101010");
+        let (keys, next) = parse_key_page(&list_page(&[&key], false, Some("echoed-token")));
+        assert_eq!(keys, vec![key]);
+        assert_eq!(
+            next, None,
+            "a token without IsTruncated must not be followed"
+        );
+    }
+
+    /// The bucket is shared. These are the real neighbours from the reported
+    /// host: rotated app logs of an unrelated static site, and EasyPanel's own
+    /// backup layout. Neither is a `.sql.gz` dump of ours, and neither may reach
+    /// a picker row.
+    #[test]
+    fn a_shared_buckets_foreign_objects_never_reach_the_dump_list() {
+        let ours = dump_key("viding-org-db", "mysql", "20260906-020202");
+        let (keys, next) = parse_key_page(&list_page(
+            &[
+                "/viding-org_website-static/app.log.1",
+                "/viding-org_website-static/app.log.2.gz",
+                "backups/viding-co-db/mysql/2026-09-05T00-00-00.tar.gz",
+                &ours,
+            ],
+            false,
+            None,
+        ));
+        assert_eq!(keys, vec![ours.clone()], "only our dump survives the page");
+        assert_eq!(next, None);
+        for foreign in [
+            "/viding-org_website-static/app.log.1",
+            "backups/viding-co-db/mysql/2026-09-05T00-00-00.tar.gz",
+        ] {
+            assert!(parse_dump_key(foreign).is_none(), "{foreign}");
+        }
+        assert!(parse_dump_key(&ours).is_some());
+    }
+
     /// The mirror of the dump's phase signal, read in the other direction. The
     /// `.sql`-alone case is load-bearing twice: it is the "importing" line the
     /// operator sees, and it is what tells `restore_from_r2` that a failure from
@@ -526,5 +743,63 @@ mod tests {
         let r = store_refusal("https://a.r2.com", "dumps", "https://b.r2.com", "dumps")
             .expect("a different endpoint must be refused");
         assert!(r.contains("a.r2.com") && r.contains("b.r2.com"), "{r}");
+    }
+
+    /// A listing answers at most 1000 keys. Reading only the first page reported
+    /// "no dumps found" against a bucket whose first 1000 keys were somebody
+    /// else's rotated logs — the dumps were real and sitting past the cut, so the
+    /// page-following is what makes a wide listing true rather than merely short.
+    #[test]
+    fn a_truncated_listing_hands_back_its_keys_and_the_way_to_the_next_page() {
+        let page = "<ListBucketResult>\
+             <Contents><Key>shop/db-20260905-101010.sql.gz</Key></Contents>\
+             <Contents><Key>shop/db-20260904-070707.sql.gz</Key></Contents>\
+             <IsTruncated>true</IsTruncated>\
+             <NextContinuationToken>1ueGcxL/tok</NextContinuationToken>\
+             </ListBucketResult>";
+        let (keys, next) = parse_key_page(page);
+        assert_eq!(
+            keys,
+            vec![
+                "shop/db-20260905-101010.sql.gz",
+                "shop/db-20260904-070707.sql.gz"
+            ]
+        );
+        assert_eq!(next.as_deref(), Some("1ueGcxL/tok"));
+    }
+
+    /// S3 may echo a token on the LAST page. Following it re-asks for the same
+    /// tail forever, so the token counts only while `IsTruncated` says so.
+    #[test]
+    fn a_token_on_a_final_page_is_not_followed() {
+        let page = "<ListBucketResult>\
+             <Contents><Key>shop/db-20260905-101010.sql.gz</Key></Contents>\
+             <IsTruncated>false</IsTruncated>\
+             <NextContinuationToken>1ueGcxL/tok</NextContinuationToken>\
+             </ListBucketResult>";
+        let (keys, next) = parse_key_page(page);
+        assert_eq!(keys.len(), 1);
+        assert!(next.is_none(), "a finished listing must not be re-asked");
+    }
+
+    /// The bucket is shared. These are the real neighbours from the host this was
+    /// found on: rotated app logs and EasyPanel's own backups. Only our own keys
+    /// may reach a row, because the row's whole job is to name where a dump came
+    /// from.
+    #[test]
+    fn objects_that_are_not_our_dumps_never_become_rows() {
+        let page = "<ListBucketResult>\
+             <Contents><Key>/viding-org_website-static/app.log.1</Key></Contents>\
+             <Contents><Key>viding-co-db/2026-08-10T05:01:23.000Z.sql.gz</Key></Contents>\
+             <Contents><Key>viding-co-db/mysql-20260905-204845.sql.gz</Key></Contents>\
+             <IsTruncated>false</IsTruncated></ListBucketResult>";
+        let (keys, _) = parse_key_page(page);
+        // The log is dropped by the suffix; the panel's own backup survives that
+        // and is dropped by the key SHAPE, which is why both filters exist.
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        let ours: Vec<DumpKey> = keys.iter().filter_map(|k| parse_dump_key(k)).collect();
+        assert_eq!(ours.len(), 1, "{ours:?}");
+        assert_eq!(ours[0].origin(), "viding-co-db/mysql");
+        assert_eq!(ours[0].when(), "2026-09-05 20:48:45");
     }
 }

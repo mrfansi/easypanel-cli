@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The object-storage dump picker can restore a dump taken from ANOTHER
+  service.** Reported from real use: a dump had been taken from one database
+  service and the operator wanted it loaded into a different one, and the TUI
+  would not let them. Nothing in the engine ever refused this —
+  `easypanel db restore <project> <service> --path <key>` accepts any key — but
+  the picker signed a `ListObjectsV2` for the selected service's own
+  `{project}/{service}-` prefix, so another service's dump was not reachable from
+  that screen at all. The picker still OPENS on this service's own dumps (that is
+  the ordinary answer, and pulling in someone else's data is a deliberate act);
+  `[a]` widens it to every dump on the host, newest first, each row naming the
+  project/service it came from and when it was taken — the same "carry where it
+  came from" shape the "Restore from another server" list already uses. The pane
+  title says which scope is on screen, so a wide list is never mistaken for this
+  service's history, and picking another service's dump makes the confirmation say
+  so by name (both ends) on top of the existing OVERWRITES wording. The
+  destination is always the service the picker was opened on: a row says where a
+  dump came FROM and never redirects the restore. `db list --all-services` prints
+  the same host-wide listing for the CLI; the default output is unchanged.
+
+### Fixed
+
+- **The dump picker's keys no longer vanish.** They were written to the status
+  line only, and the status line is transient: any later reply (a metrics tick, a
+  result) overwrote it, leaving the one screen whose Enter OVERWRITES a database
+  with no instructions at all and `[d] download` undiscoverable — visible in the
+  report's own screenshot, where the picker sat above a bare "Ready". The keys now
+  live on the pane's own bottom border, the convention the viewer and the DBMS
+  browser already use, and are derived from what the picker can do right now: an
+  empty list advertises neither restore nor download, since there is nothing to
+  restore or download.
+
 ## [0.98.16] — 2026-09-06
 
 ### Fixed

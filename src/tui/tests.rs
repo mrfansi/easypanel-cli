@@ -9523,3 +9523,181 @@ fn a_database_list_still_loading_never_reads_as_none() {
     );
     assert!(app.status.contains("type them"), "{}", app.status);
 }
+
+/// The two dump keys from the reported case: one written for the service the
+/// picker is opened on, one for a DIFFERENT service on the same host.
+const OWN_DUMP: &str = "viding-co-db/mysql-20260905-101010.sql.gz";
+const OTHER_DUMP: &str = "viding-org-db/mysql-20260906-020202.sql.gz";
+
+fn r2_dumps(all_services: bool, keys: &[&str]) -> Resp {
+    Resp::R2Dumps {
+        project: "viding-co-db".into(),
+        service: "mysql".into(),
+        all_services,
+        keys: keys.iter().map(|k| k.to_string()).collect(),
+    }
+}
+
+/// Reported: "dump dari service lain dan ingin restore ke service lain kenapa
+/// gak bisa?" — the picker listed only the keys under the selected service's own
+/// prefix, so another service's dump could not be reached from it at all, even
+/// though `db restore --path` has always accepted any key. `a` widens the scope,
+/// and each wide row names where its dump came from.
+#[test]
+fn the_dump_picker_can_widen_to_another_services_dumps() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+
+    // Narrow: this service's own history, which is all the prefix can return.
+    app.handle(r2_dumps(false, &[OWN_DUMP]), &tx);
+    assert_eq!(app.backups.r2_dumps, vec![OWN_DUMP.to_string()]);
+    assert!(
+        app.viewer.title.contains("viding-co-db/mysql") && !app.viewer.title.contains("EVERY"),
+        "the narrow title names the service whose dumps these are: {}",
+        app.viewer.title
+    );
+    assert!(
+        !app.viewer.lines.join("\n").contains("viding-org-db"),
+        "the narrow list is still only this service's: {:?}",
+        app.viewer.lines
+    );
+
+    // `a` asks for the wide scope and carries the DESTINATION through unchanged.
+    app.on_key(KeyCode::Char('a'), &tx);
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::R2Dumps { ref project, ref service, all_services: true })
+            if project == "viding-co-db" && service == "mysql"),
+        "widening re-asks for the listing without changing the destination"
+    );
+
+    // Wide: the other service's dump is offered, and an object that is not one
+    // of our dumps (EasyPanel's own backups share the bucket) is skipped.
+    app.handle(
+        r2_dumps(
+            true,
+            &[OWN_DUMP, OTHER_DUMP, "backups/shop/db/2026-09-05.sql.gz"],
+        ),
+        &tx,
+    );
+    assert_eq!(
+        app.backups.r2_dumps,
+        vec![OWN_DUMP.to_string(), OTHER_DUMP.to_string()],
+        "the wide list holds both services' dumps and nothing foreign"
+    );
+    let shown = app.viewer.lines.join("\n");
+    assert!(
+        shown.contains("viding-org-db/mysql") && shown.contains("2026-09-06 02:02:02"),
+        "a wide row names the service it came from and when: {shown}"
+    );
+    assert!(
+        app.viewer.title.contains("EVERY service")
+            && app
+                .viewer
+                .title
+                .contains("restoring into viding-co-db/mysql"),
+        "a wide list must not read as this service's own history: {}",
+        app.viewer.title
+    );
+}
+
+/// The destructive half. A wide list means the row under the cursor may be
+/// another service's data, so the confirmation names BOTH ends — and the restore
+/// still goes into the service the picker was opened on, never into the service
+/// the dump came from.
+#[test]
+fn a_cross_service_restore_names_both_services_and_targets_the_destination() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.handle(r2_dumps(true, &[OWN_DUMP, OTHER_DUMP]), &tx);
+
+    // Row 0 is the column header; the other service's dump is the second row.
+    app.viewer.row.select(Some(2));
+    app.on_key(KeyCode::Enter, &tx);
+    let label = &app.confirm.as_ref().expect("a confirmation").label;
+    assert!(
+        label.contains("DIFFERENT service")
+            && label.contains("viding-org-db/mysql")
+            && label.contains("viding-co-db/mysql")
+            && label.contains("OVERWRITES"),
+        "both ends and the overwrite must be said: {label}"
+    );
+
+    app.confirm_key(KeyCode::Char('y'), &tx);
+    match rx.try_recv().expect("the restore was dispatched") {
+        Req::RestoreR2 {
+            project,
+            service,
+            path,
+        } => {
+            assert_eq!(
+                (project.as_str(), service.as_str()),
+                ("viding-co-db", "mysql"),
+                "the dump's own service must never redirect the restore"
+            );
+            assert_eq!(path, OTHER_DUMP, "and it loads the selected dump");
+        }
+        _ => panic!("expected a RestoreR2 request"),
+    }
+
+    // Same picker, this service's own dump: no cross-service warning to cry wolf
+    // with, and the overwrite is still said.
+    app.viewer.row.select(Some(1));
+    app.on_key(KeyCode::Enter, &tx);
+    let label = &app.confirm.as_ref().expect("a confirmation").label;
+    assert!(
+        !label.contains("DIFFERENT") && label.contains("OVERWRITES"),
+        "{label}"
+    );
+}
+
+/// The keys of this screen used to live in the status line ONLY, and the status
+/// line is transient: in the reported screenshot the picker was on screen saying
+/// nothing but "Ready", because a later reply had overwritten it — leaving the
+/// one screen whose Enter OVERWRITES a database with no instructions, and `d`
+/// undiscoverable. They belong on the pane's own border, and must name only what
+/// the picker can actually do.
+#[test]
+fn the_dump_pickers_keys_survive_the_next_status_line() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.handle(r2_dumps(false, &[OWN_DUMP]), &tx);
+
+    // Exactly the regression: another reply lands and takes the status line.
+    app.handle(Resp::Progress("Ready".into()), &tx);
+    let rows = screen_rows(&mut app, 120, 20);
+    let shown = rows.join("\n");
+    assert!(
+        shown.contains("[Enter] restore")
+            && shown.contains("[d] download")
+            && shown.contains("[a] every service"),
+        "the keys must still be on screen after the status moved on:\n{shown}"
+    );
+    assert!(
+        rows.last().is_some_and(|l| l.contains("Ready")),
+        "and the status line is left free for progress/results: {:?}",
+        rows.last()
+    );
+
+    // Widened: the same key narrows back, and the scope is named both places.
+    app.handle(r2_dumps(true, &[OWN_DUMP, OTHER_DUMP]), &tx);
+    let shown = screen_rows(&mut app, 120, 20).join("\n");
+    assert!(
+        shown.contains("[a] only this service") && shown.contains("EVERY service"),
+        "the wide scope says how to get back and what it is showing:\n{shown}"
+    );
+
+    // Nothing to restore or download: neither key is advertised, but `a` — which
+    // is the way out of an empty narrow list — is.
+    app.handle(r2_dumps(false, &[]), &tx);
+    let hint = app.backups.r2_hint();
+    assert!(
+        !hint.contains("Enter") && !hint.contains("download"),
+        "an empty list must not advertise an inert key: {hint}"
+    );
+    assert!(hint.contains("[a] every service"), "{hint}");
+    let shown = screen_rows(&mut app, 120, 20).join("\n");
+    assert!(
+        shown.contains("[a] every service") && !shown.contains("[Enter] restore"),
+        "and the border matches:\n{shown}"
+    );
+}

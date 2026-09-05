@@ -35,9 +35,17 @@ pub(super) struct BackupUi {
 
     // ---- restore from an object-storage dump this tool wrote (mirrors above) ----
     /// Which service the object-storage restore picker restores INTO.
+    ///
+    /// The DESTINATION, and the only thing a restore is aimed at. A row may name
+    /// a different service (see `r2_all_services`) — that says where the dump
+    /// came FROM and must never redirect the restore.
     pub(super) r2_restore_into: Option<(String, String)>,
     /// The dump object keys on screen, in the SAME order as the picker's rows.
     pub(super) r2_dumps: Vec<String>,
+    /// True while the picker is showing EVERY service's dumps rather than only
+    /// the destination's own. Drives the title, the hint and what `a` asks for
+    /// next, so the three cannot disagree about which scope is on screen.
+    pub(super) r2_all_services: bool,
     /// The dump a confirmation is about to restore (its object key).
     pub(super) pending_r2_restore: Option<String>,
 
@@ -98,6 +106,44 @@ impl BackupUi {
         }
     }
 
+    /// The keys THIS picker has right now, for its own bottom border.
+    ///
+    /// A hint, not a status line: the status is transient (any later reply — a
+    /// metrics tick, a result — overwrites it), and this is the one screen whose
+    /// Enter OVERWRITES a database, so it may never be left with nothing saying
+    /// so. Derived from what the picker can actually do: an empty list offers
+    /// neither restore nor download, because there is nothing to restore or
+    /// download and help that names an inert key is worse than none.
+    pub(super) fn r2_hint(&self) -> String {
+        let scope = if self.r2_all_services {
+            "[a] only this service"
+        } else {
+            "[a] every service"
+        };
+        if self.r2_dumps.is_empty() {
+            // From an empty narrow list, widening IS the way out — so `a` is
+            // the one key worth naming here.
+            return format!(" {scope} · [Esc] back ");
+        }
+        format!(" [Enter] restore · [d] download · {scope} · [Esc] back ")
+    }
+
+    /// The picker's title, which must say WHICH SCOPE is on screen: a wide list
+    /// holding other services' dumps must never read as this service's own
+    /// history.
+    pub(super) fn r2_title(&self) -> String {
+        let into = self
+            .r2_restore_into
+            .as_ref()
+            .map(|(p, s)| format!("{p}/{s}"))
+            .unwrap_or_default();
+        if self.r2_all_services {
+            format!("Dumps of EVERY service in object storage · restoring into {into}")
+        } else {
+            format!("Dumps of {into} in object storage")
+        }
+    }
+
     /// Tick or untick the database at picker row `i` (row 0 is "All", which is
     /// not a database). Returns false when the row is not one.
     pub(super) fn toggle(&mut self, i: usize) -> bool {
@@ -141,7 +187,48 @@ impl BackupUi {
         self.marked.clear();
         self.r2_restore_into = None;
         self.r2_dumps.clear();
+        // The scope is per-opening: a picker reopened from a service must show
+        // that service's own dumps, not whatever the last one had widened to.
+        self.r2_all_services = false;
     }
+}
+
+/// The dump picker's rows, and the keys those rows aim at — same order, so a
+/// restore is aimed by index into DATA and never by parsing a row back.
+///
+/// The wide scope names each dump's origin (`{project}/{service}` and when it
+/// was taken), the reason `backup::history_all` carries one too: as soon as a
+/// row can be another service's, a row that does not say so is ambiguous about
+/// what would be overwritten with what. A key that is not one of ours — the
+/// bucket also holds EasyPanel's own backups — is dropped from BOTH lists
+/// rather than rendered half-parsed.
+pub(super) fn r2_rows(keys: &[String], all_services: bool) -> (Vec<String>, Vec<String>) {
+    if !all_services {
+        // One service's own history: the bare key is unambiguous here, and it is
+        // exactly what `easypanel db restore … --path` wants pasted.
+        return (
+            keys.iter()
+                .enumerate()
+                .map(|(i, k)| format!("{} {k}", row_marker(i)))
+                .collect(),
+            keys.to_vec(),
+        );
+    }
+    let parsed: Vec<crate::dump::DumpKey> = keys
+        .iter()
+        .filter_map(|k| crate::dump::parse_dump_key(k))
+        .collect();
+    let mut lines = vec![format!("    {:<21}{:<28}{}", "When", "From", "File")];
+    lines.extend(parsed.iter().enumerate().map(|(i, d)| {
+        format!(
+            "{} {:<21}{:<28}{}",
+            row_marker(i),
+            d.when(),
+            d.origin(),
+            d.key
+        )
+    }));
+    (lines, parsed.into_iter().map(|d| d.key).collect())
 }
 
 #[cfg(test)]

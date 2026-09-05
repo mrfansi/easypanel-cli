@@ -404,6 +404,11 @@ enum DbCmd {
         /// Storage provider id or name (optional when one remote provider exists).
         #[arg(long)]
         provider: Option<String>,
+        /// List the dumps of EVERY service on this host (newest first, with the
+        /// project/service each came from) — any of those keys can be loaded into
+        /// this service with `db restore --path`.
+        #[arg(long)]
+        all_services: bool,
     },
     /// Dump mysql/mariadb databases to object storage — non-locking, one gzip file,
     /// uploaded straight from the container to the existing remote storage (R2).
@@ -1194,7 +1199,14 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     project,
                     service,
                     provider,
-                } => commands::db_list(&client, &project, &service, provider.as_deref()),
+                    all_services,
+                } => commands::db_list(
+                    &client,
+                    &project,
+                    &service,
+                    provider.as_deref(),
+                    all_services,
+                ),
                 DbCmd::Dump {
                     project,
                     service,

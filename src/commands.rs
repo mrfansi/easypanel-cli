@@ -2973,10 +2973,65 @@ pub(crate) fn copy_database(
     Ok(dump)
 }
 
+/// The `.sql.gz` object keys under `prefix`, sorted (so a key's trailing
+/// `%Y%m%d-%H%M%S` stamp puts the newest last).
+///
+/// EVERY page is read, not just the first. `ListObjectsV2` answers at most 1000
+/// keys and reports `IsTruncated` with a `NextContinuationToken`; reading one
+/// page silently returned "no dumps" against a bucket this tool shares with
+/// other things (the user's held ~250 KB of rotated app logs whose keys sort
+/// ahead of every dump), which is a lie that looks exactly like an empty
+/// history. `MAX_PAGES` bounds it so a pathological bucket cannot spin forever;
+/// hitting the bound is an error rather than a short answer, for the same reason.
+fn list_r2_keys(store: &RemoteStore, prefix: &str) -> Result<Vec<String>> {
+    const MAX_PAGES: usize = 50;
+    let http = reqwest::blocking::Client::new();
+    let mut keys: Vec<String> = Vec::new();
+    let mut token: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        let (url, auth) = crate::s3::sign_list(
+            &store.endpoint,
+            &store.bucket,
+            prefix,
+            token.as_deref(),
+            &store.access_key,
+            &store.secret_key,
+            &store.region,
+            &amz_date,
+        );
+        let body = http
+            .get(&url)
+            .header("Authorization", auth)
+            .header("x-amz-date", amz_date)
+            .header("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+            .send()?
+            .error_for_status()?
+            .text()?;
+        let (page, next) = crate::dump::parse_key_page(&body);
+        keys.extend(page);
+        match next {
+            Some(t) => token = Some(t),
+            None => {
+                keys.sort();
+                return Ok(keys);
+            }
+        }
+    }
+    anyhow::bail!(
+        "the storage listing did not finish after {MAX_PAGES} pages of 1000 keys; \
+         narrow it down with a per-service listing"
+    )
+}
+
 /// The object keys of the dumps this tool has written for a service, newest last.
 /// EasyPanel has no endpoint that lists them (they are the tool's own files, not
 /// its backup actions), so this signs an S3 `ListObjectsV2` for the
 /// `{project}/{service}-` prefix directly. Shared by the CLI `db list` and the TUI.
+///
+/// The store is resolved HERE and passed down: a fan-out over several prefixes
+/// (the host-wide listing) would otherwise re-ask the panel which provider to
+/// use once per service, and the answer cannot change mid-listing.
 pub(crate) fn list_r2_dumps(
     client: &EasypanelClient,
     project: &str,
@@ -2984,35 +3039,60 @@ pub(crate) fn list_r2_dumps(
     provider: Option<&str>,
 ) -> Result<Vec<String>> {
     let store = pick_remote_provider(client, provider)?;
-    let prefix = crate::dump::dump_prefix(project, service);
-    let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let (url, auth) = crate::s3::sign_list(
-        &store.endpoint,
-        &store.bucket,
-        &prefix,
-        &store.access_key,
-        &store.secret_key,
-        &store.region,
-        &amz_date,
-    );
-    let body = reqwest::blocking::Client::new()
-        .get(&url)
-        .header("Authorization", auth)
-        .header("x-amz-date", amz_date)
-        .header("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
-        .send()?
-        .error_for_status()?
-        .text()?;
-    // The XML lists <Key>…</Key> per object; no XML dep needed for one tag.
-    let mut keys: Vec<String> = body
-        .split("<Key>")
-        .skip(1)
-        .filter_map(|s| s.split("</Key>").next())
-        .filter(|k| k.ends_with(".sql.gz"))
-        .map(String::from)
-        .collect();
-    keys.sort();
-    Ok(keys)
+    list_r2_keys(&store, &crate::dump::dump_prefix(project, service))
+}
+
+/// Every dump this tool has written on the host, whatever service it came from,
+/// NEWEST FIRST — each row carrying its origin.
+///
+/// The same move `backup::history_all` makes, for the same reason: restoring
+/// ACROSS services is a legitimate thing to want (`db restore --path` has always
+/// accepted any key), and filtering the list by the destination's own prefix
+/// showed an empty list and explained nothing. Newest first because a wide list
+/// is long and the dump you just took is the one you came for; the per-service
+/// listing keeps its newest-LAST order, which `db_restore` relies on to pick a
+/// default.
+///
+/// Anything in the bucket that is not one of our keys (EasyPanel's own backups,
+/// unrelated objects) is skipped by `parse_dump_key`.
+pub(crate) fn list_all_r2_dumps(
+    client: &EasypanelClient,
+    provider: Option<&str>,
+) -> Result<Vec<crate::dump::DumpKey>> {
+    // Ask per SERVICE rather than scanning the whole bucket. The bucket may be
+    // shared with hundreds of thousands of objects that are none of our
+    // business, so a full scan is both slow and — before pagination — wrong;
+    // `{project}/{service}-` filters server-side, and the panel already knows
+    // every service it has. Only the engines this path can dump are asked for:
+    // no other service has ever written one of these keys.
+    //
+    // The provider is resolved ONCE for the whole fan-out: it cannot change
+    // between prefixes, and asking per service was an extra panel round-trip per
+    // database service.
+    let store = pick_remote_provider(client, provider)?;
+    let all = client.call("projects", "listProjectsAndServices", Value::Null)?;
+    let mut dumps: Vec<crate::dump::DumpKey> = Vec::new();
+    for s in all
+        .get("services")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let (project, service, stype) = (
+            field(s, "/projectName"),
+            field(s, "/name"),
+            field(s, "/type"),
+        );
+        if !crate::dump::can_dump(&stype) {
+            continue;
+        }
+        let keys = list_r2_keys(&store, &crate::dump::dump_prefix(&project, &service))?;
+        dumps.extend(keys.iter().filter_map(|k| crate::dump::parse_dump_key(k)));
+    }
+    // Newest first across every service: the stamp sorts lexically, so one sort
+    // on the key orders the whole set.
+    dumps.sort_by(|a, b| b.ts.cmp(&a.ts).then_with(|| a.key.cmp(&b.key)));
+    Ok(dumps)
 }
 
 pub fn db_list(
@@ -3020,7 +3100,22 @@ pub fn db_list(
     project: &str,
     service: &str,
     provider: Option<&str>,
+    all_services: bool,
 ) -> Result<()> {
+    // `db restore <project> <service> --path <key>` accepts ANY key, so the CLI
+    // must be able to show the keys that are not this service's own — otherwise
+    // the only restorable dumps a user can NAME are the ones already listed.
+    if all_services {
+        let dumps = list_all_r2_dumps(client, provider)?;
+        if dumps.is_empty() {
+            println!("No dumps found on this host's object storage.");
+            return Ok(());
+        }
+        for d in dumps {
+            println!("{}  {:<28}{}", d.when(), d.origin(), d.key);
+        }
+        return Ok(());
+    }
     let keys = list_r2_dumps(client, project, service, provider)?;
     if keys.is_empty() {
         println!("No dumps found for {project}/{service}.");

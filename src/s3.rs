@@ -159,10 +159,18 @@ pub(crate) fn presign(
 /// `Authorization`, `x-amz-date: {amz_date}`, and `x-amz-content-sha256:
 /// UNSIGNED-PAYLOAD`. Used to find the dumps this tool wrote, since EasyPanel has no
 /// endpoint that lists them.
+///
+/// `continuation_token` asks for the NEXT page: a listing returns at most 1000
+/// keys, and a caller that signs only the first page silently reports part of a
+/// bucket as all of it.
+// Same shape as `presign`: a signer genuinely needs all of these, and a params
+// struct would be ceremony.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sign_list(
     endpoint: &str,
     bucket: &str,
     prefix: &str,
+    continuation_token: Option<&str>,
     access_key: &str,
     secret_key: &str,
     region: &str,
@@ -174,8 +182,25 @@ pub(crate) fn sign_list(
         .trim_end_matches('/');
     let datestamp = &amz_date[..8];
 
-    // Query params, sorted by name (byte order): list-type before prefix.
-    let canonical_query = format!("list-type=2&prefix={}", uri_encode(prefix, false));
+    // The canonical query MUST be sorted by parameter name in byte order, and a
+    // continuation token sorts BEFORE both of the others
+    // (`continuation-token` < `list-type` < `prefix`) — hence a sort rather than
+    // a hand-written string, which is how a second parameter breaks a signature.
+    let mut params = vec![
+        ("list-type", uri_encode("2", false)),
+        ("prefix", uri_encode(prefix, false)),
+    ];
+    if let Some(token) = continuation_token {
+        // The token is opaque base64 (`/`, `+`, `=`), so it must be encoded as a
+        // query VALUE — slashes included.
+        params.push(("continuation-token", uri_encode(token, false)));
+    }
+    params.sort_by_key(|(name, _)| *name);
+    let canonical_query = params
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("&");
     let canonical_uri = format!("/{bucket}/");
     let signed_headers = "host;x-amz-content-sha256;x-amz-date";
     let canonical_headers =

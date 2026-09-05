@@ -223,10 +223,15 @@ pub(super) enum Req {
         service: String,
         databases: Vec<String>,
     },
-    /// List the object-storage dumps this tool wrote for a service, to restore one.
+    /// List object-storage dumps to restore INTO `project`/`service`.
+    ///
+    /// `all_services` widens the listing from that service's own dumps to every
+    /// dump on the host: the destination is still `project`/`service`, so the
+    /// scope decides only what is OFFERED, never what a restore is aimed at.
     R2Dumps {
         project: String,
         service: String,
+        all_services: bool,
     },
     /// Download one of those dumps (by object key) to the current directory.
     DownloadR2 {
@@ -795,10 +800,16 @@ pub(super) enum Resp {
     DbmsFailed {
         message: String,
     },
-    /// The object-storage dumps this tool wrote for a service, to pick one to restore.
+    /// The object-storage dumps to pick one of, and what `project`/`service` a
+    /// pick would be restored INTO.
+    ///
+    /// Object keys only: the rows are built from them (`backup_ui::r2_rows`), so
+    /// how a dump reads and which key a row aims at have one definition, and the
+    /// scope travels along because it decides both the wording and the columns.
     R2Dumps {
         project: String,
         service: String,
+        all_services: bool,
         keys: Vec<String>,
     },
     /// A copy that has been PLANNED but not run: what `plan_copy` resolved, ready
@@ -1553,11 +1564,25 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             ),
             Err(e) => Resp::Err(e.to_string()),
         },
-        Req::R2Dumps { project, service } => {
-            match crate::commands::list_r2_dumps(client, &project, &service, None) {
+        Req::R2Dumps {
+            project,
+            service,
+            all_services,
+        } => {
+            // Two scopes, one destination. The wide listing is what makes a dump
+            // of ANOTHER service reachable from here at all; the narrow one stays
+            // this service's own truthful history.
+            let keys = if all_services {
+                crate::commands::list_all_r2_dumps(client, None)
+                    .map(|d| d.into_iter().map(|d| d.key).collect())
+            } else {
+                crate::commands::list_r2_dumps(client, &project, &service, None)
+            };
+            match keys {
                 Ok(keys) => Resp::R2Dumps {
                     project,
                     service,
+                    all_services,
                     keys,
                 },
                 Err(e) => Resp::Err(e.to_string()),

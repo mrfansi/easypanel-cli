@@ -3312,28 +3312,42 @@ impl App {
             Resp::R2Dumps {
                 project,
                 service,
+                all_services,
                 keys,
             } => {
-                let title = format!("Dumps of {project}/{service} in object storage");
+                let (lines, keys) = super::backup_ui::r2_rows(&keys, all_services);
                 let lines = if keys.is_empty() {
+                    // Empty is not a dead end while the scope can still widen:
+                    // the dump to load may well be another service's, which `a`
+                    // reaches. Once already wide there is nothing left to offer.
                     vec![
-                        "No dumps found for this service.".into(),
+                        if all_services {
+                            "No dumps of any service on this host's object storage.".to_string()
+                        } else {
+                            "No dumps found for this service.".to_string()
+                        },
                         String::new(),
                         "Make one first: Storage ▸ Dump now (non-locking).".into(),
+                        if all_services {
+                            String::new()
+                        } else {
+                            "Or press [a] for the dumps of every service on this host.".into()
+                        },
                     ]
                 } else {
-                    keys.iter()
-                        .enumerate()
-                        .map(|(i, k)| format!("{} {k}", row_marker(i)))
-                        .collect()
+                    lines
                 };
                 self.backups.r2_dumps = keys;
+                self.backups.r2_all_services = all_services;
                 self.backups.r2_restore_into = Some((project, service));
-                self.show_picker(title, lines);
+                self.show_picker(self.backups.r2_title(), lines);
+                // The keys live on the pane's bottom border (`r2_hint`), not
+                // here: the status line is overwritten by the next reply to
+                // arrive, and this screen's Enter overwrites a database.
                 self.status = if self.backups.r2_dumps.is_empty() {
                     "No dumps yet".into()
                 } else {
-                    "[Enter] restore the selected dump · [d] download it here · [Esc] back".into()
+                    format!("{} dumps", self.backups.r2_dumps.len())
                 };
             }
             Resp::BackupHistoryFrom {
@@ -5557,17 +5571,55 @@ impl App {
     /// Open the list of THIS tool's own object-storage dumps for the service, to
     /// restore one — the other half of the non-locking `db dump`, so the TUI is not
     /// stuck restoring only through the CLI.
+    ///
+    /// It opens NARROW (this service's own dumps) and `a` widens it to the whole
+    /// host. That way round because the default answer to "restore this service"
+    /// is its own history, and pulling in another service's dump — which
+    /// OVERWRITES this one with someone else's data — is a deliberate act, not
+    /// something to be one keystroke away from by accident.
     pub(super) fn open_r2_restore(&mut self, req: &Sender<Req>) {
         let Some((project, service, _)) = self.selected_row() else {
             self.status = "Select a database first".into();
             return;
         };
-        let _ = req.send(Req::R2Dumps { project, service });
+        let _ = req.send(Req::R2Dumps {
+            project,
+            service,
+            all_services: false,
+        });
         self.status = "Looking for dumps in object storage...".into();
+    }
+
+    /// Widen the open dump picker to every service's dumps, or narrow it back.
+    ///
+    /// Re-asks for the listing rather than filtering what is on screen: the wide
+    /// scope is a different S3 request (no per-service prefix), so there is
+    /// nothing local to widen to. The DESTINATION is carried through unchanged —
+    /// widening changes what is offered, never what a restore is aimed at.
+    pub(super) fn toggle_r2_scope(&mut self, req: &Sender<Req>) {
+        let Some((project, service)) = self.backups.r2_restore_into.clone() else {
+            return;
+        };
+        let all_services = !self.backups.r2_all_services;
+        let _ = req.send(Req::R2Dumps {
+            project,
+            service,
+            all_services,
+        });
+        self.status = if all_services {
+            "Looking for dumps of every service...".into()
+        } else {
+            "Looking for dumps in object storage...".into()
+        };
     }
 
     /// Ask before restoring the object-storage dump under the cursor. It recreates
     /// and OVERWRITES the databases the dump holds, so the confirmation says so.
+    ///
+    /// The destination is `r2_restore_into` — the service the operator opened the
+    /// picker on. A row may be another service's dump, and when it is, the
+    /// confirmation NAMES BOTH: the whole risk of a wide list is loading the
+    /// wrong service's data, and the engine cannot tell you that afterwards.
     pub(super) fn ask_r2_restore(&mut self) {
         let Some((project, service)) = self.backups.r2_restore_into.clone() else {
             return;
@@ -5579,15 +5631,27 @@ impl App {
         let Some(key) = self.backups.r2_dumps.get(i).cloned() else {
             return;
         };
-        self.backups.pending_r2_restore = Some(key.clone());
+        let source = crate::dump::parse_dump_key(&key);
+        let cross = source
+            .as_ref()
+            .is_some_and(|d| d.project != project || d.service != service);
+        let label = match (cross, source) {
+            (true, Some(d)) => format!(
+                "This dump is from a DIFFERENT service: {} (taken {}). \
+                 Restore it INTO {project}/{service}? It recreates and OVERWRITES \
+                 the databases in it.",
+                d.origin(),
+                d.when()
+            ),
+            _ => format!("Restore dump '{key}'? It recreates and OVERWRITES the databases in it."),
+        };
+        self.backups.pending_r2_restore = Some(key);
         self.confirm = Some(Confirm {
             action: "r2restore".into(),
             project,
             service,
             stype: String::new(),
-            label: format!(
-                "Restore dump '{key}'? It recreates and OVERWRITES the databases in it."
-            ),
+            label,
         });
     }
 
