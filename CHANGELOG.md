@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.16] — 2026-09-06
+
 ### Fixed
 
 - **"could not launch the command in the container" now says what the container
@@ -4042,7 +4044,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.15...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.16...HEAD
+[0.98.16]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.16
 [0.98.15]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.15
 [0.98.14]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.14
 [0.98.13]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.13
