@@ -7,25 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2026.3.0906] — 2026-09-06
-
-Two things a database service could not do from this terminal — be looked at, and be moved — now have keys. `Y` walks a mysql/mariadb/postgres/mongo service's databases → tables → rows and runs statements of your own, through the service's own client inside its container; `easypanel db copy` (and the TUI's first target picker) copies a database into another service, on this panel or another host. The container terminal also selects and copies text now.
-
-### Highlights
-- Tidak ada pada release ini.
-
-### Changes
-- Browse a database from the TUI, and copy one into another service. Thanks @mrfansi
-- Select and copy text in the container terminal. Thanks @mrfansi
-
-### Fixes
-- Tidak ada pada release ini.
-
-### Pull Requests
-- Tidak ada pada release ini.
-
-### Contributors
-- @mrfansi
+## [0.98.13] — 2026-09-06
 
 ### Added
 
@@ -3952,8 +3934,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v2026.3.0906...HEAD
-[2026.3.0906]: https://github.com/mrfansi/easypanel-cli/releases/tag/v2026.3.0906
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.13...HEAD
+[0.98.13]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.13
 [0.98.12]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.12
 [0.98.11]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.11
 [0.98.10]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.10
