@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Confirming a database copy is one keypress again, and the dialog no longer
+  names a service that does not exist.** It was the only confirmation in the tool
+  that made you type something: the target service's name, spelled exactly, before
+  `Enter` would do anything. That was the fiddliest step in the feature and it
+  bought nothing — the plan directly above the question already names the
+  databases, the source, the destination `server/project/service`, and both image
+  tags, and says in as many words that the target's copies will be OVERWRITTEN and
+  cannot be recovered. It is now `[y]` / `[n]`, the same answer every other
+  destructive database action here takes, and it is still two steps: nothing is
+  written until the plan has been shown and answered. Losing the typed buffer also
+  cures what it was corrupting — the `Target:` line was assembled from the
+  destination AND that buffer, so typing `mysql`, the very name being asked for,
+  turned `viding-idc/viding-org-db/mysql` into `viding-idc/viding-org-db/mysql/mysql`
+  on the one dialog that overwrites databases.
+
+- **Cancelling a database copy no longer leaves the resolved plan behind.** The
+  plan was held aside while the dialog asked about it, and answering `n` or `Esc`
+  closed the dialog without dropping it. Dispatch goes by action name, so nothing
+  ran it — but a plan nobody agreed to had no business outliving the question.
+
 ## [0.98.14] — 2026-09-06
 
 ### Added
@@ -25,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backup picker has. Ticking nothing still copies **every** non-system database,
   and the field now SAYS "all of them" rather than leaving that rule to be
   remembered. Nothing about the copy itself changed: same-host default, plan then
-  typed confirmation, same refusals.
+  confirmation, same refusals.
 
 ### Fixed
 

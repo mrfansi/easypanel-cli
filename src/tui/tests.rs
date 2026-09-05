@@ -9082,52 +9082,63 @@ fn a_refused_plan_shows_the_named_reason_and_offers_no_confirmation() {
     assert!(app.copy_pending.is_none());
 }
 
-/// The typed confirmation is the gate: this is the most destructive operation in
-/// the tool (it overwrites databases on a host that may not be the one on screen),
-/// so a reflexive `y` must not start it — only the target service's own name.
+/// One key confirms, one cancels — the same gate every other destructive database
+/// action here uses. What makes this safe is the plan ABOVE the keys: it names the
+/// databases, both image tags and the destination host before anything is written.
 #[test]
-fn a_copy_runs_only_once_the_target_service_name_is_typed() {
+fn a_copy_runs_when_confirmed_and_not_when_cancelled() {
     let (tx, _rx) = std::sync::mpsc::channel();
+    let plan = || Resp::CopyDbPlan {
+        target_name: "there".into(),
+        target_project: "shop-staging".into(),
+        target_service: "mysql".into(),
+        project: "shop".into(),
+        service: "db".into(),
+        databases: vec!["studio".into()],
+        lines: vec![
+            "engine        mysql".into(),
+            "target image  mysql:5.7".into(),
+        ],
+    };
+
+    // Cancelled: nothing is dumped, nothing is loaded.
     let mut app = copy_app();
-    app.handle(
-        Resp::CopyDbPlan {
-            target_name: "there".into(),
-            target_project: "shop-staging".into(),
-            target_service: "mysql".into(),
-            project: "shop".into(),
-            service: "db".into(),
-            databases: vec!["studio".into()],
-            lines: vec![
-                "engine        mysql".into(),
-                "target image  mysql:5.7".into(),
-            ],
-        },
-        &tx,
-    );
+    app.handle(plan(), &tx);
+    app.confirm_key(KeyCode::Char('n'), &tx);
+    assert!(app.confirm.is_none(), "the dialog closes");
+    assert!(app.copy_db_req.is_none(), "cancelling must copy nothing");
+    assert!(app.copy_pending.is_none(), "and must not leave one pending");
+
+    let mut app = copy_app();
+    app.handle(plan(), &tx);
+    app.confirm_key(KeyCode::Esc, &tx);
+    assert!(app.copy_db_req.is_none(), "Esc must copy nothing");
+
+    // Confirmed with one key.
+    let mut app = copy_app();
+    app.handle(plan(), &tx);
     let c = app.confirm.as_ref().expect("a confirmation was raised");
-    assert_eq!(c.stype, "expect:mysql", "typed, not y/n");
     // The plan the operator is agreeing to is on screen, including the skew they
     // can only weigh before anything is overwritten.
     assert!(c.label.contains("mysql:5.7"), "{}", c.label);
     assert!(c.label.contains("OVERWRITTEN"), "{}", c.label);
 
-    // `y` is not a shortcut here — it is a CHARACTER, so it lands in the buffer
-    // and has to be removed. That is the point of the typed path: no keypress a
-    // hand makes by reflex can start this.
+    // The destination is named ONCE, and no row asks for anything to be typed —
+    // the buffer that used to live here appended itself to the target line.
+    let rows = screen_rows(&mut app, 80, 30);
+    let targets: Vec<&String> = rows.iter().filter(|r| r.contains("Target:")).collect();
+    assert_eq!(targets.len(), 1, "{rows:?}");
+    assert!(
+        targets[0].contains("Target: there/shop-staging/mysql"),
+        "{:?}",
+        targets[0]
+    );
+    assert!(
+        !rows.iter().any(|r| r.contains("Type:")),
+        "nothing to type: {rows:?}"
+    );
+
     app.confirm_key(KeyCode::Char('y'), &tx);
-    assert!(app.copy_db_req.is_none(), "a plain y must not start a copy");
-    assert!(app.confirm.is_some(), "the dialog stays open");
-    app.confirm_key(KeyCode::Backspace, &tx);
-
-    for ch in "mysqlx".chars() {
-        app.confirm_key(KeyCode::Char(ch), &tx);
-    }
-    app.confirm_key(KeyCode::Enter, &tx);
-    assert!(app.copy_db_req.is_none(), "a wrong name must not start it");
-    assert!(app.confirm.is_some());
-
-    app.confirm_key(KeyCode::Backspace, &tx);
-    app.confirm_key(KeyCode::Enter, &tx);
     let req = app.copy_db_req.as_ref().expect("the copy was promoted");
     assert!(req.run, "stage two: this one actually copies");
     assert_eq!(req.target_server, "there");

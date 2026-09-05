@@ -777,9 +777,10 @@ pub(super) struct MigrateReq {
 /// A database copy waiting for its target token, which only event_loop can look
 /// up. Same rule as `MigrateReq`: the App holds a server NAME, never a token.
 ///
-/// Used for BOTH stages — `run: false` asks for the plan, `run: true` (set by the
-/// typed confirmation) asks for the copy. The target may be THIS host, so unlike
-/// a migration `target_server` is not required to differ from the current one.
+/// Used for BOTH stages — `run: false` asks for the plan, `run: true` (set when
+/// the plan is confirmed) asks for the copy. The target may be THIS host, so
+/// unlike a migration `target_server` is not required to differ from the current
+/// one.
 pub(super) struct CopyDbReq {
     pub(super) target_server: String,
     pub(super) target_project: String,
@@ -844,7 +845,7 @@ pub(super) struct App {
     /// A planned copy the confirmation is about to act on. Separate from
     /// `copy_db_req`, which the event loop TAKES: this one waits for
     /// `confirm_key` to promote it, so a copy cannot reach the worker without
-    /// passing through the typed confirmation.
+    /// passing through the confirmation.
     pub(super) copy_pending: Option<CopyDbReq>,
     /// A cross-host compare waiting for the event loop to resolve the target
     /// host's token (which only the ServerConfig holds).
@@ -3425,13 +3426,14 @@ impl App {
                 };
             }
             // A copy that has been planned but not run. Stage two: show what the
-            // plan resolved and ask — with the target service TYPED, not `y`.
+            // plan resolved and ask.
             //
-            // This is the most destructive operation in the tool: it overwrites
-            // databases on a host that may not even be the one on screen. The
-            // plain y/n path is what the less dangerous ops use; typing the target
-            // service's name is the one confirmation that cannot be given by
-            // reflex, and it makes the operator restate WHICH service they mean.
+            // It is still TWO steps — nothing is written until this dialog is
+            // answered — but the answer is one key, the same [y]/[n] every other
+            // destructive database action here takes. It used to demand the target
+            // service's name be typed out; the plan on screen already names the
+            // databases, the source and the destination host, so the typing added
+            // fiddliness rather than certainty.
             Resp::CopyDbPlan {
                 target_name,
                 target_project,
@@ -3442,11 +3444,6 @@ impl App {
                 lines,
             } => {
                 let dest = format!("{target_name}/{target_project}/{target_service}");
-                // No "type the name to confirm" line here: `render_confirm`
-                // already prints `Type:` and `[Enter] confirm when it matches
-                // {name}` for an `expect:` confirmation, and a dialog that says it
-                // twice is two rows nearer to pushing those very keys off the
-                // bottom of a 24-row terminal.
                 let label = format!(
                     "Copy {} database(s) from {project}/{service}\n\n{}\n\n\
                      Those databases on the target will be OVERWRITTEN and cannot \
@@ -3459,7 +3456,7 @@ impl App {
                 self.copy_pending = Some(CopyDbReq {
                     target_server: target_name,
                     target_project,
-                    target_service: target_service.clone(),
+                    target_service,
                     source: (project, service),
                     databases,
                     run: true,
@@ -3470,13 +3467,18 @@ impl App {
                     // must name — for every other confirmation the target is on the
                     // host being viewed, and for this one it may not be.
                     project: dest,
-                    // `service` is the typed-input buffer for an `expect:`
-                    // confirmation, so it starts empty rather than naming anything.
+                    // Plain y/n, like every other destructive database action here.
+                    // This used to demand the target service's name be TYPED, which
+                    // is the strictest gate in the tool — and the plan above it
+                    // already names what will be overwritten, on which host, twice
+                    // over. The typing bought no extra certainty and was the one
+                    // thing operators had to stop and puzzle over; it also fed the
+                    // buffer that made the target line contradict itself.
                     service: String::new(),
-                    stype: format!("expect:{target_service}"),
+                    stype: String::new(),
                     label,
                 });
-                self.status = "Type the target service name, then Enter".into();
+                self.status = "Confirm the copy".into();
             }
             // Succeeded, with something the user must act on. The viewer, because
             // the status line is one line and these sentences are longer than any

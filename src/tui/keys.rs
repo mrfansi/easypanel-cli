@@ -1091,11 +1091,14 @@ impl App {
                     return;
                 }
             }
-        } else {
-            if !matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                self.status = "Cancelled".into();
-                return;
-            }
+        } else if !matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            self.status = "Cancelled".into();
+            // A cancelled copy must not leave its resolved plan sitting in
+            // `copy_pending`: the next confirmation to be answered `y` dispatches
+            // by action name, and a plan nobody agreed to has no business
+            // outliving the dialog that asked about it.
+            self.copy_pending = None;
+            return;
         }
 
         // Deleting a project/domain has its own endpoint; the rest are ordinary
