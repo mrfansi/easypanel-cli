@@ -8981,7 +8981,7 @@ fn copy_app_on_redis() -> App {
 fn the_copy_form_carries_its_target_host_project_and_service_through() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = copy_app();
-    app.open_copy_db_form();
+    app.open_copy_db_form(&tx);
     let form = app.form.as_mut().expect("form opened");
     set_f_val(form, "To server", "there");
     set_f_val(form, "Target project", "shop-staging");
@@ -9008,7 +9008,7 @@ fn the_copy_form_carries_its_target_host_project_and_service_through() {
 fn the_copy_form_defaults_to_this_host_and_blank_databases_mean_all() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = copy_app();
-    app.open_copy_db_form();
+    app.open_copy_db_form(&tx);
     let form = app.form.as_mut().expect("form opened");
     assert_eq!(
         f_val(form, "To server"),
@@ -9034,7 +9034,7 @@ fn the_copy_form_defaults_to_this_host_and_blank_databases_mean_all() {
 fn a_copy_into_the_source_itself_is_refused() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = copy_app();
-    app.open_copy_db_form();
+    app.open_copy_db_form(&tx);
     app.submit_form(&tx); // every target field still prefilled from the source
     assert!(app.copy_db_req.is_none(), "nothing requested");
     assert!(app.status.contains("the source itself"), "{}", app.status);
@@ -9055,7 +9055,7 @@ fn a_redis_service_is_offered_no_copy_and_refused_the_form() {
         "redis must not be offered a copy: {labels:?}"
     );
 
-    app.open_copy_db_form();
+    app.open_copy_db_form(&tx);
     assert!(app.form.is_none(), "no form for an engine that cannot copy");
     assert!(app.copy_db_req.is_none());
     assert!(
@@ -9133,4 +9133,382 @@ fn a_copy_runs_only_once_the_target_service_name_is_typed() {
     assert_eq!(req.target_server, "there");
     assert_eq!(req.target_service, "mysql");
     assert_eq!(req.databases, vec!["studio"]);
+}
+
+/// A source database, a second project that can also take a copy, and a project
+/// that cannot — so the target pickers have something to exclude.
+fn copy_app_two_projects() -> App {
+    let mut app = App::new(
+        "here".into(),
+        vec![
+            ("here".into(), "https://here".into()),
+            ("there".into(), "https://there".into()),
+        ],
+    );
+    app.projects = vec!["shop".into(), "staging".into(), "web".into()];
+    app.all_services = vec![
+        svc("shop", "cache", "redis"),
+        svc("shop", "db", "mysql"),
+        svc("staging", "db-restore", "mariadb"),
+        svc("staging", "queue", "redis"),
+        svc("web", "site", "app"),
+    ];
+    app.screen = Screen::Projects;
+    app.services_table.select(Some(2));
+    assert_eq!(
+        app.selected_row(),
+        Some(("shop".into(), "db".into(), "mysql".into()))
+    );
+    app
+}
+
+/// The options a picker field is actually offering.
+fn f_opts(f: &Form, label: &str) -> Vec<String> {
+    match &f
+        .fields
+        .iter()
+        .find(|x| x.label == label)
+        .unwrap_or_else(|| panic!("missing form field {label}"))
+        .kind
+    {
+        FieldKind::Choice(o) => o.clone(),
+        FieldKind::Multi(Some(o)) => o.clone(),
+        _ => panic!("{label} is not offering options"),
+    }
+}
+
+fn screen_rows(app: &mut App, w: u16, h: u16) -> Vec<String> {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| super::render::ui(f, app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// A copy LOADS INTO an existing service, so both target fields are pickers of
+/// what exists on this host — and only of what a copy can actually land in. A
+/// typed name could only ever be answered by the plan's refusal, minutes later.
+#[test]
+fn the_copy_forms_target_pickers_offer_only_what_a_copy_can_land_in() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = copy_app_two_projects();
+    app.open_copy_db_form(&tx);
+    let form = app.form.as_ref().expect("form opened");
+    // `web` holds only an app: nowhere for a database to land, so it is not
+    // offered at all.
+    assert_eq!(f_opts(form, "Target project"), vec!["shop", "staging"]);
+    // Within the source's own project, the redis service is excluded by the same
+    // `dump::can_dump` gate the source passed.
+    assert_eq!(f_opts(form, "Target service"), vec!["db"]);
+
+    // Another host has NOT been contacted, so its inventory is unknown here: the
+    // fields fall back to typed, which is what the migrate form already does.
+    let form = app.form.as_mut().unwrap();
+    set_f_val(form, "To server", "there");
+    app.sync_copy_db_targets();
+    let form = app.form.as_ref().unwrap();
+    for label in ["Target project", "Target service"] {
+        let f = form.fields.iter().find(|f| f.label == label).unwrap();
+        assert!(
+            matches!(f.kind, FieldKind::Text),
+            "{label} must be typed for an uncontacted host"
+        );
+    }
+}
+
+/// Space is what changes a picker's value — and picking a project must re-fill
+/// the services under it rather than keeping the previous project's service,
+/// which does not exist there.
+#[test]
+fn space_changes_a_picker_value_and_refills_what_depends_on_it() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = copy_app_two_projects();
+    app.open_copy_db_form(&tx);
+    app.form_key(KeyCode::Tab, &tx); // To server -> Target project
+    assert_eq!(f_val(app.form.as_ref().unwrap(), "Target project"), "shop");
+
+    app.form_key(KeyCode::Char(' '), &tx);
+    assert!(app.chooser.is_some(), "Space opens the dropdown");
+    for c in "stag".chars() {
+        app.chooser_key(KeyCode::Char(c), &tx);
+    }
+    app.chooser_key(KeyCode::Enter, &tx);
+
+    let form = app.form.as_ref().unwrap();
+    assert_eq!(f_val(form, "Target project"), "staging");
+    assert_eq!(f_opts(form, "Target service"), vec!["db-restore"]);
+    assert_eq!(
+        f_val(form, "Target service"),
+        "db-restore",
+        "the previous project's service must not be carried over"
+    );
+}
+
+/// Help that lies is worse than no help: `[Space]` is advertised only while the
+/// focused field answers it.
+#[test]
+fn the_form_footer_only_offers_space_where_it_does_something() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = copy_app_two_projects();
+    app.open_copy_db_form(&tx);
+    let rows = screen_rows(&mut app, 100, 24);
+    let footer = |rows: &[String]| {
+        rows.iter()
+            .find(|r| r.contains("[Enter] save"))
+            .cloned()
+            .expect("the form footer is on screen")
+    };
+    assert!(
+        footer(&rows).contains("[Space] choose"),
+        "a Choice field has a chooser: {:?}",
+        footer(&rows)
+    );
+
+    // Point the copy at another host, which makes the target fields typed, and
+    // focus one of them.
+    let form = app.form.as_mut().unwrap();
+    set_f_val(form, "To server", "there");
+    app.sync_copy_db_targets();
+    app.form_key(KeyCode::Tab, &tx);
+    let rows = screen_rows(&mut app, 100, 24);
+    assert!(
+        !footer(&rows).contains("[Space]"),
+        "Space types a space in a text field, so it must not be advertised: {:?}",
+        footer(&rows)
+    );
+}
+
+/// The pre-flight is a table of label→value rows, and the dialog centres its
+/// body — which used to centre every row on its own, leaving the values ragged.
+/// The rows must share a left edge and one value column, and the storage endpoint
+/// must be elided rather than hard-broken through the middle of a hostname.
+#[test]
+fn the_copy_pre_flight_stays_a_table_with_an_unbroken_endpoint() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = copy_app();
+    let plan = crate::commands::CopyPlan {
+        stype: "mysql".into(),
+        databases: vec!["vidingco_studio".into()],
+        bucket: "viding-db".into(),
+        endpoint: "https://429cfd3cea272f5187a8d098e46cf652.r2.cloudflarestorage.com".into(),
+        src_provider: "Cloudflare Viding DB".into(),
+        dst_provider: "Cloudflare Viding DB".into(),
+        src_image: "mysql:8.0".into(),
+        dst_image: "mysql:8.4".into(),
+    };
+    app.handle(
+        Resp::CopyDbPlan {
+            target_name: "viding-idc".into(),
+            target_project: "viding-org-db".into(),
+            target_service: "mysql".into(),
+            project: "viding-co-db".into(),
+            service: "mysql".into(),
+            databases: vec!["vidingco_studio".into()],
+            lines: copy_plan_lines(&plan),
+        },
+        &tx,
+    );
+    let rows = screen_rows(&mut app, 80, 30);
+    let labels = [
+        "engine",
+        "databases",
+        "source image",
+        "target image",
+        "via storage",
+        "source store",
+        "target store",
+    ];
+    let at = |needle: &str| -> (usize, String) {
+        let row = rows
+            .iter()
+            .find(|r| r.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} is not on screen"))
+            .clone();
+        (row.find(needle).unwrap(), row)
+    };
+    let (left, _) = at(labels[0]);
+    for label in labels {
+        let (col, row) = at(label);
+        assert_eq!(
+            col, left,
+            "'{label}' must share the block's left edge: {row:?}"
+        );
+    }
+    // One value column: every value starts at the same offset from the label.
+    let value_col = |row: &str, label: &str| {
+        let after = row.find(label).unwrap() + label.len();
+        after + row[after..].find(|c: char| c != ' ').unwrap()
+    };
+    let expected = value_col(&at("engine").1, "engine");
+    for label in labels {
+        let (_, row) = at(label);
+        assert_eq!(
+            value_col(&row, label),
+            expected,
+            "'{label}' value must line up with the others: {row:?}"
+        );
+    }
+
+    // The endpoint is on ONE row, elided — not hard-broken mid-token, which is
+    // what a 60-character R2 hostname used to do ("…cloudflarestor"/"age.com/…").
+    let carrying: Vec<&String> = rows.iter().filter(|r| r.contains("429cfd3c")).collect();
+    assert_eq!(
+        carrying.len(),
+        1,
+        "the endpoint must not be split: {carrying:?}"
+    );
+    let storage = at("via storage").1;
+    assert!(
+        storage.contains('…'),
+        "an endpoint too long for the dialog is elided: {storage:?}"
+    );
+    assert!(
+        storage.contains("viding-db"),
+        "the bucket survives the elision — it is what identifies the storage: {storage:?}"
+    );
+    // Both panels' own names for that storage are still there: the whole point of
+    // the line is telling that both ends point at the same bucket.
+    assert!(rows
+        .iter()
+        .any(|r| r.contains("source store  'Cloudflare Viding DB'")));
+    assert!(rows
+        .iter()
+        .any(|r| r.contains("target store  'Cloudflare Viding DB'")));
+}
+
+/// Ticking replaces typing: the operator picks from the source's own databases,
+/// and exactly those reach the request.
+#[test]
+fn ticked_databases_are_the_ones_copied_and_ticking_none_copies_all() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = copy_app();
+    app.open_copy_db_form(&tx);
+    app.handle(
+        Resp::DatabasesIn {
+            project: "shop".into(),
+            service: "db".into(),
+            names: vec!["studio".into(), "billing".into(), "logs".into()],
+        },
+        &tx,
+    );
+    let form = app.form.as_ref().expect("the form is still open");
+    assert_eq!(
+        f_opts(form, "Databases (blank = all)"),
+        ["studio", "billing", "logs"]
+    );
+    assert!(
+        app.backups.names.is_empty(),
+        "the listing went to the form, not the backup picker"
+    );
+
+    // Focus Databases, open the ticking list, tick the first and the third.
+    for _ in 0..3 {
+        app.form_key(KeyCode::Tab, &tx);
+    }
+    app.form_key(KeyCode::Char(' '), &tx);
+    app.chooser_key(KeyCode::Char(' '), &tx);
+    app.chooser_key(KeyCode::Down, &tx);
+    app.chooser_key(KeyCode::Down, &tx);
+    app.chooser_key(KeyCode::Char(' '), &tx);
+    app.chooser_key(KeyCode::Enter, &tx);
+    assert!(app.chooser.is_none(), "Enter closes the list");
+
+    let form = app.form.as_mut().unwrap();
+    set_f_val(form, "Target service", "db-restore");
+    app.submit_form(&tx);
+    let req = app.copy_db_req.as_ref().expect("a copy was requested");
+    assert_eq!(
+        req.databases,
+        vec!["studio", "logs"],
+        "only the ticked databases are copied"
+    );
+
+    // A fresh form with nothing ticked: that still means EVERY non-system
+    // database, which the event loop turns into `all: true`.
+    app.copy_db_req = None;
+    app.open_copy_db_form(&tx);
+    app.handle(
+        Resp::DatabasesIn {
+            project: "shop".into(),
+            service: "db".into(),
+            names: vec!["studio".into(), "billing".into(), "logs".into()],
+        },
+        &tx,
+    );
+    // Open the list, tick and untick the same name, and take the empty selection.
+    for _ in 0..3 {
+        app.form_key(KeyCode::Tab, &tx);
+    }
+    app.form_key(KeyCode::Char(' '), &tx);
+    app.chooser_key(KeyCode::Char(' '), &tx);
+    app.chooser_key(KeyCode::Char(' '), &tx);
+    app.chooser_key(KeyCode::Enter, &tx);
+    let form = app.form.as_mut().unwrap();
+    assert_eq!(
+        f_val(form, "Databases (blank = all)"),
+        "",
+        "unticking leaves nothing selected"
+    );
+    set_f_val(form, "Target service", "db-restore");
+    app.submit_form(&tx);
+    let req = app.copy_db_req.as_ref().expect("a copy was requested");
+    assert!(
+        req.databases.is_empty(),
+        "ticking nothing is the form's spelling of --all: {:?}",
+        req.databases
+    );
+}
+
+/// A list that has not arrived is not a service with no databases — and a list
+/// that cannot be read leaves the operator able to type the names.
+#[test]
+fn a_database_list_still_loading_never_reads_as_none() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = copy_app();
+    app.open_copy_db_form(&tx);
+    assert!(
+        matches!(rx.try_recv(), Ok(Req::DatabasesIn { ref project, ref service, .. })
+            if project == "shop" && service == "db"),
+        "the source's databases are asked for through the existing request"
+    );
+    let rows = screen_rows(&mut app, 100, 24);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("reading the source's databases")),
+        "the field says it is loading: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|r| r.contains("no databases")),
+        "a pending list must never be reported as none: {rows:?}"
+    );
+    // And it offers no key it cannot answer.
+    for _ in 0..3 {
+        app.form_key(KeyCode::Tab, &tx);
+    }
+    app.form_key(KeyCode::Char(' '), &tx);
+    assert!(app.chooser.is_none(), "there is nothing to tick yet");
+    assert!(app.status.contains("Still reading"), "{}", app.status);
+
+    // The engine cannot be enumerated: fall back to typing, with the way out said.
+    app.handle(Resp::Err("connection refused".into()), &tx);
+    let f = app
+        .form
+        .as_ref()
+        .unwrap()
+        .fields
+        .iter()
+        .find(|f| f.label == "Databases (blank = all)")
+        .unwrap();
+    assert!(
+        matches!(f.kind, FieldKind::Text),
+        "an unreadable list leaves a typed field, not a dead picker"
+    );
+    assert!(app.status.contains("type them"), "{}", app.status);
 }

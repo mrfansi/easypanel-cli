@@ -3299,7 +3299,15 @@ impl App {
                 project,
                 service,
                 names,
-            } => self.open_backup_picker(project, service, names),
+            } => {
+                // Two flows ask this one question. The copy form asked for the
+                // list to TICK; the backup flow asked in order to open its picker.
+                // Whoever is waiting gets it — the form is modal, so only one can
+                // be.
+                if !self.fill_copy_db_names(&project, &service, &names) {
+                    self.open_backup_picker(project, service, names);
+                }
+            }
             Resp::R2Dumps {
                 project,
                 service,
@@ -3681,7 +3689,14 @@ impl App {
                 self.status = msg;
                 self.apply_refresh(what, req);
             }
-            Resp::Err(e) => self.status = format!("Error: {e}"),
+            Resp::Err(e) => {
+                self.status = format!("Error: {e}");
+                // A list that failed must stop claiming to be loading. The copy
+                // form's database picker falls back to a typed field — the same
+                // answer the Branch dropdown gives when its list cannot load —
+                // so a source whose engine will not answer is still copyable.
+                self.copy_db_names_unavailable(short_reason(&e));
+            }
             Resp::Cf(cf) => self.handle_cf_resp(cf, req),
         }
     }
@@ -5117,7 +5132,7 @@ impl App {
     /// copy into another project is the common case, and it must not require
     /// picking anything unusual. A migration excludes it (copying a config onto
     /// its own host under the same name is a no-op); a copy does not.
-    pub(super) fn open_copy_db_form(&mut self) {
+    pub(super) fn open_copy_db_form(&mut self, req: &Sender<Req>) {
         let Some((project, service, stype)) = self.selected_row() else {
             self.status = "Select a database first".into();
             return;
@@ -5138,23 +5153,186 @@ impl App {
                 .map(|(n, _)| n.clone())
                 .filter(|n| *n != self.server_name),
         );
+        // On THIS host the target is not a guess: `all_services` was fetched from
+        // this very panel, so both target fields are REAL pickers, filtered to the
+        // engines a copy can load into (`dump::can_dump` — the same gate the source
+        // passed above). A copy loads into an EXISTING service, so offering what
+        // exists is not a convenience: a typed name could only be answered by the
+        // plan's own refusal, minutes later.
+        //
+        // Another host has never been contacted, so its projects and services are
+        // unknown here — those stay free text, exactly as the migrate form's target
+        // project does. `sync_copy_db_targets` swaps the two fields over when the
+        // chosen host changes.
         let fields = vec![
             Field::choice_owned("To server", hosts, &self.server_name),
-            // Free text for both, not dropdowns: the target may be on a host that
-            // has not been contacted yet, so neither its projects nor its services
-            // are known here. Same reasoning as the migrate form's target project.
-            Field::text("Target project", &project),
-            Field::text("Target service", &service),
-            // Blank = every non-system database, the form's spelling of `--all`.
-            Field::text("Databases (blank = all)", ""),
+            Field::choice_owned("Target project", self.copy_target_projects(), &project),
+            Field::choice_owned(
+                "Target service",
+                self.copy_target_services(&project),
+                &service,
+            ),
+            // Ticked from the source service's OWN list, which is on its way here
+            // through the same `Req::DatabasesIn` the backup picker uses — the
+            // operator used to have to type every schema name, comma-separated,
+            // exactly right. Nothing ticked still means every non-system database
+            // (`all: true` in the event loop), which is why the field SAYS so
+            // instead of leaving an empty box to be remembered.
+            Field::multi("Databases (blank = all)", "all of them"),
         ];
         self.form = Some(
             Form::new(
-                FormKind::CopyDatabase { project, service },
+                FormKind::CopyDatabase {
+                    project: project.clone(),
+                    service: service.clone(),
+                },
                 " Copy databases into another service ",
                 fields,
             )
             .with_note("the target's copies of these databases are OVERWRITTEN".to_string()),
+        );
+        // Asked for AFTER the form is on screen: the listing runs inside the
+        // container, which is not something to hold an empty screen for. Until it
+        // lands the field says it is loading; `Resp::DatabasesIn` fills it in.
+        let _ = req.send(Req::DatabasesIn {
+            project,
+            service,
+            stype,
+        });
+    }
+
+    /// Projects on THIS host that hold at least one service a copy can load into.
+    ///
+    /// Filtered by the same `dump::can_dump` gate the source passed: a project
+    /// whose only services are redis and an app has nowhere for a database to
+    /// land, and offering it would lead to a picker with no services in it.
+    pub(super) fn copy_target_projects(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .all_services
+            .iter()
+            .filter(|s| crate::dump::can_dump(&field(s, "/type")))
+            .map(|s| field(s, "/projectName"))
+            .collect();
+        // `all_services` arrives sorted by (project, name), but it is also written
+        // directly (tests, a partial refresh), so this does not lean on that.
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Services in `project` on THIS host a copy can load into.
+    pub(super) fn copy_target_services(&self, project: &str) -> Vec<String> {
+        self.all_services
+            .iter()
+            .filter(|s| {
+                field(s, "/projectName") == project && crate::dump::can_dump(&field(s, "/type"))
+            })
+            .map(|s| field(s, "/name"))
+            .collect()
+    }
+
+    /// Re-fit the copy form's two target fields to the host that is now chosen.
+    ///
+    /// Only THIS host's inventory is known locally, so the same-host case gets
+    /// pickers and any other host gets typed fields. Called from `apply_chooser`
+    /// after "To server" or "Target project" changes; a no-op on every other form,
+    /// since "To server" is the migrate form's label too.
+    pub(super) fn sync_copy_db_targets(&mut self) {
+        let Some(form) = self.form.as_ref() else {
+            return;
+        };
+        if !matches!(form.kind, FormKind::CopyDatabase { .. }) {
+            return;
+        }
+        let same_host = form.by_label("To server") == self.server_name;
+        let project = form.by_label("Target project");
+        let (projects, services) = if same_host {
+            (
+                self.copy_target_projects(),
+                self.copy_target_services(&project),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        for (label, options) in [("Target project", projects), ("Target service", services)] {
+            if let Some(f) = form.fields.iter_mut().find(|f| f.label == label) {
+                if same_host {
+                    f.set_options(options);
+                } else {
+                    // An uncontacted host's inventory is genuinely unknown: the
+                    // field says so by being TYPED, which is the answer the migrate
+                    // form already gives — and with it focused the footer stops
+                    // advertising a chooser that does not exist.
+                    f.kind = FieldKind::Text;
+                }
+            }
+        }
+    }
+
+    /// Put the source service's own databases into the copy form's picker.
+    ///
+    /// Returns false when this listing was not the one the copy form asked for,
+    /// so the caller can hand it to the backup picker instead — both flows go
+    /// through the same `Req::DatabasesIn`, and there is no second fetch.
+    fn fill_copy_db_names(&mut self, project: &str, service: &str, names: &[String]) -> bool {
+        let waiting = self.form.as_ref().is_some_and(|form| {
+            matches!(&form.kind, FormKind::CopyDatabase { project: p, service: s }
+                if p == project && s == service)
+                && form
+                    .fields
+                    .iter()
+                    .any(|f| matches!(f.kind, FieldKind::Multi(_)))
+        });
+        if !waiting {
+            return false;
+        }
+        // An engine that answers nothing is not a service with no databases — the
+        // worker already falls back to the one name the panel knows, so empty
+        // means the listing genuinely could not be read.
+        if names.is_empty() {
+            self.copy_db_names_unavailable("the engine listed none");
+            return true;
+        }
+        if let Some(form) = self.form.as_mut() {
+            if let Some(f) = form
+                .fields
+                .iter_mut()
+                .find(|f| matches!(f.kind, FieldKind::Multi(_)))
+            {
+                f.set_multi_options(names.to_vec());
+            }
+        }
+        self.status = format!(
+            "{} database(s) in the source — [Space] on Databases to tick the ones to copy",
+            names.len()
+        );
+        true
+    }
+
+    /// The source's database list is not coming: let the operator TYPE the names.
+    ///
+    /// A no-op unless a copy form is open with its picker still waiting, so an
+    /// unrelated error cannot rewrite a field the operator has already used.
+    fn copy_db_names_unavailable(&mut self, reason: &str) {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        if !matches!(form.kind, FormKind::CopyDatabase { .. }) {
+            return;
+        }
+        let Some(f) = form
+            .fields
+            .iter_mut()
+            .find(|f| matches!(f.kind, FieldKind::Multi(None)))
+        else {
+            return;
+        };
+        f.kind = FieldKind::Text;
+        self.status = format!(
+            "Couldn't read the source's databases ({reason}) — type them comma-separated, or leave it blank for all"
         );
     }
 
@@ -5698,18 +5876,35 @@ impl App {
         }
     }
 
-    /// Open the dropdown for the currently focused Choice field.
+    /// Open the dropdown for the currently focused Choice or Multi field.
     pub(super) fn open_chooser(&mut self) {
         let Some(form) = self.form.as_ref() else {
             return;
         };
         let f = &form.fields[form.focus];
-        if let FieldKind::Choice(opts) = &f.kind {
-            if opts.is_empty() {
-                self.status = format!("{} has no options yet", f.label);
-                return;
+        match &f.kind {
+            FieldKind::Choice(opts) => {
+                if opts.is_empty() {
+                    self.status = format!("{} has no options yet", f.label);
+                    return;
+                }
+                self.chooser = Some(Chooser::new(form.focus, f.label, opts.clone(), &f.value));
             }
-            self.chooser = Some(Chooser::new(form.focus, f.label, opts.clone(), &f.value));
+            // A list still in flight is NOT an empty list: saying so is the whole
+            // point of `Multi(None)`, and opening a blank box would claim the
+            // service holds nothing.
+            FieldKind::Multi(None) => {
+                self.status = format!("Still reading {} from the source service…", f.label);
+            }
+            FieldKind::Multi(Some(opts)) => {
+                self.chooser = Some(Chooser::multi(
+                    form.focus,
+                    f.label,
+                    opts.clone(),
+                    &f.ticked(),
+                ));
+            }
+            _ => {}
         }
     }
 

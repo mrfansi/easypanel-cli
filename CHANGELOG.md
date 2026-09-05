@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The copy-databases form picks its target and its databases instead of asking
+  you to type them.** Every field on it used to be free text: the target project,
+  the target service, and a comma-separated list of schema names typed exactly
+  right — while the footer advertised `[Space] choose`, a key that did nothing on
+  any of them. On **this** host both targets are now real pickers built from the
+  service list already loaded, filtered by the same `dump::can_dump` gate the
+  source passed, so a project holding nothing a copy can land in is not offered at
+  all and picking a project re-fills the services under it. The databases are
+  **ticked** from the source service's own list — fetched through the very
+  `Req::DatabasesIn` the backup picker uses, so there is no second fetch — with
+  `Space` on a row and `Enter` to take them, the same tick-a-set interaction the
+  backup picker has. Ticking nothing still copies **every** non-system database,
+  and the field now SAYS "all of them" rather than leaving that rule to be
+  remembered. Nothing about the copy itself changed: same-host default, plan then
+  typed confirmation, same refusals.
+
+### Fixed
+
+- **A form no longer advertises a key that does nothing.** The form footer said
+  `[Space] choose` on every form regardless of what was focused, so it lied on
+  most of them: `Space` types a space in a text field, toggles a Bool, opens
+  `$EDITOR` on an editor field, and only opens a chooser on a picker. The hint is
+  now derived from the focused field's kind — `toggle` / `choose` / `tick` /
+  `edit`, and nothing at all where the key is inert. Fixed once, for every form.
+
+- **The copy pre-flight reads as a table again, and its storage endpoint is no
+  longer broken mid-word.** The confirmation centres its body, which is right for
+  a question and wrong for the `engine / databases / source image / target image`
+  rows: each was centred on its own, so no two values shared a column at the exact
+  moment you are comparing two image tags. Indented rows (the same indent `db
+  copy` prints) are now left-aligned as one block, centred as a whole, and elided
+  to the dialog's width instead of wrapped — a 60-character opaque R2 hostname
+  used to be hard-split across two lines (`…cloudflarestor` / `age.com/…`), which
+  read as a corrupted dialog. Storage takes three rows instead of one long one:
+  the bucket first (so an elision eats the generic
+  `.r2.cloudflarestorage.com` tail, never the account that identifies it), then
+  each panel's own name for that storage, mirroring the source/target image pair.
+  Nothing was dropped, and both ends can still be seen to point at the same
+  bucket. The dialog is also sized from the body it actually built, so on a 24-row
+  terminal `[Esc] Cancel` no longer falls off the bottom.
+
 ## [0.98.13] — 2026-09-06
 
 ### Added

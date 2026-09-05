@@ -382,7 +382,9 @@ impl App {
                 form.clamp_focus();
             }
             FieldKind::Editor => self.edit_field = Some(idx),
-            FieldKind::Choice(_) => self.open_chooser(),
+            // A click opens the same list Space does — Multi included, so the
+            // mouse can reach the ticking list as well.
+            FieldKind::Choice(_) | FieldKind::Multi(_) => self.open_chooser(),
             _ => {}
         }
     }
@@ -408,7 +410,14 @@ impl App {
                 let i = ch.state.selected().unwrap_or(0);
                 ch.state.select(Some((i + 1).min(last)));
             }
+            // A click on a row TICKS it in a ticking list (the mouse mirror of
+            // Space) and stays open, so several can be picked without reopening
+            // the box for each one; Enter is what finishes.
             MouseEventKind::Down(_) => match ch.item_at(m.column, m.row) {
+                Some(i) if ch.multi => {
+                    ch.state.select(Some(i));
+                    ch.toggle(i);
+                }
                 Some(i) => {
                     ch.state.select(Some(i));
                     self.apply_chooser(req);
@@ -424,6 +433,18 @@ impl App {
         let Some(ch) = self.chooser.as_ref() else {
             return;
         };
+        if ch.multi {
+            // Nothing ticked is a REAL answer in a ticking list ("all of them"),
+            // not a failed pick — so, unlike the single-choice path below, an
+            // empty selection is stored rather than refused.
+            let (idx, ticked) = (ch.field, ch.ticked());
+            self.chooser = None;
+            if let Some(form) = self.form.as_mut() {
+                form.fields[idx].set_ticked(&ticked);
+                form.clamp_focus();
+            }
+            return;
+        }
         // Nothing matched, so there is nothing to apply. Closing anyway looked
         // EXACTLY like a successful pick: the dropdown vanished, the field kept
         // its old value, and nothing was said — so a typo left the user believing
@@ -444,6 +465,22 @@ impl App {
                         f.value.clear();
                     }
                     self.load_form_branches(req);
+                }
+                // The copy form's target host decides whether its project/service
+                // fields can be pickers at all (only THIS host's services are
+                // known locally), and its target project decides which services
+                // are offered. A no-op on the migrate form, which shares the
+                // "To server" label.
+                "To server" => self.sync_copy_db_targets(),
+                "Target project" => {
+                    // Clear the service first, exactly as picking a Repo clears its
+                    // Branch: `set_options` KEEPS a current value that is absent
+                    // from the new list, which here would go on offering a service
+                    // the newly chosen project does not have.
+                    if let Some(f) = form.fields.iter_mut().find(|f| f.label == "Target service") {
+                        f.value.clear();
+                    }
+                    self.sync_copy_db_targets();
                 }
                 _ => {}
             }
@@ -937,6 +974,15 @@ impl App {
             KeyCode::Backspace => {
                 ch.filter.pop();
                 ch.clamp();
+            }
+            // In a ticking list Space is the TICK, the same key that marks a row
+            // everywhere else in this TUI — so it is taken before the filter gets
+            // it. A name containing a space is still reachable by typing any other
+            // part of it.
+            KeyCode::Char(' ') if ch.multi => {
+                if let Some(i) = ch.state.selected() {
+                    ch.toggle(i);
+                }
             }
             KeyCode::Char(c) => {
                 ch.filter.push(c);

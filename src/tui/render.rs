@@ -4250,6 +4250,10 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
         let hint = match (focused, &field.kind) {
             (true, FieldKind::Bool) => "  ⌄ Space to toggle",
             (true, FieldKind::Choice(_)) => "  ⌄ Space to choose",
+            (true, FieldKind::Multi(Some(_))) => "  ⌄ Space to tick",
+            // No key is offered for a list that has not arrived: the field's own
+            // value already says it is being read.
+            (true, FieldKind::Multi(None)) => "",
             (true, FieldKind::Editor) => "  ⌄ Space to open in $EDITOR",
             _ => "",
         };
@@ -4295,15 +4299,33 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
         ("save", "cancel")
     };
     let slot = slots[visible.len()];
-    let footer = fit_hints(
-        &[
-            format!("[Enter] {enter}"),
-            format!("[Esc] {esc}"),
-            "[Tab] move field".into(),
-            "[Space] choose".into(),
-        ],
-        slot.width,
-    );
+    // `[Space] …` is advertised ONLY when the focused field actually answers it.
+    // The footer used to say "[Space] choose" on every form, which is a lie on
+    // three quarters of them: Space types a space in a Text/Secret field, toggles
+    // a Bool, and opens $EDITOR on an Editor field. The "Copy databases" form was
+    // where it showed worst — every target field was free text, so the one key the
+    // footer named did nothing at all. Derived from the focused field's kind, so
+    // it cannot drift from what `form_key` does with the key.
+    let space = match visible
+        .contains(&form.focus)
+        .then(|| &form.fields[form.focus].kind)
+    {
+        // Kept SHORT on purpose: `fit_hints` drops a hint that does not fit, and
+        // at 60 columns "[Space] open $EDITOR" was the one that fell off — so the
+        // key with no other advertisement would be the one dropped.
+        Some(FieldKind::Bool) => Some("[Space] toggle"),
+        Some(FieldKind::Choice(_)) => Some("[Space] choose"),
+        Some(FieldKind::Multi(Some(_))) => Some("[Space] tick"),
+        Some(FieldKind::Editor) => Some("[Space] edit"),
+        _ => None,
+    };
+    let mut hints = vec![
+        format!("[Enter] {enter}"),
+        format!("[Esc] {esc}"),
+        "[Tab] move field".into(),
+    ];
+    hints.extend(space.map(str::to_string));
+    let footer = fit_hints(&hints, slot.width);
     f.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
         slot,
@@ -4331,20 +4353,77 @@ pub(super) fn render_chooser(f: &mut Frame, ch: &mut Chooser) {
             "  nothing matches — Backspace to widen",
             Style::default().fg(Color::Indexed(210)),
         )))]
+    } else if ch.multi {
+        // The tick sits INSIDE the row, exactly as the backup picker draws it, so
+        // ticking one name does not shift every other one sideways.
+        items
+            .into_iter()
+            .map(|o| {
+                let tick = if ch.marked.contains(&o) { "✓ " } else { "  " };
+                ListItem::new(format!("{tick}{o}"))
+            })
+            .collect()
     } else {
         items.into_iter().map(ListItem::new).collect()
+    };
+    // What Enter does depends on how many are ticked, so it SAYS which — "blank
+    // means all of them" is a rule the operator would otherwise have to remember
+    // while looking at a list of names.
+    let keys = match (ch.multi, ch.marked.len()) {
+        (false, _) => " Enter select · Esc cancel ".to_string(),
+        (true, 0) => " Space tick · Enter: all of them · Esc cancel ".to_string(),
+        (true, n) => format!(" Space tick · Enter: the {n} ticked · Esc cancel "),
     };
     let list = List::new(rows)
         .block(
             Block::bordered()
                 .title(title)
                 // The keys were nowhere on this widget before.
-                .title_bottom(" Enter select · Esc cancel ")
+                .title_bottom(keys)
                 .border_style(Style::default().fg(Color::Cyan)),
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("› ");
     f.render_stateful_widget(list, area, &mut ch.state);
+}
+
+/// The lines of a confirmation's label, with an INDENTED BLOCK kept as a block.
+///
+/// The dialog centres its body, which is right for a question and wrong for a
+/// table: a copy's pre-flight is label→value rows (`engine`, `databases`, `source
+/// image`, …), and centring each row on its own made every value start in a
+/// different column — the block stopped reading as a table at exactly the moment
+/// the operator is comparing two image tags.
+///
+/// So a label line that begins with whitespace — the indent `db copy` prints the
+/// same rows with — is left-aligned, and the whole block is offset by one padding
+/// so it still sits centred inside the dialog. Prose lines are left to the
+/// paragraph's own centring.
+///
+/// Block rows are ELIDED to the width, never wrapped: a 60-character opaque R2
+/// endpoint used to be hard-broken mid-token across two rows
+/// ("…cloudflarestor" / "age.com/…"), which reads as a corrupted dialog. The
+/// ellipsis is `first_line`'s, the same one the tables use per column.
+fn label_body(label: &str, inner: usize) -> Vec<Line<'static>> {
+    let is_block = |l: &&str| l.starts_with(' ') || l.starts_with('\t');
+    let block_width = label
+        .lines()
+        .filter(is_block)
+        .map(|l| crate::output::first_line(l, inner).chars().count())
+        .max()
+        .unwrap_or(0);
+    let pad = " ".repeat(inner.saturating_sub(block_width) / 2);
+    label
+        .lines()
+        .map(|l| {
+            if is_block(&l) {
+                Line::from(format!("{pad}{}", crate::output::first_line(l, inner)))
+                    .alignment(Alignment::Left)
+            } else {
+                Line::from(l.to_string())
+            }
+        })
+        .collect()
 }
 
 pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_account: Option<&str>) {
@@ -4356,27 +4435,6 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
     let full = f.area();
     let w = 60.min(full.width.saturating_sub(4)).max(24);
     let inner = w.saturating_sub(2).max(1) as usize;
-    // Word wrapping can break earlier than a hard division, so round up and add a
-    // line: a dialog one row too tall is harmless, one row too short hides the keys.
-    //
-    // Counted PER LINE of the label, because a label may carry its own newlines (a
-    // copy shows its whole pre-flight here). Summing the whole string's length
-    // instead under-counts a short line and the keys fall out of the bottom.
-    let label_lines = c
-        .label
-        .lines()
-        .map(|l| (l.chars().count().div_ceil(inner)).max(1) as u16)
-        .sum::<u16>()
-        + 1;
-    // blank + label + blank + server + target + blank + keys, plus the borders.
-    let typed_extra = u16::from(c.stype.starts_with("expect:")) * 2;
-    let h = (label_lines + 8 + typed_extra).min(full.height);
-    // COLUMNS, like `w` and `inner` above. As a percentage the box came out
-    // narrower than the width the wrap was calculated with, so the label ran to
-    // more lines than the height allowed for and the line naming the keys could
-    // fall out of the bottom — on the dialog for irreversible actions.
-    let area = centered_abs_w(w, h, full);
-    f.render_widget(Clear, area);
     // A Cloudflare confirm (its action is `cf-*`) is NOT an EasyPanel host operation:
     // "on {server}" names the wrong machine, and the host/service target semantics below
     // are meaningless — a DNS record delete touches no EasyPanel host at all, yet the
@@ -4386,7 +4444,9 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
     // act within it — skipped for account-delete, whose target account is named in the
     // label and may not be the active one — plus a scope line that is actually true.
     let lines = if c.action.starts_with("cf-") {
-        let mut v = vec![Line::from(""), Line::from(c.label.clone()), Line::from("")];
+        let mut v = vec![Line::from("")];
+        v.extend(label_body(&c.label, inner));
+        v.push(Line::from(""));
         if c.action != "cf-account-delete" {
             if let Some(acc) = cf_account {
                 v.push(Line::from(Span::styled(
@@ -4435,10 +4495,11 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
         // line, in that server's colour, above the target it applies to.
         let tint = server_colour(server);
         let mut v = vec![Line::from("")];
-        // One `Line` per line of the label. `Line::from` a string containing
-        // newlines does NOT break it — the rows run together into one unreadable
-        // smear, which is what a multi-line pre-flight used to render as.
-        v.extend(c.label.lines().map(|l| Line::from(l.to_string())));
+        // One `Line` per line of the label, with its aligned block kept aligned —
+        // see `label_body`. `Line::from` a string containing newlines does NOT
+        // break it: the rows run together into one unreadable smear, which is what
+        // a multi-line pre-flight used to render as.
+        v.extend(label_body(&c.label, inner));
         v.push(Line::from(""));
         // A copy WRITES TO ANOTHER HOST, so "on {server}" — which names the host
         // this session is connected to — would name the wrong machine on the one
@@ -4463,6 +4524,20 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
         }
         v
     };
+    // Sized from the body that was just built, rather than from a re-count of the
+    // label: the aligned block is elided to the width instead of wrapped, so a
+    // second guess at how many rows it takes could only be wrong. A row is one
+    // line, plus however many extra rows the wrap gives a line that overflows.
+    let rows: u16 = lines
+        .iter()
+        .map(|l| (l.width().div_ceil(inner)).max(1) as u16)
+        .sum();
+    // COLUMNS, like `w` and `inner` above. As a percentage the box came out
+    // narrower than the width the wrap was calculated with, so the label ran to
+    // more lines than the height allowed for and the line naming the keys could
+    // fall out of the bottom — on the dialog for irreversible actions.
+    let area = centered_abs_w(w, (rows + 2).min(full.height), full);
+    f.render_widget(Clear, area);
     let body = Paragraph::new(lines);
     f.render_widget(
         body.alignment(Alignment::Center)

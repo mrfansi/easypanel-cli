@@ -861,6 +861,13 @@ pub(super) enum FieldKind {
     /// A choice from real data (project/service/protocol), cycled with space/←/→.
     /// Dynamic so its contents can come from the API, not be typed by hand.
     Choice(Vec<String>),
+    /// SEVERAL values from real data, ticked in the same dropdown a Choice opens.
+    ///
+    /// `None` means the list has been ASKED FOR and has not arrived yet. That is
+    /// not the same as an empty list, and the difference matters: an empty
+    /// dropdown reads as "this service holds no databases", which is a far more
+    /// alarming answer than "not back from the panel yet".
+    Multi(Option<Vec<String>>),
     /// Multi-line content edited in $EDITOR, like env.
     ///
     /// A Dockerfile never fits in a single-line field; forcing it into
@@ -890,6 +897,9 @@ pub(super) struct Field {
     /// a step > 0, that form becomes a staged wizard. Submit values are still read
     /// from ALL steps at once.
     pub(super) step: u8,
+    /// For a `Multi` field, what ticking NOTHING actually does ("all of them").
+    /// Empty on every other kind, which has no such meaning.
+    pub(super) blank_means: &'static str,
 }
 
 impl Field {
@@ -901,6 +911,7 @@ impl Field {
             kind: FieldKind::Editor,
             only_for: Vec::new(),
             step: 0,
+            blank_means: "",
         }
     }
     pub(super) fn text(label: &'static str, value: &str) -> Self {
@@ -910,6 +921,7 @@ impl Field {
             kind: FieldKind::Text,
             only_for: Vec::new(),
             step: 0,
+            blank_means: "",
         }
     }
     /// Show this field only when the `switch` field holds one of `tags` (comma
@@ -936,6 +948,7 @@ impl Field {
             kind: FieldKind::Secret,
             only_for: Vec::new(),
             step: 0,
+            blank_means: "",
         }
     }
     pub(super) fn boolean(label: &'static str, on: bool) -> Self {
@@ -945,6 +958,7 @@ impl Field {
             kind: FieldKind::Bool,
             only_for: Vec::new(),
             step: 0,
+            blank_means: "",
         }
     }
     pub(super) fn choice(label: &'static str, options: &[&str], value: &str) -> Self {
@@ -966,6 +980,7 @@ impl Field {
             kind: FieldKind::Choice(options),
             only_for: Vec::new(),
             step: 0,
+            blank_means: "",
         }
     }
     /// Replace the list of choices (e.g. services filled in after a project is
@@ -983,6 +998,39 @@ impl Field {
             self.value = options.first().cloned().unwrap_or_default();
         }
         self.kind = FieldKind::Choice(options);
+    }
+    /// A field whose value is SEVERAL names ticked from a list that is still on
+    /// its way. `blank_means` is what an empty selection actually does, shown in
+    /// place of the value so the contract is on screen rather than implied.
+    pub(super) fn multi(label: &'static str, blank_means: &'static str) -> Self {
+        Self {
+            label,
+            value: String::new(),
+            kind: FieldKind::Multi(None),
+            only_for: Vec::new(),
+            step: 0,
+            blank_means,
+        }
+    }
+    /// The list arrived. An EMPTY list is not offered as a picker — the caller
+    /// falls the field back to typing, because a dropdown with nothing in it
+    /// cannot be told apart from a list that hasn't loaded.
+    pub(super) fn set_multi_options(&mut self, options: Vec<String>) {
+        self.kind = FieldKind::Multi(Some(options));
+    }
+    /// The names currently ticked, in the order they are stored.
+    pub(super) fn ticked(&self) -> Vec<String> {
+        self.value
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+    /// Store `names` as this field's value — the same comma-separated spelling a
+    /// typed fallback produces, so submit reads one shape either way.
+    pub(super) fn set_ticked(&mut self, names: &[String]) {
+        self.value = names.join(", ");
     }
     /// Cycle to the next choice (Bool is treated as yes/no).
     pub(super) fn cycle(&mut self) {
@@ -1014,6 +1062,14 @@ impl Field {
             // it exists and how big it is, not a snippet of its first line.
             FieldKind::Editor if self.value.trim().is_empty() => "(empty)".into(),
             FieldKind::Editor => format!("{} lines", self.value.lines().count()),
+            // Nothing ticked is a MEANING, not an absence — so it is spelled out
+            // rather than left as an empty box the operator has to remember the
+            // rule for. And a list that has not arrived says so: an empty picker
+            // would otherwise read as "there are none".
+            FieldKind::Multi(None) if self.value.is_empty() => {
+                "(reading the source's databases…)".into()
+            }
+            FieldKind::Multi(_) if self.value.is_empty() => self.blank_means.into(),
             _ => self.value.clone(),
         }
     }
@@ -1384,6 +1440,16 @@ pub(super) struct Chooser {
     pub(super) state: ListState,
     /// The dropdown box as drawn (filled in at render), for click/hover hit-testing.
     pub(super) rect: Rect,
+    /// Ticking mode: Space ticks a row and Enter takes every ticked one, instead
+    /// of Enter taking the single highlighted row.
+    ///
+    /// The same widget either way. A second list overlay with its own keys would
+    /// have been a second thing to learn for the same idea, and the ticks read
+    /// exactly like the backup picker's (`BackupUi::picker_lines`) — ✓ inside the
+    /// row, so ticking one does not shift the names sideways.
+    pub(super) multi: bool,
+    /// The ticked options, when `multi`.
+    pub(super) marked: std::collections::HashSet<String>,
 }
 
 impl Chooser {
@@ -1402,7 +1468,47 @@ impl Chooser {
             filter: String::new(),
             state,
             rect: Rect::default(),
+            multi: false,
+            marked: std::collections::HashSet::new(),
         }
+    }
+
+    /// A ticking dropdown for a `Multi` field, with `current` already ticked.
+    pub(super) fn multi(
+        field: usize,
+        label: &'static str,
+        options: Vec<String>,
+        current: &[String],
+    ) -> Self {
+        let mut ch = Self::new(
+            field,
+            label,
+            options,
+            current.first().map_or("", String::as_str),
+        );
+        ch.multi = true;
+        ch.marked = current.iter().cloned().collect();
+        ch
+    }
+
+    /// Tick or untick the option at `i` within the filtered rows.
+    pub(super) fn toggle(&mut self, i: usize) {
+        let Some(name) = self.matches().get(i).cloned() else {
+            return;
+        };
+        if !self.marked.remove(&name) {
+            self.marked.insert(name);
+        }
+    }
+
+    /// The ticked options in the list's own order, so the stored value does not
+    /// depend on the order they happened to be ticked in.
+    pub(super) fn ticked(&self) -> Vec<String> {
+        self.options
+            .iter()
+            .filter(|o| self.marked.contains(*o))
+            .cloned()
+            .collect()
     }
 
     /// The option index (within `matches()`) under (col,row), None if outside. The

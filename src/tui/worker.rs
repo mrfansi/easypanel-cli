@@ -1643,17 +1643,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             };
             if !run {
                 return Resp::CopyDbPlan {
-                    lines: vec![
-                        format!("engine        {}", plan.stype),
-                        format!("databases     {}", plan.databases.join(", ")),
-                        // Shown, never compared: no tag says whether a load fits.
-                        format!("source image  {}", plan.src_image),
-                        format!("target image  {}", plan.dst_image),
-                        format!(
-                            "via storage   {}/{} ('{}' here, '{}' there)",
-                            plan.endpoint, plan.bucket, plan.src_provider, plan.dst_provider
-                        ),
-                    ],
+                    lines: copy_plan_lines(&plan),
                     databases: plan.databases,
                     target_name,
                     target_project,
@@ -3067,6 +3057,40 @@ fn fetch_inspect(
         "inspectService",
         json!({ "projectName": project, "serviceName": service }),
     )
+}
+
+/// The pre-flight rows the copy confirmation shows, indented exactly as the CLI's
+/// `db copy` prints the same plan.
+///
+/// The indent is what tells `render_confirm` this is an ALIGNED BLOCK and not
+/// prose, so the rows keep their column instead of each being centred on its own.
+///
+/// Storage takes three rows, not one. It used to be a single line carrying the
+/// endpoint, the bucket and both provider names — around 100 characters, which the
+/// 60-column dialog hard-broke mid-token through the middle of an opaque R2
+/// hostname. Split, every row fits and nothing is dropped: the bucket comes FIRST
+/// (so an elision at the width eats the generic `.r2.cloudflarestorage.com` tail,
+/// never the account that identifies it), and each panel's own name for that
+/// storage gets a row, mirroring the `source image` / `target image` pair above.
+/// Both ends provably point at the same bucket — `plan_copy` refuses the copy
+/// otherwise (`dump::store_refusal`) — so ONE storage row is the honest shape.
+pub(super) fn copy_plan_lines(plan: &crate::commands::CopyPlan) -> Vec<String> {
+    // The scheme is the same on every S3 endpoint and costs 8 of the columns the
+    // account id needs.
+    let host = plan
+        .endpoint
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    vec![
+        format!("  engine        {}", plan.stype),
+        format!("  databases     {}", plan.databases.join(", ")),
+        // Shown, never compared: no tag says whether a load fits.
+        format!("  source image  {}", plan.src_image),
+        format!("  target image  {}", plan.dst_image),
+        format!("  via storage   {} @ {host}", plan.bucket),
+        format!("  source store  '{}'", plan.src_provider),
+        format!("  target store  '{}'", plan.dst_provider),
+    ]
 }
 
 /// One step of the database browser, start to finish: what the engine needs,

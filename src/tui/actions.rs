@@ -518,7 +518,7 @@ impl App {
                 // core will then reject.
                 v.push(MenuItem::new(
                     "Copy databases into another service",
-                    |a, _| a.open_copy_db_form(),
+                    |a, r| a.open_copy_db_form(r),
                 ));
             }
             v.push(MenuItem::new("Backup now", |a, r| a.backup_now(r)));
