@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.17] — 2026-09-06
+
 ### Added
 
 - **The object-storage dump picker can restore a dump taken from ANOTHER
@@ -39,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   browser already use, and are derived from what the picker can do right now: an
   empty list advertises neither restore nor download, since there is nothing to
   restore or download.
+
+- **`db list` no longer stops at the first 1000 objects.** The listing signed a
+  single `ListObjectsV2` and ignored `IsTruncated`/`NextContinuationToken`, so a
+  service with more dumps than one page reported only the page it happened to
+  get — and against a bucket this tool shares with other things the answer could
+  be "no dumps" while the dumps existed. Every page is now followed (bounded, and
+  a listing that will not finish is an error rather than a short answer), and the
+  host-wide scope asks for one server-filtered `{project}/{service}-` prefix per
+  database service the panel reports instead of scanning the bucket, so another
+  tenant's log rotation cannot displace our keys.
 
 ## [0.98.16] — 2026-09-06
 
@@ -4077,7 +4089,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.16...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.17...HEAD
+[0.98.17]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.17
 [0.98.16]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.16
 [0.98.15]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.15
 [0.98.14]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.14
