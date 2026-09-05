@@ -664,6 +664,20 @@ fn palette_filters_then_jumps_to_service() {
             .map(|i| i.label.clone())
             .collect()
     };
+    // Just the CONTEXTUAL rows (actions on the highlighted row). The per-service
+    // quick actions added below them carry an identity by design, so an assertion
+    // about "the action rows must not repeat the service" has to name which block
+    // it means.
+    let action_rows = |a: &App| -> Vec<String> {
+        a.palette
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .filter(|i| matches!(i.action, super::actions::PaletteAction::Run(_)))
+            .map(|i| i.label.clone())
+            .collect()
+    };
 
     // With no service selected (not on Services): the palette is PURE navigation —
     // no action entries (preventing hundreds of them).
@@ -686,18 +700,27 @@ fn palette_filters_then_jumps_to_service() {
     for action in ["Deploy", "Env", "Domain", "Basic auth", "Delete service"] {
         assert!(l.iter().any(|x| x == action), "missing {action} in {l:?}");
     }
-    // It appears ONCE — as the row that jumps to it. Not on all thirty actions.
+    // It is not repeated down the action rows — that is what made the palette a
+    // wall of the same text. The quick-action rows (Terminal / DB shell, one per
+    // service) DO name their service, because there each row names a different
+    // one: that is what distinguishes them, not repetition.
+    assert!(
+        !action_rows(&app).iter().any(|x| x.contains("proj/web")),
+        "the service must not be repeated down the action rows: {:?}",
+        action_rows(&app)
+    );
+    // It appears once as the row that jumps to it.
     assert_eq!(
-        l.iter().filter(|x| x.contains("proj/web")).count(),
-        1,
-        "the service must not be repeated down the action rows: {l:?}"
+        l.iter().filter(|x| *x == "Open  proj/web  ·  app").count(),
+        1
     );
     // It is named once, in the title.
     assert_eq!(
         app.palette.as_ref().and_then(|p| p.context.clone()),
         Some("proj/web".into())
     );
-    assert!(!l.iter().any(|x| x.starts_with("DB shell"))); // app isn't a db
+    // app isn't a db, so no DB shell among ITS actions.
+    assert!(!action_rows(&app).iter().any(|x| x.starts_with("DB shell")));
 
     // Dropping it from the LABEL must not drop it from the SEARCH: "deploy web"
     // still has to find the deploy action on web.
@@ -780,6 +803,85 @@ fn palette_filters_then_jumps_to_service() {
     assert!(
         app.confirm.as_ref().is_some_and(|c| c.action == "deploy"),
         "the Deploy quick action must raise a deploy confirmation"
+    );
+}
+
+#[test]
+fn the_palette_opens_a_terminal_on_any_service_without_selecting_it_first() {
+    // The palette's action rows only ever described the HIGHLIGHTED row, so the
+    // one thing `:` could not do was "open a terminal on that service over
+    // there" — the very move it advertises for navigation. These entries carry
+    // their own identity, so they work from a screen with no row at all.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.all_services = vec![svc("alpha", "api", "app"), svc("beta", "web", "app")];
+    app.screen = Screen::Dashboard; // no row selected anywhere
+    app.open_palette();
+
+    let pal = app.palette.as_mut().expect("the palette");
+    // The words a user reaches for, not the label's wording: "shell" finds it too.
+    pal.query = "shell web".into();
+    let hits: Vec<String> = pal
+        .matches()
+        .into_iter()
+        .map(|i| pal.items[i].label.clone())
+        .collect();
+    assert_eq!(hits, vec!["Terminal  beta/web".to_string()], "{hits:?}");
+
+    pal.state.select(Some(0));
+    app.palette_run(&tx);
+    assert!(app.palette.is_none());
+    // The request names the service the ROW named — not the selection (there is
+    // none) and not the other project's service.
+    assert_eq!(
+        app.terminal_req,
+        Some(("beta".into(), "web".into(), None)),
+        "a plain shell on the service the entry carries"
+    );
+}
+
+#[test]
+fn the_palette_offers_a_db_shell_only_where_one_exists() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.all_services = vec![svc("alpha", "api", "app"), svc("alpha", "pg", "postgres")];
+    app.screen = Screen::Dashboard;
+    app.open_palette();
+
+    let labels: Vec<String> = app
+        .palette
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.label.clone())
+        .collect();
+    assert!(labels.iter().any(|x| x == "Terminal  alpha/api"));
+    assert!(
+        labels
+            .iter()
+            .any(|x| x == "DB shell  alpha/pg  ·  postgres"),
+        "{labels:?}"
+    );
+    // An app has no database client to log into; a door that could only fail is
+    // not offered.
+    assert!(
+        !labels.iter().any(|x| x.contains("DB shell  alpha/api")),
+        "{labels:?}"
+    );
+
+    let pal = app.palette.as_mut().unwrap();
+    // "psql" is neither in the label nor in the service name.
+    pal.query = "psql".into();
+    let hits = pal.matches();
+    assert_eq!(hits.len(), 1, "{:?}", pal.items[hits[0]].label);
+    pal.state.select(Some(0));
+    app.palette_run(&tx);
+    // Some(stype) is what makes the event loop build the client command instead
+    // of a plain `sh`.
+    assert_eq!(
+        app.terminal_req,
+        Some(("alpha".into(), "pg".into(), Some("postgres".into())))
     );
 }
 
@@ -8532,4 +8634,503 @@ fn cf_record_loading_empty_and_error_states_render_without_panic() {
     let screen = render(&mut app);
     assert!(screen.contains("api.example.com"), "ready state:\n{screen}");
     assert!(screen.contains("auto"), "ttl 1 renders as auto:\n{screen}");
+}
+
+/// One step's answer, as the worker sends it.
+#[allow(clippy::too_many_arguments)]
+fn dbms_resp(
+    level: dbms::Level,
+    database: &str,
+    table: &str,
+    columns: &[&str],
+    rows: Vec<Vec<String>>,
+    capped: bool,
+) -> Resp {
+    Resp::Dbms {
+        project: "alpha".into(),
+        service: "db".into(),
+        level,
+        database: database.into(),
+        table: table.into(),
+        columns: columns.iter().map(|c| c.to_string()).collect(),
+        rows,
+        capped,
+        truncated: false,
+    }
+}
+
+/// The level (and what it points at) of the request the app just sent.
+fn dbms_req(rx: &std::sync::mpsc::Receiver<Req>) -> (dbms::Level, String, String) {
+    match rx.try_recv().expect("a request must have been sent") {
+        Req::Dbms {
+            level,
+            database,
+            table,
+            ..
+        } => (level, database, table),
+        _ => panic!("the browser must send Req::Dbms"),
+    }
+}
+
+#[test]
+fn the_database_browser_walks_in_and_back_out_again() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.open_dbms("alpha".into(), "db".into(), "mysql".into(), &tx);
+
+    assert!(app.screen == Screen::Dbms);
+    assert_eq!(
+        dbms_req(&rx),
+        (dbms::Level::Databases, String::new(), String::new()),
+        "it opens on the database list, which nothing else in the tool can show"
+    );
+
+    app.handle(
+        dbms_resp(
+            dbms::Level::Databases,
+            "",
+            "",
+            &["Database"],
+            vec![vec!["information_schema".into()], vec!["shop".into()]],
+            false,
+        ),
+        &tx,
+    );
+    // Move onto the second database and open it: the name comes from the row's
+    // DATA, so a drill-down can never be aimed at the wrong one.
+    app.on_key(KeyCode::Down, &tx);
+    app.on_key(KeyCode::Enter, &tx);
+    assert_eq!(
+        dbms_req(&rx),
+        (dbms::Level::Tables, "shop".into(), String::new())
+    );
+
+    app.handle(
+        dbms_resp(
+            dbms::Level::Tables,
+            "shop",
+            "",
+            &["Table"],
+            vec![vec!["orders".into()]],
+            false,
+        ),
+        &tx,
+    );
+    app.on_key(KeyCode::Enter, &tx);
+    assert_eq!(
+        dbms_req(&rx),
+        (dbms::Level::Rows, "shop".into(), "orders".into())
+    );
+
+    // A preview that hit its limit must SAY so — a silent cap is a lie about how
+    // much data is there.
+    let rows: Vec<Vec<String>> = (0..crate::dbms::PREVIEW_LIMIT)
+        .map(|i| vec![i.to_string(), "x".into()])
+        .collect();
+    app.handle(
+        dbms_resp(
+            dbms::Level::Rows,
+            "shop",
+            "orders",
+            &["id", "note"],
+            rows,
+            true,
+        ),
+        &tx,
+    );
+    assert!(
+        app.dbms.title().contains("200-row cap"),
+        "{}",
+        app.dbms.title()
+    );
+
+    // Esc walks back up one level at a time, and only leaves the screen from the
+    // top — the same contract the viewer's Esc has.
+    app.on_key(KeyCode::Esc, &tx);
+    assert_eq!(
+        dbms_req(&rx),
+        (dbms::Level::Tables, "shop".into(), String::new()),
+        "back to the table list of the database we were in"
+    );
+    assert!(app.screen == Screen::Dbms);
+    app.handle(
+        dbms_resp(
+            dbms::Level::Tables,
+            "shop",
+            "",
+            &["Table"],
+            vec![vec!["orders".into()]],
+            false,
+        ),
+        &tx,
+    );
+    app.on_key(KeyCode::Esc, &tx);
+    assert_eq!(
+        dbms_req(&rx),
+        (dbms::Level::Databases, String::new(), String::new())
+    );
+    app.handle(
+        dbms_resp(dbms::Level::Databases, "", "", &["Database"], vec![], false),
+        &tx,
+    );
+    app.on_key(KeyCode::Esc, &tx);
+    assert!(app.screen == Screen::Projects, "at the top, Esc leaves");
+    assert!(app.dbms.target.is_none());
+}
+
+#[test]
+fn a_failed_query_is_visible_and_does_not_erase_the_grid() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.open_dbms("alpha".into(), "db".into(), "postgres".into(), &tx);
+    app.handle(
+        dbms_resp(
+            dbms::Level::Tables,
+            "shop",
+            "",
+            &["Table"],
+            vec![vec!["public.orders".into()]],
+            false,
+        ),
+        &tx,
+    );
+
+    let msg = "ERROR:  column \"nmae\" does not exist";
+    app.handle(
+        Resp::DbmsFailed {
+            message: msg.into(),
+        },
+        &tx,
+    );
+
+    assert!(app.status.contains("does not exist"), "{}", app.status);
+    assert_eq!(app.dbms.error.as_deref(), Some(msg));
+    assert_eq!(
+        app.dbms.rows.len(),
+        1,
+        "the grid you were looking at must survive a failed query"
+    );
+
+    // And it is on the SCREEN, not only in the status line: an empty grid may
+    // never be the only sign that something went wrong.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    term.draw(|f| super::render::ui(f, &mut app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .chunks(100)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(screen.contains("does not exist"), "{screen}");
+    assert!(
+        screen.contains("public.orders"),
+        "the previous result is still there:\n{screen}"
+    );
+}
+
+#[test]
+fn browsing_redis_says_where_to_go_instead_of_opening_an_empty_screen() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.open_dbms("alpha".into(), "cache".into(), "redis".into(), &tx);
+
+    assert!(app.screen == Screen::Dashboard, "no screen is opened");
+    assert!(app.dbms.target.is_none());
+    assert!(
+        app.status.contains("redis-cli"),
+        "the refusal names the thing that works: {}",
+        app.status
+    );
+    assert!(rx.try_recv().is_err(), "and nothing was asked of the panel");
+}
+
+#[test]
+fn the_palette_browses_a_database_by_identity() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.all_services = vec![svc("alpha", "api", "app"), svc("alpha", "pg", "postgres")];
+    app.screen = Screen::Dashboard; // nothing selected anywhere
+    app.open_palette();
+
+    let pal = app.palette.as_mut().expect("the palette");
+    // A word a user would type, which is in neither the label nor the service name.
+    pal.query = "tables".into();
+    let hits = pal.matches();
+    assert_eq!(hits.len(), 1, "{:?}", hits);
+    assert_eq!(
+        pal.items[hits[0]].label,
+        "Browse database  alpha/pg  ·  postgres"
+    );
+    pal.state.select(Some(0));
+    app.palette_run(&tx);
+
+    assert_eq!(
+        app.dbms.target,
+        Some(("alpha".into(), "pg".into(), "postgres".into())),
+        "opened on the service the entry carries, with no row selected"
+    );
+    assert_eq!(
+        dbms_req(&rx),
+        (dbms::Level::Databases, String::new(), String::new())
+    );
+}
+
+#[test]
+fn the_query_box_runs_what_was_typed_in_the_database_it_is_open_on() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.open_dbms("alpha".into(), "db".into(), "mysql".into(), &tx);
+    let _ = rx.try_recv(); // the opening databases listing
+    app.handle(
+        dbms_resp(
+            dbms::Level::Tables,
+            "shop",
+            "",
+            &["Table"],
+            vec![vec!["orders".into()]],
+            false,
+        ),
+        &tx,
+    );
+
+    app.on_key(KeyCode::Char('e'), &tx);
+    let form = app.form.as_mut().expect("the query box opens");
+    // The note must not promise something the engine does not take.
+    assert!(
+        form.note.as_deref().unwrap_or_default().contains("SQL"),
+        "{:?}",
+        form.note
+    );
+    set_f_val(form, "Query", "SELECT * FROM orders WHERE ref = 'a''b'");
+    app.submit_form(&tx);
+
+    assert!(app.form.is_none(), "the box closes on submit");
+    match rx.try_recv().expect("the query is sent") {
+        Req::Dbms {
+            level,
+            database,
+            query,
+            ..
+        } => {
+            assert_eq!(level, dbms::Level::Query);
+            assert_eq!(database, "shop", "it runs where the browser is standing");
+            assert_eq!(
+                query, "SELECT * FROM orders WHERE ref = 'a''b'",
+                "sent as typed — quotes and all"
+            );
+        }
+        _ => panic!("a query must go out as Req::Dbms"),
+    }
+    // An empty box is refused rather than running an empty statement.
+    app.on_key(KeyCode::Char('e'), &tx);
+    let form = app.form.as_mut().expect("reopened");
+    assert_eq!(
+        f_val(form, "Query"),
+        "SELECT * FROM orders WHERE ref = 'a''b'",
+        "it reopens on what was last run"
+    );
+    set_f_val(form, "Query", "   ");
+    app.submit_form(&tx);
+    assert!(app.form.is_some(), "still open: {}", app.status);
+    assert!(rx.try_recv().is_err(), "nothing was sent");
+}
+
+/// A database service ready to be copied FROM, with two configured hosts so the
+/// target picker has somewhere else to point.
+fn copy_app() -> App {
+    let mut app = App::new(
+        "here".into(),
+        vec![
+            ("here".into(), "https://here".into()),
+            ("there".into(), "https://there".into()),
+        ],
+    );
+    app.projects = vec!["shop".into()];
+    app.all_services = vec![svc("shop", "db", "mysql"), svc("shop", "cache", "redis")];
+    app.screen = Screen::Projects;
+    // Rows are the project header, then the services SORTED — so `cache` is row 1
+    // and `db` is row 2. Asserted rather than assumed: an off-by-one here would
+    // silently test the redis service instead.
+    app.services_table.select(Some(2));
+    assert_eq!(
+        app.selected_row(),
+        Some(("shop".into(), "db".into(), "mysql".into()))
+    );
+    app
+}
+
+/// The same fixture with the cursor on the redis service instead.
+fn copy_app_on_redis() -> App {
+    let mut app = copy_app();
+    app.services_table.select(Some(1));
+    assert_eq!(
+        app.selected_row(),
+        Some(("shop".into(), "cache".into(), "redis".into()))
+    );
+    app
+}
+
+/// The form's three target fields must reach the request UNCHANGED — this is the
+/// first target picker in the tool, so nothing downstream can re-derive them from
+/// the selected row the way every restore flow does.
+#[test]
+fn the_copy_form_carries_its_target_host_project_and_service_through() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = copy_app();
+    app.open_copy_db_form();
+    let form = app.form.as_mut().expect("form opened");
+    set_f_val(form, "To server", "there");
+    set_f_val(form, "Target project", "shop-staging");
+    set_f_val(form, "Target service", "mysql");
+    set_f_val(form, "Databases (blank = all)", " studio , billing ");
+    app.submit_form(&tx);
+
+    let req = app.copy_db_req.as_ref().expect("a copy was requested");
+    assert_eq!(req.target_server, "there");
+    assert_eq!(req.target_project, "shop-staging");
+    assert_eq!(req.target_service, "mysql");
+    assert_eq!(req.source, ("shop".to_string(), "db".to_string()));
+    // Trimmed and split, so a comma-separated list typed with spaces still names
+    // the schemas rather than " billing ".
+    assert_eq!(req.databases, vec!["studio", "billing"]);
+    // Stage one only: the plan is asked for, nothing is dumped yet.
+    assert!(!req.run, "submitting the form must only PLAN");
+}
+
+/// Same host must be reachable without picking anything unusual: the current
+/// server is the default, so Enter through the form is a same-host copy into
+/// another service. A migration excludes the current host; a copy must not.
+#[test]
+fn the_copy_form_defaults_to_this_host_and_blank_databases_mean_all() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = copy_app();
+    app.open_copy_db_form();
+    let form = app.form.as_mut().expect("form opened");
+    assert_eq!(
+        f_val(form, "To server"),
+        "here",
+        "this host is the default target"
+    );
+    // Only the target service is changed — the same-host, same-project case.
+    set_f_val(form, "Target service", "db-restore");
+    app.submit_form(&tx);
+
+    let req = app.copy_db_req.as_ref().expect("a copy was requested");
+    assert_eq!(req.target_server, "here");
+    assert_eq!(req.target_project, "shop", "prefilled from the source");
+    assert_eq!(req.target_service, "db-restore");
+    // Blank is the form's spelling of `--all`; the event loop turns an empty list
+    // into `all: true`, so an empty list here is the whole point.
+    assert!(req.databases.is_empty());
+}
+
+/// Copying a service into ITSELF would dump rows and load them back over
+/// themselves. Refused at submit, with nothing requested.
+#[test]
+fn a_copy_into_the_source_itself_is_refused() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = copy_app();
+    app.open_copy_db_form();
+    app.submit_form(&tx); // every target field still prefilled from the source
+    assert!(app.copy_db_req.is_none(), "nothing requested");
+    assert!(app.status.contains("the source itself"), "{}", app.status);
+}
+
+/// The menu must not offer what the core will refuse. `store_menu` is gated by
+/// the same `dump::can_dump` predicate `copy_refusal` refuses on, so a redis
+/// service has no copy entry at all — and asking for the form anyway (via a stale
+/// keypress) is refused with the engine named, sending nothing.
+#[test]
+fn a_redis_service_is_offered_no_copy_and_refused_the_form() {
+    let (tx, rx) = std::sync::mpsc::channel::<Req>();
+    let mut app = copy_app_on_redis();
+    let menu = app.store_menu();
+    let labels: Vec<&str> = menu.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.iter().any(|l| l.contains("Copy databases")),
+        "redis must not be offered a copy: {labels:?}"
+    );
+
+    app.open_copy_db_form();
+    assert!(app.form.is_none(), "no form for an engine that cannot copy");
+    assert!(app.copy_db_req.is_none());
+    assert!(
+        app.status.contains("redis"),
+        "names the engine: {}",
+        app.status
+    );
+    let _ = &tx;
+    assert!(rx.try_recv().is_err(), "nothing was sent");
+}
+
+#[test]
+fn a_refused_plan_shows_the_named_reason_and_offers_no_confirmation() {
+    let mut app = copy_app();
+    let reason = crate::dump::copy_refusal("mysql", "shop/db", "redis", "other/cache")
+        .expect("a redis target is refused");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.handle(Resp::Err(reason.clone()), &tx);
+    // Carried through verbatim under the status line's own "Error: " prefix — the
+    // engine's sentence is what the operator needs, not a "copy failed".
+    assert!(app.status.ends_with(&reason), "{}", app.status);
+    assert!(app.status.contains("keys, not schemas"), "{}", app.status);
+    assert!(app.confirm.is_none(), "nothing to confirm");
+    assert!(app.copy_pending.is_none());
+}
+
+/// The typed confirmation is the gate: this is the most destructive operation in
+/// the tool (it overwrites databases on a host that may not be the one on screen),
+/// so a reflexive `y` must not start it — only the target service's own name.
+#[test]
+fn a_copy_runs_only_once_the_target_service_name_is_typed() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = copy_app();
+    app.handle(
+        Resp::CopyDbPlan {
+            target_name: "there".into(),
+            target_project: "shop-staging".into(),
+            target_service: "mysql".into(),
+            project: "shop".into(),
+            service: "db".into(),
+            databases: vec!["studio".into()],
+            lines: vec![
+                "engine        mysql".into(),
+                "target image  mysql:5.7".into(),
+            ],
+        },
+        &tx,
+    );
+    let c = app.confirm.as_ref().expect("a confirmation was raised");
+    assert_eq!(c.stype, "expect:mysql", "typed, not y/n");
+    // The plan the operator is agreeing to is on screen, including the skew they
+    // can only weigh before anything is overwritten.
+    assert!(c.label.contains("mysql:5.7"), "{}", c.label);
+    assert!(c.label.contains("OVERWRITTEN"), "{}", c.label);
+
+    // `y` is not a shortcut here — it is a CHARACTER, so it lands in the buffer
+    // and has to be removed. That is the point of the typed path: no keypress a
+    // hand makes by reflex can start this.
+    app.confirm_key(KeyCode::Char('y'), &tx);
+    assert!(app.copy_db_req.is_none(), "a plain y must not start a copy");
+    assert!(app.confirm.is_some(), "the dialog stays open");
+    app.confirm_key(KeyCode::Backspace, &tx);
+
+    for ch in "mysqlx".chars() {
+        app.confirm_key(KeyCode::Char(ch), &tx);
+    }
+    app.confirm_key(KeyCode::Enter, &tx);
+    assert!(app.copy_db_req.is_none(), "a wrong name must not start it");
+    assert!(app.confirm.is_some());
+
+    app.confirm_key(KeyCode::Backspace, &tx);
+    app.confirm_key(KeyCode::Enter, &tx);
+    let req = app.copy_db_req.as_ref().expect("the copy was promoted");
+    assert!(req.run, "stage two: this one actually copies");
+    assert_eq!(req.target_server, "there");
+    assert_eq!(req.target_service, "mysql");
+    assert_eq!(req.databases, vec!["studio"]);
 }

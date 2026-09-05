@@ -233,6 +233,7 @@ impl App {
                 },
                 Screen::Maintenance => self.maint_key(code),
                 Screen::Credentials => self.credentials_key(code),
+                Screen::Dbms => self.dbms_key(code, req),
                 // Terminal is handled directly in event_loop (encode_key), not
                 // here. Dashboard has no dedicated keys.
                 Screen::Dashboard | Screen::Terminal => {}
@@ -1245,6 +1246,17 @@ impl App {
                 }
                 None => return,
             },
+            // A confirmed copy does not go straight to the worker: it still needs
+            // the target host's token, which only the event loop can look up.
+            // Promoting the pending plan IS the dispatch.
+            "copy-db" => match self.copy_pending.take() {
+                Some(pending) => {
+                    self.status = "Copying databases…".into();
+                    self.copy_db_req = Some(pending);
+                    Ok(())
+                }
+                None => return,
+            },
             "maint:systemPrune" => req.send(Req::MaintAction("systemPrune")),
             "maint:cleanupDockerImages" => req.send(Req::MaintAction("cleanupDockerImages")),
             "maint:cleanupDockerBuilder" => req.send(Req::MaintAction("cleanupDockerBuilder")),
@@ -1401,6 +1413,72 @@ impl App {
             }
             _ => move_table(&mut self.creds.row, code, self.creds.items.len()),
         }
+    }
+
+    /// The database browser: Enter walks in, Esc walks back out (and out of the
+    /// screen at the top), `e` opens the query box, `r` re-runs this step.
+    pub(super) fn dbms_key(&mut self, code: KeyCode, req: &Sender<Req>) {
+        use super::dbms::Level;
+        match code {
+            KeyCode::Esc => match self.dbms.back() {
+                Some(level) => self.dbms_fetch(level, req),
+                None => {
+                    self.dbms.target = None;
+                    self.screen = Screen::Projects;
+                }
+            },
+            KeyCode::Enter => match self.dbms.level {
+                // The name comes from the DATA behind the selected row, never
+                // parsed back off the screen.
+                Level::Databases => match self.dbms.selected_name() {
+                    Some(db) => {
+                        self.dbms.database = db;
+                        self.dbms.table.clear();
+                        self.dbms_fetch(Level::Tables, req);
+                    }
+                    None => self.status = "Select a database first".into(),
+                },
+                Level::Tables => match self.dbms.selected_name() {
+                    Some(table) => {
+                        self.dbms.table = table;
+                        self.dbms_fetch(Level::Rows, req);
+                    }
+                    None => self.status = "Select a table first".into(),
+                },
+                // A row is the end of the walk: there is nothing below it to open,
+                // and inventing a cell viewer here is not what this screen is for.
+                Level::Rows | Level::Query => {}
+            },
+            KeyCode::Char('e') => self.open_dbms_query(),
+            _ => move_table(&mut self.dbms.row, code, self.dbms.rows.len()),
+        }
+    }
+
+    /// The free-form query box — the same Form machinery every other text input
+    /// in this TUI uses, so it inherits the $EDITOR escape hatch (long SQL is not
+    /// something to type on one line).
+    pub(super) fn open_dbms_query(&mut self) {
+        let Some(engine) = self.dbms.engine() else {
+            self.status = "Open a database service first".into();
+            return;
+        };
+        let where_it_runs = if self.dbms.database.is_empty() {
+            "the server".to_string()
+        } else {
+            self.dbms.database.clone()
+        };
+        let last = self.dbms.last_query.clone();
+        self.form = Some(
+            Form::new(
+                FormKind::DbQuery,
+                " Run a query ",
+                vec![Field::text("Query", &last)],
+            )
+            .with_note(format!(
+                "{} · runs on {where_it_runs} · sent as typed, nothing is added",
+                engine.query_word()
+            )),
+        );
     }
 
     /// The Cloudflare workspace. Its keys never touch EasyPanel state, and no
@@ -1888,6 +1966,9 @@ impl App {
     pub(super) fn services_key(&mut self, code: KeyCode, req: &Sender<Req>) {
         match code {
             KeyCode::Enter => self.open_view(View::Logs, req),
+            // Browse & query the database (`Y` next to `y`, the shell): the same
+            // service, one level less raw. Also in the Shell menu (`t`).
+            KeyCode::Char('Y') => self.start_dbms(req),
             // Marking, the three ways of choosing a set: `v` takes the row (or a
             // whole project from its header), `V` takes everything the filter has
             // left on screen. Space then acts on them — see service_menu().

@@ -10,6 +10,7 @@
 mod actions;
 mod app;
 mod backup_ui;
+mod dbms;
 mod form;
 mod keys;
 mod render;
@@ -385,6 +386,34 @@ fn event_loop(
                 }
                 None => {
                     app.status = format!("Server '{}' is no longer configured", m.target_server)
+                }
+            }
+        }
+
+        // A database copy: same rule as a migration — the App knows the target by
+        // name, its token lives only here. A SAME-host copy resolves this host's
+        // own entry, which needs no special case.
+        if let Some(c) = app.copy_db_req.take() {
+            match cfg.get(&c.target_server) {
+                Some(server) => {
+                    let (project, service) = c.source;
+                    let _ = w.user.send(Req::CopyDb {
+                        target_url: server.url,
+                        target_token: server.token,
+                        target_name: c.target_server,
+                        target_project: c.target_project,
+                        target_service: c.target_service,
+                        project,
+                        service,
+                        // Blank in the form means every non-system database, which
+                        // is what `--all` means on the command line.
+                        all: c.databases.is_empty(),
+                        databases: c.databases,
+                        run: c.run,
+                    });
+                }
+                None => {
+                    app.status = format!("Server '{}' is no longer configured", c.target_server)
                 }
             }
         }

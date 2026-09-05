@@ -5,6 +5,7 @@ mod commands;
 mod config;
 mod container;
 mod credentials;
+mod dbms;
 mod domains;
 mod dump;
 mod filter;
@@ -448,6 +449,58 @@ enum DbCmd {
         provider: Option<String>,
         #[arg(long)]
         yes: bool,
+    },
+    /// Copy databases from one service into another: dump from the source, then
+    /// load into the target — on this host, or on another one with --to-server.
+    /// mysql/mariadb only. The target's copies of those databases are OVERWRITTEN.
+    Copy {
+        /// Project of the service to copy FROM.
+        src_project: String,
+        /// Service to copy FROM.
+        src_service: String,
+        /// Project of the service to copy INTO.
+        dst_project: String,
+        /// Service to copy INTO.
+        dst_service: String,
+        /// Server holding the target (see: easypanel server list).
+        /// Default: the same host as --server.
+        #[arg(long)]
+        to_server: Option<String>,
+        /// Databases to copy (comma-separated). Omit and pass --all instead.
+        #[arg(long, value_delimiter = ',')]
+        databases: Vec<String>,
+        /// Copy every non-system database the source holds.
+        #[arg(long)]
+        all: bool,
+        /// Storage provider NAME — a name is what can match on both panels, since
+        /// provider ids are per-panel. Optional when each side has exactly one
+        /// remote provider.
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List the databases a mysql/mariadb/postgres/mongo service holds, asked of
+    /// the engine itself (no EasyPanel endpoint reports them).
+    Databases { project: String, service: String },
+    /// List a database's tables (mongo: its collections).
+    Tables {
+        project: String,
+        service: String,
+        /// Which database. Default: the one EasyPanel recorded for the service.
+        #[arg(long)]
+        database: Option<String>,
+    },
+    /// Run a statement in the service's own client and print the result as a
+    /// table. SQL for mysql/mariadb/postgres, JavaScript for mongo. Sent as
+    /// typed — nothing is added to it.
+    Query {
+        project: String,
+        service: String,
+        query: String,
+        /// Which database to run it in. Default: the one EasyPanel recorded.
+        #[arg(long)]
+        database: Option<String>,
     },
 }
 
@@ -1184,6 +1237,58 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     provider.as_deref(),
                     yes,
                 ),
+                DbCmd::Copy {
+                    src_project,
+                    src_service,
+                    dst_project,
+                    dst_service,
+                    to_server,
+                    databases,
+                    all,
+                    provider,
+                    yes,
+                } => {
+                    // The active host is the SOURCE; `--to-server` names the
+                    // target, and its absence means the same host on both ends —
+                    // which needs no special case, only the same client twice.
+                    let src_server = cli
+                        .server
+                        .clone()
+                        .or_else(|| cfg.default().map(|s| s.name))
+                        .unwrap_or_default();
+                    let (dst_client, dst_server) = match &to_server {
+                        Some(name) => (commands::resolve_client_named(cfg, name)?, name.clone()),
+                        None => (client.clone(), src_server.clone()),
+                    };
+                    commands::db_copy(commands::DbCopyOpts {
+                        src: &client,
+                        src_server: &src_server,
+                        src_project: &src_project,
+                        src_service: &src_service,
+                        dst: &dst_client,
+                        dst_server: &dst_server,
+                        dst_project: &dst_project,
+                        dst_service: &dst_service,
+                        databases: &databases,
+                        all,
+                        provider: provider.as_deref(),
+                        yes,
+                    })
+                }
+                DbCmd::Databases { project, service } => {
+                    commands::db_databases(&client, &project, &service)
+                }
+                DbCmd::Tables {
+                    project,
+                    service,
+                    database,
+                } => commands::db_tables(&client, &project, &service, database.as_deref()),
+                DbCmd::Query {
+                    project,
+                    service,
+                    query,
+                    database,
+                } => commands::db_query(&client, &project, &service, database.as_deref(), &query),
             }
         }
 

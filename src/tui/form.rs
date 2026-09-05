@@ -1076,6 +1076,9 @@ pub(super) enum FormKind {
     },
     /// Search for a keyword in the logs of all services at once.
     LogSearch,
+    /// Run a statement against the database being browsed. The engine's own
+    /// language (SQL, or JavaScript for mongosh) — it is sent verbatim.
+    DbQuery,
     /// Pick which OTHER server to read backups from, to restore one here.
     RestoreFrom {
         project: String,
@@ -1128,6 +1131,17 @@ pub(super) enum FormKind {
         project: String,
         service: String,
         stype: String,
+    },
+    /// Copy DATABASES (not config) out of a service into another one — another
+    /// project, or another host. Unlike `Migrate` the target host may be the
+    /// current one, so its picker includes this server rather than excluding it.
+    ///
+    /// No `stype`: the engine is gated before the form opens and resolved again by
+    /// the worker from BOTH panels, so carrying a copy of it here would be a third
+    /// place for it to be wrong.
+    CopyDatabase {
+        project: String,
+        service: String,
     },
     /// Add a DNS record to the current Cloudflare zone (type/name/content/…).
     CfRecordCreate,

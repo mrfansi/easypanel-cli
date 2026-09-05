@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -157,6 +158,26 @@ pub(super) enum Req {
         service: String,
         stype: String,
     },
+    /// One step of the database browser: list the databases, list a database's
+    /// tables, preview a table's rows, or run what the user typed.
+    ///
+    /// EasyPanel has no query endpoint, so every step runs the engine's own
+    /// client in batch mode inside the container (`crate::dbms` builds the
+    /// command, `container::run_capture` runs it). One request variant rather
+    /// than four: they differ only in which command is built, and splitting them
+    /// would spread one feature over four identical handlers.
+    Dbms {
+        project: String,
+        service: String,
+        stype: String,
+        level: super::dbms::Level,
+        /// Empty at the `Databases` level.
+        database: String,
+        /// Empty above the `Rows` level.
+        table: String,
+        /// Only used by the `Query` level.
+        query: String,
+    },
     /// Back this database up ONCE, right now.
     ///
     /// There is no such endpoint: `runDatabaseBackup` only runs a SCHEDULE. So a
@@ -218,6 +239,33 @@ pub(super) enum Req {
         project: String,
         service: String,
         path: String,
+    },
+    /// Copy databases OUT of `project`/`service` and INTO another service, which
+    /// may live on another host — the same two-leg composition as the CLI
+    /// `db copy` (dump to shared storage, then load from it).
+    ///
+    /// The target's url+token are resolved in event_loop, the only place holding
+    /// the ServerConfig; the worker is bound to one host. For a SAME-host copy
+    /// they are simply this host's own, which needs no special case.
+    ///
+    /// `run` is what makes this two-step, exactly as the CLI is: `false` plans
+    /// and answers [`Resp::CopyDbPlan`] so the plan can be shown and confirmed,
+    /// `true` plans AGAIN and then copies. The second plan is not waste — it is
+    /// the same "read immediately before acting" order `db copy` uses, and it is
+    /// what stops a confirmation from acting on a panel that has since changed.
+    CopyDb {
+        target_url: String,
+        target_token: String,
+        /// The target's configured name — for the status line, not the call.
+        target_name: String,
+        target_project: String,
+        target_service: String,
+        project: String,
+        service: String,
+        /// Empty with `all` set means every non-system database the source holds.
+        databases: Vec<String>,
+        all: bool,
+        run: bool,
     },
     /// All services across projects in a single call.
     AllServices,
@@ -724,11 +772,51 @@ pub(super) enum Resp {
         service: String,
         names: Vec<String>,
     },
+    /// One step of the database browser came back: the grid, where it belongs,
+    /// and what is imperfect about it.
+    Dbms {
+        project: String,
+        service: String,
+        level: super::dbms::Level,
+        database: String,
+        table: String,
+        columns: Vec<String>,
+        rows: Vec<Vec<String>>,
+        /// The preview hit its LIMIT: there are more rows than these.
+        capped: bool,
+        /// The captured output was cut at the capture budget.
+        truncated: bool,
+    },
+    /// A browser step FAILED, carrying the engine's own message.
+    ///
+    /// Kept apart from `Resp::Err` (which only writes the status line): a SQL
+    /// error must be visible on the screen that asked for it, and an empty grid
+    /// must never be the only sign that something went wrong.
+    DbmsFailed {
+        message: String,
+    },
     /// The object-storage dumps this tool wrote for a service, to pick one to restore.
     R2Dumps {
         project: String,
         service: String,
         keys: Vec<String>,
+    },
+    /// A copy that has been PLANNED but not run: what `plan_copy` resolved, ready
+    /// to be shown and confirmed.
+    ///
+    /// The plan travels as rendered lines rather than as a `CopyPlan`, because
+    /// this is what the confirmation displays and the shape of it belongs next to
+    /// the words. Everything needed to actually run is carried alongside — the
+    /// target server by NAME only, since the App must never hold a token.
+    CopyDbPlan {
+        target_name: String,
+        target_project: String,
+        target_service: String,
+        project: String,
+        service: String,
+        databases: Vec<String>,
+        /// The pre-flight, one line each: engine, databases, both images, storage.
+        lines: Vec<String>,
     },
     /// The restorable backups found on ANOTHER host. `hidden` counts the ones
     /// left out because they sit on that host's local disk and cannot be read
@@ -1312,6 +1400,17 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 names,
             }
         }
+        Req::Dbms {
+            project,
+            service,
+            stype,
+            level,
+            database,
+            table,
+            query,
+        } => dbms_step(
+            client, project, service, stype, level, database, table, query,
+        ),
         Req::BackupNow {
             project,
             service,
@@ -1496,7 +1595,11 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             project,
             service,
             path,
-        } => match crate::commands::restore_from_r2(client, &project, &service, &path, None) {
+        } => match crate::commands::restore_from_r2(client, &project, &service, &path, None, |p| {
+            // The phase word comes from `restore_phase` ("importing — 2.9 GB
+            // to read"), so the prefix must not say it again.
+            let _ = resp_tx.send(Resp::Progress(format!("{project}/{service}: {p}")));
+        }) {
             // Refresh::None, like DumpR2: a restore imports rows INTO a database, it
             // doesn't change the service table (names, status, metrics), so reloading
             // every service on completion is a wasted round-trip — needless churn on a
@@ -1507,6 +1610,79 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             ),
             Err(e) => Resp::Err(e.to_string()),
         },
+        Req::CopyDb {
+            target_url,
+            target_token,
+            target_name,
+            target_project,
+            target_service,
+            project,
+            service,
+            databases,
+            all,
+            run,
+        } => {
+            let dst_client = EasypanelClient::new(&target_url, &target_token);
+            let src = crate::commands::CopyTarget {
+                client,
+                project: &project,
+                service: &service,
+            };
+            let dst = crate::commands::CopyTarget {
+                client: &dst_client,
+                project: &target_project,
+                service: &target_service,
+            };
+            // The plan runs FIRST and on BOTH stages, exactly as the CLI does. Its
+            // failure is an engine's own named reason ("The target … is 'redis': it
+            // holds keys, not schemas …"), so it is passed through verbatim rather
+            // than wrapped in a "copy failed" that would bury it.
+            let plan = match crate::commands::plan_copy(&src, &dst, &databases, all, None) {
+                Ok(p) => p,
+                Err(e) => return Resp::Err(format!("{e:#}")),
+            };
+            if !run {
+                return Resp::CopyDbPlan {
+                    lines: vec![
+                        format!("engine        {}", plan.stype),
+                        format!("databases     {}", plan.databases.join(", ")),
+                        // Shown, never compared: no tag says whether a load fits.
+                        format!("source image  {}", plan.src_image),
+                        format!("target image  {}", plan.dst_image),
+                        format!(
+                            "via storage   {}/{} ('{}' here, '{}' there)",
+                            plan.endpoint, plan.bucket, plan.src_provider, plan.dst_provider
+                        ),
+                    ],
+                    databases: plan.databases,
+                    target_name,
+                    target_project,
+                    target_service,
+                    project,
+                    service,
+                };
+            }
+            // Same closure convention as DumpR2: the phase words the two legs emit
+            // are already distinct ("uploading" vs "downloading"), so nothing is
+            // prefixed onto them.
+            match crate::commands::copy_database(&src, &dst, &plan.databases, None, |p| {
+                let _ = resp_tx.send(Resp::Progress(format!("{project}/{service}: {p}")));
+            }) {
+                // Refresh::None, like RestoreR2: rows land INSIDE a database and
+                // change nothing the service table shows.
+                Ok(d) => Resp::Done(
+                    format!(
+                        "Copied {} database(s) into {target_name}/{target_project}/{target_service}: {} · dump kept at {}/{}",
+                        d.databases.len(),
+                        d.databases.join(", "),
+                        d.bucket,
+                        d.key
+                    ),
+                    Refresh::None,
+                ),
+                Err(e) => Resp::Err(format!("{e:#}")),
+            }
+        }
         Req::LogSearch { query } => log_search(client, &query),
         Req::Repos => Resp::Repos(github_repos(client)),
         Req::ConfigForm {
@@ -2891,6 +3067,90 @@ fn fetch_inspect(
         "inspectService",
         json!({ "projectName": project, "serviceName": service }),
     )
+}
+
+/// One step of the database browser, start to finish: what the engine needs,
+/// what it was asked, and what it answered.
+///
+/// Every failure on the way — an unsupported engine, an unreachable panel, a
+/// broken query — comes back as `Resp::DbmsFailed` so the screen can SAY it. The
+/// one thing this must never do is return an empty grid for a step that failed.
+#[allow(clippy::too_many_arguments)]
+fn dbms_step(
+    client: &EasypanelClient,
+    project: String,
+    service: String,
+    stype: String,
+    level: super::dbms::Level,
+    database: String,
+    table: String,
+    query: String,
+) -> Resp {
+    use super::dbms::Level;
+    use crate::dbms;
+
+    let Some(engine) = dbms::Engine::from_service_type(&stype) else {
+        return Resp::DbmsFailed {
+            message: dbms::unsupported_reason(&stype)
+                .unwrap_or_else(|| format!("{stype} cannot be browsed")),
+        };
+    };
+    let inspect = match client.call(
+        &format!("services/{stype}"),
+        "inspectService",
+        json!({ "projectName": project, "serviceName": service }),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            return Resp::DbmsFailed {
+                message: e.to_string(),
+            }
+        }
+    };
+    let creds = dbms::creds(engine, &inspect);
+
+    let command = match level {
+        Level::Databases => dbms::list_databases_cmd(engine, &creds),
+        Level::Tables => dbms::list_tables_cmd(engine, &creds, &database),
+        Level::Rows => dbms::preview_cmd(engine, &creds, &database, &table, dbms::PREVIEW_LIMIT),
+        Level::Query => dbms::query_cmd(engine, &creds, &database, &query),
+    };
+    // A listing is a fixed, cheap statement; what the user typed is not, and the
+    // cap is the only thing standing between a cartesian join and a frozen lane.
+    let cap = match level {
+        Level::Query | Level::Rows => Duration::from_secs(60),
+        _ => Duration::from_secs(20),
+    };
+    let capture = match crate::container::run_capture(client, &project, &service, &command, cap) {
+        Ok(c) => c,
+        Err(e) => {
+            return Resp::DbmsFailed {
+                message: e.to_string(),
+            }
+        }
+    };
+    if let Some(message) = dbms::failure(&capture.output, capture.exit_code) {
+        return Resp::DbmsFailed { message };
+    }
+
+    let grid = match level {
+        Level::Databases => dbms::Grid::from_names("Database", dbms::parse_names(&capture.output)),
+        Level::Tables => {
+            dbms::Grid::from_names(engine.table_word(), dbms::parse_names(&capture.output))
+        }
+        Level::Rows | Level::Query => dbms::parse_grid(engine, &capture.output),
+    };
+    Resp::Dbms {
+        project,
+        service,
+        level,
+        database,
+        table,
+        capped: level == Level::Rows && grid.rows.len() >= dbms::PREVIEW_LIMIT,
+        truncated: capture.truncated,
+        columns: grid.columns,
+        rows: grid.rows,
+    }
 }
 
 fn diff_services(

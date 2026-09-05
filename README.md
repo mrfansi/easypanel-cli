@@ -55,6 +55,16 @@ searchable table, and every domain on the box — without clicking through a hie
 - **One-key database shell** (`y`) — `mysql`, `psql`, `mongosh` or `redis-cli` already
   logged in with that service's own stored credentials. You never type a password, and
   it never appears in `ps`. Nothing like it in the panel.
+- **Browse and query a database from the TUI** (`Y`) — walk a mysql/mariadb/postgres/mongo
+  service's **databases → tables → rows** in a normal table, and run your own statement
+  (`e`) with the result in the same grid. It works by running that service's own client
+  in batch mode inside its container, so no port has to be exposed, no client has to be
+  installed here, and nothing is typed twice: the credentials come from the panel. The
+  row preview stops at 200 rows and **says so** in the title, and a failed statement
+  shows the engine's own message above your last result instead of an empty table.
+  Read-only by nature and by intent — there is no edit-a-cell or DDL builder; anything
+  you type in the query box is yours, exactly as typed. Redis is not offered here (it
+  has no tables to walk); `y` gives it a `redis-cli` instead.
 - **Database credentials, read and copy** (Shell menu → Credentials) — user, password,
   internal host/port and a ready-to-paste connection URL for any database service.
   Masked by default; `v` reveals, `c` copies the selected value to your clipboard (via
@@ -87,8 +97,10 @@ searchable table, and every domain on the box — without clicking through a hie
   watched, never all of them.
 - **Global search / command palette** (`:`) — jump to any service or tab by typing, and
   run any action on the selected row from the same box (`deploy karir`, `logs api`). It
-  knows every service from the moment the app starts, so it works before you have opened
-  anything.
+  also opens a **terminal**, an auto-login **DB shell** or the **database browser** on
+  *any* service without selecting it first (`shell api`, `psql`, `tables`) — from any
+  screen, for any project. It knows every service from the moment the app starts, so it
+  works before you have opened anything.
 - **Cloudflare beside EasyPanel** (`W`) — switch into account analytics, domains,
   Tunnels, R2 and Workers without leaving the terminal. The Cloudflare workspace has
   clickable product tabs, an account picker you can edit in place, row actions in the
@@ -192,6 +204,7 @@ container terminal has its own selection**, see below.
 | **Uptime** | The domains you enrolled, and what they last answered — broken ones first, then the slowest. Shows the status code, TTFB, total, and how a domain compares with its peers. `r` checks them all, `e` edits the request, `x` stops watching. |
 | **Services** | **Every project and service in one searchable table** — a project header (with its service count and aggregate metrics) followed by its services, so the hierarchy stays visible without drill-down. A colored status dot reads at a glance: green `active`, yellow `stopped`, gray `disabled`, cyan `deploying` (a build is running), and a pulsing red **`down`** for a crashed/restart-looping service (its Swarm replicas are missing), counted in the title. From a selected service you can do the lot, grouped into menus — logs, terminal & DB shell, deploy/restart/stop/start, clone, env (view/edit/replace/`.env` file), ports, mounts, redirects, domains, resource limits, basic auth, and a database's config file. Selecting a project header targets the project and opens its own menu (`Space`): migrate the whole project to another host, new service, new project, destroy project. |
 | **Viewer** | Scrollable pane for logs, env, ports, mounts, redirects, backups, source & build, and a two-service diff. Credentials are masked — a field whose name reads like a secret shows as `••••••••` rather than in the clear. Reached from a service; `Esc` goes back. In the ports/mounts/redirects view, a digit key deletes that row. **Logs tail live** — the pane sticks to the newest line and new output appears as it happens; scrolling up pauses the follow (the title says so) and `End` resumes it. Long lines are not wrapped — `←→` scroll sideways, and the pane says so at the bottom-right when a line runs past the edge, then shows which column you are on once you scroll. |
+| **Database** | Reached with `Y` from a database service (or `:` → `Browse database …`). Walks **databases → tables → rows**: `Enter` opens what is selected, `Esc` steps back one level and leaves the screen from the top, `r` re-runs the current step, and `e` runs a statement of your own (SQL, or a mongosh script) into the same grid. The title says which service, engine, database and table you are looking at and how much of it is shown; a row preview stops at 200 rows and names that cap. When the engine complains, its own message is shown under the grid you already had — never an empty table with nothing said. |
 
 ### Key bindings
 
@@ -216,7 +229,7 @@ container terminal has its own selection**, see below.
 | `u` | **Build & source** — source · build · auto deploy · resource limits · a database's **config file** |
 | `m` | **Storage** — mounts · backups |
 | `d` | **Lifecycle** — deploy · force rebuild (no cache) · restart · stop · start (each confirmed) |
-| `t` | **Shell** — container shell · DB shell · credentials (view & copy) |
+| `t` | **Shell** — container shell · DB shell · browse & query · credentials (view & copy) |
 | `x` | **Danger** — delete service · delete project |
 
 Inside a menu: `↑↓` select · `→` enter a submenu · `←` back · `Enter` run · `Esc` close.
@@ -236,6 +249,7 @@ reports each service that succeeded or failed — nothing is changed silently.
 |---|---|
 | `Enter` | logs for the selected service (**live**; `End` re-follows) · on **Actions**, the action's detail + deploy log |
 | `y` | **DB shell** — `mysql`/`psql`/`mongosh`/`redis-cli`, already logged in |
+| `Y` | **browse & query the database** — databases → tables → rows, plus a query box (`e`) |
 | `t` → Credentials | **view & copy** a database's user, password, host, port and connection URL (`v` reveal · `c` copy) |
 | `g` | **search a keyword across every service's logs at once** |
 | `c` | **clone the service's config into a new service** (any project) |
@@ -464,6 +478,14 @@ easypanel db dump <project> <service> --databases a,b,c   # or --all
 easypanel db list <project> <service>                     # the dumps written so far
 easypanel db restore <project> <service> --path <key> [--yes]
 
+# Copy a database from one service into another (add --to-server for another host)
+easypanel db copy <src-project> <src-service> <dst-project> <dst-service> --all [--yes]
+
+# Browse & query a database through its own client, inside its container
+easypanel db databases <project> <service>
+easypanel db tables <project> <service> [--database D]
+easypanel db query <project> <service> "SELECT id, email FROM users LIMIT 5" [--database D]
+
 # Maintenance (active server)
 easypanel maintenance info|prune|cleanup-images|cleanup-builder [--yes]
 
@@ -512,6 +534,93 @@ This is the *tool's* backup, so it does **not** appear in EasyPanel's own restor
 UI — restore it with `db restore`. It buffers to the container's `/tmp` during the
 run (needs free space ≈ the compressed size), and never prints your storage secret
 or the database root password.
+
+### Copy a database from one service into another
+
+`db copy` moves databases between two database services — a different project, or
+a different EasyPanel host with `--to-server`. It is `db dump` and `db restore`
+composed, so the data goes **container → storage → container** over presigned URLs
+and never touches this machine:
+
+```bash
+# Same host, into a staging service
+easypanel db copy shop mysql shop-staging mysql --databases studio,billing
+
+# To another configured server (see: easypanel server list)
+easypanel db copy shop mysql shop mysql --all --to-server staging-host
+```
+
+In the **TUI** it is a menu item on a database service's **Storage ▸** menu —
+**"Copy databases into another service"**. It is the only flow here with a real
+**target picker**: every restore lands in the service the cursor is on, so the
+form asks for the target **host, project and service** separately. The host list
+starts with the one you are on, so a same-host copy into another project needs
+nothing unusual picked. Leaving **Databases** blank means all of them, the form's
+spelling of `--all`.
+
+It is two steps, like the command line: the plan is fetched and shown first —
+engine, databases, both images, the bucket and each panel's provider — and only
+then does it ask. Because this is the most destructive thing in the tool (it
+overwrites databases on a host that may not even be the one on screen), the
+confirmation is **typed, not `y`**: you retype the target service's name. The
+dialog's `Target:` line names the destination `host/project/service`, not the host
+you are viewing. Progress reports on the status line through both halves —
+`dumping`, `compressing`, `uploading`, then `downloading`, `decompressing`,
+`importing`.
+
+Copying to another host requires **the same bucket registered as a storage
+provider on both panels**: the load presigns its download against the *target's*
+own provider, so a dump written to a bucket the target does not have is a dump it
+cannot read. The provider **ids** may differ — they are per-panel — and are not
+compared; only the bucket and endpoint must match, and `db copy` checks them before
+dumping anything. Name a provider with `--provider` when a panel has several; use
+its **name**, since that is the value that can match on both sides.
+
+Everything else it refuses, it also refuses before dumping a byte: postgres and
+mongo (no single-`.sql.gz` dump here yet — EasyPanel's own backup does accept them),
+redis (it holds keys, not schemas), and a **mismatch between the two engines**,
+which is refused rather than warned about, because the dump is written by the
+source's tool and read by the target's client and a mismatch fails *inside* the
+load. Version skew is reported rather than predicted: the pre-flight prints both
+services' images, so you see `mysql:8` → `mysql:5.7` before confirming — no tag can
+tell you whether a load will fit.
+
+**The target is overwritten.** The confirmation names the databases and says so
+(`--yes` skips it). A load has no transaction around it, so if one fails partway
+the target **may be partially written** — some of the dump's tables replaced and
+some not — and the error says that instead of implying nothing happened. The dump
+is kept afterwards and filed under the **source** service, so it shows up in
+`easypanel db list <src-project> <src-service>` and *not* under the target; the
+copy prints the full object key, and a failed load tells you the one `db restore`
+command that retries just the load without dumping again.
+
+### Browse and query a database
+
+EasyPanel has no query surface and no exec endpoint, so this asks the database
+itself: it runs **that service's own client in batch mode inside its container**
+(`mysql --batch --raw`, `psql -A -F<tab>`, `mongosh --quiet --eval`) over the same
+WebSocket the embedded shell uses, and turns the tab-separated (or JSON) output
+back into a table. No port has to be exposed, no client has to be installed here,
+and the credentials come from the panel — you never type a password.
+
+```bash
+easypanel db databases shop mysql                       # what the server holds
+easypanel db tables shop mysql --database shop          # or its collections, on mongo
+easypanel db query shop mysql "SELECT id, email FROM users LIMIT 5"
+easypanel db query shop mongo 'db.users.find().limit(5).forEach(d=>print(JSON.stringify(d)))'
+```
+
+In the **TUI** it is a screen: `Y` on a database service (or `:` →
+`Browse database …`) walks databases → tables → rows, and `e` runs a statement
+into the same grid.
+
+What it deliberately is not: there is **no cell editor, no DDL builder and no
+export**. A statement is sent exactly as typed — nothing is added to it, no LIMIT
+is injected — so an unbounded `SELECT` is your decision, the same as it would be
+in the shell (`y`). Row previews do carry a 200-row cap, and the screen says so
+rather than quietly showing you part of a table. **Redis is not offered**: it has
+no databases-with-tables to walk and no result that is a grid, so it keeps its
+`redis-cli` shell instead of getting a key browser pretending to be a table.
 
 ### Export a project's config
 
@@ -747,6 +856,15 @@ Stated plainly, because a README that promises what the code doesn't do is a bug
   worth knowing: it silently sets `autoDeploy` to `false` on every successful call, so
   merely changing a branch disables auto-deploy. This CLI restores the value afterwards
   and exposes it as a toggle. Any client that doesn't will quietly break your deploys.
+- **The database browser reads through the container shell, with the limits that
+  implies.** There is no query endpoint in EasyPanel, so results come back as a
+  client's batch output over a WebSocket: a value containing a tab or a newline can
+  shift its row (mysql `--raw` does not escape them; such a row is kept, never
+  dropped), a very large result is cut at 256 KB and says so, and a step that takes
+  longer than 60 s reports "may still be running · output may be incomplete" rather
+  than pretending the answer is empty. The client flags used for each engine come from
+  their documented batch options; they have not been re-verified against every image
+  version.
 
 ## How it talks to EasyPanel
 

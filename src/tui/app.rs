@@ -50,6 +50,9 @@ pub(super) enum Screen {
     /// A database service's connection identity (user, password, host, URL),
     /// opened from a service. Read-only, with reveal + copy.
     Credentials,
+    /// Browsing a database service: its databases, their tables, a table's rows,
+    /// and a free-form query. Opened from a service, like Terminal.
+    Dbms,
 }
 
 /// Viewer is deliberately NOT here: it's the result of opening something on a
@@ -124,7 +127,7 @@ impl Screen {
             Screen::Uptime => 7,
             // Viewer & Terminal are always opened from Projects, so that tab stays
             // highlighted — neither has its own tab.
-            Screen::Viewer | Screen::Terminal | Screen::Credentials => 6,
+            Screen::Viewer | Screen::Terminal | Screen::Credentials | Screen::Dbms => 6,
         }
     }
     pub(super) fn next(self) -> Self {
@@ -137,7 +140,9 @@ impl Screen {
             Screen::Domains => Screen::Projects,
             Screen::Projects => Screen::Uptime,
             Screen::Uptime => Screen::Dashboard,
-            Screen::Viewer | Screen::Terminal | Screen::Credentials => Screen::Dashboard,
+            Screen::Viewer | Screen::Terminal | Screen::Credentials | Screen::Dbms => {
+                Screen::Dashboard
+            }
         }
     }
     /// The previous tab (for ←). Wraps through TAB_SCREENS; Viewer/Terminal count
@@ -769,6 +774,23 @@ pub(super) struct MigrateReq {
     pub(super) services: Vec<(String, String, String)>,
 }
 
+/// A database copy waiting for its target token, which only event_loop can look
+/// up. Same rule as `MigrateReq`: the App holds a server NAME, never a token.
+///
+/// Used for BOTH stages — `run: false` asks for the plan, `run: true` (set by the
+/// typed confirmation) asks for the copy. The target may be THIS host, so unlike
+/// a migration `target_server` is not required to differ from the current one.
+pub(super) struct CopyDbReq {
+    pub(super) target_server: String,
+    pub(super) target_project: String,
+    pub(super) target_service: String,
+    /// The source, as (project, service).
+    pub(super) source: (String, String),
+    /// Empty means every non-system database the source holds.
+    pub(super) databases: Vec<String>,
+    pub(super) run: bool,
+}
+
 /// Does this status line report a failure?
 ///
 /// ONE definition, because two consumers must agree: `render` colours it, and the
@@ -816,6 +838,14 @@ pub(super) struct App {
     /// Set by the migrate form; event_loop resolves the destination token and
     /// hands the work to the worker.
     pub(super) migrate_req: Option<MigrateReq>,
+    /// A database copy waiting for the event loop to resolve the target host's
+    /// token. Carries both stages — see `CopyDbReq::run`.
+    pub(super) copy_db_req: Option<CopyDbReq>,
+    /// A planned copy the confirmation is about to act on. Separate from
+    /// `copy_db_req`, which the event loop TAKES: this one waits for
+    /// `confirm_key` to promote it, so a copy cannot reach the worker without
+    /// passing through the typed confirmation.
+    pub(super) copy_pending: Option<CopyDbReq>,
     /// A cross-host compare waiting for the event loop to resolve the target
     /// host's token (which only the ServerConfig holds).
     pub(super) diff_across_req: Option<DiffAcrossReq>,
@@ -947,6 +977,10 @@ pub(super) struct App {
     /// through this struct among the tabs, the filter and the terminal.
     pub(super) backups: BackupUi,
 
+    /// The database browser's state: which service, how deep, and the grid it is
+    /// showing (see `super::dbms::DbmsUi`).
+    pub(super) dbms: super::dbms::DbmsUi,
+
     /// Services marked for a bulk action, as (project, service).
     ///
     /// The service TYPE is deliberately not stored: it is looked up at dispatch
@@ -1019,6 +1053,8 @@ impl App {
             chooser: None,
             server_action: None,
             migrate_req: None,
+            copy_db_req: None,
+            copy_pending: None,
             diff_across_req: None,
             diff_project_across_req: None,
             restore_from_req: None,
@@ -1070,6 +1106,7 @@ impl App {
             services_table: TableState::default(),
             viewer: super::viewer::ViewerUi::default(),
             backups: BackupUi::default(),
+            dbms: super::dbms::DbmsUi::default(),
             marked: HashSet::new(),
             select_all_services: false,
             filter: String::new(),
@@ -1188,12 +1225,7 @@ impl App {
     /// event_loop fetches its contents, opens the editor, then saves.
     pub(super) fn start_config_edit(&mut self) {
         match self.selected_row() {
-            Some((p, s, t))
-                if matches!(
-                    t.as_str(),
-                    "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
-                ) =>
-            {
+            Some((p, s, t)) if crate::lifecycle::is_database(&t) => {
                 self.edit_config = Some((p, s, t));
             }
             Some((_, _, t)) => {
@@ -1215,12 +1247,7 @@ impl App {
     /// A database shell with auto login (mysql/mariadb/postgres/mongo/redis).
     pub(super) fn start_db_shell(&mut self) {
         match self.selected_row() {
-            Some((project, service, stype))
-                if matches!(
-                    stype.as_str(),
-                    "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
-                ) =>
-            {
+            Some((project, service, stype)) if crate::lifecycle::is_database(&stype) => {
                 self.terminal_req = Some((project, service, Some(stype)));
             }
             Some((_, _, stype)) => {
@@ -1230,16 +1257,68 @@ impl App {
         }
     }
 
+    /// Browse the SELECTED database service: its databases, their tables, a
+    /// table's rows, and a free-form query.
+    pub(super) fn start_dbms(&mut self, req: &Sender<Req>) {
+        match self.selected_row() {
+            Some((project, service, stype)) => self.open_dbms(project, service, stype, req),
+            None => self.status = "Select a service first".into(),
+        }
+    }
+
+    /// Browse a database service BY IDENTITY — so the palette can open it with
+    /// nothing selected, and for a service on another tab.
+    pub(super) fn open_dbms(
+        &mut self,
+        project: String,
+        service: String,
+        stype: String,
+        req: &Sender<Req>,
+    ) {
+        // One definition of what can be browsed (redis says where to go
+        // instead), so the key, the menu and the palette cannot disagree.
+        if let Some(why) = crate::dbms::unsupported_reason(&stype) {
+            self.status = why;
+            return;
+        }
+        self.dbms = super::dbms::DbmsUi {
+            target: Some((project, service, stype)),
+            ..Default::default()
+        };
+        self.screen = Screen::Dbms;
+        self.dbms_fetch(super::dbms::Level::Databases, req);
+    }
+
+    /// Ask the worker for one step of the browser. The level decides which
+    /// command is built; `database`/`table` come from where the walk has got to.
+    pub(super) fn dbms_fetch(&mut self, level: super::dbms::Level, req: &Sender<Req>) {
+        let Some((project, service, stype)) = self.dbms.target.clone() else {
+            return;
+        };
+        self.dbms.loading = true;
+        self.dbms.error = None;
+        self.status = match level {
+            super::dbms::Level::Databases => "Reading databases...".into(),
+            super::dbms::Level::Tables => format!("Reading tables in {}...", self.dbms.database),
+            super::dbms::Level::Rows => format!("Reading rows of {}...", self.dbms.table),
+            super::dbms::Level::Query => "Running the query...".to_string(),
+        };
+        let _ = req.send(Req::Dbms {
+            project,
+            service,
+            stype,
+            level,
+            database: self.dbms.database.clone(),
+            table: self.dbms.table.clone(),
+            query: self.dbms.last_query.clone(),
+        });
+    }
+
     /// Show a database service's stored credentials (user, password, host, port,
     /// connection URL). event_loop inspects the service and fills `creds`.
     pub(super) fn start_credentials(&mut self) {
         match self.selected_row() {
-            Some((project, service, stype))
-                if matches!(
-                    stype.as_str(),
-                    "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
-                ) =>
-            {
+            Some((project, service, stype)) if crate::lifecycle::is_database(&stype) => {
                 self.credentials_req = Some((project, service, stype));
                 self.status = "Reading credentials...".into();
             }
@@ -1326,9 +1405,10 @@ impl App {
         // content, so fall back to Services.
         if matches!(
             self.screen,
-            Screen::Viewer | Screen::Terminal | Screen::Credentials
+            Screen::Viewer | Screen::Terminal | Screen::Credentials | Screen::Dbms
         ) {
             self.screen = Screen::Projects;
+            self.dbms.target = None;
         }
         self.term.input = None;
         self.term.parser = None;
@@ -1358,7 +1438,10 @@ impl App {
     /// Terminal is absent on purpose: its keystrokes go straight to the shell and
     /// never reach this dispatch.
     pub(super) fn screen_owns_esc(&self) -> bool {
-        matches!(self.screen, Screen::Viewer | Screen::Credentials)
+        matches!(
+            self.screen,
+            Screen::Viewer | Screen::Credentials | Screen::Dbms
+        )
     }
 
     /// Switch the top-level workspace. Entering Cloudflare lands on the Zones home
@@ -3333,6 +3416,60 @@ impl App {
                     "[Enter] restore the selected backup · [Esc] back".into()
                 };
             }
+            // A copy that has been planned but not run. Stage two: show what the
+            // plan resolved and ask — with the target service TYPED, not `y`.
+            //
+            // This is the most destructive operation in the tool: it overwrites
+            // databases on a host that may not even be the one on screen. The
+            // plain y/n path is what the less dangerous ops use; typing the target
+            // service's name is the one confirmation that cannot be given by
+            // reflex, and it makes the operator restate WHICH service they mean.
+            Resp::CopyDbPlan {
+                target_name,
+                target_project,
+                target_service,
+                project,
+                service,
+                databases,
+                lines,
+            } => {
+                let dest = format!("{target_name}/{target_project}/{target_service}");
+                // No "type the name to confirm" line here: `render_confirm`
+                // already prints `Type:` and `[Enter] confirm when it matches
+                // {name}` for an `expect:` confirmation, and a dialog that says it
+                // twice is two rows nearer to pushing those very keys off the
+                // bottom of a 24-row terminal.
+                let label = format!(
+                    "Copy {} database(s) from {project}/{service}\n\n{}\n\n\
+                     Those databases on the target will be OVERWRITTEN and cannot \
+                     be recovered.",
+                    databases.len(),
+                    lines.join("\n"),
+                );
+                // Held here rather than in the Confirm, so a copy cannot reach the
+                // worker without passing through `confirm_key`.
+                self.copy_pending = Some(CopyDbReq {
+                    target_server: target_name,
+                    target_project,
+                    target_service: target_service.clone(),
+                    source: (project, service),
+                    databases,
+                    run: true,
+                });
+                self.confirm = Some(Confirm {
+                    action: "copy-db".into(),
+                    // The DESTINATION, which is what the dialog's "Target:" line
+                    // must name — for every other confirmation the target is on the
+                    // host being viewed, and for this one it may not be.
+                    project: dest,
+                    // `service` is the typed-input buffer for an `expect:`
+                    // confirmation, so it starts empty rather than naming anything.
+                    service: String::new(),
+                    stype: format!("expect:{target_service}"),
+                    label,
+                });
+                self.status = "Type the target service name, then Enter".into();
+            }
             // Succeeded, with something the user must act on. The viewer, because
             // the status line is one line and these sentences are longer than any
             // terminal: the clone note explaining WHY a config file was held back
@@ -3501,6 +3638,43 @@ impl App {
                     self.screen = Screen::Projects;
                     self.status = format!("Terminal {} closed", self.term.title);
                 }
+            }
+            Resp::Dbms {
+                project,
+                service,
+                level,
+                database,
+                table,
+                columns,
+                rows,
+                capped,
+                truncated,
+            } => {
+                // A reply for a service we are no longer looking at (a second
+                // browser opened, or the screen closed) must not overwrite the
+                // grid on screen.
+                let mine = self
+                    .dbms
+                    .target
+                    .as_ref()
+                    .is_some_and(|(p, s, _)| *p == project && *s == service);
+                if !mine {
+                    return;
+                }
+                self.dbms
+                    .show(level, database, table, columns, rows, capped, truncated);
+                self.screen = Screen::Dbms;
+                // One wording for "how much is this", shared with the pane title:
+                // two of them would eventually disagree about the same number.
+                self.status = self.dbms.count_note();
+            }
+            Resp::DbmsFailed { message } => {
+                // The message goes ON the screen that asked, not only into the
+                // status line — and the previous grid stays, so it is clear WHAT
+                // failed rather than everything vanishing.
+                self.dbms.loading = false;
+                self.dbms.error = Some(message.clone());
+                self.status = format!("Error: {message}");
             }
             Resp::Progress(msg) => self.status = msg,
             Resp::Done(msg, what) => {
@@ -4931,6 +5105,59 @@ impl App {
         self.status = "Reading the databases in this service...".into();
     }
 
+    /// Open the "copy databases into another service" form.
+    ///
+    /// The one thing the restore flows have never had is a TARGET picker: every
+    /// restore lands in the service the cursor is on, so moving a database
+    /// somewhere else meant leaving the TUI. The host and project pickers follow
+    /// `open_migrate_form`; the target SERVICE is new, and so is the fact that the
+    /// target host may be THIS one.
+    ///
+    /// Which is why the host list INCLUDES the current server, first — a same-host
+    /// copy into another project is the common case, and it must not require
+    /// picking anything unusual. A migration excludes it (copying a config onto
+    /// its own host under the same name is a no-op); a copy does not.
+    pub(super) fn open_copy_db_form(&mut self) {
+        let Some((project, service, stype)) = self.selected_row() else {
+            self.status = "Select a database first".into();
+            return;
+        };
+        // The same predicate `dump::copy_refusal` refuses on, asked before the
+        // form rather than after the plan: offering a form that can only end in a
+        // refusal wastes the operator's typing.
+        if !crate::dump::can_dump(&stype) {
+            self.status =
+                format!("A copy needs a mysql or mariadb service; {service} is '{stype}'");
+            return;
+        }
+        // This host first, so Enter through the form is a same-host copy.
+        let mut hosts = vec![self.server_name.clone()];
+        hosts.extend(
+            self.all_servers
+                .iter()
+                .map(|(n, _)| n.clone())
+                .filter(|n| *n != self.server_name),
+        );
+        let fields = vec![
+            Field::choice_owned("To server", hosts, &self.server_name),
+            // Free text for both, not dropdowns: the target may be on a host that
+            // has not been contacted yet, so neither its projects nor its services
+            // are known here. Same reasoning as the migrate form's target project.
+            Field::text("Target project", &project),
+            Field::text("Target service", &service),
+            // Blank = every non-system database, the form's spelling of `--all`.
+            Field::text("Databases (blank = all)", ""),
+        ];
+        self.form = Some(
+            Form::new(
+                FormKind::CopyDatabase { project, service },
+                " Copy databases into another service ",
+                fields,
+            )
+            .with_note("the target's copies of these databases are OVERWRITTEN".to_string()),
+        );
+    }
+
     pub(super) fn backup_now(&mut self, req: &Sender<Req>) {
         self.backups.r2_mode = false;
         let Some((project, service, stype)) = self.selected_row() else {
@@ -5734,6 +5961,45 @@ impl App {
                     services,
                 });
             }
+            FormKind::CopyDatabase { project, service } => {
+                let target_server = form.by_label("To server");
+                let target_project = form.by_label("Target project").trim().to_string();
+                let target_service = form.by_label("Target service").trim().to_string();
+                if target_server.is_empty() {
+                    self.status = "Choose the target server first".into();
+                    return;
+                }
+                if target_project.is_empty() || target_service.is_empty() {
+                    self.status = "Name the target project and service first".into();
+                    return;
+                }
+                // Copying a service into itself would dump and then load the same
+                // rows back over themselves — pointless, and it reads as a mistake.
+                if target_server == self.server_name
+                    && target_project == *project
+                    && target_service == *service
+                {
+                    self.status = "That is the source itself — name a different service".into();
+                    return;
+                }
+                let databases: Vec<String> = form
+                    .by_label("Databases (blank = all)")
+                    .split(',')
+                    .map(|d| d.trim().to_string())
+                    .filter(|d| !d.is_empty())
+                    .collect();
+                // Stage one: the PLAN. Nothing is dumped until the confirmation
+                // that shows it comes back.
+                self.copy_db_req = Some(CopyDbReq {
+                    target_server,
+                    target_project,
+                    target_service,
+                    source: (project.clone(), service.clone()),
+                    databases,
+                    run: false,
+                });
+                self.status = "Checking both ends...".into();
+            }
             FormKind::DeployEdit { project, service } => match deploy_body(form) {
                 Ok(deploy) => {
                     let _ = req.send(Req::DeploySave {
@@ -5845,6 +6111,19 @@ impl App {
                 self.status = format!("Searching '{query}' across all services...");
                 let _ = req.send(Req::LogSearch { query });
                 self.form = None;
+                return;
+            }
+            FormKind::DbQuery => {
+                let query = form.by_label("Query");
+                if query.trim().is_empty() {
+                    self.status = "Type a statement first".into();
+                    return;
+                }
+                self.form = None;
+                // Remembered before the request so reopening the box (after an
+                // error, most of all) starts from what was typed, not a blank.
+                self.dbms.last_query = query;
+                self.dbms_fetch(super::dbms::Level::Query, req);
                 return;
             }
             FormKind::PortCreate { project, service } => match port_body(form) {
@@ -6597,6 +6876,8 @@ impl App {
             Screen::Hosts => self.load_hosts = true,
             // A credentials snapshot doesn't poll; reopening it re-reads.
             Screen::Terminal | Screen::Credentials => {}
+            // Re-run the step that is on screen, whatever depth it is at.
+            Screen::Dbms => self.dbms_fetch(self.dbms.level, req),
             Screen::Maintenance => {
                 let _ = req.send(Req::MaintInfo);
             }

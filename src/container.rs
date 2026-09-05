@@ -141,6 +141,149 @@ pub(crate) fn run_once(
     Ok(out)
 }
 
+/// The markers that FRAME a captured one-shot. Both are printed by `printf` with
+/// a `%s` placeholder, so the RESOLVED form (`__EZP_OUT_ok__`,
+/// `__EZP_RC_0__`) can only come from the command actually running: a PTY echoes
+/// the input line back, and that echo carries the literal `%s`. Same
+/// echo-discrimination the detached launcher relies on ([`FIRED`]).
+const OUT_MARK: &str = "__EZP_OUT_ok__";
+const RC_PREFIX: &str = "__EZP_RC_";
+
+/// How much captured text is kept. A `SELECT *` on a large table would otherwise
+/// stream until the cap elapsed and hold all of it in memory; past this the read
+/// stops and the result says it was cut, which is the honest thing to show above
+/// a grid.
+const MAX_CAPTURE_BYTES: usize = 256 * 1024;
+
+/// What a framed one-shot printed, whether it succeeded, and whether it fitted.
+///
+/// Kept apart from [`Run`]: that one describes a DETACHED job (its `output` is
+/// "what it printed WHEN IT FAILED", and it has no notion of a result being cut
+/// short), while this is the whole point here — a query's rows, its exit status,
+/// and whether there were more of them than we were willing to hold.
+pub(crate) struct Capture {
+    /// Everything the command printed between the two markers, `\r` stripped.
+    pub output: String,
+    /// The command's exit status. `None` = the closing marker never arrived
+    /// within `cap`, so the command may still be running and `output` may be a
+    /// fragment — NOT the same thing as "it finished and printed nothing".
+    pub exit_code: Option<i32>,
+    /// The read stopped at [`MAX_CAPTURE_BYTES`]; there was more.
+    pub truncated: bool,
+}
+
+/// The input line that runs `command` between two resolved markers and reports
+/// its exit status.
+///
+/// `command` is NOT re-quoted: it is sent as a shell line exactly as built, the
+/// same contract [`run_once`] has. The markers each start on a fresh line, so
+/// neither can be split by the PTY wrapping a long line of output.
+fn capture_line(command: &str) -> String {
+    format!("printf '\\n__EZP_OUT_%s__\\n' ok ; {command} ; printf '\\n__EZP_RC_%s__\\n' $?\n")
+}
+
+/// The exit code carried by the closing marker, and where in the text it starts.
+///
+/// Only a marker with DIGITS counts: `__EZP_RC_%s__` is the shell's echo of what
+/// we typed, `__EZP_RC_0__` is the shell answering.
+fn find_rc(text: &str) -> Option<(i32, usize)> {
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(RC_PREFIX) {
+        let at = from + rel;
+        let rest = &text[at + RC_PREFIX.len()..];
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if !digits.is_empty() && rest[digits.len()..].starts_with("__") {
+            if let Ok(code) = digits.parse::<i32>() {
+                return Some((code, at));
+            }
+        }
+        from = at + RC_PREFIX.len();
+    }
+    None
+}
+
+/// Split a raw captured stream into what the command printed and how it ended.
+///
+/// The opening marker is what drops the shell's echo of our own input line: the
+/// echo cannot contain the resolved marker, so everything up to and including it
+/// is noise (the echo, any login banner) and everything after it is output. With
+/// no opening marker at all (a shell that never ran the line) nothing is thrown
+/// away — a fragment the caller can read beats a blank.
+fn parse_capture(raw: &str, truncated: bool) -> Capture {
+    let clean = raw.replace('\r', "");
+    let (exit_code, end) = match find_rc(&clean) {
+        Some((code, at)) => (Some(code), at),
+        None => (None, clean.len()),
+    };
+    let body = &clean[..end];
+    let payload = match body.find(OUT_MARK) {
+        Some(i) => &body[i + OUT_MARK.len()..],
+        None => body,
+    };
+    Capture {
+        output: payload.trim_matches('\n').to_string(),
+        exit_code,
+        truncated,
+    }
+}
+
+/// Run ONE command and capture what it printed, framed by markers so the result
+/// is COMPLETE rather than merely quiet.
+///
+/// [`run_once`] stops after 1.2 s with nothing new, which is right for a poll but
+/// wrong for a query: a statement that thinks for two seconds before printing
+/// anything would come back empty, indistinguishable from a result set with no
+/// rows. Here the read continues until the closing marker arrives (the command
+/// has exited), the socket closes, `cap` elapses, or the byte budget is spent —
+/// and each of those is reported for what it is.
+pub(crate) fn run_capture(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    command: &str,
+    cap: Duration,
+) -> Result<Capture> {
+    let url = ws_url(client, project, service, "sh")?;
+    let (mut ws, _) = tungstenite::connect(&url)?;
+    set_read_timeout(&mut ws, Duration::from_millis(200));
+    ws.send(Message::Text(
+        json!({ "input": capture_line(command) }).to_string(),
+    ))
+    .map_err(|e| anyhow!("failed to send command: {}", connect_failure(&e)))?;
+
+    let start = std::time::Instant::now();
+    let mut out = String::new();
+    let mut truncated = false;
+    while start.elapsed() < cap {
+        match ws.read() {
+            Ok(Message::Text(t)) => {
+                if let Some(o) = serde_json::from_str::<Value>(&t)
+                    .ok()
+                    .and_then(|v| v.get("output").and_then(Value::as_str).map(String::from))
+                {
+                    out.push_str(&o);
+                    if find_rc(&out).is_some() {
+                        break;
+                    }
+                    if out.len() > MAX_CAPTURE_BYTES {
+                        truncated = true;
+                        break;
+                    }
+                }
+            }
+            Ok(Message::Close(_)) => break,
+            Ok(_) => {}
+            // A read timeout is the normal quiet case, not a failure: the command
+            // is still working.
+            Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+    }
+    let _ = ws.close(None);
+    Ok(parse_capture(&out, truncated))
+}
+
 /// A resolved marker (`printf '…%s…' ok`) that appears ONLY in the shell's output,
 /// never in the echoed input line (a PTY echoes what we type, and the echo carries
 /// the literal `%s`, not `ok`) — so seeing it means the launch actually ran.
@@ -385,5 +528,65 @@ mod tests {
             line.contains(r"echo $? > '\''/tmp/r.done'\''"),
             "captures the command's exit code into the sentinel"
         );
+    }
+
+    #[test]
+    fn a_capture_drops_the_shells_echo_and_reads_the_exit_code() {
+        // What a PTY really returns: our input line echoed back (carrying the
+        // literal %s), then the resolved opening marker, the rows, the resolved
+        // closing marker.
+        let raw = concat!(
+            "printf '\\n__EZP_OUT_%s__\\n' ok ; mysql -e 'SELECT 1' ; printf '\\n__EZP_RC_%s__\\n' $?\r\n",
+            "\r\n__EZP_OUT_ok__\r\n",
+            "1\t2\r\n",
+            "\r\n__EZP_RC_0__\r\n"
+        );
+        let cap = parse_capture(raw, false);
+        assert_eq!(cap.output, "1\t2", "only what the command printed");
+        assert_eq!(cap.exit_code, Some(0));
+        assert!(!cap.truncated);
+
+        // A failing command: its message is the payload, its status is carried.
+        let failed = parse_capture(
+            "\n__EZP_OUT_ok__\nERROR 1064 (42000): bad syntax\n\n__EZP_RC_1__\n",
+            false,
+        );
+        assert_eq!(failed.output, "ERROR 1064 (42000): bad syntax");
+        assert_eq!(failed.exit_code, Some(1));
+    }
+
+    #[test]
+    fn no_closing_marker_means_incomplete_not_empty() {
+        // The echo alone must not be mistaken for a finished run: it carries
+        // `%s`, never a number, so there is no exit code to read.
+        let echo_only =
+            "printf '\\n__EZP_OUT_%s__\\n' ok ; sleep 60 ; printf '\\n__EZP_RC_%s__\\n' $?\n";
+        let cap = parse_capture(echo_only, false);
+        assert_eq!(cap.exit_code, None, "an echoed marker is not an answer");
+
+        // Output started arriving but the command had not finished: the rows are
+        // kept AND the caller is told the status is unknown.
+        let partial = parse_capture("\n__EZP_OUT_ok__\nid\tname\n1\tAda\n", false);
+        assert_eq!(partial.output, "id\tname\n1\tAda");
+        assert_eq!(partial.exit_code, None);
+
+        // Truncation is carried through, so a cut result can say so.
+        assert!(parse_capture("\n__EZP_OUT_ok__\nx\n", true).truncated);
+    }
+
+    #[test]
+    fn capture_line_frames_the_command_with_resolved_markers() {
+        let line = capture_line("mysql -e 'SELECT 1'");
+        assert!(
+            line.starts_with("printf '\\n__EZP_OUT_%s__\\n' ok ; "),
+            "{line}"
+        );
+        assert!(
+            line.trim_end().ends_with("printf '\\n__EZP_RC_%s__\\n' $?"),
+            "the status is reported by the shell, not guessed: {line}"
+        );
+        // The command is passed through untouched — it is already a shell line.
+        assert!(line.contains("mysql -e 'SELECT 1'"), "{line}");
+        assert!(line.ends_with('\n'), "the line must be submitted");
     }
 }

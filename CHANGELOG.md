@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A database screen: browse and query a remote database from the TUI** (`Y` on a
+  database service, the Shell menu, or `:` → `Browse database …`). Until now the
+  only way into a database here was the raw interactive shell (`y`) — fine if you
+  already know the schema, useless for "what is even in this thing". The screen
+  walks **databases → tables → rows** as an ordinary table (`Enter` in, `Esc` back
+  one level and out at the top, `r` re-runs the step), and `e` opens a query box
+  whose result lands in the same grid. It works by running the service's OWN client
+  in batch mode inside its container — `mysql --batch --raw`, `psql -A -F<tab> -q -P
+  footer=off -P null=NULL`, `mongosh --quiet --eval` printing one JSON document per
+  line — so no port is exposed, no client is installed locally, and the credentials
+  come from the panel: you never type a password. Mongo columns are the UNION of the
+  documents' top-level keys in first-seen order, because a collection has no fixed
+  shape and letting the first document decide would hide fields the others have.
+  Everything about the result's honesty is deliberate: a row preview stops at 200
+  rows and NAMES that cap in the title, an over-long capture says it was cut, a step
+  that outruns its 60 s says it may still be running (which is not the same as "0
+  rows"), and a failed statement shows the engine's own message under the grid you
+  already had — an empty table is never the only sign that something broke. Also on
+  the command line, sharing the same module: `easypanel db databases|tables|query`.
+  **Redis is not offered** — it has no databases-with-tables to walk and no result
+  that is a grid, so it keeps `redis-cli` (`y`) instead of getting a key browser
+  dressed up as a table. Nothing writes on your behalf: there is no cell editor, no
+  DDL builder and no export, and a statement is sent exactly as typed — no LIMIT is
+  injected into it.
+
+- **`container::run_capture`: a one-shot container command whose result is
+  COMPLETE, not merely quiet.** The existing `run_once` stops after 1.2 s with
+  nothing new, which is right for polling a sentinel file and wrong for a query: a
+  statement that thinks for two seconds before printing would have come back empty,
+  indistinguishable from a result set with no rows. The new call frames the command
+  between two markers printed by the shell (`printf '…%s…'`, so the resolved form
+  can only come from the command actually RUNNING — a PTY echoes the literal `%s`),
+  reads until the closing marker carries the exit status, and reports a missing
+  marker as "timed out, output may be incomplete". The echo of our own input line is
+  dropped by the same discrimination, so the payload is what the command printed and
+  nothing else. `run_once` and `run_until_done` are untouched.
+
+- **`:` now opens a terminal or a DB shell on ANY service, not just the
+  highlighted one.** The palette's action rows described the row under the
+  cursor, so the one thing global search could not do was "open a shell on that
+  service over there" — you had to go to Services, find the row, then press `t`,
+  which is the browsing the palette exists to skip. Every service now carries its
+  own `Terminal  proj/svc` entry, and every database a `DB shell  proj/db  ·
+  mysql` entry, alongside the `Open …` jump it already had. They run **by
+  identity** — never by a highlighted row — so they work from the Dashboard, with
+  nothing selected, and for a service in another project. Searchable by the words
+  you would actually type rather than the label's wording: `shell api`, `console
+  api`, `psql`, `mongosh`, `redis-cli`, `sql db`. A DB shell is only offered where
+  one exists (mysql/mariadb/postgres/mongo/redis), from the same `lifecycle`
+  definition of "a database" the menu and the `y` key use — the four copies of
+  that type list this feature would have made five are now one.
+
 - **The embedded container terminal is selectable — drag to select, release to
   copy.** The pane paints the shell's screen cell by cell, and mouse capture is on
   for the whole session, so there was nothing there for the host terminal to
@@ -24,6 +76,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not to a screen row, so scrolling (or new output arriving) leaves it on the same
   text. `Esc` clears it — but only while something is selected, so vi still gets
   its `Esc` — and any key sent to the shell clears it too. Listed in `?`.
+
+- **`easypanel db copy <src-project> <src-service> <dst-project> <dst-service>` —
+  move a database from one service into another, on this host or on another one
+  with `--to-server`.** EasyPanel has no such endpoint; this is the two halves
+  that already existed, composed: the non-locking `db dump` out of the source
+  container and the schema-recreating `db restore` into the target, with the checks
+  that only make sense when you can see BOTH ends. The data never touches this
+  machine — it goes container→storage→container over presigned URLs — and
+  same-host is not a special case, only the same client used twice. mysql/mariadb,
+  the same pair `db dump` supports.
+  Everything it refuses, it refuses BEFORE dumping a byte, because every one of
+  these is otherwise discovered an hour and 25 GB later: an engine with no dump on
+  this path (postgres and mongo get pointed at EasyPanel's own backup, which does
+  accept them; redis is told it holds keys, not schemas); a **mismatch** between
+  the two engines, which is refused rather than warned about — the file is written
+  by the source's tool and read by the target's client, so a mismatch fails inside
+  the load, and that is the one failure that leaves a target half-written; and, for
+  a cross-host copy, **two panels whose storage names a different bucket or
+  endpoint**, since the load presigns against the *target's* provider and would
+  fetch nothing. Provider IDs are deliberately not compared — they are per-panel,
+  so only the bucket has to match. **A cross-host copy therefore needs the same
+  bucket registered on both panels.**
+  Version skew is *reported, not predicted*: the pre-flight prints both services'
+  images before the confirmation, so you see `mysql:8` → `mysql:5.7` while there is
+  still nothing overwritten to regret. No tag can tell you whether a load will fit,
+  so nothing here pretends to parse one. The confirmation names the databases and
+  says they will be **OVERWRITTEN** (`--yes` skips it, the convention the other
+  destructive db commands use). The dump is kept afterwards and filed under the
+  SOURCE service, so `db list <source>` stays truthful — which means it will *not*
+  appear under the target, so the copy prints the whole object key. And if the load
+  fails, the error carries that key plus the one `db restore` command that retries
+  only the load: the dump is the expensive half and must not have to be made twice.
+
+- **The same copy in the TUI: "Copy databases into another service" on a database
+  service's Storage ▸ menu — and the first real TARGET PICKER in the tool.** Every
+  restore here lands in the service the cursor happens to be on, which is why
+  moving a database anywhere else has always meant leaving the TUI. This form asks
+  for the target **host, project and service** as three separate fields. The host
+  list starts with the one you are already on (a migration excludes the current
+  host, because copying a config onto itself is a no-op; a copy into another
+  project on the same machine is the common case), so a same-host copy needs
+  nothing unusual picked. Leaving Databases blank means all of them — the form's
+  spelling of `--all`. Copying a service into itself is refused at submit.
+  Two steps, like the command line: the plan is fetched and SHOWN first — engine,
+  databases, both images, the bucket, each panel's provider — and only then does it
+  ask. The confirmation is **typed, not `y`**: you retype the target service's
+  name, because this is the most destructive operation in the tool and `y` is a
+  key a hand presses by reflex. The dialog's `Target:` line names the destination
+  `host/project/service` rather than the host you are viewing, which for this one
+  operation is not the machine being written to. The menu is gated by the same
+  predicate the core refuses on, so a redis or postgres service is never offered a
+  copy it would then be denied — and a refusal arrives as the engine's own
+  sentence, not as "failed". Both halves report on the status line.
+  **Deliberately not in the palette** (`:`): a palette entry runs in one
+  keystroke, and this needs a form and a typed confirmation before it may run at
+  all.
+
+- **A confirmation dialog can hold more than one line.** `Line::from` does not
+  break a string on its newlines — it smears the rows together — so a multi-line
+  body (the copy pre-flight is five key/value rows) rendered as one unreadable
+  run. The label is now split per line, and the dialog's height is measured per
+  line too: summing the whole string under-counted short lines, which is how the
+  `[Enter]`/`[Esc]` keys could end up pushed off the bottom of the very dialog
+  asking to approve something irreversible.
+
+### Changed
+
+- **A database restore now says how far it has got, instead of going silent for up
+  to an hour.** `db dump` has reported its phase and byte count since 0.98.12, but
+  the restore watched nothing at all — the half of the job where you most want to
+  know something is happening. It now reads the same two temp files backwards
+  (`downloading` → `decompressing` → `importing`) from the sizes the sentinel poll
+  was already collecting, so this costs no extra round trip. In the TUI it lands on
+  the status line like the dump's.
+  Reaching the `importing` phase also buys an honest failure. A load has no
+  transaction around it, so "the restore failed" never meant "nothing changed": a
+  failure after the import began now says the target **MAY BE PARTIALLY WRITTEN**,
+  with some of the dump's tables replaced and some not. A failure before it says
+  the target is *probably* untouched — probably, because the sentinel is polled
+  every 5 s and a load shorter than that could have been missed, and claiming
+  certainty there would be a guess dressed as a fact.
 
 ## [0.98.12] — 2026-08-10
 

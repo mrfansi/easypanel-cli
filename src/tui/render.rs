@@ -26,7 +26,7 @@ pub(super) const GLOBAL_KEYS: &[Key] = &[
     Key("?", "this help"),
     Key(
         ":",
-        "global search: jump to a service/tab; quick actions (deploy/restart/logs/…) for the selected service",
+        "global search: jump to a service/tab; terminal / DB shell / browse a database on ANY service; quick actions (deploy/restart/logs/…) for the selected one",
     ),
     Key("s", "server list (select/add/edit/delete)"),
     Key("r", "refresh"),
@@ -106,6 +106,10 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("p", "view ports"),
             Key("b", "view backups"),
             Key("y", "DB shell (auto login)"),
+            Key(
+                "Y",
+                "browse & query the database — databases, tables, rows, free-form query",
+            ),
             Key("c", "clone service (config, not data)"),
             Key("g", "search a word in the logs of ALL services"),
             Key("n", "new service"),
@@ -149,6 +153,13 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
             Key("v", "reveal / hide the password and connection URL"),
             Key("c / y / Enter", "copy the selected value to the clipboard"),
             Key("Esc", "back to Services"),
+        ],
+        Screen::Dbms => &[
+            Key("↑↓", "select a row"),
+            Key("Enter", "open the selected database / preview its rows"),
+            Key("e", "run a query (SQL, or JavaScript on mongo)"),
+            Key("r", "re-run this step"),
+            Key("Esc", "back one level — and out to Services at the top"),
         ],
     }
 }
@@ -231,6 +242,7 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
                 Screen::Viewer => render_viewer(f, chunks[1], app),
                 Screen::Terminal => render_terminal(f, chunks[1], app),
                 Screen::Credentials => render_credentials(f, chunks[1], app),
+                Screen::Dbms => render_dbms(f, chunks[1], app),
             }
         }
     }
@@ -3207,6 +3219,168 @@ pub(super) fn render_credentials(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
+/// The widths a result grid's columns get, and how many had to be left out.
+///
+/// A query's shape is not known in advance, so the layout is computed from the
+/// content: each column asks for what its widest value needs (bounded, since one
+/// long JSON blob must not push every other column off screen), then the widest
+/// give width back until the row fits. Columns are only DROPPED when even a
+/// floor-width row does not fit — and then the count is said out loud, because a
+/// silently missing column is a wrong answer.
+fn grid_widths(columns: &[String], rows: &[Vec<String>], avail: u16) -> (Vec<u16>, usize) {
+    const MIN: u16 = 6;
+    const MAX: u16 = 48;
+    let mut want: Vec<u16> = columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let widest = rows
+                .iter()
+                .filter_map(|r| r.get(i))
+                .map(|v| v.chars().count())
+                .max()
+                .unwrap_or(0);
+            (widest.max(c.chars().count()) as u16).clamp(MIN, MAX)
+        })
+        .collect();
+    let total = |w: &[u16]| w.iter().sum::<u16>() + w.len().saturating_sub(1) as u16;
+
+    while total(&want) > avail {
+        // Take from the widest first; when nothing can give any more, the row
+        // itself is too long and the last column goes.
+        let widest = want
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| **w > MIN)
+            .max_by_key(|(_, w)| **w)
+            .map(|(i, _)| i);
+        match widest {
+            Some(i) => want[i] -= 1,
+            None => {
+                if want.len() <= 1 {
+                    break;
+                }
+                want.pop();
+            }
+        }
+    }
+    // Spare room goes to the LAST column, so the grid fills its pane the way
+    // every other table here does and the widest values get the most of it.
+    let spare = avail.saturating_sub(total(&want));
+    if spare > 0 {
+        if let Some(last) = want.last_mut() {
+            *last += spare;
+        }
+    }
+    let hidden = columns.len() - want.len();
+    (want, hidden)
+}
+
+/// The database browser: one grid, whatever level it is showing, plus the
+/// engine's own error when there is one.
+pub(super) fn render_dbms(f: &mut Frame, area: Rect, app: &mut App) {
+    let colour = server_colour(&app.server_name);
+
+    // An error takes the bottom of the pane and leaves the grid above it: what
+    // failed stays visible next to what you were looking at, and an empty grid is
+    // never the only sign that something went wrong.
+    let (grid_area, err_area) = match &app.dbms.error {
+        Some(msg) => {
+            let width = area.width.saturating_sub(4).max(10) as usize;
+            let lines = (msg.chars().count() / width + 1).min(4) as u16 + 2;
+            let h = lines.min(area.height.saturating_sub(3));
+            let split = Layout::vertical([Constraint::Min(3), Constraint::Length(h)]).split(area);
+            (split[0], Some(split[1]))
+        }
+        None => (area, None),
+    };
+
+    if app.dbms.columns.is_empty() {
+        let note = if app.dbms.loading {
+            "  Asking the engine…"
+        } else {
+            "  Nothing to show"
+        };
+        f.render_widget(
+            Paragraph::new(note)
+                .style(Style::default().fg(Color::DarkGray))
+                .block(pane(app.dbms.title(), colour)),
+            grid_area,
+        );
+    } else {
+        // 2 borders + the 2-column highlight symbol.
+        let avail = grid_area.width.saturating_sub(4);
+        let (widths, hidden) = grid_widths(&app.dbms.columns, &app.dbms.rows, avail);
+        let shown = widths.len();
+        let headers: Vec<&str> = app
+            .dbms
+            .columns
+            .iter()
+            .take(shown)
+            .map(String::as_str)
+            .collect();
+        // Cut each value to the width its column actually got, with the ellipsis
+        // every other table here uses — ratatui would clip it at the pane edge
+        // with no mark, and a cut value reads as a complete, different one.
+        let rows: Vec<Vec<String>> = app
+            .dbms
+            .rows
+            .iter()
+            .map(|r| {
+                widths
+                    .iter()
+                    .enumerate()
+                    .map(|(i, w)| {
+                        crate::output::first_line(
+                            r.get(i).map(String::as_str).unwrap_or(""),
+                            *w as usize,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        let constraints: Vec<Constraint> = widths.iter().map(|w| Constraint::Length(*w)).collect();
+        let mut title = app.dbms.title();
+        if hidden > 0 {
+            title.push_str(&format!("· {hidden} more columns not shown "));
+        }
+        render_table(
+            f,
+            grid_area,
+            title,
+            &headers,
+            &constraints,
+            rows,
+            &mut app.dbms.row,
+            colour,
+            // NULL is a state, not a value: dimmed so it cannot be mistaken for
+            // the four-letter string.
+            |_, text| (text == "NULL").then(|| Style::default().fg(Color::DarkGray)),
+        );
+    }
+
+    // The keys THIS level has, on its own bottom border — the viewer's convention.
+    let hint = app.dbms.hint();
+    if grid_area.height >= 2 && (grid_area.width as usize) > hint.chars().count() + 4 {
+        let y = grid_area.y + grid_area.height - 1;
+        let x = grid_area.x + 2;
+        f.render_widget(
+            Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
+            Rect::new(x, y, hint.chars().count() as u16, 1),
+        );
+    }
+
+    if let (Some(rect), Some(msg)) = (err_area, app.dbms.error.clone()) {
+        f.render_widget(
+            Paragraph::new(format!(" {msg}"))
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(Color::Red))
+                .block(pane(" The engine said ", Color::Red)),
+            rect,
+        );
+    }
+}
+
 /// What marks a domain whose destination service no longer exists.
 const ORPHAN_MARK: &str = "✗";
 
@@ -4184,7 +4358,16 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
     let inner = w.saturating_sub(2).max(1) as usize;
     // Word wrapping can break earlier than a hard division, so round up and add a
     // line: a dialog one row too tall is harmless, one row too short hides the keys.
-    let label_lines = c.label.chars().count().div_ceil(inner) as u16 + 1;
+    //
+    // Counted PER LINE of the label, because a label may carry its own newlines (a
+    // copy shows its whole pre-flight here). Summing the whole string's length
+    // instead under-counts a short line and the keys fall out of the bottom.
+    let label_lines = c
+        .label
+        .lines()
+        .map(|l| (l.chars().count().div_ceil(inner)).max(1) as u16)
+        .sum::<u16>()
+        + 1;
     // blank + label + blank + server + target + blank + keys, plus the borders.
     let typed_extra = u16::from(c.stype.starts_with("expect:")) * 2;
     let h = (label_lines + 8 + typed_extra).min(full.height);
@@ -4251,17 +4434,24 @@ pub(super) fn render_confirm(f: &mut Frame, c: &Confirm, server: &str, cf_accoun
         // dialog. It is the last thing read before pressing y, so it is on its own
         // line, in that server's colour, above the target it applies to.
         let tint = server_colour(server);
-        let mut v = vec![
-            Line::from(""),
-            Line::from(c.label.clone()),
-            Line::from(""),
-            Line::from(Span::styled(
+        let mut v = vec![Line::from("")];
+        // One `Line` per line of the label. `Line::from` a string containing
+        // newlines does NOT break it — the rows run together into one unreadable
+        // smear, which is what a multi-line pre-flight used to render as.
+        v.extend(c.label.lines().map(|l| Line::from(l.to_string())));
+        v.push(Line::from(""));
+        // A copy WRITES TO ANOTHER HOST, so "on {server}" — which names the host
+        // this session is connected to — would name the wrong machine on the one
+        // dialog where that question matters most. Its target line carries the
+        // destination host instead, so the line is dropped rather than lying.
+        if c.action != "copy-db" {
+            v.push(Line::from(Span::styled(
                 format!("on {server}"),
                 Style::default().fg(tint).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(target),
-            Line::from(""),
-        ];
+            )));
+        }
+        v.push(Line::from(target));
+        v.push(Line::from(""));
         if let Some(expected) = c.stype.strip_prefix("expect:") {
             v.push(Line::from(format!("Type: {}", c.service)));
             v.push(Line::from(format!(

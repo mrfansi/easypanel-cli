@@ -25,6 +25,19 @@ pub fn resolve_client(cfg: &ServerConfig, server: &Option<String>) -> Result<Eas
     Ok(EasypanelClient::new(&s.url, &s.token))
 }
 
+/// The client for a server named EXPLICITLY, rather than the active one.
+///
+/// `resolve_client` answers "the host this command is aimed at"; a copy needs a
+/// SECOND host as well, and only ever by name — the token is read here and goes
+/// no further, the same split the TUI keeps by resolving names in its event loop
+/// so the UI state never holds one.
+pub fn resolve_client_named(cfg: &ServerConfig, name: &str) -> Result<EasypanelClient> {
+    let s = cfg
+        .get(name)
+        .ok_or_else(|| anyhow!("Server '{name}' not found. See: easypanel server list"))?;
+    Ok(EasypanelClient::new(&s.url, &s.token))
+}
+
 pub fn valid_name(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
@@ -2430,23 +2443,27 @@ struct RemoteStore {
     region: String,
 }
 
-/// The engine of a database service, read from the project's service list so we
-/// don't have to guess the `services/{type}` path. Only mysql/mariadb dump for now;
-/// anything else is a clear error, not a silently wrong command.
-fn resolve_db_engine(client: &EasypanelClient, project: &str, service: &str) -> Result<String> {
+/// The `type` of a service, read from its project's service list — so callers do
+/// not have to guess which `services/{type}` path a service answers on.
+fn service_stype(client: &EasypanelClient, project: &str, service: &str) -> Result<String> {
     let data = client.call(
         "projects",
         "inspectProject",
         json!({ "projectName": project }),
     )?;
-    let stype = data
-        .get("services")
+    data.get("services")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .find(|s| field(s, "/name") == service)
         .map(|s| field(s, "/type"))
-        .ok_or_else(|| anyhow!("{project}/{service} not found"))?;
+        .ok_or_else(|| anyhow!("{project}/{service} not found"))
+}
+
+/// The engine of a database service. Only mysql/mariadb dump for now; anything
+/// else is a clear error, not a silently wrong command.
+fn resolve_db_engine(client: &EasypanelClient, project: &str, service: &str) -> Result<String> {
+    let stype = service_stype(client, project, service)?;
     match stype.as_str() {
         "mysql" | "mariadb" => Ok(stype),
         other => {
@@ -2555,6 +2572,24 @@ fn service_root_password(
     Ok(pw)
 }
 
+/// The image a service runs, for a pre-flight to SHOW.
+///
+/// Never compared. A version skew is not predictable from a tag — `mysql:8`,
+/// `mysql:8.0.36` and a private mirror's own name all describe servers whose
+/// collations may or may not agree — so both ends are printed and the operator
+/// decides. An unreadable image must not block a copy either, so this answers a
+/// string rather than a `Result`.
+fn service_image(client: &EasypanelClient, stype: &str, project: &str, service: &str) -> String {
+    match client.call(
+        &format!("services/{stype}"),
+        "inspectService",
+        json!({ "projectName": project, "serviceName": service }),
+    ) {
+        Ok(v) => field(&v, "/image"),
+        Err(_) => "unknown".to_string(),
+    }
+}
+
 /// The result of a completed non-locking dump to object storage.
 pub(crate) struct R2Dump {
     pub bucket: String,
@@ -2584,7 +2619,7 @@ pub(crate) fn dump_to_r2(
     let now = chrono::Utc::now();
     let ts = now.format("%Y%m%d-%H%M%S").to_string();
     let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
-    let key = format!("{project}/{service}-{ts}.sql.gz");
+    let key = crate::dump::dump_key(project, service, &ts);
     let tmp = format!("/tmp/ezp-dump-{ts}.sql.gz");
     let url = crate::s3::presign(
         "PUT",
@@ -2693,13 +2728,20 @@ pub fn db_dump(
 }
 
 /// Restore a dump this tool wrote (by its object key) into a service. Shared by
-/// the CLI `db restore` and the TUI worker; no confirmation or printing of its own.
+/// the CLI `db restore`, the second leg of [`copy_database`], and the TUI worker;
+/// no confirmation or printing of its own.
+///
+/// `on_progress` receives the same kind of phase line the dump reports. It used
+/// to watch nothing at all, which left the load half of a transfer silent for up
+/// to an hour — the one part of the job where the operator most wants to know
+/// whether anything is happening.
 pub(crate) fn restore_from_r2(
     client: &EasypanelClient,
     project: &str,
     service: &str,
     path: &str,
     provider: Option<&str>,
+    mut on_progress: impl FnMut(&str),
 ) -> Result<()> {
     let stype = resolve_db_engine(client, project, service)?;
     let root_password = service_root_password(client, &stype, project, service)?;
@@ -2723,14 +2765,28 @@ pub(crate) fn restore_from_r2(
     let cmd = crate::dump::restore_command(&stype, &root_password, &tmp, &url)
         .ok_or_else(|| anyhow!("db restore supports mysql/mariadb only"))?;
 
+    // Same two files the dump watches, read in the other direction — see
+    // `dump::restore_phase`. Reaching the `.sql`-alone phase is also the only
+    // signal available that the CLIENT has started reading, i.e. that a failure
+    // from here on can have written rows.
+    let sql = tmp.strip_suffix(".gz").unwrap_or(&tmp).to_string();
+    let watch = [sql.clone(), tmp.clone()];
+    let mut loading = false;
     let run = crate::container::run_until_done(
         client,
         project,
         service,
         &cmd,
         std::time::Duration::from_secs(3600),
-        &[],
-        |_| {},
+        &watch,
+        |sizes| {
+            let of = |p: &str| sizes.iter().find(|(f, _)| f == p).map(|(_, b)| *b);
+            let (s, g) = (of(&sql), of(&tmp));
+            if s.is_some() && g.is_none() {
+                loading = true;
+            }
+            on_progress(&crate::dump::restore_phase(s, g));
+        },
     )?;
     let redact = |s: &str| {
         s.replace(&url, "<presigned-url>")
@@ -2740,12 +2796,172 @@ pub(crate) fn restore_from_r2(
     };
     match run.exit_code {
         Some(0) => Ok(()),
-        Some(n) => anyhow::bail!("Restore failed (exit {n}). {}", redact(&run.output)),
+        // A load that had started can have replaced some tables and not others:
+        // there is no transaction around DDL, so "it failed" does NOT mean "it
+        // changed nothing". Say so rather than letting the operator assume.
+        Some(n) if loading => anyhow::bail!(
+            "Restore failed (exit {n}) while loading — {project}/{service} MAY BE \
+             PARTIALLY WRITTEN: some of the dump's tables will have been replaced \
+             and some not. Check it before re-running. {}",
+            redact(&run.output)
+        ),
+        // The download or the decompression failed, so probably nothing was
+        // written — but the sentinel is polled every 5 s and a very short load
+        // could have come and gone between two polls, so this is not a promise.
+        Some(n) => anyhow::bail!(
+            "Restore failed (exit {n}) before the load was seen to start. \
+             {project}/{service} is probably untouched, though a load shorter than \
+             the 5 s poll could have been missed — check it before re-running. {}",
+            redact(&run.output)
+        ),
         None => anyhow::bail!(
-            "Restore still running after 60 min — it continues in the container. \
-             Check the service before re-running; a second restore may clash."
+            "Restore still running after 60 min — it continues in the container, so \
+             {project}/{service} may be partially written until it finishes. Check \
+             the service before re-running; a second restore may clash."
         ),
     }
+}
+
+// ---------- Copying a database from one service to another ----------
+//
+// Composed from the two halves above rather than given a data path of its own:
+// `dump_to_r2` already pushes a non-locking, self-contained `.sql.gz` from the
+// source container straight to shared storage, and `restore_from_r2` already
+// pulls one into a target container and recreates the schemas. A copy is those
+// two, in order, with the checks that only make sense when you can see BOTH ends.
+//
+// Same-host is not a special case: the two legs never talk to each other, only to
+// the bucket, so "the same host" is simply the same client passed twice.
+
+/// One end of a copy. The shape `migrate::Target` already uses for "where a thing
+/// is going", so the two cross-host features describe a destination the same way.
+pub(crate) struct CopyTarget<'a> {
+    pub client: &'a EasypanelClient,
+    pub project: &'a str,
+    pub service: &'a str,
+}
+
+impl CopyTarget<'_> {
+    fn name(&self) -> String {
+        format!("{}/{}", self.project, self.service)
+    }
+}
+
+/// What a copy is about to do, resolved from BOTH panels before anything is
+/// dumped. Everything here is either a refusal that already passed or a fact the
+/// operator is shown before being asked to confirm.
+pub(crate) struct CopyPlan {
+    /// The engine both ends share — a mismatch never gets this far.
+    pub stype: String,
+    pub databases: Vec<String>,
+    pub bucket: String,
+    pub endpoint: String,
+    pub src_provider: String,
+    pub dst_provider: String,
+    pub src_image: String,
+    pub dst_image: String,
+}
+
+/// Everything that must hold BEFORE a byte is dumped, checked against both
+/// panels. Nothing here writes.
+///
+/// Kept apart from [`copy_database`] for two reasons. A 25 GB dump that lands in
+/// a bucket the target cannot read is an hour wasted for a comparison that costs
+/// one API call. And the operator can only weigh a version skew — which nothing
+/// can predict, so both images are simply shown — while there is still nothing
+/// overwritten to regret.
+pub(crate) fn plan_copy(
+    src: &CopyTarget,
+    dst: &CopyTarget,
+    databases: &[String],
+    all: bool,
+    provider: Option<&str>,
+) -> Result<CopyPlan> {
+    let src_stype = service_stype(src.client, src.project, src.service)?;
+    let dst_stype = service_stype(dst.client, dst.project, dst.service)?;
+    if let Some(reason) =
+        crate::dump::copy_refusal(&src_stype, &src.name(), &dst_stype, &dst.name())
+    {
+        anyhow::bail!(reason);
+    }
+
+    // `--provider` is matched against each panel separately, by id OR name. Ids
+    // are per-panel, so a name is the only value that can select on both ends.
+    let src_store = pick_remote_provider(src.client, provider)?;
+    let dst_store = pick_remote_provider(dst.client, provider)?;
+    if let Some(reason) = crate::dump::store_refusal(
+        &src_store.endpoint,
+        &src_store.bucket,
+        &dst_store.endpoint,
+        &dst_store.bucket,
+    ) {
+        anyhow::bail!(reason);
+    }
+
+    let databases = resolve_dump_databases(src.client, src.project, src.service, databases, all)?;
+    Ok(CopyPlan {
+        src_image: service_image(src.client, &src_stype, src.project, src.service),
+        dst_image: service_image(dst.client, &dst_stype, dst.project, dst.service),
+        stype: src_stype,
+        databases,
+        bucket: src_store.bucket,
+        endpoint: src_store.endpoint,
+        src_provider: src_store.name,
+        dst_provider: dst_store.name,
+    })
+}
+
+/// Dump `databases` out of `src` and load them into `dst`, reporting through one
+/// progress closure for the whole run. Shared by the CLI and the TUI, so both
+/// surfaces get the identical behaviour.
+///
+/// `databases` must be the list a [`plan_copy`] already resolved and the operator
+/// already agreed to — it is passed through as an explicit list so no second
+/// resolution can quietly widen what was confirmed.
+///
+/// The phase words the two legs emit are already distinct ("uploading" vs
+/// "downloading"), so nothing is prefixed onto them: the line stays exactly the
+/// shape `db dump` and `db restore` produce, which is what lets a caller reuse
+/// its existing progress closure verbatim.
+pub(crate) fn copy_database(
+    src: &CopyTarget,
+    dst: &CopyTarget,
+    databases: &[String],
+    provider: Option<&str>,
+    mut on_progress: impl FnMut(&str),
+) -> Result<R2Dump> {
+    let dump = dump_to_r2(
+        src.client,
+        src.project,
+        src.service,
+        databases,
+        false,
+        provider,
+        &mut on_progress,
+    )?;
+    // The dump survives a failed load, and it is the expensive half — so the
+    // error carries the key and the one command that retries only the load.
+    // Without it the operator's only obvious move is to dump 25 GB again.
+    restore_from_r2(
+        dst.client,
+        dst.project,
+        dst.service,
+        &dump.key,
+        provider,
+        &mut on_progress,
+    )
+    .map_err(|e| {
+        anyhow!(
+            "{e}\nThe dump itself succeeded and is kept at {}/{}. Retry just the \
+             load with:  easypanel db restore {} {} --path {}",
+            dump.bucket,
+            dump.key,
+            dst.project,
+            dst.service,
+            dump.key
+        )
+    })?;
+    Ok(dump)
 }
 
 /// The object keys of the dumps this tool has written for a service, newest last.
@@ -2759,7 +2975,7 @@ pub(crate) fn list_r2_dumps(
     provider: Option<&str>,
 ) -> Result<Vec<String>> {
     let store = pick_remote_provider(client, provider)?;
-    let prefix = format!("{project}/{service}-");
+    let prefix = crate::dump::dump_prefix(project, service);
     let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let (url, auth) = crate::s3::sign_list(
         &store.endpoint,
@@ -2804,6 +3020,130 @@ pub fn db_list(
     for k in keys {
         println!("{k}");
     }
+    Ok(())
+}
+
+/// Everything a browse/query step needs: which engine, and how to log into it.
+///
+/// The CLI and the TUI ask the same questions of the same module
+/// (`crate::dbms`), so a query typed at a prompt and one typed in the TUI's box
+/// build the identical command.
+fn dbms_target(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+) -> Result<(crate::dbms::Engine, crate::dbms::Creds)> {
+    let stype = service_stype(client, project, service)?;
+    let engine = crate::dbms::Engine::from_service_type(&stype).ok_or_else(|| {
+        anyhow!(crate::dbms::unsupported_reason(&stype)
+            .unwrap_or_else(|| format!("{service} is '{stype}'")))
+    })?;
+    let inspect = client.call(
+        &format!("services/{stype}"),
+        "inspectService",
+        json!({ "projectName": project, "serviceName": service }),
+    )?;
+    Ok((engine, crate::dbms::creds(engine, &inspect)))
+}
+
+/// Run one command in the database's container and hand back what it printed,
+/// turning the engine's own complaint into this command's error.
+fn dbms_capture(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    command: &str,
+) -> Result<String> {
+    let cap = crate::container::run_capture(
+        client,
+        project,
+        service,
+        command,
+        std::time::Duration::from_secs(60),
+    )?;
+    if let Some(msg) = crate::dbms::failure(&cap.output, cap.exit_code) {
+        anyhow::bail!(msg);
+    }
+    if cap.truncated {
+        eprintln!("warning: the output was cut — there was more than this.");
+    }
+    Ok(cap.output)
+}
+
+/// The database to work in: the one asked for, or the one EasyPanel recorded.
+fn dbms_database(want: Option<&str>, creds: &crate::dbms::Creds) -> Result<String> {
+    match want {
+        Some(d) => Ok(d.to_string()),
+        None if !creds.database.is_empty() => Ok(creds.database.clone()),
+        None => anyhow::bail!(
+            "This service has no database on record; name one with --database (see: db databases)."
+        ),
+    }
+}
+
+pub fn db_databases(client: &EasypanelClient, project: &str, service: &str) -> Result<()> {
+    let (engine, creds) = dbms_target(client, project, service)?;
+    let out = dbms_capture(
+        client,
+        project,
+        service,
+        &crate::dbms::list_databases_cmd(engine, &creds),
+    )?;
+    for name in crate::dbms::parse_names(&out) {
+        println!("{name}");
+    }
+    Ok(())
+}
+
+pub fn db_tables(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    database: Option<&str>,
+) -> Result<()> {
+    let (engine, creds) = dbms_target(client, project, service)?;
+    let database = dbms_database(database, &creds)?;
+    let out = dbms_capture(
+        client,
+        project,
+        service,
+        &crate::dbms::list_tables_cmd(engine, &creds, &database),
+    )?;
+    for name in crate::dbms::parse_names(&out) {
+        println!("{name}");
+    }
+    Ok(())
+}
+
+/// Run a statement and print the result as a table. The statement is sent as
+/// typed — no LIMIT is added, so an unbounded SELECT on a huge table is the
+/// caller's decision, the same as it would be in the shell.
+pub fn db_query(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    database: Option<&str>,
+    query: &str,
+) -> Result<()> {
+    let (engine, creds) = dbms_target(client, project, service)?;
+    // A query MAY be server-wide (`SHOW DATABASES`, an admin command), so an
+    // absent database is not an error here the way it is for a table listing.
+    let database = database
+        .map(str::to_string)
+        .unwrap_or_else(|| creds.database.clone());
+    let out = dbms_capture(
+        client,
+        project,
+        service,
+        &crate::dbms::query_cmd(engine, &creds, &database, query),
+    )?;
+    let grid = crate::dbms::parse_grid(engine, &out);
+    if grid.columns.is_empty() {
+        println!("The statement ran and returned nothing.");
+        return Ok(());
+    }
+    let headers: Vec<&str> = grid.columns.iter().map(String::as_str).collect();
+    crate::output::table(&headers, grid.rows);
     Ok(())
 }
 
@@ -2948,8 +3288,123 @@ pub fn db_restore(
         return Ok(());
     }
     println!("Restoring {path} into {project}/{service}…");
-    restore_from_r2(client, project, service, path, provider)?;
+    let started = std::time::Instant::now();
+    let done = restore_from_r2(client, project, service, path, provider, |p| {
+        progress_line(&format!(
+            "{p}  [{}]",
+            crate::output::human_duration(started.elapsed().as_secs() as i64)
+        ));
+    });
+    progress_done();
+    done?;
     println!("Restored {path} into {project}/{service}.");
+    Ok(())
+}
+
+/// Everything `db copy` needs. A struct rather than a dozen arguments, the shape
+/// `TunnelRouteAddOpts` already uses here.
+pub struct DbCopyOpts<'a> {
+    pub src: &'a EasypanelClient,
+    pub src_server: &'a str,
+    pub src_project: &'a str,
+    pub src_service: &'a str,
+    pub dst: &'a EasypanelClient,
+    pub dst_server: &'a str,
+    pub dst_project: &'a str,
+    pub dst_service: &'a str,
+    pub databases: &'a [String],
+    pub all: bool,
+    pub provider: Option<&'a str>,
+    pub yes: bool,
+}
+
+/// Copy databases from one service into another — on this host, or on another
+/// one with `--to-server`.
+///
+/// The pre-flight is printed BEFORE the confirmation deliberately: the two images
+/// are the only version-skew signal there is, and they are worth nothing after
+/// the target has been overwritten.
+pub fn db_copy(opts: DbCopyOpts<'_>) -> Result<()> {
+    let src = CopyTarget {
+        client: opts.src,
+        project: opts.src_project,
+        service: opts.src_service,
+    };
+    let dst = CopyTarget {
+        client: opts.dst,
+        project: opts.dst_project,
+        service: opts.dst_service,
+    };
+    let plan = plan_copy(&src, &dst, opts.databases, opts.all, opts.provider)?;
+
+    println!(
+        "Copy {} database(s): {}:{}/{} → {}:{}/{}",
+        plan.databases.len(),
+        opts.src_server,
+        opts.src_project,
+        opts.src_service,
+        opts.dst_server,
+        opts.dst_project,
+        opts.dst_service,
+    );
+    println!("  engine        {}", plan.stype);
+    println!("  databases     {}", plan.databases.join(", "));
+    // Shown, never compared — a tag cannot tell you whether a load will fit.
+    println!("  source image  {}", plan.src_image);
+    println!("  target image  {}", plan.dst_image);
+    println!(
+        "  via storage   {}/{} (provider '{}' on {}, '{}' on {})",
+        plan.endpoint,
+        plan.bucket,
+        plan.src_provider,
+        opts.src_server,
+        plan.dst_provider,
+        opts.dst_server,
+    );
+
+    if !confirm(
+        &format!(
+            "Load {} into {}/{} on {}? Those databases there will be OVERWRITTEN \
+             and cannot be recovered.",
+            plan.databases.join(", "),
+            opts.dst_project,
+            opts.dst_service,
+            opts.dst_server
+        ),
+        opts.yes,
+    )? {
+        return Ok(());
+    }
+
+    let started = std::time::Instant::now();
+    let copied = copy_database(&src, &dst, &plan.databases, opts.provider, |p| {
+        progress_line(&format!(
+            "{p}  [{}]",
+            crate::output::human_duration(started.elapsed().as_secs() as i64)
+        ));
+    });
+    progress_done();
+    let copied = copied?;
+    println!(
+        "Copied {} database(s) into {}/{} on {}: {}.",
+        copied.databases.len(),
+        opts.dst_project,
+        opts.dst_service,
+        opts.dst_server,
+        copied.databases.join(", ")
+    );
+    // Filed under the SOURCE service (see `dump::dump_key`), so it will NOT show
+    // up under the target — which makes printing the whole key the only way the
+    // operator finds it again from this side.
+    println!(
+        "Dump kept at {}/{} on {} (provider '{}'), listed by:  easypanel db list {} {}",
+        copied.bucket,
+        copied.key,
+        opts.src_server,
+        copied.provider,
+        opts.src_project,
+        opts.src_service
+    );
     Ok(())
 }
 

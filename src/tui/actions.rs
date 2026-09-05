@@ -84,6 +84,24 @@ impl Menu {
 pub(super) enum PaletteAction {
     /// Jump to a service (switch to Services, highlight its row).
     Service { project: String, service: String },
+    /// Open a container terminal on a service BY IDENTITY — the palette's quick
+    /// action. Reachable with no row selected and for a service in another
+    /// project, which is exactly what `Run` (and `start_terminal` behind it)
+    /// cannot do: those read the highlighted row.
+    Terminal { project: String, service: String },
+    /// Open an auto-login database shell on a service by identity. `stype` is
+    /// carried because the event loop needs it to build the client command.
+    DbShell {
+        project: String,
+        service: String,
+        stype: String,
+    },
+    /// Browse a database service by identity — its databases, tables and rows.
+    Dbms {
+        project: String,
+        service: String,
+        stype: String,
+    },
     /// Run a contextual action on the CURRENTLY selected row (the same action
     /// function from the menu/leaf). The row is already highlighted, so the action
     /// hits the right one.
@@ -361,6 +379,15 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// Whether the highlighted row is a database service. The type list itself
+    /// lives in `lifecycle` — one definition, so the menu, the palette and the
+    /// direct keys can't drift apart on what "a database" is.
+    fn selected_is_database(&self) -> bool {
+        self.selected_row()
+            .map(|(_, _, t)| crate::lifecycle::is_database(&t))
+            .unwrap_or(false)
+    }
+
     pub(super) fn env_menu(&self) -> Vec<MenuItem> {
         // ONE door. This used to be three — "View env", "Edit env (partial)" and
         // "Replace entire env" — for what is one screen and one operation.
@@ -474,7 +501,7 @@ impl App {
             // databases, restorable on a host that never had them. Only mysql/mariadb
             // for now: it uploads with `curl` from inside the container, and those
             // images ship it while the postgres image does not.
-            if matches!(stype.as_str(), "mysql" | "mariadb") {
+            if crate::dump::can_dump(&stype) {
                 v.push(MenuItem::new(
                     "Dump now (non-locking) → object storage",
                     |a, r| a.dump_r2_now(r),
@@ -484,6 +511,14 @@ impl App {
                 v.push(MenuItem::new(
                     "Object-storage dumps (restore / download)",
                     |a, r| a.open_r2_restore(r),
+                ));
+                // Dump out of here and load into ANOTHER service — a different
+                // project, or a different host. Gated by the same predicate
+                // `copy_refusal` refuses on, so the menu cannot offer a copy the
+                // core will then reject.
+                v.push(MenuItem::new(
+                    "Copy databases into another service",
+                    |a, _| a.open_copy_db_form(),
                 ));
             }
             v.push(MenuItem::new("Backup now", |a, r| a.backup_now(r)));
@@ -534,10 +569,17 @@ impl App {
 
     pub(super) fn shell_menu(&self) -> Vec<MenuItem> {
         let mut v = vec![MenuItem::new("Terminal", |a, _| a.start_terminal())];
-        if self.is_selected_type(&["mysql", "mariadb", "postgres", "mongo", "redis"]) {
+        if self.selected_is_database() {
             v.push(MenuItem::new("DB shell (auto login)", |a, _| {
                 a.start_db_shell()
             }));
+            // Offered for redis too: the item explains that redis has no tables
+            // and points at the shell, which is more useful than an absent row
+            // that explains nothing.
+            v.push(MenuItem::new(
+                "Browse & query (databases → rows)",
+                |a, r| a.start_dbms(r),
+            ));
             v.push(MenuItem::new("Credentials (view & copy)", |a, _| {
                 a.start_credentials()
             }));
@@ -721,8 +763,52 @@ impl App {
             items.push(PaletteItem {
                 search: label.clone(),
                 label,
-                action: PaletteAction::Service { project, service },
+                action: PaletteAction::Service {
+                    project: project.clone(),
+                    service: service.clone(),
+                },
             });
+            // Quick actions, per service and BY IDENTITY. The palette is the one
+            // place a terminal is reachable without first finding the row: the
+            // contextual block above only ever describes the highlighted service.
+            // `search` carries the words the intent is reached by, since the label
+            // stays short (see PaletteItem).
+            let label = format!("Terminal  {project}/{service}");
+            items.push(PaletteItem {
+                search: format!("{label} shell sh console exec"),
+                label,
+                action: PaletteAction::Terminal {
+                    project: project.clone(),
+                    service: service.clone(),
+                },
+            });
+            // Only a database HAS a db shell; offering one on an app is a door
+            // that could only fail.
+            if crate::lifecycle::is_database(&t) {
+                let label = format!("DB shell  {project}/{service}  ·  {t}");
+                items.push(PaletteItem {
+                    search: format!("{label} sql psql mysql mongosh redis-cli database"),
+                    label,
+                    action: PaletteAction::DbShell {
+                        project: project.clone(),
+                        service: service.clone(),
+                        stype: t.clone(),
+                    },
+                });
+                // Browsing is the other half of that door: same identity, and the
+                // engines it does NOT support say so when opened rather than
+                // being silently missing from the list.
+                let label = format!("Browse database  {project}/{service}  ·  {t}");
+                items.push(PaletteItem {
+                    search: format!("{label} tables rows query select schema browse data dbms sql"),
+                    label,
+                    action: PaletteAction::Dbms {
+                        project,
+                        service,
+                        stype: t,
+                    },
+                });
+            }
         }
         let mut state = ListState::default();
         state.select(Some(0));
@@ -1083,6 +1169,28 @@ impl App {
             PaletteAction::Service { project, service } => {
                 let (p, s) = (project.clone(), service.clone());
                 self.jump_to_service(&p, &s, req);
+            }
+            // The identity travels with the entry, so the request is built here
+            // rather than through `start_terminal`/`start_db_shell` (which resolve
+            // the selected row). The event loop consumes `terminal_req` the same
+            // way whichever door set it.
+            PaletteAction::Terminal { project, service } => {
+                self.terminal_req = Some((project.clone(), service.clone(), None));
+            }
+            PaletteAction::DbShell {
+                project,
+                service,
+                stype,
+            } => {
+                self.terminal_req = Some((project.clone(), service.clone(), Some(stype.clone())));
+            }
+            PaletteAction::Dbms {
+                project,
+                service,
+                stype,
+            } => {
+                let (p, s, t) = (project.clone(), service.clone(), stype.clone());
+                self.open_dbms(p, s, t, req);
             }
             PaletteAction::Run(run) => run(self, req),
             PaletteAction::CfProduct(p) => self.cf_set_product(*p, req),
