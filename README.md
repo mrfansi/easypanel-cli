@@ -14,10 +14,6 @@ EasyPanel's web panel shows you one server at a time. This shows you all of them
 host's CPU, memory and disk side by side, every service across every project in one
 searchable table, and every domain on the box — without clicking through a hierarchy.
 
-## Latest Release
-
-**[v2026.3.0906](https://github.com/mrfansi/easypanel-cli/releases/tag/v2026.3.0906)** — 2026-09-06
-
 ## 📸 Screenshots
 
 **Every service across every project, with live metrics, in one searchable table:**
