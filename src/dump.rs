@@ -174,8 +174,17 @@ fn sh_quote(s: &str) -> String {
 /// validated every database name with [`valid_db_name`] first. `tmp_file` is the
 /// final `.sql.gz` path in the container.
 ///
-/// Non-locking (`--single-transaction --quick`), self-contained (`--databases`
-/// embeds `CREATE DATABASE`/`USE`, plus routines/triggers/events).
+/// Non-locking (`--single-transaction --quick`) and self-contained: `--databases`
+/// embeds `USE`, and `--add-drop-database` puts a `DROP DATABASE IF EXISTS`
+/// before each `CREATE DATABASE`.
+///
+/// That DROP is a deliberate product decision, not a default: loading this dump
+/// REPLACES each database it holds. Without it the load was a MERGE — every table
+/// in the dump was replaced (mysqldump's own `DROP TABLE IF EXISTS`), but a table
+/// that existed only on the target survived, so a "copy" left the target holding a
+/// mixture of both sides that matched neither. A copy is asked for to make one
+/// service look like another, and the confirmation has always said the target's
+/// copies are OVERWRITTEN and cannot be recovered; this is what makes that true.
 ///
 /// mysqldump writes to a plain FILE, which is then gzipped — NOT piped into gzip.
 /// The container shell EasyPanel gives us is a PTY (`docker exec -it`); piping a
@@ -204,7 +213,7 @@ pub fn dump_command(
     // and a stray write racing our read can EAGAIN.
     let sql_file = tmp_file.strip_suffix(".gz").unwrap_or(tmp_file);
     let work = format!(
-        "MYSQL_PWD='{pw}' {tool} -uroot --databases {dbs} \
+        "MYSQL_PWD='{pw}' {tool} -uroot --databases {dbs} --add-drop-database \
          --single-transaction --quick --routines --triggers --events {extra} > '{sql}' \
          && gzip -f '{sql}' && curl -sfS -T '{gz}' '{url}'",
         pw = sh_quote(root_password),
@@ -266,8 +275,10 @@ fn cleanup(work: &str, a: &str, b: &str) -> String {
 
 /// The download+import command for a dump this tool wrote. Buffers the object to
 /// a temp file first (a broken mid-stream download would half-import), then feeds
-/// it to the client. The dump's own `CREATE DATABASE` means the target schema
-/// need not pre-exist — this is exactly the cross-server restore EasyPanel can't do.
+/// it to the client. The dump's own `DROP DATABASE`/`CREATE DATABASE` means the
+/// target schema need not pre-exist — this is exactly the cross-server restore
+/// EasyPanel can't do — and that where it DOES exist it is replaced, not merged
+/// into (see [`dump_command`]).
 pub fn restore_command(
     stype: &str,
     root_password: &str,
@@ -466,9 +477,13 @@ mod tests {
         .unwrap();
         assert!(cmd.contains("mysqldump -uroot --databases shop blog"));
         assert!(cmd.contains("--single-transaction"), "must not lock the DB");
+        // REPLACE, not merge. Without `--add-drop-database` a load left any table
+        // that existed only on the target in place, so the target ended up holding
+        // a mixture of both sides that matched neither — while the confirmation
+        // said its databases would be OVERWRITTEN.
         assert!(
-            cmd.contains("--databases"),
-            "embeds CREATE DATABASE for a fresh host"
+            cmd.contains("--databases shop blog --add-drop-database"),
+            "each database is dropped and recreated: {cmd}"
         );
         // mysqldump writes a plain file, THEN it's gzipped, THEN uploaded — piping
         // a real-sized dump through the container PTY hits EAGAIN and corrupts it.
@@ -513,6 +528,8 @@ mod tests {
         let cmd = dump_command("mariadb", "pw", &["app".into()], "/tmp/d", "URL").unwrap();
         assert!(cmd.contains("mariadb-dump"));
         assert!(cmd.contains("--hex-blob") && cmd.contains("utf8mb4"));
+        // Same replace semantics as mysql: mariadb-dump takes the flag too.
+        assert!(cmd.contains("--add-drop-database"), "{cmd}");
     }
 
     #[test]

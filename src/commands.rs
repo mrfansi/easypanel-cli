@@ -3468,8 +3468,9 @@ pub fn db_copy(opts: DbCopyOpts<'_>) -> Result<()> {
 
     if !confirm(
         &format!(
-            "Load {} into {}/{} on {}? Those databases there will be OVERWRITTEN \
-             and cannot be recovered.",
+            "Load {} into {}/{} on {}? Each of those databases there is DROPPED and \
+             recreated from this dump — anything in it the dump does not contain \
+             is gone and cannot be recovered.",
             plan.databases.join(", "),
             opts.dst_project,
             opts.dst_service,

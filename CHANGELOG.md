@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A copy now REPLACES the database on the target instead of merging into it.**
+  The dump is taken with `--add-drop-database`, so each database it holds is
+  dropped on the target and recreated from the dump: afterwards the target matches
+  the source exactly. Before, the load replaced every table the dump contained
+  (mysqldump drops each one itself) but left a table that existed only on the
+  target in place, so a "copy" produced a mixture of both sides that matched
+  neither — while the confirmation already promised the target's databases would be
+  overwritten. The confirmations in the CLI and the TUI now say what happens in as
+  many words: each target database is DROPPED and recreated, and anything in it the
+  dump does not contain is gone. Verified against a live container that the flag
+  really emits `DROP DATABASE IF EXISTS` with that image's mysqldump. Note that
+  dumps taken BEFORE this change do not carry the DROP, so restoring one of those
+  still merges.
+
 ## [0.98.18] — 2026-09-06
 
 ### Fixed

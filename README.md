@@ -585,10 +585,14 @@ load. Version skew is reported rather than predicted: the pre-flight prints both
 services' images, so you see `mysql:8` → `mysql:5.7` before confirming — no tag can
 tell you whether a load will fit.
 
-**The target is overwritten.** The confirmation names the databases and says so
-(`--yes` skips it). A load has no transaction around it, so if one fails partway
-the target **may be partially written** — some of the dump's tables replaced and
-some not — and the error says that instead of implying nothing happened. The dump
+**The target is replaced, not merged into.** Each database the dump holds is
+`DROP DATABASE`d on the target and recreated from the dump, so afterwards it
+matches the source exactly — a table that existed only on the target is gone.
+That is what the confirmation means by "dropped and recreated … cannot be
+recovered" (`--yes` skips it). A load has no transaction around it, so if one
+fails partway the target **may be partially written** — some of the dump's
+databases replaced and some not — and the error says that instead of implying
+nothing happened. The dump
 is kept afterwards and filed under the **source** service, so it shows up in
 `easypanel db list <src-project> <src-service>` and *not* under the target; the
 copy prints the full object key, and a failed load tells you the one `db restore`

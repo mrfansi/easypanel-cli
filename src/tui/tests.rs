@@ -9121,7 +9121,11 @@ fn a_copy_runs_when_confirmed_and_not_when_cancelled() {
     // The plan the operator is agreeing to is on screen, including the skew they
     // can only weigh before anything is overwritten.
     assert!(c.label.contains("mysql:5.7"), "{}", c.label);
-    assert!(c.label.contains("OVERWRITTEN"), "{}", c.label);
+    // The dialog must say what actually happens: each target database is dropped
+    // and rebuilt from the dump, so anything only the target had is gone. Saying
+    // merely "overwritten" left room to read it as a merge.
+    assert!(c.label.contains("DROPPED and recreated"), "{}", c.label);
+    assert!(c.label.contains("cannot be recovered"), "{}", c.label);
 
     // The destination is named ONCE, and no row asks for anything to be typed —
     // the buffer that used to live here appended itself to the target line.

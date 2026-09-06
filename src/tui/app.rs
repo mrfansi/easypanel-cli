@@ -3460,8 +3460,9 @@ impl App {
                 let dest = format!("{target_name}/{target_project}/{target_service}");
                 let label = format!(
                     "Copy {} database(s) from {project}/{service}\n\n{}\n\n\
-                     Those databases on the target will be OVERWRITTEN and cannot \
-                     be recovered.",
+                     Each of those databases on the target is DROPPED and recreated \
+                     from this dump — anything in it the dump does not contain is \
+                     gone and cannot be recovered.",
                     databases.len(),
                     lines.join("\n"),
                 );
@@ -5205,7 +5206,9 @@ impl App {
                 " Copy databases into another service ",
                 fields,
             )
-            .with_note("the target's copies of these databases are OVERWRITTEN".to_string()),
+            .with_note(
+                "the target's copies of these databases are DROPPED and replaced".to_string(),
+            ),
         );
         // Asked for AFTER the form is on screen: the listing runs inside the
         // container, which is not something to hold an empty screen for. Until it
