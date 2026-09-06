@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A dump, restore or copy could fail to launch, and the diagnosis was measured
+  rather than guessed.** Three separate things were wrong, each found by probing
+  the real container instead of reasoning about it. The launch line was typed at
+  the shell the instant the socket opened, so on a shell that had not yet reached
+  a prompt it was simply lost — the reported failure carried exactly that
+  fingerprint (`\e[?2004h` and a bare prompt, our line neither echoed nor run);
+  the launch now waits for the shell's first byte, which costs nothing on a warm
+  container. The command's base64 is percent-encoded in the WebSocket URL, so a
+  `+` in it can no longer be read as a space by anything on the path. And the
+  detached job keeps `nohup` alone: `setsid` is NOT present in these images
+  (`sh: setsid: command not found`), and a launch that used it would have been a
+  silent no-op whose sentinel never appeared. Proven end to end against a live
+  service: a job fired in one session, outliving its socket, read back with
+  `exit_code = 0` and its own output.
+
 ## [0.98.17] — 2026-09-06
 
 ### Added
