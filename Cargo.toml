@@ -1,6 +1,6 @@
 [package]
 name = "easypanel"
-version = "0.98.19"
+version = "0.98.20"
 edition = "2021"
 description = "Manage multiple EasyPanel hosts from your terminal — CLI + TUI"
 license = "MIT"
