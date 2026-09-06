@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.19] — 2026-09-06
+
 ### Changed
 
 - **A copy now REPLACES the database on the target instead of merging into it.**
@@ -4124,7 +4126,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.18...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.19...HEAD
+[0.98.19]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.19
 [0.98.18]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.18
 [0.98.17]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.17
 [0.98.16]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.16
