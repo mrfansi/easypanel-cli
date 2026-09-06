@@ -101,6 +101,9 @@ enum Command {
     /// Per-service monitoring and storage
     #[command(subcommand)]
     Monitor(MonitorCmd),
+    /// The host machine itself
+    #[command(subcommand)]
+    Host(HostCmd),
     /// Server info and Docker cleanup
     Maintenance {
         #[command(subcommand)]
@@ -115,6 +118,19 @@ enum Command {
     Man,
     /// Interactive TUI
     Menu,
+}
+
+/// The MACHINE behind a panel, as opposed to `server` (the local config entry
+/// naming it) and `service` (what runs on it). The TUI keeps the same split: a
+/// server picker for the entry, a Hosts screen for the machines.
+#[derive(Subcommand)]
+enum HostCmd {
+    /// Open an interactive shell on the host — a PRIVILEGED ROOT shell on the machine
+    Shell {
+        /// Skip the confirmation
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -954,6 +970,19 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                 .unwrap_or_default();
             let client = resolve_client(cfg, &cli.server)?;
             tui::run(cfg, client, name)
+        }
+
+        Some(Command::Host(HostCmd::Shell { yes })) => {
+            // `resolve_client` already fails clearly when --server names nothing,
+            // so it runs BEFORE the confirmation: no point asking about a host
+            // that is not configured.
+            let client = resolve_client(cfg, &cli.server)?;
+            let name = cli
+                .server
+                .clone()
+                .or_else(|| cfg.default().map(|s| s.name))
+                .unwrap_or_default();
+            commands::host_shell(cfg, client, &name, yes)
         }
 
         Some(Command::Server(c)) => match c {

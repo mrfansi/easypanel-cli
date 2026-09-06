@@ -230,19 +230,31 @@ pub(super) fn db_command(stype: &str, inspect: &Value) -> Option<String> {
 
 /// Run the WebSocket session on its own thread. Returns a sender for keystrokes
 /// & resize events; output is sent as `Resp::TermOutput`, session end as `Resp::TermClosed`.
+///
+/// `auth_hint` is appended when the panel REFUSES the token at the handshake (and
+/// only then). It exists because the two routes fail that way for different
+/// reasons: a container shell needs a valid token, the host shell needs an ADMIN
+/// one, and "terminal failed to connect: HTTP error: 403 Forbidden" sends an
+/// operator hunting a network problem they do not have. Empty = nothing to add.
 pub(super) fn spawn_session(
     url: String,
     resp_tx: Sender<Resp>,
     input_rx: Receiver<TermMsg>,
     cols: u16,
     rows: u16,
+    auth_hint: &'static str,
 ) {
     std::thread::spawn(move || {
         let mut ws = match tungstenite::connect(&url) {
             Ok((ws, _)) => ws,
             Err(e) => {
+                let hint = if crate::container::is_auth_rejection(&e) {
+                    auth_hint
+                } else {
+                    ""
+                };
                 let _ = resp_tx.send(Resp::Err(format!(
-                    "terminal failed to connect: {}",
+                    "terminal failed to connect: {}{hint}",
                     connect_failure(&e)
                 )));
                 let _ = resp_tx.send(Resp::TermClosed);

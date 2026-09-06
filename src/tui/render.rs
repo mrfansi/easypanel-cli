@@ -48,6 +48,10 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
                 "Enter",
                 "host detail — the full reason a host is unreachable",
             ),
+            Key(
+                "t",
+                "shell on this HOST — a privileged root shell on the machine (confirmed)",
+            ),
         ],
         Screen::Uptime => &[
             Key("r", "check them all now"),

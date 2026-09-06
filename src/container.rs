@@ -17,6 +17,41 @@ use tungstenite::Message;
 
 use crate::client::EasypanelClient;
 
+/// The command that opens an INTERACTIVE shell for a human: `bash` where the
+/// image has it, POSIX `sh` where it does not. One exec, so the pane is never
+/// briefly dead and there is no extra round trip.
+///
+/// Every part of this shape is MEASURED against the panel (server
+/// `easypanel-viding-idc`, 2026-09-06), because the obvious spellings are worse
+/// in ways that are invisible until you are in the pane:
+///
+/// - `exec bash 2>/dev/null || exec sh` — the shape you would write first — has
+///   TWO faults. On an image without bash (`system/mailpit`, Alpine) the session
+///   closes immediately with an empty stream: a failed `exec` terminates the
+///   shell, so the `||` fallback is never reached and the pane is dead. And on an
+///   image WITH bash it starts a bash that is NOT interactive (measured `$-` =
+///   `hBs`, `PS1` empty, no prompt, no bracketed paste): bash is interactive only
+///   while stdin AND stderr are both terminals, and the `2>/dev/null` meant to
+///   silence "not found" takes stderr away — costing the prompt, readline, arrow
+///   keys and history.
+/// - Testing with `command -v` instead fixes both: the redirect applies to the
+///   probe rather than to the shell, and `exec` only runs on a binary that is
+///   there. Measured landings — `viding-org-db/mysql`: `$0=bash`,
+///   `BASH_VERSION=5.1.8(1)-release`, `$-=himBHs`, prompt `bash-5.1#`;
+///   `viding-co-db/mysql-mcp`: bash `5.2.21(1)-release`, prompt
+///   `root@…:/app#`; `system/mailpit` (no bash — `/bin/sh: bash: not found`):
+///   `$0=sh`, `BASH_VERSION` empty, `$-=smi`, prompt `/ # `.
+///
+/// This is a SHELL LINE, not an argv: the panel hands the exec command to
+/// `/bin/sh -c` (measured — `echo A; echo B` prints two lines, and an image with
+/// no shell at all fails with `exec: "/bin/sh": stat /bin/sh: no such file or
+/// directory`), which is what the `&&`/`||` need.
+///
+/// The non-interactive helpers ([`run_capture`], [`fire`]) deliberately keep
+/// plain `sh`: they send POSIX one-liners, where bash buys nothing.
+pub(crate) const INTERACTIVE_SHELL: &str =
+    "command -v bash >/dev/null 2>&1 && exec bash || exec sh";
+
 /// The `wss://…/ws/containerShell` URL that runs `command` in a service's
 /// running container. Resolves the container id first (a service can have several
 /// tasks; only a running one can be exec'd into).
@@ -39,16 +74,55 @@ pub(crate) fn ws_url(
         })
         .and_then(|c| c.get("Id").and_then(Value::as_str))
         .ok_or_else(|| anyhow!("No running container for {project}/{service}"))?;
-    let wss = client
-        .url()
-        .trim_end_matches('/')
-        .replacen("https://", "wss://", 1)
-        .replacen("http://", "ws://", 1);
     Ok(format!(
-        "{wss}/ws/containerShell?container={cid}&command={}&token={}",
+        "{}/ws/containerShell?container={cid}&command={}&token={}",
+        wss_base(client),
         query_escape(&base64(command.as_bytes())),
         client.token()
     ))
+}
+
+/// The panel's origin with the WebSocket scheme — the base both `/ws/` routes share.
+fn wss_base(client: &EasypanelClient) -> String {
+    client
+        .url()
+        .trim_end_matches('/')
+        .replacen("https://", "wss://", 1)
+        .replacen("http://", "ws://", 1)
+}
+
+/// The `wss://…/ws/hostShell` URL — a shell on the HOST, not in a container.
+///
+/// Neither route is in `easypanel-api.json`; the spec documents no `/ws/` path at
+/// all, which is why "EasyPanel has no host-exec endpoint" was the standing
+/// belief here. It does. Unlike `containerShell` this one takes NO `container`
+/// and NO `command` parameter — so there is nothing to base64 and nothing to
+/// percent-encode, and [`INTERACTIVE_SHELL`] does not apply: the server chooses
+/// the shell and there is no way to ask for another.
+///
+/// What the panel does with it (read from the handler's own source, `/app/backend.js`
+/// in the `easypanel` container, EasyPanel 2.32.2) is worth knowing before opening one:
+///
+/// - it spawns `docker run --rm -it --privileged --net=host --pid=host --ipc=host
+///   --volume /:/host <helper> chroot /host` — a privileged container in the host's
+///   namespaces, chrooted into the host filesystem. That is root on the real machine,
+///   which is why the TUI puts a confirmation in front of it;
+/// - the route's `preValidation` requires an ADMIN token, so a valid but non-admin
+///   API token fails the HANDSHAKE rather than the shell;
+/// - if the helper image is missing the handler runs `docker pull` FIRST, so the
+///   first frame can be many seconds late on a host that has never opened one;
+/// - the socket bridge is the same one `containerShell` uses — `{"input"}` →
+///   `pty.write`, `{"resize":[cols,rows]}` → `pty.resize`, output → `{"output"}` —
+///   and `socket.on("close")` kills the pty. Closing the pane really does end the
+///   shell; nothing is left running, the opposite of the detached-launch path.
+///
+/// Measured live against `idc.viding.org` (2026-09-06) with this tool's own stored
+/// API token: handshake 101, first `{"output"}` frame is a bash prompt
+/// (`$0=/bin/bash`, `BASH_VERSION=5.1.16(1)-release`, `id -un` = `root`),
+/// `{"resize":[100,30]}` followed by `stty size` printed `30 100`. A bad token gets
+/// no 101 at all (close code 1002).
+pub(crate) fn host_ws_url(client: &EasypanelClient) -> String {
+    format!("{}/ws/hostShell?token={}", wss_base(client), client.token())
 }
 
 /// Percent-encode the three base64 characters that a URL QUERY does not carry
@@ -96,6 +170,18 @@ pub(crate) fn connect_failure(e: &tungstenite::Error) -> String {
         tungstenite::Error::Url(_) => "could not reach the panel".to_string(),
         other => other.to_string(),
     }
+}
+
+/// Did the panel REFUSE the token, as opposed to being unreachable?
+///
+/// Both `/ws/` routes authenticate at the HANDSHAKE, so a rejected token is an
+/// HTTP status on the upgrade rather than anything the socket ever says. Worth
+/// telling apart because the fix is nothing like "the panel is down" — and for
+/// `hostShell` it is different again: that route's `preValidation` requires an
+/// ADMIN token, so a token that works for every other command in this tool can
+/// still be refused there.
+pub(crate) fn is_auth_rejection(e: &tungstenite::Error) -> bool {
+    matches!(e, tungstenite::Error::Http(r) if r.status() == 401 || r.status() == 403)
 }
 
 /// Standard base64 (with padding). Hand-written — the encoding is trivial, no
@@ -272,6 +358,9 @@ pub(crate) fn run_capture(
     command: &str,
     cap: Duration,
 ) -> Result<Capture> {
+    // Plain `sh`, NOT [`INTERACTIVE_SHELL`]: what gets typed here is a POSIX
+    // one-liner framed by `printf` markers, so bash would buy nothing — and the
+    // marker parsing is calibrated against what this shell echoes back.
     let url = ws_url(client, project, service, "sh")?;
     let (mut ws, _) = tungstenite::connect(&url)?;
     set_read_timeout(&mut ws, Duration::from_millis(200));
@@ -649,6 +738,9 @@ fn fire(
     // reported "still running after 60 min". `nohup: ignoring input and appending
     // output to 'nohup.out'` in that stream is the tell. Typed into `sh` the line
     // is parsed by a shell, which is what the redirect and the `&` need.
+    // And it is plain `sh`, NOT [`INTERACTIVE_SHELL`]: the launch is a POSIX
+    // one-liner, bash would buy it nothing, and this is the delivery path that was
+    // just stabilised — the shell it types into stays exactly the one measured.
     let url = ws_url(client, project, service, "sh")?;
     let (mut ws, _) = tungstenite::connect(&url)
         .map_err(|e| anyhow!("failed to start the command: {}", connect_failure(&e)))?;
@@ -733,6 +825,88 @@ pub(crate) fn set_read_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The interactive shell command, and the two things about its shape that a
+    /// well-meaning simplification would break. Both were measured live (see
+    /// [`INTERACTIVE_SHELL`]).
+    #[test]
+    fn the_interactive_shell_prefers_bash_and_can_still_fall_back() {
+        assert_eq!(
+            INTERACTIVE_SHELL,
+            "command -v bash >/dev/null 2>&1 && exec bash || exec sh"
+        );
+        // GUARDED, because `exec bash || exec sh` never reaches its fallback: a
+        // failed `exec` ends the shell, and on a bash-less image the pane got an
+        // immediately closed socket and an empty screen.
+        assert!(
+            INTERACTIVE_SHELL.starts_with("command -v bash >/dev/null 2>&1 &&"),
+            "the bash arm must be gated on bash existing: {INTERACTIVE_SHELL}"
+        );
+        // NOTHING may redirect the shell being exec'd. bash is interactive only
+        // while stdin and stderr are both terminals, so `exec bash 2>/dev/null`
+        // starts a bash with no prompt, no readline and no history.
+        let shells = &INTERACTIVE_SHELL[INTERACTIVE_SHELL.find("exec ").expect("an exec")..];
+        assert!(
+            !shells.contains('>'),
+            "no redirection on the shells we exec: {INTERACTIVE_SHELL}"
+        );
+        // Falls back to POSIX `sh`, and in ONE exec — no second round trip, so no
+        // window in which the pane has no shell behind it.
+        assert!(INTERACTIVE_SHELL.ends_with("|| exec sh"));
+        assert_eq!(INTERACTIVE_SHELL.matches("exec ").count(), 2);
+    }
+
+    /// The host shell's URL, and the fact that a failure can never print it.
+    #[test]
+    fn the_host_url_carries_only_a_token_and_never_reaches_an_error_message() {
+        let client = EasypanelClient::new("https://panel.example.com/", "SECRET-TOKEN");
+        let url = host_ws_url(&client);
+        assert_eq!(
+            url,
+            "wss://panel.example.com/ws/hostShell?token=SECRET-TOKEN"
+        );
+        // No container and no command: this route takes neither, so there is
+        // nothing to base64 and nothing to percent-encode.
+        assert!(!url.contains("container=") && !url.contains("command="));
+        // Plain http stays unencrypted rather than being silently upgraded, the
+        // same as the container route — a lab panel on http must still work.
+        assert!(
+            host_ws_url(&EasypanelClient::new("http://10.0.0.7:3000", "t"))
+                .starts_with("ws://10.0.0.7:3000/ws/hostShell?")
+        );
+
+        // tungstenite's Url error renders the WHOLE uri, and that uri is the token.
+        // A panel outage must not print a credential into the scrollback.
+        let e = tungstenite::Error::Url(tungstenite::error::UrlError::UnableToConnect(url.clone()));
+        let shown = connect_failure(&e);
+        assert!(
+            !shown.contains("SECRET-TOKEN") && !shown.contains("token="),
+            "a failed host connection leaked the token: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_refused_token_is_told_apart_from_an_unreachable_panel() {
+        // Both /ws/ routes authenticate at the UPGRADE, so a rejected token is an
+        // HTTP status and nothing else. The host shell needs an ADMIN token, and
+        // "HTTP error: 403 Forbidden" on its own sends the operator looking for a
+        // firewall they do not have.
+        let http = |code: u16| {
+            tungstenite::Error::Http(
+                tungstenite::http::Response::builder()
+                    .status(code)
+                    .body(None)
+                    .unwrap(),
+            )
+        };
+        assert!(is_auth_rejection(&http(401)));
+        assert!(is_auth_rejection(&http(403)));
+        assert!(
+            !is_auth_rejection(&http(502)),
+            "a bad gateway is not a token"
+        );
+        assert!(!is_auth_rejection(&tungstenite::Error::ConnectionClosed));
+    }
 
     #[test]
     fn parse_done_reads_the_exit_code_or_nothing_yet() {

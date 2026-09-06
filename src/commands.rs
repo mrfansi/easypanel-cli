@@ -2327,6 +2327,37 @@ pub fn maintenance_clean(client: &EasypanelClient, op: &str, label: &str, yes: b
     Ok(())
 }
 
+/// `easypanel host shell` — an interactive shell on the HOST behind the panel.
+///
+/// Deliberately the SAME code path as the TUI's Hosts ▸ `t`: it opens the TUI
+/// straight onto its terminal pane. There is no second implementation of the
+/// session, the vt100 emulation or the key encoding — one pane, one protocol
+/// handler, so a fix to either reaches both. Leaving the shell leaves you in the
+/// TUI, which is the point: the host is where you were already working.
+///
+/// Gated like the destructive Docker cleanups above, and for a stronger reason:
+/// EasyPanel's handler answers this route with
+/// `docker run --privileged --net=host --pid=host --ipc=host -v /:/host … chroot /host`
+/// (its own source, `/app/backend.js`, 2.32.2) — root on the real machine, not a
+/// container. `--yes` skips the prompt for scripted use.
+pub fn host_shell(
+    cfg: &ServerConfig,
+    client: EasypanelClient,
+    server: &str,
+    yes: bool,
+) -> Result<()> {
+    if !confirm(
+        &format!(
+            "Open a shell on the HOST behind '{server}'? This is a privileged root shell on \
+             the host filesystem — every project on it, not one container."
+        ),
+        yes,
+    )? {
+        return Ok(());
+    }
+    crate::tui::run_host_shell(cfg, client, server.to_string())
+}
+
 /// Registered storage providers (their id is needed for restore).
 pub fn storage_providers(client: &EasypanelClient) -> Result<()> {
     let v = client.call("storageProviders/common", "list", Value::Null)?;

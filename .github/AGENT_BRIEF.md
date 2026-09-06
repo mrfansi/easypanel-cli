@@ -210,6 +210,35 @@ initial `resize` from the real terminal size. Verified live: connecting with
 `command=base64("sh")`, sending an `input` of `echo …`, the `output` came back with the
 shell prompt and the command result. This is the flagship feature — do it well.
 
+### Killer feature DONE: shell on the HOST (`/ws/hostShell`)
+
+"EasyPanel has no host-exec endpoint" was the standing belief here and it is **wrong**.
+The spec (`easypanel-api.json`) documents no `/ws/` route at all — not even
+`containerShell` — so sweeping its 377 paths proves nothing about them. There is a
+second one, and it is a shell on the machine.
+
+- **URL**: `wss://{panel}/ws/hostShell?token={apiToken}` — **no** `container`, **no**
+  `command`. Nothing to base64, nothing to percent-encode.
+- **Auth**: the same stored API token, and it must be an **admin** token
+  (`preValidation: Yi({ admin: true, disableInDemoMode: true })`). A non-admin token is
+  refused at the HANDSHAKE (no 101), not by the shell.
+- **What the panel runs** (its own handler, `/app/backend.js` in the `easypanel`
+  container, 2.32.2): `docker run --rm -it --privileged --net=host --pid=host --ipc=host
+  --volume /:/host <helper> chroot /host`, pty 80×30. That is **root on the real host**,
+  which is why both entry points confirm first.
+- **Cold start**: if the helper image is absent the handler `docker pull`s it *before*
+  spawning, so the first frame can be many seconds late. An empty pane is not a dead one.
+- **Framing**: the same bridge object as `containerShell` — `{"input"}` → `pty.write`,
+  `{"resize":[cols,rows]}` → `pty.resize`, output → `{"output"}`, `socket.on("close")`
+  kills the pty (so closing the pane really does end the shell; the opposite of the
+  detached-launch path's guarantee).
+- **Verified live** (idc.viding.org, 2026-09-06) with this tool's own stored token:
+  handshake 101; first `{"output"}` is a bash prompt; `echo $0-$BASH_VERSION-$(id -un)`
+  returned `/bin/bash-5.1.16(1)-release-root`; `{"resize":[100,30]}` then `stty size`
+  printed `30 100`; PID 1 is `systemd`. A bad token gets no 101 (close 1002).
+- **`INTERACTIVE_SHELL` does not apply**: the route takes no command, so the shell is
+  the server's choice — and it is already bash. Nothing to send.
+
 ### Killer feature DONE (v0.26.0): clone a service — not in the web panel
 
 `c` on a service composes a copy from `inspectService` → `createService` (everything inline

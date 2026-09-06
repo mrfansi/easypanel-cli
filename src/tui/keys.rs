@@ -229,6 +229,9 @@ impl App {
                     // Hosts used to be the one screen with no row action at all —
                     // you could see a host was DOWN and had no way to ask why.
                     KeyCode::Enter => self.open_host_detail(),
+                    // `t` is "terminal" here as it is on Services, but one level
+                    // out: the machine, not a container on it.
+                    KeyCode::Char('t') => self.request_host_shell(),
                     _ => move_table(&mut self.hosts_state, code, self.hosts.len()),
                 },
                 Screen::Maintenance => self.maint_key(code),
@@ -1156,6 +1159,13 @@ impl App {
                     stype,
                     index: c.stype.parse().unwrap_or(0),
                 })
+            }
+            // Opening the host shell: no API call and no worker — the event loop
+            // resolves the server's token and starts the session (same as the
+            // container terminal). The server name travelled in `project`.
+            "host-shell" => {
+                self.host_shell_req = Some(c.project);
+                return;
             }
             // Removing a server: a config change, not an API call.
             "server-remove" => {

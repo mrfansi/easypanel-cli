@@ -272,6 +272,8 @@ stop, start), `X` (delete project).
 **Viewer** — `↑↓`/`PgUp`/`PgDn` scroll · `←→` scroll sideways (lines are not wrapped) ·
 `Home` first line and left edge · `End` re-follow the log tail · `[0]`–`[9]` deletes that
 row (ports/mounts/redirects) · `Esc` back.
+**Hosts** (`2`) — `Enter` host detail (the whole reason an unreachable host is
+unreachable) · `t` **a shell on that host itself** (confirmed first — see below).
 **Domains** — `n` new · `e` edit · `E` bulk edit · `x` delete · `P` set primary.
 
 `E` rewrites one part — the host, the destination service, or a custom
@@ -489,6 +491,9 @@ easypanel db query <project> <service> "SELECT id, email FROM users LIMIT 5" [--
 # Maintenance (active server)
 easypanel maintenance info|prune|cleanup-images|cleanup-builder [--yes]
 
+# A shell on the host machine itself (privileged root — see below)
+easypanel host shell [--server prod] [--yes]
+
 # Monitoring
 easypanel stats                      # CPU/mem/disk/load
 easypanel monitor services|storage
@@ -500,6 +505,48 @@ easypanel notification list|delete
 
 `--type` defaults to `app`; other types (mysql, postgres, redis, mongo, mariadb,
 wordpress, compose) match your EasyPanel services.
+
+### A shell on the host itself
+
+```bash
+easypanel host shell                 # default server
+easypanel host shell --server prod   # a specific host
+```
+
+…or press `t` on the **Hosts** screen (`2`), which acts on the highlighted row — that
+screen shows every configured machine at once, so the row under the cursor is routinely
+not the one the rest of the TUI is pointed at. Both doors are the same code: the CLI one
+opens the TUI straight onto its terminal pane, so there is one session handler, one
+emulator and one set of keys, not two.
+
+**Both ask first**, which a container shell does not. That asymmetry is on purpose.
+EasyPanel answers this route by running
+`docker run --privileged --net=host --pid=host --ipc=host -v /:/host … chroot /host`:
+root on the real machine, in its namespaces, with every project's data one command away
+and no undo. A container shell's blast radius is one service. `--yes` skips the prompt.
+
+The pane says which it is — `Terminal · HOST shell — <server> (root) · Ctrl-Q exit` —
+because the host pane and a container pane are otherwise identical, and the border keeps
+the per-host colour the rest of the TUI uses.
+
+Two things worth knowing, both from the panel's own handler:
+
+- **The token must be an admin token.** Authentication happens at the WebSocket
+  handshake, so a valid non-admin token is refused there rather than by the shell. The
+  failure says so instead of leaving you hunting a network problem.
+- **The first open can be slow.** If the helper image is not on the host yet, the panel
+  pulls it *before* starting anything, so an empty pane for a while is the download, not
+  a dead session. The status line says it is starting.
+
+Closing the pane (`exit` or `Ctrl-Q`) kills the shell — the panel's bridge kills the pty
+when the socket closes, so nothing is left running on the host.
+
+This route is **not in the published API spec**; neither is the container shell. The spec
+documents no `/ws/` path at all, which is why this tool spent a long time asserting there
+was no way onto the host. Protocol and behaviour here were established by a live round
+trip against a real panel (idc.viding.org, 2026-09-06), kept as an `--ignored` test
+(`host_shell_ws_roundtrip_live`) so a panel upgrade that changes it is caught by running
+it rather than by a user.
 
 ### Non-locking database dump to object storage
 
@@ -600,8 +647,8 @@ command that retries just the load without dumping again.
 
 ### Browse and query a database
 
-EasyPanel has no query surface and no exec endpoint, so this asks the database
-itself: it runs **that service's own client in batch mode inside its container**
+EasyPanel has no query surface and no REST endpoint that runs anything, so this asks
+the database itself: it runs **that service's own client in batch mode inside its container**
 (`mysql --batch --raw`, `psql -A -F<tab>`, `mongosh --quiet --eval`) over the same
 WebSocket the embedded shell uses, and turns the tab-separated (or JSON) output
 back into a table. No port has to be exposed, no client has to be installed here,

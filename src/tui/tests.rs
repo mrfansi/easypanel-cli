@@ -186,7 +186,7 @@ fn resource_body_parses_numbers_defaults_zero_and_rejects_junk() {
 #[test]
 fn base64_matches_known_values() {
     use crate::container::base64;
-    assert_eq!(base64(b"sh"), "c2g="); // the container shell we use
+    assert_eq!(base64(b"sh"), "c2g="); // the shell the one-shot helpers open on
     assert_eq!(base64(b""), "");
     assert_eq!(base64(b"M"), "TQ==");
     assert_eq!(base64(b"Ma"), "TWE=");
@@ -2126,11 +2126,18 @@ fn terminal_ws_roundtrip_live() {
     let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
     let srv = cfg.default().expect("a default server exists");
     let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
-    let url = crate::container::ws_url(&client, "zzz-emb", "zzz-redis", "sh").expect("ws_url");
+    // The command the pane itself opens with.
+    let url = crate::container::ws_url(
+        &client,
+        "zzz-emb",
+        "zzz-redis",
+        crate::container::INTERACTIVE_SHELL,
+    )
+    .expect("ws_url");
 
     let (out_tx, out_rx) = channel::<Resp>();
     let (in_tx, in_rx) = channel::<super::terminal::TermMsg>();
-    super::terminal::spawn_session(url, out_tx, in_rx, 80, 24);
+    super::terminal::spawn_session(url, out_tx, in_rx, 80, 24, "");
     std::thread::sleep(Duration::from_millis(900));
     in_tx
         .send(super::terminal::TermMsg::Input(
@@ -2150,6 +2157,53 @@ fn terminal_ws_roundtrip_live() {
         assert!(Instant::now() < deadline, "no output containing the proof");
     }
     drop(in_tx); // close the session
+}
+
+/// The host shell against a real panel. Ignored by default like the container
+/// round trip above; this is the check that was actually run to establish the
+/// protocol (idc.viding.org, 2026-09-06) and the one to re-run after a panel
+/// upgrade, because `/ws/hostShell` is in no published spec and nothing else
+/// would notice it changing.
+#[test]
+#[ignore = "live: opens a real root shell on the default server's host"]
+fn host_shell_ws_roundtrip_live() {
+    use super::worker::Resp;
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+
+    let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
+    let srv = cfg.default().expect("a default server exists");
+    let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
+    let url = crate::container::host_ws_url(&client);
+
+    let (out_tx, out_rx) = channel::<Resp>();
+    let (in_tx, in_rx) = channel::<super::terminal::TermMsg>();
+    super::terminal::spawn_session(url, out_tx, in_rx, 100, 30, "");
+    // The panel may `docker pull` the helper image before the pty exists, so the
+    // prompt can be far later than a container shell's.
+    std::thread::sleep(Duration::from_secs(3));
+    in_tx
+        .send(super::terminal::TermMsg::Input(
+            "echo HOSTPROOF-$(id -un)-$(cat /proc/1/comm)\n".into(),
+        ))
+        .unwrap();
+
+    let mut parser = vt100::Parser::new(30, 100, 0);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(Resp::TermOutput(b)) = out_rx.recv_timeout(Duration::from_millis(400)) {
+            parser.process(&b);
+        }
+        let screen = parser.screen().contents();
+        // Root, and PID 1 is the host's init — not a container's entrypoint.
+        if screen.contains("HOSTPROOF-root-systemd") {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no host shell answer; screen was:\n{screen}"
+        );
+    }
 }
 
 #[test]
@@ -3253,6 +3307,91 @@ fn an_unreachable_host_can_be_asked_why() {
     assert!(flat.contains("blackhole") && flat.contains("10.255.255.1"));
     // Esc goes back where you came from, not to some default screen.
     assert!(matches!(app.viewer.from, Screen::Hosts));
+}
+
+#[test]
+fn t_on_hosts_confirms_before_a_root_shell_on_the_highlighted_host() {
+    // By identity, not "the active server": Hosts shows every configured machine
+    // at once, so the highlighted row is routinely not the one the rest of the TUI
+    // points at — and the panel answers this route with a privileged container
+    // chrooted into the host's /, so the wrong row is root on the wrong machine.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("prod".into(), vec![]);
+    app.screen = Screen::Hosts;
+    app.hosts = vec![
+        HostRow {
+            name: "prod".into(),
+            url: "https://prod.example.com".into(),
+            state: HostState::Loading,
+        },
+        HostRow {
+            name: "staging".into(),
+            url: "https://staging.example.com".into(),
+            state: HostState::Loading,
+        },
+    ];
+    app.hosts_state.select(Some(1));
+
+    app.on_key(KeyCode::Char('t'), &tx);
+    let label = app
+        .confirm
+        .as_ref()
+        .expect("t must ask first")
+        .label
+        .clone();
+    assert!(
+        label.contains("staging") && label.contains("HOST"),
+        "the confirmation must name the machine it is about: {label}"
+    );
+    assert!(
+        app.host_shell_req.is_none(),
+        "nothing may be requested before the answer"
+    );
+
+    // Anything but y cancels, and cancelling must not leave the request armed.
+    app.on_key(KeyCode::Char('n'), &tx);
+    assert!(app.host_shell_req.is_none());
+    assert!(app.confirm.is_none());
+
+    app.on_key(KeyCode::Char('t'), &tx);
+    app.on_key(KeyCode::Char('y'), &tx);
+    assert_eq!(app.host_shell_req.as_deref(), Some("staging"));
+
+    // Nothing selected: say so rather than asking about a host that isn't there.
+    let mut empty = App::new("prod".into(), vec![]);
+    empty.screen = Screen::Hosts;
+    empty.on_key(KeyCode::Char('t'), &tx);
+    assert!(empty.confirm.is_none() && empty.host_shell_req.is_none());
+    assert_eq!(empty.status, "Select a host first");
+}
+
+#[test]
+fn the_host_pane_title_cannot_be_mistaken_for_a_container_pane() {
+    // The two panes are pixel-identical apart from this string, and only one of
+    // them is root on the machine every project lives on.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let title = super::host_term_title("viding-idc");
+    let mut app = App::new("viding-idc".into(), vec![]);
+    app.screen = Screen::Terminal;
+    app.term.title = title;
+    app.term.parser = Some(vt100::Parser::new(4, 60, super::TERM_SCROLLBACK));
+    let mut t = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    t.draw(|f| ui(f, &mut app)).unwrap();
+    let painted: String = t
+        .backend()
+        .buffer()
+        .content()
+        .chunks(80)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        painted.contains("HOST shell") && painted.contains("viding-idc"),
+        "the pane header must say HOST and name the server:\n{painted}"
+    );
+    assert!(painted.contains("root"), "and that it is root:\n{painted}");
 }
 
 #[test]

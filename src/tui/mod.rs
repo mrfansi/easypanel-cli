@@ -53,6 +53,28 @@ use worker::{spawn_workers, Req, Resp, View};
 
 /// Open the TUI for the default server (or the resolved --server).
 pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> Result<()> {
+    start(cfg, client, server_name, false)
+}
+
+/// Open the TUI already on a shell for that server's HOST (`easypanel host shell`).
+///
+/// The CLI entry point and the Hosts ▸ `t` entry point are the same code from
+/// here on: one pane, one WebSocket handler, one key encoder. A standalone CLI
+/// terminal would be a second vt100 path to keep correct for no gain.
+pub fn run_host_shell(
+    cfg: &ServerConfig,
+    client: EasypanelClient,
+    server_name: String,
+) -> Result<()> {
+    start(cfg, client, server_name, true)
+}
+
+fn start(
+    cfg: &ServerConfig,
+    client: EasypanelClient,
+    server_name: String,
+    host_shell: bool,
+) -> Result<()> {
     if cfg.all().is_empty() {
         println!("No servers yet. Run: easypanel server add");
         return Ok(());
@@ -60,6 +82,12 @@ pub fn run(cfg: &ServerConfig, client: EasypanelClient, server_name: String) -> 
 
     let names: Vec<(String, String)> = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
     let mut app = App::new(server_name, names);
+    // Already agreed to on the command line, so it does NOT re-arm the TUI's own
+    // confirmation — asking twice for one deliberate act trains people to hold
+    // down `y`.
+    if host_shell {
+        app.host_shell_req = Some(app.server_name.clone());
+    }
     // Enrolled domains are a per-host preference, loaded once at start-up. A
     // failure here is not fatal: the watchlist is a convenience, not credentials.
     app.watch = crate::config::Watchlist::new(crate::config::Watchlist::default_path())
@@ -470,7 +498,8 @@ fn event_loop(
                 Some(server) => {
                     let client = EasypanelClient::new(&server.url, &server.token);
                     // DB shell: take rootPassword + the database name from
-                    // inspectService, build the mysql client command. Plain shell: "sh".
+                    // inspectService, build the mysql client command. Plain shell:
+                    // bash where the image has it, `sh` where it does not.
                     let command = match &db {
                         Some(stype) => {
                             match client.call(
@@ -491,7 +520,7 @@ fn event_loop(
                                 }
                             }
                         }
-                        None => "sh".to_string(),
+                        None => crate::container::INTERACTIVE_SHELL.to_string(),
                     };
                     match crate::container::ws_url(&client, &project, &service, &command) {
                         Ok(url) => {
@@ -507,7 +536,7 @@ fn event_loop(
                             let label =
                                 db.as_deref().map(|s| format!(" ({s})")).unwrap_or_default();
                             app.term.title = format!("{project}/{service}{label}");
-                            terminal::spawn_session(url, w.resp_tx.clone(), rx, tcols, trows);
+                            terminal::spawn_session(url, w.resp_tx.clone(), rx, tcols, trows, "");
                             app.screen = Screen::Terminal;
                             app.status = "Terminal — type `exit` or Ctrl-Q to leave".into();
                         }
@@ -515,6 +544,50 @@ fn event_loop(
                     }
                 }
                 None => app.status = "Active server not found".into(),
+            }
+        }
+
+        // Host shell: the SAME pane as the container terminal, on a different URL.
+        // `/ws/hostShell` speaks the identical protocol (verified live), so it
+        // reuses `spawn_session` and the vt100 parser verbatim — a second emulator
+        // path would be two things to keep correct and two places for a keystroke
+        // to go missing.
+        //
+        // Resolved here for the same reason the container terminal is: only this
+        // loop holds the ServerConfig, and the URL needs that server's token.
+        if let Some(name) = app.host_shell_req.take() {
+            match cfg.get(&name) {
+                Some(server) => {
+                    let client = EasypanelClient::new(&server.url, &server.token);
+                    let url = crate::container::host_ws_url(&client);
+                    let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+                    let (tcols, trows) = (cols, rows.saturating_sub(5).max(1));
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    app.term.parser = Some(vt100::Parser::new(trows, tcols, TERM_SCROLLBACK));
+                    app.term.input = Some(tx);
+                    app.term.title = host_term_title(&name);
+                    terminal::spawn_session(
+                        url,
+                        w.resp_tx.clone(),
+                        rx,
+                        tcols,
+                        trows,
+                        // Read from the handler's own source: this route's
+                        // preValidation is `admin: true`, so a token that works
+                        // everywhere else in this tool is still refused here.
+                        " — /ws/hostShell requires an ADMIN API token; a non-admin token is \
+                         refused at the handshake even though it works everywhere else",
+                    );
+                    app.screen = Screen::Terminal;
+                    // Not "Terminal —": the first frame can be many seconds away.
+                    // The panel pulls the helper image before it spawns anything,
+                    // so on a host that has never opened one an empty pane is the
+                    // image downloading, not a dead session.
+                    app.status = format!(
+                        "Host shell on {name} — root on the host. Starting (first open pulls an image); `exit` or Ctrl-Q to leave"
+                    );
+                }
+                None => app.status = format!("Server '{name}' is no longer configured"),
             }
         }
 
@@ -843,6 +916,18 @@ fn edit_config_in_editor(
         &format!("easypanel-{project}-{service}.conf"),
         &current,
     )
+}
+
+/// The pane label for a host shell.
+///
+/// The host pane and a container pane are otherwise pixel-identical, and only one
+/// of them is root on the machine with every project's data on it — so the title
+/// names the SERVER and says what it is, in words, rather than leaving the
+/// difference to a prompt the operator has to notice. The pane's border already
+/// carries `server_colour(&app.server_name)`, which is the tool's existing "which
+/// host am I on" signal; nothing new is invented here.
+pub(super) fn host_term_title(server: &str) -> String {
+    format!("HOST shell — {server} (root)")
 }
 
 /// Write a file only this user can read, replacing whatever was there.

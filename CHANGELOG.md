@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A shell on the HOST — `easypanel host shell`, and `t` on the Hosts screen.**
+  This tool has said for a long time that EasyPanel has no host-exec endpoint.
+  That was wrong: the API spec documents no `/ws/` route at all (not even the
+  container shell it has used since v0.18.0), so sweeping its 377 paths never
+  said anything about them. There is a second one — `/ws/hostShell`, taking only
+  a `token`, no container and no command — and it is a shell on the machine. It
+  is the same pane as the container terminal on a different URL: one WebSocket
+  handler, one vt100 emulator, one key encoder, so the CLI entry point opens the
+  TUI straight onto that pane rather than growing a second terminal. Verified by
+  a live round trip against a real panel (2026-09-06): handshake with the token
+  this tool already stores, first frame a bash prompt, `{"resize":[100,30]}`
+  followed by `stty size` printing `30 100`, and PID 1 on the far side is
+  `systemd`. That round trip is kept as an `--ignored` test so a panel upgrade
+  that changes the protocol is caught by running it rather than by a user.
+- **Both doors confirm first, unlike a container shell.** The panel answers this
+  route by running `docker run --privileged --net=host --pid=host --ipc=host
+  -v /:/host … chroot /host` — root on the real machine, in its namespaces, with
+  every project's data one command away and no undo, where a container shell's
+  blast radius is one service. The TUI arms the same plain y/n gate the
+  destructive database actions use, naming the host; the CLI prompts unless
+  `--yes`. The pane header reads `Terminal · HOST shell — <server> (root)`,
+  because the two panes are otherwise identical and only one of them is the whole
+  machine.
+- **Two failure modes it names instead of shrugging at.** The route requires an
+  ADMIN token and authenticates at the handshake, so a valid non-admin token is
+  refused there — the message says that rather than "failed to connect", which
+  otherwise sends an operator hunting a network problem they do not have. And if
+  the helper image is not on the host yet the panel pulls it *before* starting
+  anything, so the status line says the session is starting and an empty pane is
+  a download rather than a dead socket. The host URL goes through the same
+  redaction as the container one: a connection failure can never print the
+  `?token=` it tried.
+
+### Changed
+
+- **The container terminal now opens `bash` when the image has it, and falls back
+  to `sh` when it does not.** One exec, so there is no extra round trip and no
+  moment where the pane has no shell behind it. The command is
+  `command -v bash >/dev/null 2>&1 && exec bash || exec sh`, and both halves of it
+  were measured live: on `viding-org-db/mysql` the pane comes up on
+  `bash-5.1#` with `$0=bash` and `BASH_VERSION=5.1.8(1)-release`, and on
+  `system/mailpit` — an image with no bash at all (`/bin/sh: bash: not found`) —
+  it comes up on `/ # ` with `$0=sh` and no `BASH_VERSION`. The obvious spelling
+  `exec bash 2>/dev/null || exec sh` is what this deliberately avoids: a failed
+  `exec` ends the shell, so on a bash-less image that form closed the session
+  immediately and left the pane dead, and even where bash existed the
+  `2>/dev/null` took stderr away and started a bash that was not interactive (no
+  prompt, no line editing, no history). The one-shot helpers behind dumps,
+  restores and queries keep plain `sh`: they send POSIX one-liners, where bash
+  buys nothing. The database shell is unaffected — it execs the engine's client,
+  not a shell.
+
 ## [0.98.19] — 2026-09-06
 
 ### Changed

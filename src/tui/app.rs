@@ -879,6 +879,10 @@ pub(super) struct App {
     /// (project, service, stype) awaiting a DB credentials view; event_loop
     /// inspects the service (it holds the ServerConfig) and fills `creds`.
     pub(super) credentials_req: Option<(String, String, String)>,
+    /// The server NAME whose HOST shell was confirmed. Resolved by event_loop: it
+    /// holds the ServerConfig, and the `/ws/hostShell` URL needs that server's
+    /// token. Set only after the confirmation is answered `y`.
+    pub(super) host_shell_req: Option<String>,
     /// The database credentials currently on the Credentials screen.
     pub(super) creds: CredsUi,
     /// Text the event_loop should put on the system clipboard (via OSC 52) on its
@@ -1066,6 +1070,7 @@ impl App {
             edit_field: None,
             terminal_req: None,
             credentials_req: None,
+            host_shell_req: None,
             creds: CredsUi::default(),
             clipboard: None,
             term: super::terminal::TermUi::default(),
@@ -4875,6 +4880,37 @@ impl App {
         self.viewer.hscroll = 0;
         self.viewer.from = Screen::Hosts;
         self.screen = Screen::Viewer;
+    }
+
+    /// Ask to open a shell on the HIGHLIGHTED host, behind a confirmation.
+    ///
+    /// By identity (the row's server name), never "the active server": Hosts is
+    /// the one screen showing every configured machine at once, so the row under
+    /// the cursor is frequently not the one the rest of the TUI is pointed at.
+    ///
+    /// Gated where a container shell is not, and the asymmetry is deliberate.
+    /// EasyPanel's `/ws/hostShell` handler runs
+    /// `docker run --privileged --net=host --pid=host --ipc=host -v /:/host … chroot /host`
+    /// (read from `/app/backend.js`, 2.32.2) — root on the real machine, in its
+    /// namespaces, with every project's data one `rm -rf` away and no undo. A
+    /// container shell is blast-radius-one; this is the whole host. One keystroke
+    /// is a cheap price for making the operator mean it.
+    pub(super) fn request_host_shell(&mut self) {
+        let Some(h) = self.hosts_state.selected().and_then(|i| self.hosts.get(i)) else {
+            self.status = "Select a host first".into();
+            return;
+        };
+        self.confirm = Some(Confirm {
+            action: "host-shell".into(),
+            project: h.name.clone(),
+            service: String::new(),
+            stype: String::new(),
+            label: format!(
+                "Open a shell on the HOST '{}'? This is a privileged root shell on the host \
+                 filesystem — every project on it, not one container.",
+                h.name
+            ),
+        });
     }
 
     /// Open the migrate form — one service, or every service in the highlighted
