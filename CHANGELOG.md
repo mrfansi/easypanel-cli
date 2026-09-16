@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.21] — 2026-09-17
+
 ### Added
 
 - **A file mount is editable as a file — `E` on the Mounts screen, and
@@ -4230,7 +4232,8 @@ tests:
 - Unreadable status bar and sparklines (named colours are reinterpreted by terminal
   themes; palette indices are not).
 
-[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.20...HEAD
+[Unreleased]: https://github.com/mrfansi/easypanel-cli/compare/v0.98.21...HEAD
+[0.98.21]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.21
 [0.98.20]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.20
 [0.98.19]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.19
 [0.98.18]: https://github.com/mrfansi/easypanel-cli/releases/tag/v0.98.18
