@@ -867,6 +867,9 @@ pub(super) struct App {
     /// (project, service, stype) — awaiting a Config File (Advanced db) edit in
     /// $EDITOR; its contents come from inspectService and are saved via updateAdvanced.
     pub(super) edit_config: Option<(String, String, String)>,
+    /// (project, service, index) awaiting a file mount's $EDITOR open; the event
+    /// loop owns the terminal and fetches fresh values before editing.
+    pub(super) edit_mount_file: Option<(String, String, usize)>,
     /// The index of the form field awaiting an $EDITOR open; event_loop does it —
     /// only it holds the terminal.
     pub(super) edit_field: Option<usize>,
@@ -1067,6 +1070,7 @@ impl App {
             edit_env: None,
             edit_project_env: None,
             edit_config: None,
+            edit_mount_file: None,
             edit_field: None,
             terminal_req: None,
             credentials_req: None,

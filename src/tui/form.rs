@@ -831,6 +831,27 @@ pub(super) fn mount_body(form: &Form) -> std::result::Result<Value, String> {
     }
 }
 
+/// A fresh listMounts value supplies the path as well as the contents, so an
+/// editor save cannot turn a volume/bind mount into a file by accident.
+pub(super) fn mount_file_target(values: &Value) -> std::result::Result<(String, String), String> {
+    let kind = field(values, "/type");
+    if kind != "file" {
+        return Err(format!(
+            "A {kind} mount has no contents to edit — press e to change where it is mounted"
+        ));
+    }
+    let path = values
+        .get("mountPath")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if path.trim().is_empty() {
+        return Err("Mount path is required".into());
+    }
+    // Missing contents mean an empty file, not field()'s display placeholder.
+    let content = values.get("content").and_then(Value::as_str).unwrap_or("");
+    Ok((path.to_string(), content.to_string()))
+}
+
 /// The `values` object for createPort: `{published, target, protocol}`.
 ///
 /// Both are numbers in the API, so they're parsed; a non-numeric value is rejected

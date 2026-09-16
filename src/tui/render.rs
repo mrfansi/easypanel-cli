@@ -133,6 +133,7 @@ pub(super) fn screen_keys(screen: Screen) -> &'static [Key] {
                 "n / e / b / x",
                 "act on what is shown — the keys for THIS view are listed on its bottom border",
             ),
+            Key("E", "open a file mount's contents in $EDITOR (Mounts only)"),
             Key(
                 "↑↓",
                 "select a row (ports/mounts/redirects) · scroll (logs, env, source)",
@@ -4063,9 +4064,8 @@ pub(super) fn viewer_actions(app: &App) -> String {
     }
     match app.viewer.ctx.as_ref().map(|(v, ..)| *v) {
         Some(View::Env) => " e edit ".into(),
-        Some(View::Ports) | Some(View::Mounts) | Some(View::Redirects) => {
-            " ↑↓ select · n add · x delete ".into()
-        }
+        Some(View::Mounts) => " ↑↓ select · n add · e edit · x delete · E contents ".into(),
+        Some(View::Ports) | Some(View::Redirects) => " ↑↓ select · n add · x delete ".into(),
         Some(View::Source) => " e set source · b set build ".into(),
         _ => String::new(),
     }

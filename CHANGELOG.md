@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A file mount is editable as a file — `E` on the Mounts screen, and
+  `service mount-edit` / `service mount-content` on the CLI.** A `file` mount is
+  a small config file materialised into the container, and it was the one thing
+  in this tool you could create but never open: the Mounts row printed nothing
+  but its path, so there was no way to tell an empty file from a populated one,
+  and the only way to change a character was the mount form with its `Content`
+  field. `E` now opens the selected file mount's contents in `$EDITOR` and saves
+  them through `updateMount` — the same door the env and a database's config
+  file already use — while `e` keeps its meaning and edits where the
+  mount lands. The row says how much is in it (`file /etc/app/config.yml
+  (12 lines)`, or `(empty)`), in the CLI listing too.
+
+  The values are re-read from `listMounts` at the moment you press `E`, not
+  remembered from when the list was drawn, so editing a mount someone else has
+  changed since fails honestly and one that has disappeared says so — the rule
+  `e` already followed. The mount path comes back from that same fetch and is
+  sent unchanged, so an editor save can never convert a mount to another type,
+  and a volume or bind mount answers `A volume mount has no contents to edit —
+  press e to change where it is mounted` instead of opening an empty buffer.
+  The temp file keeps the mount's own file name (`easypanel-<project>-<service>-
+  config.yml`) so the editor picks the right syntax highlighting, with anything
+  outside `[A-Za-z0-9._-]` replaced — a remote path must not steer where we
+  write.
+
+  Emptying the buffer truncates the file rather than cancelling: the spec's file
+  shape is `content: {"type": "string"}` with no `minLength`, unlike `mountPath`,
+  so a blank config file is a legal thing to want, and the status line says
+  `Emptying mount file...` so the outcome is not silent. The create form's
+  `Content is still empty — Space to open it in $EDITOR` guard is untouched:
+  there, empty means the editor was never opened.
+
+- **The CLI can do all of it too, which it could not do at all before.**
+  `mount-add --kind file` was rejected outright (`use volume|bind`), so a file
+  mount could only be made in the TUI or the web panel. Now:
+  `service mount-add … --kind file --file c.yml` (or stdin),
+  `service mount-content … --index 1` to read the file back byte for byte — no
+  trailing newline is invented, unlike `service env`, because this is the read
+  half of `mount-content > f; $EDITOR f; mount-edit --file f` and a newline
+  nobody typed would come back as a real change — and `service mount-edit`,
+  which re-reads the mount and keeps every field you did not name, so
+  `--mount-path /new` on a file mount preserves its contents and `--index 7` on
+  a service with three mounts answers `Mount [7] is not there — web has 3
+  mounts`. `mount-edit` never reads stdin implicitly (only `--stdin` asks for
+  it): a command that blocked on a tty when you only wanted to move a path
+  would be a trap, and an accidental empty read would erase the file.
+
 ## [0.98.20] — 2026-09-06
 
 ### Added

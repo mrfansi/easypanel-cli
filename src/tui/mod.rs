@@ -707,6 +707,32 @@ fn event_loop(
             }
         }
 
+        // File mounts use updateMount, preserving the freshly fetched mount path.
+        if let Some((project, service, index)) = app.edit_mount_file.take() {
+            match edit_mount_file_in_editor(&w.user, &w.resp, terminal, &project, &service, index) {
+                Ok(Some((mount_path, edited))) => {
+                    // Unlike an unopened create-form field, empty editor output
+                    // deliberately truncates the file; the OpenAPI content string
+                    // has no minLength. Make that operation visible while saving.
+                    app.status = if edited.is_empty() {
+                        "Emptying mount file...".into()
+                    } else {
+                        "Saving mount file...".into()
+                    };
+                    let _ = w.user.send(Req::MountUpdate {
+                        project,
+                        service,
+                        index,
+                        values: serde_json::json!({
+                            "type": "file", "content": edited, "mountPath": mount_path
+                        }),
+                    });
+                }
+                Ok(None) => app.status = "Mount file unchanged".into(),
+                Err(e) => app.status = format!("Error: {e}"),
+            }
+        }
+
         // Switch server: build a new worker (the old one stops when its sender is dropped).
         if let Some(name) = app.switch_to.take() {
             if let Some(server) = cfg.get(&name) {
@@ -916,6 +942,62 @@ fn edit_config_in_editor(
         &format!("easypanel-{project}-{service}.conf"),
         &current,
     )
+}
+
+/// Fetch the mount again before opening it: the viewer's row can be stale.
+fn edit_mount_file_in_editor(
+    req: &Sender<Req>,
+    resp: &Receiver<Resp>,
+    terminal: &mut ratatui::DefaultTerminal,
+    project: &str,
+    service: &str,
+    index: usize,
+) -> Result<Option<(String, String)>> {
+    req.send(Req::MountForm {
+        project: project.to_string(),
+        service: service.to_string(),
+        index,
+    })?;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let values = loop {
+        match resp.recv_timeout(Duration::from_millis(200)) {
+            Ok(Resp::MountForm { values, .. }) => break values,
+            Ok(Resp::Err(e)) => return Err(anyhow::anyhow!(e)),
+            Ok(_) => {}
+            Err(_) if Instant::now() > deadline => {
+                return Err(anyhow::anyhow!("timed out fetching mount file"))
+            }
+            Err(_) => {}
+        }
+    };
+    let (mount_path, current) = form::mount_file_target(&values).map_err(anyhow::Error::msg)?;
+    // Preserve the extension for syntax highlighting without letting a remote
+    // path introduce directories or shell punctuation into the temporary name.
+    let basename: String = mount_path
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let basename = if basename.is_empty() {
+        format!("mount-{index}.txt")
+    } else {
+        basename
+    };
+    let edited = edit_text_in_editor(
+        terminal,
+        &format!("easypanel-{project}-{service}-{basename}"),
+        &current,
+    )?;
+    Ok(edited.map(|content| (mount_path, content)))
 }
 
 /// The pane label for a host shell.

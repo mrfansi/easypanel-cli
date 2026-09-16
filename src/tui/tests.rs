@@ -2712,6 +2712,110 @@ fn editing_a_mount_prefills_it_and_keeps_e_meaning_one_thing() {
 }
 
 #[test]
+fn file_mount_rows_show_contents_without_changing_mount_indices() {
+    // File rows used to hide whether there was anything to edit; the printed
+    // indices must survive because every mount action resolves that marker.
+    let rows = super::viewer::mounts_lines(&json!([
+        {"type": "file", "mountPath": "/etc/app/config.yml", "content": "a: 1\nb: 2\n"},
+        {"type": "file", "mountPath": "/empty", "content": ""},
+        {"type": "file", "mountPath": "/missing"},
+        {"type": "bind", "hostPath": "/srv/data", "mountPath": "/data"},
+        {"type": "volume", "name": "db", "mountPath": "/var/lib/db"}
+    ]));
+    assert_eq!(
+        rows,
+        vec![
+            "[0] file  /etc/app/config.yml  (2 lines)",
+            "[1] file  /empty  (empty)",
+            "[2] file  /missing  (empty)",
+            "[3] bind  /srv/data -> /data",
+            "[4] volume  db -> /var/lib/db",
+        ]
+    );
+}
+
+#[test]
+fn mount_file_target_preserves_contents_and_refuses_non_files() {
+    // A stale list can now point to a volume/bind mount; editing contents must
+    // never silently convert its type or write a missing-value placeholder.
+    assert_eq!(
+        mount_file_target(&json!({"type": "file", "mountPath": "/a.yml", "content": "a: 1\n"}))
+            .unwrap(),
+        ("/a.yml".into(), "a: 1\n".into())
+    );
+    assert_eq!(
+        mount_file_target(&json!({"type": "file", "mountPath": "/empty"})).unwrap(),
+        ("/empty".into(), String::new())
+    );
+    assert_eq!(
+        mount_file_target(&json!({"type": "file", "mountPath": "/dash", "content": "-"})).unwrap(),
+        ("/dash".into(), "-".into())
+    );
+    for kind in ["volume", "bind"] {
+        let error = mount_file_target(&json!({"type": kind, "mountPath": "/data"})).unwrap_err();
+        assert!(error.contains(kind) && error.contains("press e"), "{error}");
+    }
+    for values in [
+        json!({"type": "file"}),
+        json!({"type": "file", "mountPath": "  "}),
+    ] {
+        assert!(mount_file_target(&values)
+            .unwrap_err()
+            .contains("Mount path"));
+    }
+}
+
+#[test]
+fn mount_contents_key_uses_the_printed_index_and_requires_selection() {
+    // The row position need not be the API index: choosing by position would
+    // open and overwrite another mount's file.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer.ctx = Some((View::Mounts, "proj".into(), "web".into(), "app".into()));
+    app.viewer.lines = vec!["[12] file  /etc/app.yml  (2 lines)".into()];
+    app.viewer.row.select(Some(0));
+    app.on_key(KeyCode::Char('E'), &tx);
+    assert_eq!(
+        app.edit_mount_file.take(),
+        Some(("proj".into(), "web".into(), 12))
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "the event loop fetches before opening the editor"
+    );
+
+    // Lowercase e still opens the full mount form, with the same printed index.
+    app.on_key(KeyCode::Char('e'), &tx);
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        Req::MountForm { index: 12, .. }
+    ));
+    assert!(app.edit_mount_file.is_none());
+    app.viewer.row.select(None);
+    app.on_key(KeyCode::Char('E'), &tx);
+    assert!(app.edit_mount_file.is_none());
+    assert!(app.status.contains("Select a mount"));
+}
+
+#[test]
+fn mount_contents_key_in_ports_explains_the_working_keys() {
+    // An uppercase E outside Mounts must not silently do nothing or edit the
+    // selected service's env; its refusal advertises this viewer's real actions.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer.ctx = Some((View::Ports, "proj".into(), "web".into(), "app".into()));
+    app.viewer.lines = vec!["[0] tcp 8080->80".into()];
+    app.viewer.row.select(Some(0));
+    app.on_key(KeyCode::Char('E'), &tx);
+    assert!(app.edit_mount_file.is_none());
+    assert!(app.edit_env.is_none());
+    assert!(app.status.starts_with("Not here"), "{}", app.status);
+    assert!(app.status.contains("n add") && !app.status.contains("E contents"));
+}
+
+#[test]
 fn a_form_is_wide_enough_for_the_note_that_explains_it() {
     // The form was a fixed 64 columns, so its own explanation was cut mid-word:
     // "lists that server's backups; only ones on shared remote stora". A

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use dialoguer::{Confirm, Input, Password};
 use serde_json::{json, Value};
-use std::io::Read;
+use std::io::{Read, Write};
 
 use crate::client::EasypanelClient;
 use crate::cloudflare::CloudflareAccount;
@@ -1810,6 +1810,15 @@ pub fn mounts_list(client: &EasypanelClient, project: &str, service: &str) -> Re
             let detail = match field(m, "/type").as_str() {
                 "bind" => format!("{} -> {}", field(m, "/hostPath"), field(m, "/mountPath")),
                 "volume" => format!("{} -> {}", field(m, "/name"), field(m, "/mountPath")),
+                "file" => {
+                    let content = m.get("content").and_then(Value::as_str).unwrap_or("");
+                    let summary = if content.is_empty() {
+                        "empty".to_string()
+                    } else {
+                        format!("{} lines", content.lines().count())
+                    };
+                    format!("{} ({summary})", field(m, "/mountPath"))
+                }
                 _ => field(m, "/mountPath"),
             };
             vec![i.to_string(), field(m, "/type"), detail]
@@ -1819,6 +1828,74 @@ pub fn mounts_list(client: &EasypanelClient, project: &str, service: &str) -> Re
     Ok(())
 }
 
+/// The OpenAPI spec defines volume {name, mountPath}, bind {hostPath, mountPath},
+/// and file {content, mountPath}; every writer uses these same required fields.
+fn mount_values(
+    kind: &str,
+    mount_path: &str,
+    name: Option<&str>,
+    host_path: Option<&str>,
+    content: Option<&str>,
+) -> Result<Value> {
+    if mount_path.trim().is_empty() {
+        return Err(anyhow!("--mount-path is required for a mount"));
+    }
+    Ok(match kind {
+        "volume" => json!({
+            "type": "volume",
+            "name": name.filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| anyhow!("--name is required for a volume mount"))?,
+            "mountPath": mount_path
+        }),
+        "bind" => json!({
+            "type": "bind",
+            "hostPath": host_path.filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| anyhow!("--host-path is required for a bind mount"))?,
+            "mountPath": mount_path
+        }),
+        "file" => json!({
+            "type": "file",
+            // Explicitly supplied empty contents are a legitimate blank config file.
+            "content": content.ok_or_else(|| anyhow!("--file is required for a file mount"))?,
+            "mountPath": mount_path
+        }),
+        other => {
+            return Err(anyhow!(
+                "Unsupported mount type: {other} (use volume|bind|file)"
+            ))
+        }
+    })
+}
+
+/// Every field not named on the command line keeps the value the mount already
+/// has, so `--mount-path /new` on a file mount does not need its contents handed
+/// over again. Read at edit time, not remembered from a listing.
+fn merged_mount_values(
+    existing: &Value,
+    kind: Option<&str>,
+    mount_path: Option<&str>,
+    name: Option<&str>,
+    host_path: Option<&str>,
+    content: Option<&str>,
+) -> Result<Value> {
+    let current = |key| existing.get(key).and_then(Value::as_str);
+    let kind = kind.or_else(|| current("type")).unwrap_or("");
+    // A file mount that stays a file always has contents, even when the server
+    // sends none for an empty one — demanding --file there would refuse an edit
+    // that changes only the path. Changing the KIND to file still requires them.
+    let keeps_file = kind == "file" && current("type") == Some("file");
+    mount_values(
+        kind,
+        mount_path.or_else(|| current("mountPath")).unwrap_or(""),
+        name.or_else(|| current("name")),
+        host_path.or_else(|| current("hostPath")),
+        content
+            .or_else(|| current("content"))
+            .or(keeps_file.then_some("")),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn mount_add(
     client: &EasypanelClient,
     project: &str,
@@ -1827,26 +1904,131 @@ pub fn mount_add(
     mount_path: &str,
     name: Option<String>,
     host_path: Option<String>,
+    file: Option<String>,
 ) -> Result<()> {
-    let values = match kind {
-        "volume" => json!({
-            "type": "volume",
-            "name": name.ok_or_else(|| anyhow!("--name is required for a volume mount"))?,
-            "mountPath": mount_path
-        }),
-        "bind" => json!({
-            "type": "bind",
-            "hostPath": host_path.ok_or_else(|| anyhow!("--host-path is required for a bind mount"))?,
-            "mountPath": mount_path
-        }),
-        other => return Err(anyhow!("Unsupported mount type: {other} (use volume|bind)")),
+    let content = if kind == "file" {
+        Some(match file {
+            Some(path) => std::fs::read_to_string(path)?,
+            None => {
+                let mut buf = String::new();
+                std::io::stdin().read_to_string(&mut buf)?;
+                buf
+            }
+        })
+    } else {
+        None
     };
+    let values = mount_values(
+        kind,
+        mount_path,
+        name.as_deref(),
+        host_path.as_deref(),
+        content.as_deref(),
+    )?;
     client.call(
         "mounts",
         "createMount",
         json!({ "projectName": project, "serviceName": service, "values": values }),
     )?;
     println!("Mount {kind} added to {project}/{service}.");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn mount_edit(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    index: usize,
+    kind: Option<String>,
+    mount_path: Option<String>,
+    name: Option<String>,
+    host_path: Option<String>,
+    file: Option<String>,
+    content_from_stdin: bool,
+) -> Result<()> {
+    if file.is_some() && content_from_stdin {
+        return Err(anyhow!("Use either --file or --stdin, not both"));
+    }
+    let mounts = client.call(
+        "mounts",
+        "listMounts",
+        json!({ "projectName": project, "serviceName": service }),
+    )?;
+    let arr = mounts
+        .as_array()
+        .ok_or_else(|| anyhow!("Invalid mount list response"))?;
+    let existing = arr.get(index).ok_or_else(|| {
+        anyhow!(
+            "Mount [{index}] is not there — {service} has {} mounts",
+            arr.len()
+        )
+    })?;
+    // Unlike mount-add, editing a path must not block on stdin or erase contents.
+    let content = match file {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None if content_from_stdin => {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            Some(buf)
+        }
+        None => None,
+    };
+    let values = merged_mount_values(
+        existing,
+        kind.as_deref(),
+        mount_path.as_deref(),
+        name.as_deref(),
+        host_path.as_deref(),
+        content.as_deref(),
+    )?;
+    client.call(
+        "mounts",
+        "updateMount",
+        json!({ "projectName": project, "serviceName": service, "index": index, "values": values }),
+    )?;
+    // A mount path change only takes effect after the service restarts.
+    println!(
+        "Mount [{index}] for {project}/{service} updated: {} {}.",
+        field(&values, "/type"),
+        field(&values, "/mountPath")
+    );
+    Ok(())
+}
+
+pub fn mount_content(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    index: usize,
+) -> Result<()> {
+    let mounts = client.call(
+        "mounts",
+        "listMounts",
+        json!({ "projectName": project, "serviceName": service }),
+    )?;
+    let arr = mounts
+        .as_array()
+        .ok_or_else(|| anyhow!("Invalid mount list response"))?;
+    let mount = arr.get(index).ok_or_else(|| {
+        anyhow!(
+            "Mount [{index}] is not there — {service} has {} mounts",
+            arr.len()
+        )
+    })?;
+    let kind = field(mount, "/type");
+    if kind != "file" {
+        return Err(anyhow!(
+            "Mount [{index}] has type {kind}, which has no contents"
+        ));
+    }
+    // Byte-for-byte, with no newline added: this is the read half of
+    // `mount-content > f; $EDITOR f; mount-edit --file f`, and a synthetic
+    // trailing newline would come back as a real change to the mounted file.
+    // `service env` does append one — env is line-oriented, a config file is not.
+    let content = mount.get("content").and_then(Value::as_str).unwrap_or("");
+    print!("{content}");
+    std::io::stdout().flush()?;
     Ok(())
 }
 
@@ -3548,6 +3730,179 @@ pub fn db_copy(opts: DbCopyOpts<'_>) -> Result<()> {
 mod tests {
     use super::*;
     use httpmock::prelude::*;
+
+    /// Writers must preserve all three spec shapes, including explicit blank files.
+    #[test]
+    fn mount_values_builds_volume_bind_and_file() {
+        assert_eq!(
+            mount_values("volume", "/data", Some("data"), None, None).unwrap(),
+            json!({"type": "volume", "name": "data", "mountPath": "/data"})
+        );
+        assert_eq!(
+            mount_values("bind", "/data", None, Some("/host"), None).unwrap(),
+            json!({"type": "bind", "hostPath": "/host", "mountPath": "/data"})
+        );
+        assert_eq!(
+            mount_values("file", "/config", None, None, Some("")).unwrap(),
+            json!({"type": "file", "content": "", "mountPath": "/config"})
+        );
+    }
+
+    /// The whole point of `mount-edit`: the request carries the index the listing
+    /// gave, next to a complete `values` object — an `updateMount` that nests
+    /// either one wrongly is accepted-looking and silently edits nothing.
+    #[test]
+    fn mount_edit_sends_the_listed_index_with_the_merged_values() {
+        let server = MockServer::start();
+        let list = server.mock(|when, then| {
+            when.method(POST).path("/api/rpc/mounts/listMounts");
+            then.status(200).json_body(json!({ "json": [
+                { "type": "volume", "name": "data", "mountPath": "/data" },
+                { "type": "file", "content": "a: 1\n", "mountPath": "/etc/app/config.yml" }
+            ] }));
+        });
+        let update = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/mounts/updateMount")
+                .json_body(json!({ "json": {
+                    "projectName": "shop",
+                    "serviceName": "web",
+                    "index": 1,
+                    // Only the path was asked for, so the contents come back untouched.
+                    "values": { "type": "file", "content": "a: 1\n", "mountPath": "/etc/app/next.yml" }
+                } }));
+            then.status(200).json_body(json!({ "json": null }));
+        });
+
+        let client = EasypanelClient::new(&server.base_url(), "t");
+        mount_edit(
+            &client,
+            "shop",
+            "web",
+            1,
+            None,
+            Some("/etc/app/next.yml".into()),
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        list.assert();
+        update.assert();
+    }
+
+    /// An index past the end must say how many there are instead of sending a
+    /// request the server would answer about a mount nobody meant.
+    #[test]
+    fn mount_edit_refuses_an_index_that_is_not_there() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/rpc/mounts/listMounts");
+            then.status(200).json_body(
+                json!({ "json": [{ "type": "volume", "name": "d", "mountPath": "/d" }] }),
+            );
+        });
+        let client = EasypanelClient::new(&server.base_url(), "t");
+        let err = mount_edit(
+            &client,
+            "shop",
+            "web",
+            7,
+            None,
+            Some("/x".into()),
+            None,
+            None,
+            None,
+            false,
+        )
+        .expect_err("index 7 of 1 must fail");
+        assert!(err.to_string().contains("has 1 mounts"), "{err}");
+    }
+
+    /// Missing required flags must fail locally rather than create an empty mount.
+    #[test]
+    fn mount_values_rejects_missing_required_fields_and_unknown_kind() {
+        for (kind, path, name, host, content, flag) in [
+            ("file", "", None, None, Some("config"), "--mount-path"),
+            ("volume", "/data", None, None, None, "--name"),
+            ("volume", "/data", Some(""), None, None, "--name"),
+            ("bind", "/data", None, None, None, "--host-path"),
+            ("bind", "/data", None, Some(""), None, "--host-path"),
+            ("file", "/config", None, None, None, "--file"),
+            ("other", "/data", None, None, None, "volume|bind|file"),
+        ] {
+            assert!(mount_values(kind, path, name, host, content)
+                .unwrap_err()
+                .to_string()
+                .contains(flag));
+        }
+    }
+
+    /// Moving a mount must not erase its contents or volume identity.
+    #[test]
+    fn merged_mount_values_preserves_unsupplied_fields() {
+        let file = json!({"type": "file", "mountPath": "/old", "content": "a\r\nb\n"});
+        assert_eq!(
+            merged_mount_values(&file, None, Some("/new"), None, None, None).unwrap(),
+            json!({"type": "file", "mountPath": "/new", "content": "a\r\nb\n"})
+        );
+        let volume = json!({"type": "volume", "mountPath": "/old", "name": "data"});
+        assert_eq!(
+            merged_mount_values(&volume, None, Some("/new"), None, None, None).unwrap(),
+            json!({"type": "volume", "mountPath": "/new", "name": "data"})
+        );
+    }
+
+    /// An empty file mount may come back with no `content` key at all; moving it
+    /// then asked for `--file`, refusing an edit that only changed the path.
+    #[test]
+    fn merged_mount_values_moves_a_file_mount_that_has_no_contents() {
+        let bare = json!({"type": "file", "mountPath": "/old"});
+        assert_eq!(
+            merged_mount_values(&bare, None, Some("/new"), None, None, None).unwrap(),
+            json!({"type": "file", "mountPath": "/new", "content": ""})
+        );
+        // Becoming a file is different: there are no contents to keep.
+        let volume = json!({"type": "volume", "mountPath": "/data", "name": "data"});
+        assert!(
+            merged_mount_values(&volume, Some("file"), None, None, None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("--file")
+        );
+    }
+
+    /// Explicit replacement, even blank, must win over old file contents.
+    #[test]
+    fn merged_mount_values_replaces_supplied_content() {
+        let file = json!({"type": "file", "mountPath": "/config", "content": "old"});
+        assert_eq!(
+            merged_mount_values(&file, None, None, None, None, Some("new\n")).unwrap(),
+            json!({"type": "file", "mountPath": "/config", "content": "new\n"})
+        );
+        assert_eq!(
+            merged_mount_values(&file, None, None, None, None, Some("")).unwrap(),
+            json!({"type": "file", "mountPath": "/config", "content": ""})
+        );
+    }
+
+    /// Switching kind must require the destination kind's own identifying field.
+    #[test]
+    fn merged_mount_values_requires_fields_for_changed_kind() {
+        let file = json!({"type": "file", "mountPath": "/config", "content": "old"});
+        assert!(
+            merged_mount_values(&file, Some("volume"), None, None, None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("--name")
+        );
+        assert_eq!(
+            merged_mount_values(&file, Some("volume"), None, Some("data"), None, None).unwrap(),
+            json!({"type": "volume", "mountPath": "/config", "name": "data"})
+        );
+    }
 
     /// A downloaded dump keeps its own name unless a file path is given, and an
     /// `--out` that is a DIRECTORY must not be written to as if it were a file.

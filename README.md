@@ -264,6 +264,13 @@ its own keys along the bottom. There is no separate "Add port" or "Replace env" 
 more — viewing a thing and changing it are the same place, and `n`/`e`/`x` mean the same
 here as they do on Domains and in the server list.
 
+**A file mount is a file, so it opens in your editor.** On the Mounts screen, `E` opens
+the selected `file` mount's contents in `$EDITOR` and saves them back through
+`updateMount` — the same door the env and a database's config file already use. `e` still
+edits where the mount lands; the row says how big the file is (`file /etc/app/config.yml
+(12 lines)`), so you can see whether there is anything in it before opening it. Emptying
+the buffer truncates the file, which the panel accepts — it does not mean "cancel".
+
 The pre-menu keys still work if you have the muscle memory: `E` `.` (edit env, toggle
 `.env` file), `P` `M` `F` (add port, mount, redirect), `f` (view redirects), `U` `B` `A`
 `L` `H` (source, build, auto deploy, resource limits, basic auth), `R` `S` `T` (restart,
@@ -271,7 +278,7 @@ stop, start), `X` (delete project).
 
 **Viewer** — `↑↓`/`PgUp`/`PgDn` scroll · `←→` scroll sideways (lines are not wrapped) ·
 `Home` first line and left edge · `End` re-follow the log tail · `[0]`–`[9]` deletes that
-row (ports/mounts/redirects) · `Esc` back.
+row (ports/mounts/redirects) · `E` a file mount's contents in `$EDITOR` · `Esc` back.
 **Hosts** (`2`) — `Enter` host detail (the whole reason an unreachable host is
 unreachable) · `t` **a shell on that host itself** (confirmed first — see below).
 **Domains** — `n` new · `e` edit · `E` bulk edit · `x` delete · `P` set primary.
@@ -466,7 +473,11 @@ easypanel service env|set-env <project> <service> [--file .env]
 # Ports, mounts, domains
 easypanel service ports|mounts|domains <project> <service>
 easypanel service port-add    <project> <service> --published 8080 --target 80
-easypanel service mount-add   <project> <service> --kind volume --name data --mount-path /data
+easypanel service mount-add     <project> <service> --kind volume --name data --mount-path /data
+easypanel service mount-add     <project> <service> --kind file --mount-path /etc/app/c.yml --file c.yml
+easypanel service mount-edit    <project> <service> --index 1 --mount-path /etc/app/next.yml
+easypanel service mount-edit    <project> <service> --index 1 --file c.yml   # or --stdin
+easypanel service mount-content <project> <service> --index 1   # the file, byte for byte
 easypanel domain list|delete|set-primary
 
 # Databases & backups

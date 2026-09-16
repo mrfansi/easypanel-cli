@@ -272,7 +272,7 @@ enum ServiceCmd {
     },
     /// List mounts
     Mounts { project: String, service: String },
-    /// Add a mount (volume|bind)
+    /// Add a mount (volume|bind|file)
     MountAdd {
         project: String,
         service: String,
@@ -286,6 +286,37 @@ enum ServiceCmd {
         /// Host path (for --kind bind)
         #[arg(long = "host-path")]
         host_path: Option<String>,
+        /// Contents for --kind file (omit to read stdin)
+        #[arg(long)]
+        file: Option<String>,
+    },
+    /// Change an existing mount (volume|bind|file)
+    MountEdit {
+        project: String,
+        service: String,
+        #[arg(long)]
+        index: usize,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long = "mount-path")]
+        mount_path: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long = "host-path")]
+        host_path: Option<String>,
+        /// Replace contents from a file
+        #[arg(long, conflicts_with = "stdin")]
+        file: Option<String>,
+        /// Replace contents from stdin (otherwise keep the current contents)
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// Print a file mount's contents
+    MountContent {
+        project: String,
+        service: String,
+        #[arg(long)]
+        index: usize,
     },
     /// Remove a mount by index
     MountRemove {
@@ -1096,6 +1127,7 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     mount_path,
                     name,
                     host_path,
+                    file,
                 } => commands::mount_add(
                     &client,
                     &project,
@@ -1104,7 +1136,27 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
                     &mount_path,
                     name,
                     host_path,
+                    file,
                 ),
+                ServiceCmd::MountEdit {
+                    project,
+                    service,
+                    index,
+                    kind,
+                    mount_path,
+                    name,
+                    host_path,
+                    file,
+                    stdin,
+                } => commands::mount_edit(
+                    &client, &project, &service, index, kind, mount_path, name, host_path, file,
+                    stdin,
+                ),
+                ServiceCmd::MountContent {
+                    project,
+                    service,
+                    index,
+                } => commands::mount_content(&client, &project, &service, index),
                 ServiceCmd::MountRemove {
                     project,
                     service,

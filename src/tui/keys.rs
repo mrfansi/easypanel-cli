@@ -2268,7 +2268,7 @@ impl App {
                     _ => self.status = format!("Select a {noun} first"),
                 }
             }
-            KeyCode::Char('n') | KeyCode::Char('e') | KeyCode::Char('b') => {
+            KeyCode::Char('n') | KeyCode::Char('e') | KeyCode::Char('b') | KeyCode::Char('E') => {
                 let view = self.viewer.ctx.as_ref().map(|(v, ..)| *v);
                 // `e` on a mount EDITS the highlighted one, the same verb Domains
                 // uses. It lives in this handler rather than its own arm so `e`
@@ -2289,6 +2289,20 @@ impl App {
                                 index,
                             });
                             self.status = "Loading mount...".into();
+                        }
+                        None => self.status = "Select a mount first".into(),
+                    }
+                    return;
+                }
+                if let (Some(View::Mounts), KeyCode::Char('E')) = (view, code) {
+                    let Some((_, project, service, _)) = self.viewer.ctx.clone() else {
+                        return;
+                    };
+                    // Like edit/delete, use the printed marker, not the row position.
+                    match self.picker_row() {
+                        Some(index) => {
+                            self.edit_mount_file = Some((project, service, index));
+                            self.status = "Opening mount file...".into();
                         }
                         None => self.status = "Select a mount first".into(),
                     }

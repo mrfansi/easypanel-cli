@@ -113,6 +113,16 @@ pub(super) fn mounts_lines(v: &Value) -> Vec<String> {
         let detail = match field(m, "/type").as_str() {
             "bind" => format!("{} -> {}", field(m, "/hostPath"), field(m, "/mountPath")),
             "volume" => format!("{} -> {}", field(m, "/name"), field(m, "/mountPath")),
+            "file" => {
+                // Read the string directly: field()'s missing-value "-" is not content.
+                let content = m.get("content").and_then(Value::as_str).unwrap_or("");
+                let summary = if content.is_empty() {
+                    "empty".into()
+                } else {
+                    format!("{} lines", content.lines().count())
+                };
+                format!("{}  ({summary})", field(m, "/mountPath"))
+            }
             _ => field(m, "/mountPath"),
         };
         format!("{} {}  {detail}", row_marker(i), field(m, "/type"))
