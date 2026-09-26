@@ -18,6 +18,7 @@ mod s3;
 mod services;
 mod source;
 mod tui;
+mod tunnel;
 mod uptime;
 
 use anyhow::Result;
@@ -159,10 +160,14 @@ enum ServerCmd {
     /// Add an EasyPanel host
     Add {
         name: Option<String>,
+        /// Panel URL. With --ssh: the panel as seen from the SSH host
+        /// (default http://localhost:3000)
         #[arg(long)]
         url: Option<String>,
         #[arg(long)]
         token: Option<String>,
+        #[command(flatten)]
+        ssh: commands::SshOpts,
     },
     /// List configured hosts
     List,
@@ -170,6 +175,8 @@ enum ServerCmd {
     Use { name: String },
     /// Remove a host
     Remove { name: String },
+    /// Check a server: its SSH tunnel (if any), then its API token
+    Test { name: String },
 }
 
 #[derive(Subcommand)]
@@ -955,10 +962,19 @@ enum CfAccountCmd {
 }
 
 fn main() {
+    // `ssh` runs this binary as its SSH_ASKPASS helper for a tunnel's password
+    // or key passphrase; that call carries a prompt, not a command.
+    if tunnel::answer_askpass() {
+        return;
+    }
     let cli = Cli::parse();
     let cfg = ServerConfig::new(ServerConfig::default_path());
 
-    if let Err(e) = run(cli, &cfg) {
+    let result = run(cli, &cfg);
+    // Before any exit: process::exit skips destructors, and a tunnel left behind
+    // is an `ssh` process holding a local port open for no one.
+    tunnel::close_all();
+    if let Err(e) = result {
         eprintln!("{e}");
         std::process::exit(1);
     }
@@ -1017,10 +1033,16 @@ fn run(cli: Cli, cfg: &ServerConfig) -> Result<()> {
         }
 
         Some(Command::Server(c)) => match c {
-            ServerCmd::Add { name, url, token } => commands::server_add(cfg, name, url, token),
+            ServerCmd::Add {
+                name,
+                url,
+                token,
+                ssh,
+            } => commands::server_add(cfg, name, url, token, ssh),
             ServerCmd::List => commands::server_list(cfg),
             ServerCmd::Use { name } => commands::server_use(cfg, &name),
             ServerCmd::Remove { name } => commands::server_remove(cfg, &name),
+            ServerCmd::Test { name } => commands::server_test(cfg, &name),
         },
 
         Some(Command::Project(c)) => {

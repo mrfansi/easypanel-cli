@@ -107,16 +107,14 @@ pub(super) enum Req {
     /// host's url+token arrive here because only the event loop can read them.
     DiffAcrossHosts {
         local: (String, String, String),
-        target_url: String,
-        target_token: String,
+        target: EasypanelClient,
         target_name: String,
     },
     /// Compare a whole project against the same project on another host. Only two
     /// calls: inspectProject carries every service's full config.
     DiffProjectAcross {
         project: String,
-        target_url: String,
-        target_token: String,
+        target: EasypanelClient,
         target_name: String,
     },
     /// Open the deploy form: replicas, start command, zero-downtime.
@@ -201,8 +199,7 @@ pub(super) enum Req {
     /// restored here. Only backups on a REMOTE provider are usable: a local-disk
     /// one physically lives on that host and this one cannot read it.
     BackupHistoryFrom {
-        src_url: String,
-        src_token: String,
+        src: EasypanelClient,
         src_name: String,
         project: String,
         service: String,
@@ -259,8 +256,7 @@ pub(super) enum Req {
     /// the same "read immediately before acting" order `db copy` uses, and it is
     /// what stops a confirmation from acting on a panel that has since changed.
     CopyDb {
-        target_url: String,
-        target_token: String,
+        target: EasypanelClient,
         /// The target's configured name — for the status line, not the call.
         target_name: String,
         target_project: String,
@@ -402,8 +398,7 @@ pub(super) enum Req {
     /// The destination's url+token are resolved in event_loop, which is the only
     /// place holding the ServerConfig; the worker is bound to one host.
     Migrate {
-        target_url: String,
-        target_token: String,
+        target: EasypanelClient,
         /// The destination's configured name — for the status line, not the call.
         target_name: String,
         target_project: String,
@@ -922,6 +917,8 @@ pub(super) enum Resp {
         name: String,
         data: std::result::Result<Value, String>,
     },
+    /// The server form's Ctrl-T: what opening that tunnel said.
+    SshTested(std::result::Result<String, String>),
     Viewer(String, Vec<String>),
     /// Output bytes from a container terminal session (fed to the vt100 parser).
     TermOutput(Vec<u8>),
@@ -1213,11 +1210,10 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
         Req::DiffServices { a, b } => diff_services(client, a, b),
         Req::DiffAcrossHosts {
             local,
-            target_url,
-            target_token,
+            target,
             target_name,
         } => {
-            let other = EasypanelClient::new(&target_url, &target_token);
+            let other = target;
             let (p, sv, ty) = local.clone();
             // The same project/service on the other host — the whole point is a
             // like-for-like "staging vs production".
@@ -1242,11 +1238,10 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
         }
         Req::DiffProjectAcross {
             project,
-            target_url,
-            target_token,
+            target,
             target_name,
         } => {
-            let other = EasypanelClient::new(&target_url, &target_token);
+            let other = target;
             let inspect = |c: &EasypanelClient| {
                 c.call(
                     "projects",
@@ -1430,13 +1425,11 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             path,
         } => backup_now(client, &project, &service, &database, &provider, &path),
         Req::BackupHistoryFrom {
-            src_url,
-            src_token,
+            src,
             src_name,
             project,
             service,
         } => {
-            let src = EasypanelClient::new(&src_url, &src_token);
             let remote: Vec<String> = match src.call("storageProviders/common", "list", Value::Null)
             {
                 Ok(v) => v
@@ -1636,8 +1629,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             Err(e) => Resp::Err(e.to_string()),
         },
         Req::CopyDb {
-            target_url,
-            target_token,
+            target,
             target_name,
             target_project,
             target_service,
@@ -1647,7 +1639,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             all,
             run,
         } => {
-            let dst_client = EasypanelClient::new(&target_url, &target_token);
+            let dst_client = target;
             let src = crate::commands::CopyTarget {
                 client,
                 project: &project,
@@ -1968,13 +1960,12 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             new_name,
         } => clone_service(client, &project, &service, &stype, &target, &new_name),
         Req::Migrate {
-            target_url,
-            target_token,
+            target,
             target_name,
             target_project,
             services,
         } => {
-            let dst_client = EasypanelClient::new(&target_url, &target_token);
+            let dst_client = target;
             // The destination project usually doesn't exist yet — that IS the
             // normal case when moving to a fresh host.
             if let Err(e) = crate::migrate::ensure_project(&dst_client, &target_project) {

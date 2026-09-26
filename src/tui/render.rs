@@ -4338,6 +4338,10 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
         "[Tab] move field".into(),
     ];
     hints.extend(space.map(str::to_string));
+    // Only while the tunnel is switched on: the key does nothing otherwise.
+    if super::app::server_form_uses_ssh(form) {
+        hints.push("[Ctrl-T] test SSH".into());
+    }
     let footer = fit_hints(&hints, slot.width);
     f.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
@@ -4583,20 +4587,20 @@ pub(super) fn render_picker(f: &mut Frame, app: &mut App) {
     let items: Vec<ListItem> = app
         .all_servers
         .iter()
-        .map(|(n, url)| {
-            let mark = if n == &app.server_name {
+        .map(|s| {
+            let mark = if s.name == app.server_name {
                 " (active)"
             } else {
                 ""
             };
-            let head = format!("{n}{mark}  ");
+            let head = format!("{}{mark}  ", s.name);
             // Whatever is left after the name — and if the URL still does not
             // fit, it ends in "…" rather than looking like a shorter host.
             let room = inner.saturating_sub(head.chars().count()).max(8);
             ListItem::new(Line::from(vec![
                 Span::raw(head),
                 Span::styled(
-                    crate::output::first_line(url, room),
+                    crate::output::first_line(&s.display_url(), room),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))

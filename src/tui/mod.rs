@@ -47,7 +47,9 @@ pub(super) const TERM_SCROLLBACK: usize = 5_000;
 /// How far Shift+PageUp/PageDown move through that history.
 const TERM_PAGE: isize = 10;
 
-use app::{App, CfAction, CredsUi, HostRow, HostState, Screen, ServerAction, WatchAction};
+use app::{
+    App, CfAction, CredsUi, HostRow, HostState, Screen, ServerAction, ServerEntry, WatchAction,
+};
 use render::ui;
 use worker::{spawn_workers, Req, Resp, View};
 
@@ -80,8 +82,8 @@ fn start(
         return Ok(());
     }
 
-    let names: Vec<(String, String)> = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
-    let mut app = App::new(server_name, names);
+    let servers = cfg.all().into_iter().map(ServerEntry::from).collect();
+    let mut app = App::new(server_name, servers);
     // Already agreed to on the command line, so it does NOT re-arm the TUI's own
     // confirmation — asking twice for one deliberate act trains people to hold
     // down `y`.
@@ -258,7 +260,16 @@ fn event_loop(
                         {
                             break;
                         }
-                        app.on_key(key.code, &w.user);
+                        // Ctrl-T on the server form tests its tunnel. Taken here:
+                        // `on_key` sees no modifiers, and a plain `t` is text.
+                        if key.code == KeyCode::Char('t')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                            && app.form.as_ref().is_some_and(app::server_form_uses_ssh)
+                        {
+                            app.request_ssh_test();
+                        } else {
+                            app.on_key(key.code, &w.user);
+                        }
                     }
                 }
                 _ => {}
@@ -272,22 +283,39 @@ fn event_loop(
             app.hosts = cfg
                 .all()
                 .into_iter()
-                .map(|s| HostRow {
-                    name: s.name,
-                    url: s.url,
-                    state: HostState::Loading,
+                .map(|s| {
+                    let entry = ServerEntry::from(s);
+                    HostRow {
+                        url: entry.display_url(),
+                        name: entry.name,
+                        state: HostState::Loading,
+                    }
                 })
                 .collect();
             for s in cfg.all() {
                 let tx = w.resp_tx.clone();
                 thread::spawn(move || {
-                    let client = EasypanelClient::new(&s.url, &s.token);
+                    let client = EasypanelClient::for_server(&s);
                     let data = client
                         .call("metrics", "getSystemStats", json!({}))
                         .map_err(|e| e.to_string());
                     let _ = tx.send(Resp::HostStat { name: s.name, data });
                 });
             }
+        }
+
+        // Ctrl-T on the server form: open a throwaway tunnel off the loop — ssh
+        // may take its whole timeout — and report what it said.
+        if let Some(t) = app.ssh_test_req.take() {
+            let mut tunnel = t.tunnel;
+            if let Some(name) = &t.stored {
+                tunnel = with_stored_secret(cfg, name, tunnel);
+            }
+            let tx = w.resp_tx.clone();
+            thread::spawn(move || {
+                let result = crate::tunnel::test(&tunnel, &t.url).map_err(|e| e.to_string());
+                let _ = tx.send(Resp::SshTested(result));
+            });
         }
 
         // A watchlist change needs the file, and the App deliberately never
@@ -311,7 +339,7 @@ fn event_loop(
                 Ok(msg) => msg,
                 Err(e) => format!("Error: {e}"),
             };
-            app.all_servers = cfg.all().into_iter().map(|s| (s.name, s.url)).collect();
+            app.all_servers = cfg.all().into_iter().map(ServerEntry::from).collect();
         }
 
         // A Cloudflare account-list change needs the config file, which only lives
@@ -366,8 +394,7 @@ fn event_loop(
                 Some(server) => {
                     let _ = w.user.send(Req::DiffProjectAcross {
                         project: d.project,
-                        target_url: server.url,
-                        target_token: server.token,
+                        target: EasypanelClient::for_server(&server),
                         target_name: d.target_server,
                     });
                 }
@@ -382,8 +409,7 @@ fn event_loop(
                 Some(server) => {
                     let _ = w.user.send(Req::DiffAcrossHosts {
                         local: d.local,
-                        target_url: server.url,
-                        target_token: server.token,
+                        target: EasypanelClient::for_server(&server),
                         target_name: d.target_server,
                     });
                 }
@@ -405,8 +431,7 @@ fn event_loop(
                         m.target_project
                     );
                     let _ = w.user.send(Req::Migrate {
-                        target_url: server.url,
-                        target_token: server.token,
+                        target: EasypanelClient::for_server(&server),
                         target_name: m.target_server,
                         target_project: m.target_project,
                         services: m.services,
@@ -426,8 +451,7 @@ fn event_loop(
                 Some(server) => {
                     let (project, service) = c.source;
                     let _ = w.user.send(Req::CopyDb {
-                        target_url: server.url,
-                        target_token: server.token,
+                        target: EasypanelClient::for_server(&server),
                         target_name: c.target_server,
                         target_project: c.target_project,
                         target_service: c.target_service,
@@ -452,8 +476,7 @@ fn event_loop(
             match cfg.get(&name) {
                 Some(server) => {
                     let _ = w.user.send(Req::BackupHistoryFrom {
-                        src_url: server.url,
-                        src_token: server.token,
+                        src: EasypanelClient::for_server(&server),
                         src_name: name,
                         project,
                         service,
@@ -496,7 +519,7 @@ fn event_loop(
         if let Some((project, service, db)) = app.terminal_req.take() {
             match cfg.get(&app.server_name) {
                 Some(server) => {
-                    let client = EasypanelClient::new(&server.url, &server.token);
+                    let client = EasypanelClient::for_server(&server);
                     // DB shell: take rootPassword + the database name from
                     // inspectService, build the mysql client command. Plain shell:
                     // bash where the image has it, `sh` where it does not.
@@ -557,37 +580,44 @@ fn event_loop(
         // loop holds the ServerConfig, and the URL needs that server's token.
         if let Some(name) = app.host_shell_req.take() {
             match cfg.get(&name) {
-                Some(server) => {
-                    let client = EasypanelClient::new(&server.url, &server.token);
-                    let url = crate::container::host_ws_url(&client);
-                    let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
-                    let (tcols, trows) = (cols, rows.saturating_sub(5).max(1));
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    app.term.parser = Some(vt100::Parser::new(trows, tcols, TERM_SCROLLBACK));
-                    app.term.input = Some(tx);
-                    app.term.title = host_term_title(&name);
-                    terminal::spawn_session(
-                        url,
-                        w.resp_tx.clone(),
-                        rx,
-                        tcols,
-                        trows,
-                        // Read from the handler's own source: this route's
-                        // preValidation is `admin: true`, so a token that works
-                        // everywhere else in this tool is still refused here.
-                        " — /ws/hostShell requires an ADMIN API token; a non-admin token is \
-                         refused at the handshake even though it works everywhere else",
-                    );
-                    app.screen = Screen::Terminal;
-                    // Not "Terminal —": the first frame can be many seconds away.
-                    // The panel pulls the helper image before it spawns anything,
-                    // so on a host that has never opened one an empty pane is the
-                    // image downloading, not a dead session.
-                    app.status = format!(
-                        "Host shell on {name} — root on the host. Starting (first open pulls an image); `exit` or Ctrl-Q to leave"
-                    );
-                }
                 None => app.status = format!("Server '{name}' is no longer configured"),
+                // Through an SSH tunnel the URL is the tunnel's local end, and
+                // opening it can fail before any WebSocket is attempted.
+                Some(server) => {
+                    match crate::container::host_ws_url(&EasypanelClient::for_server(&server)) {
+                        Err(e) => app.status = format!("Error: {e}"),
+                        Ok(url) => {
+                            let (cols, rows) =
+                                ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+                            let (tcols, trows) = (cols, rows.saturating_sub(5).max(1));
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            app.term.parser =
+                                Some(vt100::Parser::new(trows, tcols, TERM_SCROLLBACK));
+                            app.term.input = Some(tx);
+                            app.term.title = host_term_title(&name);
+                            terminal::spawn_session(
+                            url,
+                            w.resp_tx.clone(),
+                            rx,
+                            tcols,
+                            trows,
+                            // Read from the handler's own source: this route's
+                            // preValidation is `admin: true`, so a token that works
+                            // everywhere else in this tool is still refused here.
+                            " — /ws/hostShell requires an ADMIN API token; a non-admin token is \
+                             refused at the handshake even though it works everywhere else",
+                        );
+                            app.screen = Screen::Terminal;
+                            // Not "Terminal —": the first frame can be many seconds away.
+                            // The panel pulls the helper image before it spawns anything,
+                            // so on a host that has never opened one an empty pane is the
+                            // image downloading, not a dead session.
+                            app.status = format!(
+                            "Host shell on {name} — root on the host. Starting (first open pulls an image); `exit` or Ctrl-Q to leave"
+                        );
+                        }
+                    }
+                }
             }
         }
 
@@ -596,7 +626,7 @@ fn event_loop(
         if let Some((project, service, stype)) = app.credentials_req.take() {
             match cfg.get(&app.server_name) {
                 Some(server) => {
-                    let client = EasypanelClient::new(&server.url, &server.token);
+                    let client = EasypanelClient::for_server(&server);
                     match client.call(
                         &format!("services/{stype}"),
                         "inspectService",
@@ -744,7 +774,7 @@ fn event_loop(
                 // switch itself: the session is still correct, only the memory of
                 // it is lost.
                 let remembered = cfg.set_default(&name);
-                w = spawn_workers(EasypanelClient::new(&server.url, &server.token));
+                w = spawn_workers(EasypanelClient::for_server(&server));
                 app.reset_for_server(name);
                 // The watchlist belongs to the HOST, so switching must not leave
                 // the previous host's domains on screen — they are not even
@@ -780,6 +810,7 @@ fn apply_server_action(cfg: &ServerConfig, action: ServerAction) -> Result<Strin
             name,
             url,
             token,
+            ssh,
         } => {
             // Rename first, so the token lookup below and `add` both work against
             // the new name — and so a rename that clashes fails before anything
@@ -796,7 +827,13 @@ fn apply_server_action(cfg: &ServerConfig, action: ServerAction) -> Result<Strin
                     .map(|s| s.token)
                     .ok_or_else(|| anyhow::anyhow!("server '{name}' not found"))?,
             };
-            cfg.add(&name, &url, &token)?;
+            let ssh = ssh.map(|t| with_stored_secret(cfg, &name, t));
+            if let Some(t) = &ssh {
+                if t.auth == crate::tunnel::SshAuth::Password && t.secret.is_none() {
+                    anyhow::bail!("SSH password is required");
+                }
+            }
+            cfg.add(&name, &url, &token, ssh)?;
             Ok(match rename_from {
                 Some(old) => format!("Server '{old}' renamed to '{name}'"),
                 None => format!("Server '{name}' saved"),
@@ -807,6 +844,24 @@ fn apply_server_action(cfg: &ServerConfig, action: ServerAction) -> Result<Strin
             Ok(format!("Server '{name}' deleted"))
         }
     }
+}
+
+/// A blank passphrase/password on the edit form means "keep the stored one" —
+/// the same rule as the token, and for the same reason: it is never shown back.
+/// Only for the same login method: a key's passphrase is no password.
+fn with_stored_secret(
+    cfg: &ServerConfig,
+    name: &str,
+    mut t: crate::tunnel::SshTunnel,
+) -> crate::tunnel::SshTunnel {
+    if t.secret.is_none() {
+        t.secret = cfg
+            .get(name)
+            .and_then(|s| s.ssh)
+            .filter(|stored| stored.auth == t.auth)
+            .and_then(|stored| stored.secret);
+    }
+    t
 }
 
 /// Apply a Cloudflare account-list change to the local config. Config-only — the

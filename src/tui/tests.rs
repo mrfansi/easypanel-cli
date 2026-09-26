@@ -15,6 +15,15 @@ use super::table::*;
 use super::worker::*;
 use super::*;
 
+/// A configured server as the App sees it: no token, no tunnel.
+fn host(name: &str, url: &str) -> ServerEntry {
+    ServerEntry {
+        name: name.into(),
+        url: url.into(),
+        ssh: None,
+    }
+}
+
 fn form(fields: Vec<Field>) -> Form {
     Form::new(FormKind::ProjectCreate, "t", fields)
 }
@@ -2125,7 +2134,7 @@ fn terminal_ws_roundtrip_live() {
 
     let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
     let srv = cfg.default().expect("a default server exists");
-    let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
+    let client = crate::client::EasypanelClient::for_server(&srv);
     // The command the pane itself opens with.
     let url = crate::container::ws_url(
         &client,
@@ -2173,8 +2182,8 @@ fn host_shell_ws_roundtrip_live() {
 
     let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
     let srv = cfg.default().expect("a default server exists");
-    let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
-    let url = crate::container::host_ws_url(&client);
+    let client = crate::client::EasypanelClient::for_server(&srv);
+    let url = crate::container::host_ws_url(&client).unwrap();
 
     let (out_tx, out_rx) = channel::<Resp>();
     let (in_tx, in_rx) = channel::<super::terminal::TermMsg>();
@@ -3052,7 +3061,7 @@ fn form_hints_are_dropped_whole_never_truncated() {
 #[test]
 fn a_project_row_offers_project_actions_not_a_dead_end() {
     let (tx, _rx) = std::sync::mpsc::channel();
-    let mut app = App::new("s".into(), vec![("s".into(), "u".into())]);
+    let mut app = App::new("s".into(), vec![host("s", "u")]);
     app.screen = Screen::Projects;
     app.handle(
         Resp::AllServices {
@@ -3080,7 +3089,7 @@ fn migrating_needs_somewhere_to_migrate_to() {
     // A single-host setup can't migrate anywhere. Saying so beats opening a form
     // with an empty dropdown the user can't satisfy.
     let (tx, _rx) = std::sync::mpsc::channel();
-    let mut app = App::new("only".into(), vec![("only".into(), "u".into())]);
+    let mut app = App::new("only".into(), vec![host("only", "u")]);
     app.screen = Screen::Projects;
     app.handle(
         Resp::AllServices {
@@ -3100,10 +3109,7 @@ fn migrating_needs_somewhere_to_migrate_to() {
 
 #[test]
 fn migrating_a_project_collects_every_service_in_it() {
-    let mut app = App::new(
-        "a".into(),
-        vec![("a".into(), "u".into()), ("b".into(), "u".into())],
-    );
+    let mut app = App::new("a".into(), vec![host("a", "u"), host("b", "u")]);
     app.screen = Screen::Projects;
     app.all_services = vec![
         json!({"projectName": "keep", "name": "web", "type": "app"}),
@@ -3207,7 +3213,7 @@ fn render_and_the_fade_agree_on_what_counts_as_a_failure() {
 #[test]
 fn force_rebuild_is_offered_and_actually_turns_the_cache_off() {
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut app = App::new("s".into(), vec![("s".into(), "u".into())]);
+    let mut app = App::new("s".into(), vec![host("s", "u")]);
     app.screen = Screen::Projects;
     app.handle(
         Resp::AllServices {
@@ -4508,12 +4514,9 @@ fn the_server_picker_never_cuts_the_url_that_tells_hosts_apart() {
 
     let mut app = App::new("aurel".into(), vec![]);
     app.all_servers = vec![
-        ("aurel".into(), "https://aurel.kkbahagia.com".into()),
-        ("prod".into(), "https://panel.internal.example.com".into()),
-        (
-            "staging".into(),
-            "https://panel-staging.internal.example.com".into(),
-        ),
+        host("aurel", "https://aurel.kkbahagia.com"),
+        host("prod", "https://panel.internal.example.com"),
+        host("staging", "https://panel-staging.internal.example.com"),
     ];
     app.picker = Some(ratatui::widgets::ListState::default());
 
@@ -5040,7 +5043,7 @@ fn a_server_name_is_editable_and_the_edit_form_knows_it_is_a_rename() {
     use ratatui::widgets::ListState;
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("prod".into(), vec![]);
-    app.all_servers = vec![("prod".into(), "https://p".into())];
+    app.all_servers = vec![host("prod", "https://p")];
     app.picker = Some(ListState::default().with_selected(Some(0)));
     app.picker_key(KeyCode::Char('e'), &tx);
 
@@ -5079,6 +5082,150 @@ fn a_server_name_is_editable_and_the_edit_form_knows_it_is_a_rename() {
         }
         _ => panic!("a changed name must travel as a rename"),
     }
+}
+
+#[test]
+fn a_tunnel_survives_an_edit_and_a_bad_one_is_refused_before_saving() {
+    use crate::tunnel::{SshAuth, SshTunnel};
+    use ratatui::crossterm::event::KeyCode;
+    use ratatui::widgets::ListState;
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("idc".into(), vec![]);
+    let hop = SshTunnel {
+        host: "203.0.113.7".into(),
+        port: Some(2222),
+        user: Some("root".into()),
+        auth: SshAuth::Password,
+        ..Default::default()
+    };
+    app.all_servers = vec![ServerEntry {
+        name: "idc".into(),
+        url: "http://localhost:3000".into(),
+        ssh: Some(hop.clone()),
+    }];
+    let edit = |app: &mut App| {
+        app.picker = Some(ListState::default().with_selected(Some(0)));
+        app.picker_key(KeyCode::Char('e'), &tx);
+    };
+    let shown =
+        |f: &Form| -> Vec<&str> { f.visible().iter().map(|&i| f.fields[i].label).collect() };
+
+    // Prefilled: saving an unrelated change must not silently drop the tunnel
+    // and start dialling http://localhost:3000 on THIS machine.
+    edit(&mut app);
+    let f = app.form.as_ref().unwrap();
+    assert_eq!(f_val(f, SRV_CONNECTION), "ssh");
+    assert_eq!(f_val(f, SRV_SSH_PORT), "2222");
+    assert_eq!(f_val(f, SRV_SSH_USER), "root");
+    // Each login method shows only its own fields.
+    assert!(shown(f).contains(&SRV_SSH_PASSWORD));
+    assert!(!shown(f).contains(&SRV_SSH_KEY));
+    app.submit_form(&tx);
+    match app.server_action.take() {
+        // Blank password on an edit = keep the stored one (merged on save).
+        Some(ServerAction::Save { ssh, .. }) => assert_eq!(ssh, Some(hop.clone())),
+        _ => panic!("the edit must save"),
+    }
+
+    // A host ssh would parse as an option runs a local command; https through
+    // the tunnel can never verify; a port must be a port. All stop at the form.
+    for (label, value) in [
+        (SRV_SSH_HOST, "-oProxyCommand=id"),
+        ("URL", "https://panel.example.com"),
+        (SRV_SSH_PORT, "99999"),
+    ] {
+        edit(&mut app);
+        set_f_val(app.form.as_mut().unwrap(), label, value);
+        app.submit_form(&tx);
+        assert!(app.server_action.is_none(), "{label}={value} was saved");
+        assert!(app.status_is_error(), "{}", app.status);
+        app.form = None;
+    }
+
+    // Switching Connection back to direct drops the tunnel.
+    edit(&mut app);
+    set_f_val(app.form.as_mut().unwrap(), SRV_CONNECTION, "direct");
+    assert!(!shown(app.form.as_ref().unwrap()).contains(&SRV_SSH_HOST));
+    app.submit_form(&tx);
+    assert!(matches!(
+        app.server_action.take(),
+        Some(ServerAction::Save { ssh: None, .. })
+    ));
+}
+
+#[test]
+fn adding_a_password_tunnel_needs_the_password_and_defaults_the_url() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.form = Some(server_form(None));
+    let f = app.form.as_mut().unwrap();
+    set_f_val(f, "Name", "idc");
+    set_f_val(f, "Token", "tok");
+    set_f_val(f, SRV_CONNECTION, "ssh");
+    set_f_val(f, SRV_SSH_HOST, "viding-idc");
+    set_f_val(f, SRV_SSH_AUTH, "password");
+    app.submit_form(&tx);
+    assert!(app.server_action.is_none(), "saved without a password");
+
+    set_f_val(app.form.as_mut().unwrap(), SRV_SSH_PASSWORD, "pw");
+    app.submit_form(&tx);
+    match app.server_action.take() {
+        Some(ServerAction::Save {
+            url, ssh: Some(t), ..
+        }) => {
+            // The add form's `https://` placeholder, untouched, means the panel's
+            // own port on the SSH host.
+            assert_eq!(url, crate::tunnel::DEFAULT_REMOTE_URL);
+            assert_eq!(t.secret.as_deref(), Some("pw"));
+            // 22 and the default timeout are left to ssh / the tool, so the
+            // alias's own Port in ~/.ssh/config still applies.
+            assert_eq!((t.port, t.timeout), (None, None));
+        }
+        _ => panic!("the add must save"),
+    }
+}
+
+#[test]
+fn a_blank_secret_on_edit_keeps_the_stored_one_only_for_the_same_login_method() {
+    use crate::tunnel::{SshAuth, SshTunnel};
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = ServerConfig::new(dir.path().join("servers.json"));
+    let hop = |auth, secret: Option<&str>| SshTunnel {
+        host: "h".into(),
+        auth,
+        key_path: None,
+        secret: secret.map(str::to_string),
+        ..Default::default()
+    };
+    cfg.add(
+        "idc",
+        "http://localhost:3000",
+        "tok",
+        Some(hop(SshAuth::Password, Some("pw"))),
+    )
+    .unwrap();
+    let save = |ssh| {
+        apply_server_action(
+            &cfg,
+            ServerAction::Save {
+                rename_from: None,
+                name: "idc".into(),
+                url: "http://localhost:3000".into(),
+                token: None,
+                ssh: Some(ssh),
+            },
+        )
+    };
+    save(hop(SshAuth::Password, None)).unwrap();
+    assert_eq!(
+        cfg.get("idc").unwrap().ssh.unwrap().secret.as_deref(),
+        Some("pw")
+    );
+    // Switching to the agent must not carry a password along as a secret.
+    save(hop(SshAuth::Agent, None)).unwrap();
+    assert_eq!(cfg.get("idc").unwrap().ssh.unwrap().secret, None);
+    // And back to password with nothing stored: refused, not saved empty.
+    assert!(save(hop(SshAuth::Password, None)).is_err());
 }
 
 #[test]
@@ -5968,8 +6115,8 @@ fn comparing_across_hosts_asks_the_event_loop_to_resolve_the_target_token() {
     let mut app = App::new(
         "prod".into(),
         vec![
-            ("prod".into(), "https://prod".into()),
-            ("staging".into(), "https://staging".into()),
+            host("prod", "https://prod"),
+            host("staging", "https://staging"),
         ],
     );
     app.projects = vec!["shop".into()];
@@ -6072,8 +6219,8 @@ fn comparing_a_whole_project_across_hosts_resolves_the_target_token() {
     let mut app = App::new(
         "prod".into(),
         vec![
-            ("prod".into(), "https://prod".into()),
-            ("staging".into(), "https://staging".into()),
+            host("prod", "https://prod"),
+            host("staging", "https://staging"),
         ],
     );
     app.projects = vec!["shop".into()];
@@ -9187,10 +9334,7 @@ fn the_query_box_runs_what_was_typed_in_the_database_it_is_open_on() {
 fn copy_app() -> App {
     let mut app = App::new(
         "here".into(),
-        vec![
-            ("here".into(), "https://here".into()),
-            ("there".into(), "https://there".into()),
-        ],
+        vec![host("here", "https://here"), host("there", "https://there")],
     );
     app.projects = vec!["shop".into()];
     app.all_services = vec![svc("shop", "db", "mysql"), svc("shop", "cache", "redis")];
@@ -9398,10 +9542,7 @@ fn a_copy_runs_when_confirmed_and_not_when_cancelled() {
 fn copy_app_two_projects() -> App {
     let mut app = App::new(
         "here".into(),
-        vec![
-            ("here".into(), "https://here".into()),
-            ("there".into(), "https://there".into()),
-        ],
+        vec![host("here", "https://here"), host("there", "https://there")],
     );
     app.projects = vec!["shop".into(), "staging".into(), "web".into()];
     app.all_services = vec![

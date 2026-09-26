@@ -12,6 +12,11 @@ pub struct Server {
     pub token: String,
     #[serde(default)]
     pub default: bool,
+    /// The SSH hop to tunnel through. When set, `url` is the panel as seen FROM
+    /// that host, e.g. `http://localhost:3000`. Omitted from the file when unset, so a
+    /// servers.json without tunnels reads and writes exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<crate::tunnel::SshTunnel>,
 }
 
 /// The domains enrolled for uptime checks, per server (checks.json).
@@ -164,7 +169,13 @@ impl ServerConfig {
         self.all().into_iter().find(|s| s.default)
     }
 
-    pub fn add(&self, name: &str, url: &str, token: &str) -> Result<()> {
+    pub fn add(
+        &self,
+        name: &str,
+        url: &str,
+        token: &str,
+        ssh: Option<crate::tunnel::SshTunnel>,
+    ) -> Result<()> {
         let existing = self.try_all()?;
         let was_default = existing.iter().any(|s| s.name == name && s.default);
         let mut servers: Vec<Server> = existing.into_iter().filter(|s| s.name != name).collect();
@@ -178,6 +189,7 @@ impl ServerConfig {
             // Default when: it's the first server, OR it was already the
             // default (token rotation), OR no other server is marked default.
             default: is_first || was_default || !has_default,
+            ssh,
         });
 
         self.save(&servers)
@@ -365,7 +377,8 @@ mod tests {
     #[test]
     fn first_added_becomes_default_and_persists() {
         let (dir, cfg) = temp_config();
-        cfg.add("prod", "https://prod.test", "tok-prod").unwrap();
+        cfg.add("prod", "https://prod.test", "tok-prod", None)
+            .unwrap();
 
         let reloaded = ServerConfig::new(dir.path().join("servers.json"));
         let def = reloaded.default().unwrap();
@@ -374,10 +387,43 @@ mod tests {
     }
 
     #[test]
+    fn a_tunnel_is_kept_and_a_direct_server_is_written_as_before() {
+        let (dir, cfg) = temp_config();
+        cfg.add("direct", "https://p.test", "t1", None).unwrap();
+        let hop = crate::tunnel::SshTunnel {
+            host: "203.0.113.7".into(),
+            port: Some(2222),
+            user: Some("root".into()),
+            auth: crate::tunnel::SshAuth::Password,
+            secret: Some("pw".into()),
+            ..Default::default()
+        };
+        cfg.add(
+            "tunnelled",
+            "http://localhost:3000",
+            "t2",
+            Some(hop.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(cfg.get("tunnelled").unwrap().ssh, Some(hop));
+        assert_eq!(cfg.get("direct").unwrap().ssh, None);
+        // Older builds (and the PHP version) read this file: a server without a
+        // tunnel must not grow a key they do not know.
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path_of(&dir)).unwrap()).unwrap();
+        assert!(raw[0].get("ssh").is_none(), "{raw}");
+        // Re-saving without a tunnel removes it — an edit can switch back to direct.
+        cfg.add("tunnelled", "https://t.test", "t2", None).unwrap();
+        assert_eq!(cfg.get("tunnelled").unwrap().ssh, None);
+    }
+
+    #[test]
     fn adding_more_keeps_first_default() {
         let (_dir, cfg) = temp_config();
-        cfg.add("prod", "https://prod.test", "t1").unwrap();
-        cfg.add("staging", "https://staging.test", "t2").unwrap();
+        cfg.add("prod", "https://prod.test", "t1", None).unwrap();
+        cfg.add("staging", "https://staging.test", "t2", None)
+            .unwrap();
 
         assert_eq!(cfg.default().unwrap().name, "prod");
         assert!(!cfg.get("staging").unwrap().default);
@@ -387,9 +433,11 @@ mod tests {
     #[test]
     fn re_adding_default_keeps_default_on_token_rotation() {
         let (_dir, cfg) = temp_config();
-        cfg.add("prod", "https://prod.test", "t1").unwrap();
-        cfg.add("staging", "https://staging.test", "t2").unwrap();
-        cfg.add("prod", "https://prod.test", "tok-NEW").unwrap();
+        cfg.add("prod", "https://prod.test", "t1", None).unwrap();
+        cfg.add("staging", "https://staging.test", "t2", None)
+            .unwrap();
+        cfg.add("prod", "https://prod.test", "tok-NEW", None)
+            .unwrap();
 
         assert_eq!(cfg.default().unwrap().name, "prod");
         assert_eq!(cfg.get("prod").unwrap().token, "tok-NEW");
@@ -399,8 +447,8 @@ mod tests {
     #[test]
     fn renaming_keeps_the_token_the_default_and_the_position() {
         let (_d, cfg) = temp_config();
-        cfg.add("prod", "https://p", "tok-p").unwrap();
-        cfg.add("staging", "https://s", "tok-s").unwrap();
+        cfg.add("prod", "https://p", "tok-p", None).unwrap();
+        cfg.add("staging", "https://s", "tok-s", None).unwrap();
         cfg.set_default("staging").unwrap();
 
         cfg.rename("staging", "staging-eu").unwrap();
@@ -419,8 +467,8 @@ mod tests {
     #[test]
     fn renaming_onto_an_existing_name_is_refused() {
         let (_d, cfg) = temp_config();
-        cfg.add("prod", "https://p", "tok-p").unwrap();
-        cfg.add("staging", "https://s", "tok-s").unwrap();
+        cfg.add("prod", "https://p", "tok-p", None).unwrap();
+        cfg.add("staging", "https://s", "tok-s", None).unwrap();
         // Silently merging two hosts into one entry would point a name at the
         // wrong machine — the exact mistake this tool's colours exist to prevent.
         assert!(cfg.rename("staging", "prod").is_err());
@@ -501,8 +549,9 @@ mod tests {
     #[test]
     fn set_default_moves_flag() {
         let (_dir, cfg) = temp_config();
-        cfg.add("prod", "https://prod.test", "t1").unwrap();
-        cfg.add("staging", "https://staging.test", "t2").unwrap();
+        cfg.add("prod", "https://prod.test", "t1", None).unwrap();
+        cfg.add("staging", "https://staging.test", "t2", None)
+            .unwrap();
         cfg.set_default("staging").unwrap();
 
         assert_eq!(cfg.default().unwrap().name, "staging");
@@ -512,8 +561,9 @@ mod tests {
     #[test]
     fn remove_reassigns_default() {
         let (_dir, cfg) = temp_config();
-        cfg.add("prod", "https://prod.test", "t1").unwrap();
-        cfg.add("staging", "https://staging.test", "t2").unwrap();
+        cfg.add("prod", "https://prod.test", "t1", None).unwrap();
+        cfg.add("staging", "https://staging.test", "t2", None)
+            .unwrap();
         cfg.remove("prod").unwrap();
 
         assert!(cfg.get("prod").is_none());
@@ -525,7 +575,7 @@ mod tests {
     fn saves_with_0600_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let (dir, cfg) = temp_config();
-        cfg.add("prod", "https://prod.test", "t1").unwrap();
+        cfg.add("prod", "https://prod.test", "t1", None).unwrap();
 
         let mode = fs::metadata(path_of(&dir)).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
@@ -538,12 +588,12 @@ mod tests {
         // the next command saves a fresh list and DELETES every server — along
         // with their tokens, which can't be recovered from anywhere.
         let (dir, cfg) = temp_config();
-        cfg.add("prod", "https://prod.test", "secret-token")
+        cfg.add("prod", "https://prod.test", "secret-token", None)
             .unwrap();
         fs::write(path_of(&dir), "{ not valid json").unwrap();
 
         for result in [
-            cfg.add("staging", "https://x.test", "t"),
+            cfg.add("staging", "https://x.test", "t", None),
             cfg.remove("prod"),
             cfg.set_default("prod"),
         ] {
@@ -565,7 +615,7 @@ mod tests {
         // server. A read failure other than NotFound must become an error, and
         // write paths must reject it.
         let (dir, cfg) = temp_config();
-        cfg.add("prod", "https://prod.test", "secret-token")
+        cfg.add("prod", "https://prod.test", "secret-token", None)
             .unwrap();
         let path = path_of(&dir);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
@@ -583,7 +633,7 @@ mod tests {
             "the soft read path still doesn't panic"
         );
         assert!(
-            cfg.add("staging", "https://x.test", "t").is_err(),
+            cfg.add("staging", "https://x.test", "t", None).is_err(),
             "a write path must reject, not overwrite"
         );
 
@@ -596,7 +646,7 @@ mod tests {
         // A missing file = never used before. That's not corruption.
         let (_dir, cfg) = temp_config();
         assert!(cfg.try_all().unwrap().is_empty());
-        assert!(cfg.add("prod", "https://prod.test", "t").is_ok());
+        assert!(cfg.add("prod", "https://prod.test", "t", None).is_ok());
     }
 
     #[test]

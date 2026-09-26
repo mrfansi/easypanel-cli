@@ -170,6 +170,42 @@ only way to fix a typo in a name was to delete the server and lose its token wit
 the default, so the next launch comes up on the host you were last working on rather
 than silently going back to the old one.
 
+### Through an SSH tunnel
+
+A panel whose port 3000 is not reachable from your machine (firewalled, private
+network) can be added through SSH instead. The tool starts `ssh -N -L` itself on
+first use, sends every request — and the container/host terminal — through it, and
+stops it on exit:
+
+```bash
+easypanel server add prod --ssh prod-box --token <TOKEN>            # ~/.ssh/config alias, agent
+easypanel server add prod --ssh 203.0.113.7 --ssh-user root --ssh-port 2222 \
+  --ssh-key ~/.ssh/id_ed25519 --ssh-passphrase --token <TOKEN>     # key file, prompts passphrase
+easypanel server add prod --ssh 203.0.113.7 --ssh-user root --ssh-password --token <TOKEN>
+easypanel server test prod                                         # tunnel first, then the token
+```
+
+| Setting | Flag | Default |
+|---|---|---|
+| SSH host (hostname, IP or `~/.ssh/config` alias) | `--ssh` | — |
+| Port | `--ssh-port` | 22, or the alias's `Port` |
+| User | `--ssh-user` | the alias's `User`, or yours |
+| Login method | `agent` (default) · `--ssh-key PATH` · `--ssh-password` | agent / `~/.ssh/config` |
+| Key passphrase | `--ssh-passphrase` (prompted) | none |
+| Timeout | `--ssh-timeout SECS` | 10 |
+
+- `--url` is the panel **as seen from the SSH host**, and defaults to
+  `http://localhost:3000`. It must be `http://`: the request arrives at a local port, so
+  an https certificate could never match.
+- Passwords and passphrases are prompted without echo — never taken as a flag, where
+  `ps` would show them — and stored in `servers.json` (`0600`) next to the token.
+  `ssh` gets them through this binary as its `SSH_ASKPASS` helper, never through the
+  terminal, so no prompt can land in the middle of the TUI.
+- An unknown host key is refused, not accepted: connect once with plain `ssh` to trust it.
+- In the TUI (`s` → `n` / `e`) set **Connection** to `ssh` to get the same fields;
+  each login method shows only its own. **Ctrl-T** tests the tunnel from the form.
+  On an edit, a blank passphrase or password keeps the stored one.
+
 ## TUI
 
 Run with no arguments:

@@ -17,6 +17,7 @@ use crate::cloudflare::{
 };
 use crate::commands;
 use crate::output::field;
+use crate::tunnel::SshTunnel;
 
 use super::actions::{Menu, MenuItem, Palette};
 use super::backup_ui::BackupUi;
@@ -822,15 +823,237 @@ pub(super) enum ServerAction {
         url: String,
         /// None = keep the stored token (an edit form left blank).
         token: Option<String>,
+        /// The SSH hop; None = connect directly. Its `secret` is None when the
+        /// form left it blank, which on an edit means "keep the stored one".
+        ssh: Option<SshTunnel>,
     },
     Remove(String),
 }
 
+/// A configured server as the UI knows it — no token and no SSH secret, which
+/// the App never holds. The URL and tunnel are kept so the edit form can be
+/// prefilled with the current values, not left blank like the add form.
+#[derive(Clone)]
+pub(super) struct ServerEntry {
+    pub(super) name: String,
+    pub(super) url: String,
+    /// Always with `secret: None`.
+    pub(super) ssh: Option<SshTunnel>,
+}
+
+impl ServerEntry {
+    /// The address as a person reads it: a tunnelled panel's URL alone
+    /// (`http://localhost:3000`) would name every tunnelled host the same.
+    pub(super) fn display_url(&self) -> String {
+        match &self.ssh {
+            Some(t) => format!("{} via ssh {}", self.url, t.describe()),
+            None => self.url.clone(),
+        }
+    }
+}
+
+impl From<crate::config::Server> for ServerEntry {
+    fn from(s: crate::config::Server) -> Self {
+        Self {
+            name: s.name,
+            url: s.url,
+            ssh: s.ssh.map(|t| SshTunnel { secret: None, ..t }),
+        }
+    }
+}
+
+// The server form's labels: `submit_form` and the Ctrl-T test read by label.
+pub(super) const SRV_CONNECTION: &str = "Connection";
+pub(super) const SRV_SSH_HOST: &str = "SSH host";
+pub(super) const SRV_SSH_PORT: &str = "SSH port";
+pub(super) const SRV_SSH_USER: &str = "SSH user";
+pub(super) const SRV_SSH_AUTH: &str = "Login method";
+pub(super) const SRV_SSH_KEY: &str = "Key path";
+pub(super) const SRV_SSH_PASSPHRASE: &str = "Key passphrase";
+pub(super) const SRV_SSH_PASSWORD: &str = "SSH password";
+pub(super) const SRV_SSH_TIMEOUT: &str = "SSH timeout (s)";
+
+/// The add (`entry` None) or edit server form. Name, URL and token keep indexes
+/// 0-2; the tunnel fields appear only when Connection is `ssh`, and each login
+/// method shows only its own fields.
+pub(super) fn server_form(entry: Option<&ServerEntry>) -> Form {
+    let t = entry.and_then(|e| e.ssh.clone());
+    let tunnel = t.clone().unwrap_or_default();
+    let (kind, title, token) = match entry {
+        None => (
+            FormKind::ServerAdd,
+            " Add server ".to_string(),
+            Field::secret("Token"),
+        ),
+        Some(e) => (
+            FormKind::ServerEdit {
+                name: e.name.clone(),
+            },
+            format!(" Edit server: {} ", e.name),
+            // The token is deliberately not re-filled: there's no need to put
+            // it back on screen. Empty = keep the stored token.
+            Field::secret("Token (empty = unchanged)"),
+        ),
+    };
+    let ssh = |f: Field| f.when(SRV_CONNECTION, "ssh");
+    let note = match entry {
+        None => {
+            "SSH: the URL is then the panel as seen from the SSH host, e.g. \
+                 http://localhost:3000. Ctrl-T tests the tunnel."
+        }
+        Some(_) => {
+            "SSH: the URL is the panel as seen from the SSH host. A blank \
+                    passphrase or password keeps the stored one. Ctrl-T tests the tunnel."
+        }
+    };
+    Form::new(
+        kind,
+        title,
+        vec![
+            // Editable: a server's name is the label the whole UI identifies it
+            // by — the title bar, the confirmations and its colour — so a typo in
+            // it was permanent, and the only way out was to delete the server and
+            // lose its token with it.
+            Field::text("Name", entry.map(|e| e.name.as_str()).unwrap_or("")),
+            Field::text("URL", entry.map(|e| e.url.as_str()).unwrap_or("https://")),
+            token,
+            Field::choice(
+                SRV_CONNECTION,
+                &["direct", "ssh"],
+                if t.is_some() { "ssh" } else { "direct" },
+            ),
+            ssh(Field::text(SRV_SSH_HOST, &tunnel.host)),
+            ssh(Field::text(
+                SRV_SSH_PORT,
+                &tunnel.port.unwrap_or(22).to_string(),
+            )),
+            ssh(Field::text(
+                SRV_SSH_USER,
+                tunnel.user.as_deref().unwrap_or(""),
+            )),
+            ssh(Field::choice(
+                SRV_SSH_AUTH,
+                &crate::tunnel::SshAuth::NAMES,
+                tunnel.auth.as_str(),
+            )),
+            ssh(Field::text(
+                SRV_SSH_KEY,
+                tunnel.key_path.as_deref().unwrap_or("~/.ssh/id_ed25519"),
+            ))
+            .when(SRV_SSH_AUTH, "key"),
+            ssh(Field::secret(SRV_SSH_PASSPHRASE)).when(SRV_SSH_AUTH, "key"),
+            ssh(Field::secret(SRV_SSH_PASSWORD)).when(SRV_SSH_AUTH, "password"),
+            ssh(Field::text(
+                SRV_SSH_TIMEOUT,
+                &tunnel
+                    .timeout
+                    .unwrap_or(crate::tunnel::DEFAULT_TIMEOUT)
+                    .to_string(),
+            )),
+        ],
+    )
+    .with_note(note)
+}
+
+/// Is this the add/edit server form with the tunnel switched on?
+pub(super) fn server_form_uses_ssh(form: &Form) -> bool {
+    matches!(form.kind, FormKind::ServerAdd | FormKind::ServerEdit { .. })
+        && form.by_label(SRV_CONNECTION) == "ssh"
+}
+
+/// The tunnel the server form describes (None = direct), checked but for the
+/// secret, which a blank edit field keeps from the stored server.
+pub(super) fn tunnel_from_form(form: &Form, url: &str) -> Result<Option<SshTunnel>, String> {
+    use crate::tunnel::SshAuth;
+    if !server_form_uses_ssh(form) {
+        return Ok(None);
+    }
+    let opt = |label| Some(form.by_label(label)).filter(|v| !v.is_empty());
+    let port = match opt(SRV_SSH_PORT) {
+        None => None,
+        Some(p) => Some(
+            p.parse::<u16>()
+                .map_err(|_| "SSH port must be 1-65535".to_string())?,
+        ),
+    };
+    let timeout = match opt(SRV_SSH_TIMEOUT) {
+        None => None,
+        Some(t) => Some(
+            t.parse::<u64>()
+                .map_err(|_| "SSH timeout must be a number of seconds".to_string())?,
+        ),
+    };
+    let auth = SshAuth::parse(&form.by_label(SRV_SSH_AUTH)).unwrap_or_default();
+    let tunnel = SshTunnel {
+        host: form.by_label(SRV_SSH_HOST),
+        // 22 is what the field starts at; storing it would override the
+        // alias's own `Port` in ~/.ssh/config.
+        port: port.filter(|p| *p != 22),
+        user: opt(SRV_SSH_USER),
+        auth,
+        key_path: (auth == SshAuth::Key).then(|| opt(SRV_SSH_KEY)).flatten(),
+        secret: match auth {
+            SshAuth::Agent => None,
+            SshAuth::Key => opt(SRV_SSH_PASSPHRASE),
+            SshAuth::Password => opt(SRV_SSH_PASSWORD),
+        },
+        timeout: timeout.filter(|t| *t != crate::tunnel::DEFAULT_TIMEOUT),
+    };
+    crate::tunnel::validate(&tunnel, url).map_err(|e| e.to_string())?;
+    Ok(Some(tunnel))
+}
+
+/// The URL the server form means: a tunnel left on the add form's `https://`
+/// placeholder means EasyPanel's own port on the SSH host.
+pub(super) fn server_form_url(form: &Form) -> String {
+    let url = form.val(1);
+    let url = url.trim_end_matches('/');
+    if server_form_uses_ssh(form) && matches!(url, "" | "https:" | "https://" | "http://") {
+        return crate::tunnel::DEFAULT_REMOTE_URL.to_string();
+    }
+    url.to_string()
+}
+
+/// A tunnel to test, as the server form describes it right now.
+pub(super) struct SshTestReq {
+    /// The server being edited, whose stored secret fills a blank field.
+    pub(super) stored: Option<String>,
+    pub(super) tunnel: SshTunnel,
+    pub(super) url: String,
+}
+
+impl App {
+    /// Ctrl-T on the server form. Only meaningful with the tunnel switched on;
+    /// an invalid form is reported without starting anything.
+    pub(super) fn request_ssh_test(&mut self) {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        if !server_form_uses_ssh(form) {
+            return;
+        }
+        let url = server_form_url(form);
+        match tunnel_from_form(form, &url) {
+            Ok(Some(tunnel)) => {
+                self.status = format!("Testing SSH to {}…", tunnel.describe());
+                self.ssh_test_req = Some(SshTestReq {
+                    stored: match &form.kind {
+                        FormKind::ServerEdit { name } => Some(name.clone()),
+                        _ => None,
+                    },
+                    tunnel,
+                    url,
+                });
+            }
+            Ok(None) => {}
+            Err(e) => form.error = Some(e),
+        }
+    }
+}
+
 pub(super) struct App {
     pub(super) server_name: String,
-    /// (name, url) for each server. The URL is stored too so the edit form can be
-    /// prefilled with the current value, not left blank like the add form.
-    pub(super) all_servers: Vec<(String, String)>,
+    pub(super) all_servers: Vec<ServerEntry>,
     pub(super) switch_to: Option<String>,
     pub(super) picker: Option<ListState>,
     pub(super) form: Option<Form>,
@@ -886,6 +1109,9 @@ pub(super) struct App {
     /// holds the ServerConfig, and the `/ws/hostShell` URL needs that server's
     /// token. Set only after the confirmation is answered `y`.
     pub(super) host_shell_req: Option<String>,
+    /// Ctrl-T on the server form: test this tunnel. The event loop runs it — a
+    /// blank secret on an edit needs the stored one, which only it can read.
+    pub(super) ssh_test_req: Option<SshTestReq>,
     /// The database credentials currently on the Credentials screen.
     pub(super) creds: CredsUi,
     /// Text the event_loop should put on the system clipboard (via OSC 52) on its
@@ -1051,7 +1277,7 @@ pub(super) struct App {
 }
 
 impl App {
-    pub(super) fn new(server_name: String, all_servers: Vec<(String, String)>) -> Self {
+    pub(super) fn new(server_name: String, all_servers: Vec<ServerEntry>) -> Self {
         Self {
             server_name,
             all_servers,
@@ -1075,6 +1301,7 @@ impl App {
             terminal_req: None,
             credentials_req: None,
             host_shell_req: None,
+            ssh_test_req: None,
             creds: CredsUi::default(),
             clipboard: None,
             term: super::terminal::TermUi::default(),
@@ -3205,6 +3432,15 @@ impl App {
                 }
                 select_first(&mut self.hosts_state, self.hosts.len());
             }
+            // On the status line either way; a failure also lands on the form's
+            // border when the form is still open, next to the fields it is about.
+            Resp::SshTested(Ok(msg)) => self.status = msg,
+            Resp::SshTested(Err(e)) => {
+                self.status = format!("Error: {e}");
+                if let Some(form) = self.form.as_mut().filter(|f| server_form_uses_ssh(f)) {
+                    form.error = Some(e);
+                }
+            }
             Resp::MaintInfo(rows) => self.maint = rows,
             Resp::LogTail { lines, cursor } => {
                 // The first batch arrives into an empty viewer.lines, so appending
@@ -4110,8 +4346,8 @@ impl App {
         }
     }
 
-    /// The (name, url) of the server highlighted in the picker.
-    pub(super) fn picker_selected(&self) -> Option<(String, String)> {
+    /// The server highlighted in the picker.
+    pub(super) fn picker_selected(&self) -> Option<ServerEntry> {
         self.picker
             .as_ref()
             .and_then(|s| s.selected())
@@ -4926,7 +5162,7 @@ impl App {
         let others: Vec<String> = self
             .all_servers
             .iter()
-            .map(|(n, _)| n.clone())
+            .map(|s| s.name.clone())
             .filter(|n| *n != self.server_name)
             .collect();
         if others.is_empty() {
@@ -4999,7 +5235,7 @@ impl App {
         let others: Vec<String> = self
             .all_servers
             .iter()
-            .map(|(n, _)| n.clone())
+            .map(|s| s.name.clone())
             .filter(|n| *n != self.server_name)
             .collect();
         if others.is_empty() {
@@ -5032,7 +5268,7 @@ impl App {
         let others: Vec<String> = self
             .all_servers
             .iter()
-            .map(|(n, _)| n.clone())
+            .map(|s| s.name.clone())
             .filter(|n| *n != self.server_name)
             .collect();
         if others.is_empty() {
@@ -5207,7 +5443,7 @@ impl App {
         hosts.extend(
             self.all_servers
                 .iter()
-                .map(|(n, _)| n.clone())
+                .map(|s| s.name.clone())
                 .filter(|n| *n != self.server_name),
         );
         // On THIS host the target is not a guess: `all_services` was fetched from
@@ -5541,7 +5777,7 @@ impl App {
         let others: Vec<String> = self
             .all_servers
             .iter()
-            .map(|(n, _)| n.clone())
+            .map(|s| s.name.clone())
             .filter(|n| *n != self.server_name)
             .collect();
         if others.is_empty() {
@@ -6027,11 +6263,11 @@ impl App {
             FormKind::ServerAdd | FormKind::ServerEdit { .. } => {
                 // Add: token required. Edit: an empty token = keep the old one, so
                 // changing just the URL doesn't force retyping the token.
-                let (name, url, token) = match &form.kind {
-                    FormKind::ServerAdd => (form.val(0), form.val(1), Some(form.val(2))),
+                let url = server_form_url(form);
+                let (name, token) = match &form.kind {
+                    FormKind::ServerAdd => (form.val(0), Some(form.val(2))),
                     FormKind::ServerEdit { .. } => (
                         form.val(0),
-                        form.val(1),
                         match form.val(2) {
                             t if t.is_empty() => None,
                             t => Some(t),
@@ -6051,14 +6287,32 @@ impl App {
                     self.status = "Server name may only contain a-z, 0-9, - and _".into();
                     return;
                 }
+                let ssh = match tunnel_from_form(form, &url) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.status = format!("Error: {e}");
+                        return;
+                    }
+                };
+                // An edit may leave it blank to keep the stored one; an add has
+                // nothing stored to fall back on.
+                if matches!(form.kind, FormKind::ServerAdd)
+                    && ssh.as_ref().is_some_and(|t| {
+                        t.auth == crate::tunnel::SshAuth::Password && t.secret.is_none()
+                    })
+                {
+                    self.status = "Error: SSH password is required".into();
+                    return;
+                }
                 self.server_action = Some(ServerAction::Save {
                     rename_from: match &form.kind {
                         FormKind::ServerEdit { name: old } if *old != name => Some(old.clone()),
                         _ => None,
                     },
                     name,
-                    url: url.trim_end_matches('/').to_string(),
+                    url,
                     token,
+                    ssh,
                 });
             }
             FormKind::ProjectCreate => {
@@ -6986,7 +7240,7 @@ impl App {
         let cur = self
             .all_servers
             .iter()
-            .position(|(n, _)| n == &self.server_name)
+            .position(|s| s.name == self.server_name)
             .unwrap_or(0);
         let mut st = ListState::default();
         st.select(Some(cur));

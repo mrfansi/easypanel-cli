@@ -1364,36 +1364,12 @@ impl App {
             KeyCode::Esc | KeyCode::Char('s') => self.picker = None,
             KeyCode::Char('n') => {
                 self.picker = None;
-                self.form = Some(Form::new(
-                    FormKind::ServerAdd,
-                    " Add server ",
-                    vec![
-                        Field::text("Name", ""),
-                        Field::text("URL", "https://"),
-                        Field::secret("Token"),
-                    ],
-                ));
+                self.form = Some(super::app::server_form(None));
             }
             KeyCode::Char('e') => {
-                if let Some((name, url)) = self.picker_selected() {
+                if let Some(entry) = self.picker_selected() {
                     self.picker = None;
-                    self.form = Some(Form::new(
-                        FormKind::ServerEdit { name: name.clone() },
-                        format!(" Edit server: {name} "),
-                        vec![
-                            // Editable: a server's name is the label the whole UI
-                            // identifies it by — the title bar, the confirmations
-                            // and its colour — so a typo in it was permanent, and
-                            // the only way out was to delete the server and lose
-                            // its token with it.
-                            Field::text("Name", &name),
-                            Field::text("URL", &url),
-                            // The token is deliberately not re-filled: there's no
-                            // need to put it back on screen. Empty = keep the stored
-                            // token.
-                            Field::secret("Token (empty = unchanged)"),
-                        ],
-                    ));
+                    self.form = Some(super::app::server_form(Some(&entry)));
                 }
             }
             KeyCode::Char('x') => {
@@ -1401,7 +1377,8 @@ impl App {
                 // read back from anywhere — one wrong keystroke and the credential
                 // is gone. Every other destructive action here asks for
                 // confirmation; this one used not to.
-                if let Some((name, url)) = self.picker_selected() {
+                if let Some(entry) = self.picker_selected() {
+                    let (name, url) = (entry.name.clone(), entry.display_url());
                     self.picker = None;
                     self.confirm = Some(Confirm {
                         action: "server-remove".into(),
@@ -1423,10 +1400,10 @@ impl App {
                 state.select(Some(i));
             }
             KeyCode::Enter => {
-                if let Some((name, _)) = state
+                if let Some(name) = state
                     .selected()
                     .and_then(|i| self.all_servers.get(i))
-                    .cloned()
+                    .map(|s| s.name.clone())
                 {
                     if name != self.server_name {
                         self.switch_to = Some(name);

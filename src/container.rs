@@ -76,19 +76,20 @@ pub(crate) fn ws_url(
         .ok_or_else(|| anyhow!("No running container for {project}/{service}"))?;
     Ok(format!(
         "{}/ws/containerShell?container={cid}&command={}&token={}",
-        wss_base(client),
+        wss_base(client)?,
         query_escape(&base64(command.as_bytes())),
         client.token()
     ))
 }
 
 /// The panel's origin with the WebSocket scheme — the base both `/ws/` routes share.
-fn wss_base(client: &EasypanelClient) -> String {
-    client
-        .url()
+/// Through an SSH tunnel this is the tunnel's local end, which opening may fail.
+fn wss_base(client: &EasypanelClient) -> Result<String> {
+    Ok(client
+        .base_url()?
         .trim_end_matches('/')
         .replacen("https://", "wss://", 1)
-        .replacen("http://", "ws://", 1)
+        .replacen("http://", "ws://", 1))
 }
 
 /// The `wss://…/ws/hostShell` URL — a shell on the HOST, not in a container.
@@ -121,8 +122,12 @@ fn wss_base(client: &EasypanelClient) -> String {
 /// (`$0=/bin/bash`, `BASH_VERSION=5.1.16(1)-release`, `id -un` = `root`),
 /// `{"resize":[100,30]}` followed by `stty size` printed `30 100`. A bad token gets
 /// no 101 at all (close code 1002).
-pub(crate) fn host_ws_url(client: &EasypanelClient) -> String {
-    format!("{}/ws/hostShell?token={}", wss_base(client), client.token())
+pub(crate) fn host_ws_url(client: &EasypanelClient) -> Result<String> {
+    Ok(format!(
+        "{}/ws/hostShell?token={}",
+        wss_base(client)?,
+        client.token()
+    ))
 }
 
 /// Percent-encode the three base64 characters that a URL QUERY does not carry
@@ -860,7 +865,7 @@ mod tests {
     #[test]
     fn the_host_url_carries_only_a_token_and_never_reaches_an_error_message() {
         let client = EasypanelClient::new("https://panel.example.com/", "SECRET-TOKEN");
-        let url = host_ws_url(&client);
+        let url = host_ws_url(&client).unwrap();
         assert_eq!(
             url,
             "wss://panel.example.com/ws/hostShell?token=SECRET-TOKEN"
@@ -872,6 +877,7 @@ mod tests {
         // same as the container route — a lab panel on http must still work.
         assert!(
             host_ws_url(&EasypanelClient::new("http://10.0.0.7:3000", "t"))
+                .unwrap()
                 .starts_with("ws://10.0.0.7:3000/ws/hostShell?")
         );
 
@@ -1174,7 +1180,7 @@ mod tests {
     fn a_live_launch_failure_reports_what_the_shell_said() {
         let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
         let srv = cfg.default().expect("a default server exists");
-        let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
+        let client = crate::client::EasypanelClient::for_server(&srv);
         let project = std::env::var("EZP_LIVE_PROJECT").unwrap_or_else(|_| "zzz-emb".into());
         let service = std::env::var("EZP_LIVE_SERVICE").unwrap_or_else(|_| "zzz-redis".into());
 
@@ -1212,7 +1218,7 @@ mod tests {
     fn a_live_detached_run_confirms_and_reports_its_exit_code() {
         let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
         let srv = cfg.default().expect("a default server exists");
-        let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
+        let client = crate::client::EasypanelClient::for_server(&srv);
         let project = std::env::var("EZP_LIVE_PROJECT").unwrap_or_else(|_| "zzz-emb".into());
         let service = std::env::var("EZP_LIVE_SERVICE").unwrap_or_else(|_| "zzz-redis".into());
 
@@ -1245,7 +1251,7 @@ mod tests {
     fn zz_exec_semantics() {
         let cfg = crate::config::ServerConfig::new(crate::config::ServerConfig::default_path());
         let srv = cfg.get("viding-idc").expect("viding-idc");
-        let client = crate::client::EasypanelClient::new(&srv.url, &srv.token);
+        let client = crate::client::EasypanelClient::for_server(&srv);
         let (project, service) = ("viding-org-db", "mysql");
         let check = |cmd: &str| {
             run_capture(&client, project, service, cmd, Duration::from_secs(30))

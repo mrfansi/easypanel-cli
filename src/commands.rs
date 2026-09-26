@@ -22,7 +22,7 @@ pub fn resolve_client(cfg: &ServerConfig, server: &Option<String>) -> Result<Eas
             .default()
             .ok_or_else(|| anyhow!("No default server. Run: easypanel server add"))?,
     };
-    Ok(EasypanelClient::new(&s.url, &s.token))
+    Ok(EasypanelClient::for_server(&s))
 }
 
 /// The client for a server named EXPLICITLY, rather than the active one.
@@ -35,7 +35,7 @@ pub fn resolve_client_named(cfg: &ServerConfig, name: &str) -> Result<EasypanelC
     let s = cfg
         .get(name)
         .ok_or_else(|| anyhow!("Server '{name}' not found. See: easypanel server list"))?;
-    Ok(EasypanelClient::new(&s.url, &s.token))
+    Ok(EasypanelClient::for_server(&s))
 }
 
 pub fn valid_name(s: &str) -> bool {
@@ -54,12 +54,144 @@ pub fn ucfirst(s: &str) -> String {
 
 // ---------- Server ----------
 
+/// The SSH hop flags of `server add`.
+#[derive(clap::Args, Default)]
+pub struct SshOpts {
+    /// Reach the panel through an SSH tunnel to this host: a hostname, an IP, or
+    /// a Host alias from ~/.ssh/config
+    #[arg(long = "ssh", value_name = "HOST")]
+    pub host: Option<String>,
+    /// SSH port (default: 22, or the alias's Port)
+    #[arg(long = "ssh-port", value_name = "PORT", requires = "host")]
+    pub port: Option<u16>,
+    /// SSH user (default: the alias's User, or yours)
+    #[arg(long = "ssh-user", value_name = "USER", requires = "host")]
+    pub user: Option<String>,
+    /// Log in with this private key instead of the agent / ~/.ssh/config
+    #[arg(long = "ssh-key", value_name = "PATH", requires = "host")]
+    pub key: Option<String>,
+    /// The --ssh-key is encrypted: prompt for its passphrase
+    #[arg(long = "ssh-passphrase", requires = "key")]
+    pub passphrase: bool,
+    /// Log in with a password (prompted without echo, never taken as a flag)
+    #[arg(long = "ssh-password", requires = "host", conflicts_with = "key")]
+    pub password: bool,
+    /// Seconds SSH gets to connect (default 10)
+    #[arg(long = "ssh-timeout", value_name = "SECS", requires = "host")]
+    pub timeout: Option<u64>,
+}
+
+impl SshOpts {
+    fn is_empty(&self) -> bool {
+        self.host.is_none()
+    }
+
+    /// The tunnel the flags describe. Secrets are prompted, never read from
+    /// argv, where every user on the machine can see them.
+    fn into_tunnel(self) -> Result<Option<crate::tunnel::SshTunnel>> {
+        use crate::tunnel::SshAuth;
+        let Some(host) = self.host else {
+            return Ok(None);
+        };
+        let auth = if self.password {
+            SshAuth::Password
+        } else if self.key.is_some() {
+            SshAuth::Key
+        } else {
+            SshAuth::Agent
+        };
+        let secret = match auth {
+            SshAuth::Password => Some(Password::new().with_prompt("SSH password").interact()?),
+            SshAuth::Key if self.passphrase => {
+                Some(Password::new().with_prompt("Key passphrase").interact()?)
+            }
+            _ => None,
+        };
+        Ok(Some(crate::tunnel::SshTunnel {
+            host,
+            port: self.port,
+            user: self.user,
+            auth,
+            key_path: self.key,
+            secret,
+            timeout: self.timeout,
+        }))
+    }
+}
+
+/// Ask for a tunnel field by field, the way the TUI form lays it out.
+fn prompt_tunnel() -> Result<Option<crate::tunnel::SshTunnel>> {
+    use crate::tunnel::{SshAuth, SshTunnel, DEFAULT_TIMEOUT};
+    let optional = |prompt: &str| -> Result<Option<String>> {
+        let s: String = Input::new()
+            .with_prompt(prompt)
+            .allow_empty(true)
+            .interact_text()?;
+        Ok(Some(s.trim().to_string()).filter(|s| !s.is_empty()))
+    };
+    let Some(host) = optional("SSH tunnel host (empty = connect directly)")? else {
+        return Ok(None);
+    };
+    let port = optional("SSH port (empty = 22 or ~/.ssh/config)")?
+        .map(|p| {
+            p.parse::<u16>()
+                .map_err(|_| anyhow!("SSH port must be 1-65535"))
+        })
+        .transpose()?;
+    let user = optional("SSH user (empty = ~/.ssh/config or yours)")?;
+    let auth = SshAuth::NAMES[dialoguer::Select::new()
+        .with_prompt("Login method")
+        .items(&[
+            "agent — ssh-agent / ~/.ssh/config",
+            "key — a private key file",
+            "password",
+        ])
+        .default(0)
+        .interact()?];
+    let auth = SshAuth::parse(auth).unwrap_or_default();
+    let (key_path, secret) = match auth {
+        SshAuth::Agent => (None, None),
+        SshAuth::Key => {
+            let path: String = Input::new()
+                .with_prompt("Key path")
+                .default("~/.ssh/id_ed25519".to_string())
+                .interact_text()?;
+            let pass = Password::new()
+                .with_prompt("Key passphrase (empty if not encrypted)")
+                .allow_empty_password(true)
+                .interact()?;
+            (Some(path), Some(pass).filter(|p| !p.is_empty()))
+        }
+        SshAuth::Password => (
+            None,
+            Some(Password::new().with_prompt("SSH password").interact()?),
+        ),
+    };
+    let timeout: u64 = Input::new()
+        .with_prompt("SSH timeout (seconds)")
+        .default(DEFAULT_TIMEOUT)
+        .interact_text()?;
+    Ok(Some(SshTunnel {
+        host,
+        port,
+        user,
+        auth,
+        key_path,
+        secret,
+        timeout: Some(timeout).filter(|t| *t != DEFAULT_TIMEOUT),
+    }))
+}
+
 pub fn server_add(
     cfg: &ServerConfig,
     name: Option<String>,
     url: Option<String>,
     token: Option<String>,
+    ssh: SshOpts,
 ) -> Result<()> {
+    // Fully interactive only when nothing but the name came from flags: asking
+    // about a tunnel in a scripted `--url … --token …` call would block it.
+    let interactive = url.is_none() && token.is_none() && ssh.is_empty();
     let name = match name {
         Some(n) => n,
         None => Input::new().with_prompt("Server name").interact_text()?,
@@ -67,26 +199,56 @@ pub fn server_add(
     if !valid_name(&name) {
         return Err(anyhow!("Server names may only contain a-z, 0-9, - and _"));
     }
-    let url = match url {
-        Some(u) => u,
-        None => Input::new()
+    let ssh = if interactive {
+        prompt_tunnel()?
+    } else {
+        ssh.into_tunnel()?
+    };
+    let url = match (url, &ssh) {
+        (Some(u), _) => u,
+        // Through a tunnel the URL is where the panel listens ON that host, which
+        // for EasyPanel is nearly always its own port 3000.
+        (None, Some(_)) if !interactive => crate::tunnel::DEFAULT_REMOTE_URL.to_string(),
+        (None, Some(_)) => Input::new()
+            .with_prompt("Panel URL as seen from the SSH host")
+            .default(crate::tunnel::DEFAULT_REMOTE_URL.to_string())
+            .interact_text()?,
+        (None, None) => Input::new()
             .with_prompt("URL host (e.g. https://panel.example.com)")
             .interact_text()?,
     };
+    let url = url.trim_end_matches('/').to_string();
+    if let Some(t) = &ssh {
+        crate::tunnel::validate(t, &url)?;
+    }
     let token = match token {
         Some(t) => t,
         None => Password::new().with_prompt("API token").interact()?,
     };
 
-    let url = url.trim_end_matches('/').to_string();
-    cfg.add(&name, &url, &token)?;
+    cfg.add(&name, &url, &token, ssh)?;
 
     let is_default = cfg.default().map(|s| s.name == name).unwrap_or(false);
     println!(
-        "Server '{}' added.{}",
-        name,
+        "Server '{name}' added{}. Check it with: easypanel server test {name}",
         if is_default { " (default)" } else { "" }
     );
+    Ok(())
+}
+
+/// Is this server reachable, and does it take the token? The tunnel first, on
+/// its own, so a failure says WHICH hop is wrong.
+pub fn server_test(cfg: &ServerConfig, name: &str) -> Result<()> {
+    let s = cfg
+        .get(name)
+        .ok_or_else(|| anyhow!("Server '{name}' not found. See: easypanel server list"))?;
+    if let Some(t) = &s.ssh {
+        println!("{}", crate::tunnel::test(t, &s.url)?);
+    }
+    EasypanelClient::for_server(&s)
+        .call("projects", "listProjects", Value::Null)
+        .map_err(|e| anyhow!("API check failed: {e}"))?;
+    println!("API token OK — {} answered", s.url);
     Ok(())
 }
 
@@ -104,11 +266,15 @@ pub fn server_list(cfg: &ServerConfig) -> Result<()> {
                 if s.default { "*".into() } else { String::new() },
                 s.name.clone(),
                 s.url.clone(),
+                s.ssh
+                    .as_ref()
+                    .map(|t| format!("{} ({})", t.describe(), t.auth.as_str()))
+                    .unwrap_or_default(),
                 mask_token(&s.token),
             ]
         })
         .collect();
-    table(&["Default", "Name", "URL", "Token"], rows);
+    table(&["Default", "Name", "URL", "SSH tunnel", "Token"], rows);
     Ok(())
 }
 

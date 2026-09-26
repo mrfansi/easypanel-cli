@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Add a server through an SSH tunnel — `server add --ssh HOST`, a
+  `Connection: ssh` section on the TUI's add/edit server form, and `server
+  test`.** A panel whose port 3000 is firewalled off was unreachable from this
+  tool however good your SSH access to the machine was. A server can now carry
+  an SSH hop — host, port, user, login method (agent / `~/.ssh/config`, a key
+  file with optional passphrase, or a password) and timeout — and its URL is
+  then the panel as seen from that host (default `http://localhost:3000`). The
+  tool runs the system `ssh -N -L` itself, so aliases, `ProxyJump` and the
+  agent work exactly as they do for `ssh`. The tunnel opens on the first
+  request, is shared by everything that talks to that server (API calls, the
+  container and host terminals, cross-host compare, copy and migrate), is
+  reopened if `ssh` has died, and is stopped on exit.
+
+  Passwords and passphrases are prompted without echo, stored in
+  `servers.json` (`0600`) beside the token, and handed to `ssh` through this
+  binary as its `SSH_ASKPASS` helper — never on the command line, and never as
+  a terminal prompt over the TUI. An unknown host key is answered "no", so it
+  fails with ssh's own `Host key verification failed` plus a hint instead of
+  being trusted silently. A wrong remote port is caught when the tunnel opens
+  ("SSH to … works, but it could not reach the panel at … from there"). In the
+  TUI, Ctrl-T on the form opens a throwaway tunnel and reports what happened;
+  a blank passphrase or password on an edit keeps the stored one (for the same
+  login method only). A host or user beginning with `-` is refused, since
+  `ssh` would read it as an option. Servers without a tunnel are stored
+  exactly as before.
+
 ## [0.98.21] — 2026-09-17
 
 ### Added

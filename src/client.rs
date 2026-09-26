@@ -9,6 +9,9 @@ use serde_json::{json, Value};
 pub struct EasypanelClient {
     url: String,
     token: String,
+    /// The SSH hop when the panel is reached through a tunnel; `url` is then the
+    /// panel's address as seen from that host (see `tunnel`).
+    ssh: Option<crate::tunnel::SshTunnel>,
     http: reqwest::blocking::Client,
 }
 
@@ -87,6 +90,7 @@ impl EasypanelClient {
         Self {
             url: url.trim_end_matches('/').to_string(),
             token: token.to_string(),
+            ssh: None,
             // Timeout is mandatory: without it, one hanging request freezes the
             // TUI worker forever (no other request can run).
             http: reqwest::blocking::Client::builder()
@@ -96,16 +100,34 @@ impl EasypanelClient {
         }
     }
 
-    /// Call the endpoint and return the `.json` payload from the response.
-    /// Panel URL (without a trailing slash). Used to build the terminal WebSocket URL.
-    pub fn url(&self) -> &str {
-        &self.url
+    /// The client for a configured server, tunnelled when it has `ssh` set.
+    ///
+    /// Infallible and instant: the tunnel is opened by the first request, on
+    /// whichever thread makes it — never by the TUI's event loop just because a
+    /// client was built there.
+    pub fn for_server(server: &crate::config::Server) -> Self {
+        Self {
+            ssh: server.ssh.clone(),
+            ..Self::new(&server.url, &server.token)
+        }
     }
+
+    /// The origin requests actually go to (without a trailing slash): the
+    /// configured URL, or the local end of the SSH tunnel — opened on demand.
+    /// Also the base of the terminal WebSocket URL.
+    pub fn base_url(&self) -> Result<std::borrow::Cow<'_, str>> {
+        match &self.ssh {
+            None => Ok(std::borrow::Cow::Borrowed(&self.url)),
+            Some(t) => crate::tunnel::base_url(t, &self.url).map(std::borrow::Cow::Owned),
+        }
+    }
+
     /// API token. Used as the `token` query param on the terminal WebSocket.
     pub fn token(&self) -> &str {
         &self.token
     }
 
+    /// Call the endpoint and return the `.json` payload from the response.
     pub fn call(&self, group: &str, op: &str, input: Value) -> Result<Value> {
         self.call_within(group, op, input, None)
     }
@@ -126,7 +148,7 @@ impl EasypanelClient {
         input: Value,
         timeout: Option<std::time::Duration>,
     ) -> Result<Value> {
-        let endpoint = format!("{}/api/rpc/{}/{}", self.url, group, op);
+        let endpoint = format!("{}/api/rpc/{}/{}", self.base_url()?, group, op);
 
         let mut r = self
             .http
