@@ -826,7 +826,7 @@ dependencies = [
 
 [[package]]
 name = "easypanel"
-version = "0.98.21"
+version = "0.98.22"
 dependencies = [
  "anyhow",
  "chrono",
