@@ -263,7 +263,23 @@ pub(super) fn spawn_session(
         };
         // A small read timeout so the loop also gets a chance to handle input & resize.
         set_read_timeout(&mut ws, Duration::from_millis(15));
-        let _ = ws.send(resize_msg(cols, rows));
+        // The pane's size is withheld until the session first speaks. Measured
+        // live: a resize sent while the panel is still setting up is dropped —
+        // the handler awaits `inspect()`/auth (hostShell: a `docker pull`)
+        // before it listens for messages, and `docker exec`'s CLI ignores a
+        // SIGWINCH that arrives before it watches for one. Lost, it leaves the
+        // shell at node-pty's 80 columns for the whole session while the pane
+        // is wider, so bash wraps a long line onto itself. Once output flows
+        // the listener exists, and the pty really changes from its spawn size,
+        // so the one resize sent then reaches the shell.
+        let mut size = (cols, rows);
+        let mut sized = false;
+        macro_rules! send_size {
+            () => {{
+                sized = true;
+                ws.send(resize_msg(size.0, size.1))
+            }};
+        }
 
         loop {
             // Drain any pending output.
@@ -274,6 +290,10 @@ pub(super) fn spawn_session(
                             v.get("output").and_then(Value::as_str).map(str::to_string)
                         }) {
                             if resp_tx.send(Resp::TermOutput(out.into_bytes())).is_err() {
+                                return;
+                            }
+                            if !sized && send_size!().is_err() {
+                                let _ = resp_tx.send(Resp::TermClosed);
                                 return;
                             }
                         }
@@ -304,10 +324,20 @@ pub(super) fn spawn_session(
                 match input_rx.try_recv() {
                     Ok(msg) => {
                         let out = match msg {
-                            TermMsg::Input(s) => {
-                                ws.send(Message::Text(json!({ "input": s }).to_string()))
+                            // A key before any output (a slow start) must not
+                            // reach a shell still sized at 80 columns.
+                            TermMsg::Input(s) => match if sized { Ok(()) } else { send_size!() } {
+                                Ok(()) => ws.send(Message::Text(json!({ "input": s }).to_string())),
+                                err => err,
+                            },
+                            TermMsg::Resize(c, r) => {
+                                size = (c, r);
+                                if sized {
+                                    send_size!()
+                                } else {
+                                    Ok(())
+                                }
                             }
-                            TermMsg::Resize(c, r) => ws.send(resize_msg(c, r)),
                         };
                         if out.is_err() {
                             let _ = resp_tx.send(Resp::TermClosed);

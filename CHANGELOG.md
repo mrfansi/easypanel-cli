@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The terminal pane's shell was often stuck at 80 columns while the pane was
+  wider**, so a long command line wrapped back onto itself, typing landed over
+  the prompt, and full-width output (`artisan migrate:status`) was laid out for
+  80 columns. The pane sent its size the moment the WebSocket connected, while
+  the panel was still inspecting the container (or pulling the host-shell
+  image) and not yet listening; measured live, the pane's size was lost in 7
+  of 8 sessions. The size is now sent once the session first produces output
+  (or before the first keystroke, whichever comes first), and every resize
+  after that is forwarded as before — 8 of 8 sessions opened at the pane's
+  size, and a mid-session resize still reaches the shell.
+
 ## [0.98.22] — 2026-09-26
 
 ### Added
