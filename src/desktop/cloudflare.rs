@@ -98,6 +98,38 @@ enum Action {
 }
 
 impl State {
+    pub(super) fn breadcrumb(&self, target: &super::model::Target) -> String {
+        let section = if self.initialized {
+            self.section.as_str()
+        } else {
+            target.section.as_str()
+        };
+        let label = match section {
+            "analytics" => "Analytics",
+            "tunnels" | "tunnel-routes" => "Tunnels",
+            "r2" | "objects" => "R2 storage",
+            "workers" | "worker-settings" | "worker-deployments" => "Workers",
+            "accounts" => "Accounts",
+            _ => "Zones & DNS",
+        };
+        let resource = if self.initialized {
+            match section {
+                "zones" => self.zone.as_ref().map(|z| z.name.as_str()),
+                "tunnels" => self.tunnel.as_ref().map(|t| t.name.as_str()),
+                "r2" => self.bucket.as_deref(),
+                "workers" => self.worker.as_deref(),
+                _ => None,
+            }
+        } else {
+            target.resource.get("name").or_else(|| target.resource.get("id")).and_then(Value::as_str)
+        };
+        let account = target.account.as_ref().map_or("Cloudflare", |a| a.name.as_str());
+        match resource {
+            Some(resource) => format!("{account} / {resource} / {label}"),
+            None => format!("{account} / {label}"),
+        }
+    }
+
     pub(super) fn is_dirty(&self) -> bool {
         self.file.is_some()
             || self.editor.as_ref().is_some_and(|f| {
@@ -106,6 +138,18 @@ impl State {
                     .map(|x| x.value.as_str())
                     .ne(self.baseline.iter().map(String::as_str))
             })
+    }
+
+    fn source_is_current(&self, key: &str) -> bool {
+        match self.section.as_str() {
+            "zones" => key == if self.zone.is_some() { "records" } else { "zones" },
+            "tunnels" => key == if self.tunnel.is_some() { "config" } else { "tunnels" },
+            "r2" => key == if self.bucket.is_some() { "objects" } else { "buckets" },
+            "workers" => key == "workers"
+                || (self.worker.is_some() && matches!(key, "settings" | "deployments")),
+            "analytics" => matches!(key, "analytics" | "sites"),
+            _ => false,
+        }
     }
 
     fn accept_token(&mut self, current_account_id: &str, value: String) {
@@ -451,6 +495,7 @@ impl State {
 }
 
 pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
     if !state.initialized {
         state.section = match cx.target.section.as_str() {
             "analytics" | "tunnels" | "r2" | "workers" | "accounts" => cx.target.section.clone(),
@@ -481,6 +526,20 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
     }
     state.receive(cx);
     let account = cx.target.account.clone();
+    // An edit or review owns the viewport, not the space below a table or another form.
+    if state.confirmation.is_some() {
+        review(ui, state, cx);
+        return;
+    }
+    if state.editor.is_some() {
+        if let Some(account) = &account {
+            state.load(cx, account);
+            editor(ui, state, cx, account);
+        } else {
+            account_editor(ui, state, cx);
+        }
+        return;
+    }
     ui.horizontal_wrapped(|ui| {
         for (section, title) in [("zones", "Zones & DNS"), ("tunnels", "Tunnels"), ("r2", "R2 storage"), ("workers", "Workers"), ("analytics", "Analytics"), ("accounts", "Accounts")] {
             if ui.selectable_label(state.section == section, title).clicked() && state.section != section {
@@ -493,7 +552,7 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
     if state.section == "accounts" || account.is_none() {
         accounts(ui, state, cx);
     } else if let Some(account) = &account {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.strong(&account.name);
             ui.label(
                 account
@@ -527,12 +586,28 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
             }
         }
     }
-    if let Some(account) = &account {
-        editor(ui, state, cx, account);
-    } else if state.editor.is_some() {
-        account_editor(ui, state, cx);
+    feedback(ui, state, cx);
+}
+
+fn scope_identity(ui: &mut egui::Ui, state: &State, cx: &PageContext<'_>) {
+    if state.section == "accounts" {
+        return;
     }
-    review(ui, state, cx);
+    ui.add(egui::Label::new(state.breadcrumb(cx.target)).wrap());
+    if let Some(account) = &cx.target.account {
+        ui.add(egui::Label::new(format!("Account ID: {}", account.account_id.as_deref().unwrap_or("Zone-scoped token • no account ID"))).wrap());
+    }
+    let resource = match state.section.as_str() {
+        "zones" => state.zone.as_ref().map(|zone| ("Zone ID", zone.id.as_str())),
+        "tunnels" => state.tunnel.as_ref().map(|tunnel| ("Tunnel ID", tunnel.id.as_str())),
+        _ => None,
+    };
+    if let Some((label, id)) = resource {
+        ui.add(egui::Label::new(format!("{label}: {id}")).wrap());
+    }
+}
+
+fn feedback(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     for key in [
         "zones",
         "records",
@@ -552,17 +627,30 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
     ] {
         if let Some(e) = state.errors.get(key) {
             widgets::error(ui, &format!("{key}: {e}"));
+            if state.source_is_current(key)
+                && ui.add_enabled(!cx.busy(key), egui::Button::new(format!("Retry {key}"))).clicked()
+            {
+                state.loaded.remove(key);
+                let target = cx.target;
+                if let Some(account) = &target.account {
+                    state.load(cx, account);
+                }
+            }
         }
         if cx.busy(key) {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.spinner();
                 ui.label(cx.progress(key).unwrap_or(key));
             });
         }
     }
-    if !state.status.is_empty() {
+    let navigation_notice = "Save/discard the current edit, or wait for the scoped operation before changing product.";
+    if !state.status.is_empty()
+        && (state.status != navigation_notice || state.is_dirty() || state.confirmation.is_some()
+            || cx.busy("mutation") || cx.busy("transfer") || cx.busy("account"))
+    {
         ui.separator();
-        ui.label(&state.status);
+        ui.add(egui::Label::new(&state.status).wrap());
     }
     if !state.failed.is_empty() {
         egui::CollapsingHeader::new("Per-item failures")
@@ -642,14 +730,14 @@ fn accounts(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
 }
 
 fn account_editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
-    let Some(form) = state.editor.as_mut() else {
+    let Some(form) = state.editor.as_ref() else {
         return;
     };
-    ui.heading(&form.title);
-    ui.add_enabled_ui(!cx.busy("account"), |ui| widgets::form_fields(ui, form));
+    ui.add(egui::Label::new(egui::RichText::new(&form.title).strong()).truncate())
+        .on_hover_text(&form.title);
     let mut save = false;
     let mut discard = false;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         save = ui
             .add_enabled(!cx.busy("account"), egui::Button::new("Save account"))
             .clicked();
@@ -657,6 +745,22 @@ fn account_editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>
             .add_enabled(!cx.busy("account"), egui::Button::new("Discard"))
             .clicked();
     });
+    ui.separator();
+    let height = ui.available_height().max(24.0);
+    egui::ScrollArea::vertical()
+        .id_salt("cf-account-editor")
+        .max_height(height)
+        .min_scrolled_height(24.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            scope_identity(ui, state, cx);
+            feedback(ui, state, cx);
+            if let Some(form) = state.editor.as_mut() {
+                ui.add_enabled_ui(!cx.busy("account"), |ui| {
+                    widgets::form_fields_sized(ui, form, (height - 64.0).max(24.0));
+                });
+            }
+        });
     if discard {
         state.editor = None;
         state.baseline.clear();
@@ -1638,24 +1742,13 @@ fn editor(
         account_editor(ui, state, cx);
         return;
     }
-    let Some(form) = state.editor.as_mut() else {
-        return;
-    };
-    ui.heading(&form.title);
-    if let Some(path) = &state.file {
-        ui.label(format!("Local file: {}", path.display()));
-    }
-    let changed = ui
-        .add_enabled_ui(!cx.busy("mutation") && !cx.busy("transfer"), |ui| {
-            widgets::form_fields(ui, form)
-        })
-        .inner;
-    if changed {
-        state.confirmation = None;
-    }
+    ui.add(egui::Label::new(egui::RichText::new(&form.title).strong()).truncate())
+        .on_hover_text(&form.title);
+    let identity = state.breadcrumb(cx.target);
+    ui.add(egui::Label::new(&identity).truncate()).on_hover_text(&identity);
     let mut apply = false;
     let mut discard = false;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         apply = ui
             .add_enabled(
                 state.confirmation.is_none() && !cx.busy("mutation") && !cx.busy("transfer"),
@@ -1669,6 +1762,25 @@ fn editor(
             )
             .clicked();
     });
+    ui.separator();
+    let height = ui.available_height().max(24.0);
+    egui::ScrollArea::vertical()
+        .id_salt(("cf-editor", &state.editor.as_ref().unwrap().title))
+        .max_height(height)
+        .min_scrolled_height(24.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            feedback(ui, state, cx);
+            scope_identity(ui, state, cx);
+            if let Some(path) = &state.file {
+                ui.add(egui::Label::new(format!("Local file: {}", path.display())).wrap());
+            }
+            if let Some(form) = state.editor.as_mut() {
+                ui.add_enabled_ui(!cx.busy("mutation") && !cx.busy("transfer"), |ui| {
+                    widgets::form_fields_sized(ui, form, (height - 64.0).max(24.0));
+                });
+            }
+        });
     if discard {
         state.editor = None;
         state.file = None;
@@ -1890,23 +2002,42 @@ fn review(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     let Some(review) = state.confirmation.as_ref() else {
         return;
     };
+    ui.add(egui::Label::new(egui::RichText::new(&review.title).strong()).truncate())
+        .on_hover_text(&review.title);
+    ui.add(egui::Label::new(&review.target).truncate()).on_hover_text(&review.target);
+    let busy = cx.busy("mutation") || cx.busy("transfer") || cx.busy("account");
+    let approved = ui.add_enabled_ui(!busy, |ui| {
+        if let Some(expected) = &review.typed {
+            let prompt = format!("Type {expected} to confirm this target:");
+            let label = ui.add(egui::Label::new(&prompt).truncate()).on_hover_text(&prompt);
+            ui.add(egui::TextEdit::singleline(&mut state.confirm_entry).desired_width(f32::INFINITY))
+                .labelled_by(label.id);
+        }
+        ui.add_enabled(
+            review.typed.as_ref().is_none_or(|expected| state.confirm_entry == *expected),
+            egui::Button::new("Confirm").fill(ui.visuals().error_fg_color.gamma_multiply(0.20)),
+        ).clicked()
+    }).inner;
+    let cancel = ui.button("Back / cancel review").clicked();
     ui.separator();
     egui::ScrollArea::vertical()
         .id_salt("cf-review-items")
-        .max_height(180.0)
+        .max_height(ui.available_height().max(24.0))
+        .min_scrolled_height(24.0)
+        .auto_shrink([false, false])
         .show(ui, |ui| {
-            for line in &review.details {
-                ui.label(line);
+            scope_identity(ui, state, cx);
+            let review = state.confirmation.as_ref().unwrap();
+            ui.add(egui::Label::new(&review.target).wrap());
+            if let Some(expected) = &review.typed {
+                ui.add(egui::Label::new(format!("Type {expected} to confirm this target:")).wrap());
             }
+            for line in &review.details {
+                ui.add(egui::Label::new(line).wrap());
+            }
+            feedback(ui, state, cx);
         });
-    let approved = widgets::confirm(
-        ui,
-        &review.title,
-        &review.target,
-        review.typed.as_deref(),
-        &mut state.confirm_entry,
-    );
-    if ui.button("Back / cancel review").clicked() {
+    if cancel {
         state.confirmation = None;
         return;
     }
@@ -2164,6 +2295,63 @@ mod tests {
         assert!(state.is_dirty());
         state.mutation_finished();
         assert!(!state.is_dirty());
+    }
+
+    #[test]
+    fn breadcrumb_tracks_active_product_without_retaining_another_products_resource() {
+        let target = super::super::model::Target {
+            account: Some(CloudflareAccount {
+                name: "fixture".into(),
+                api_token: "not-a-real-token".into(),
+                account_id: Some("fixture-account".into()),
+                default: false,
+            }),
+            section: "records".into(),
+            resource: json!({"id": "zone-a", "name": "example.test"}),
+            ..Default::default()
+        };
+        let mut state = State::default();
+        assert_eq!(state.breadcrumb(&target), "fixture / example.test / Zones & DNS");
+        state.zone = Some(serde_json::from_value(target.resource.clone()).unwrap());
+        state.initialized = true;
+        state.section = "zones".into();
+        assert_eq!(state.breadcrumb(&target), "fixture / example.test / Zones & DNS");
+        state.section = "analytics".into();
+        assert_eq!(state.breadcrumb(&target), "fixture / Analytics");
+        state.section = "r2".into();
+        state.bucket = Some("assets".into());
+        assert_eq!(state.breadcrumb(&target), "fixture / assets / R2 storage");
+        assert_eq!(target.section, "records");
+        assert_eq!(target.resource["id"], "zone-a");
+    }
+
+    #[test]
+    fn source_retry_follows_current_product_without_discarding_draft_or_errors() {
+        let mut state = State {
+            section: "zones".into(),
+            ..Default::default()
+        };
+        state.errors.insert("zones".into(), "Failed to load zones".into());
+        assert!(state.source_is_current("zones"));
+        state.section = "workers".into();
+        state.edit(Form::new(
+            FormKind::CfWorkerDeploy,
+            "Deploy Worker",
+            vec![Field::text("Worker name", "draft-worker")],
+        ));
+        state.editor.as_mut().unwrap().fields[0].value = "changed-worker".into();
+        assert!(!state.source_is_current("zones"));
+        assert!(state.source_is_current("workers"));
+        assert!(!state.source_is_current("settings"));
+        state.worker = Some("existing-worker".into());
+        assert!(state.source_is_current("settings"));
+        assert!(state.source_is_current("deployments"));
+        assert_eq!(state.errors["zones"], "Failed to load zones");
+        assert_eq!(state.editor.as_ref().unwrap().by_label("Worker name"), "changed-worker");
+        assert!(state.is_dirty());
+        state.section = "accounts".into();
+        assert!(!state.source_is_current("zones"));
+        assert!(!state.source_is_current("workers"));
     }
 
     #[test]

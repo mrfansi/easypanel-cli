@@ -1,11 +1,6 @@
 use crate::form::{FieldKind, Form};
 use eframe::egui::{self, RichText};
 
-/// Edits values only. Submission and cancellation remain explicit domain actions.
-pub(super) fn form_fields(ui: &mut egui::Ui, form: &mut Form) -> bool {
-    form_fields_sized(ui, form, 180.0)
-}
-
 /// Keeps multiline content inside its viewport without changing form or submission semantics.
 pub(super) fn form_fields_sized(ui: &mut egui::Ui, form: &mut Form, editor_height: f32) -> bool {
     let mut changed = false;
@@ -35,16 +30,35 @@ pub(super) fn form_fields_sized(ui: &mut egui::Ui, form: &mut Form, editor_heigh
                     if ui.checkbox(&mut value, "Enabled").labelled_by(label.id).changed() { field.value = if value { "yes" } else { "no" }.into(); changed = true; }
                 }
                 FieldKind::Editor => {
+                    let footer = egui::WidgetText::from(RichText::new(
+                        "Tab moves focus. Empty content is saved as empty; Discard leaves the original unchanged.",
+                    ).small()).into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Wrap),
+                        ui.available_width(),
+                        egui::TextStyle::Small,
+                    );
+                    // Reserve both widget gaps: scroll→help and help→the trailing field spacer.
+                    let height = editor_height.min(
+                        ui.available_height() - footer.size().y - 2.0 * ui.spacing().item_spacing.y - 8.0,
+                    ).max(24.0);
                     egui::ScrollArea::vertical()
                         .id_salt(id.with("editor-scroll"))
-                        .max_height(editor_height.max(24.0))
+                        .max_height(height)
                         .min_scrolled_height(24.0)
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            let height = ui.available_height().min(height);
+                            let font = egui::FontSelection::from(egui::TextStyle::Monospace).resolve(ui.style());
+                            let line_height = ui.fonts_mut(|fonts| fonts.row_height(&font))
+                                + ui.spacing().extra_text_line_spacing;
+                            // min_size expands only the frame; desired_rows expands the text/caret viewport.
+                            let rows = ((height - 2.0 * ui.spacing().button_padding.y) / line_height)
+                                .floor().max(1.0) as usize;
                             changed |= ui.add(egui::TextEdit::multiline(&mut field.value).id(id).code_editor().lock_focus(false)
-                                .desired_width(f32::INFINITY).desired_rows(3)).labelled_by(label.id).changed();
+                                .desired_width(f32::INFINITY).desired_rows(rows).min_size(egui::vec2(0.0, height))).labelled_by(label.id).changed();
                         });
-                    ui.small("Tab moves focus. Empty content is saved as empty; Discard leaves the original unchanged.");
+                    ui.add(egui::Label::new(footer));
                 }
                 FieldKind::Choice(options) => {
                     let search_id = id.with("search");

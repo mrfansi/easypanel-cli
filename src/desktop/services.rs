@@ -2274,6 +2274,11 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             });
         }
         let height = ui.available_height().max(24.0);
+        if matches!(edit.intent, Intent::Environment | Intent::Configuration) {
+            if widgets::form_fields_sized(ui, &mut edit.form, height) {
+                edit.revision += 1;
+            }
+        } else {
         egui::ScrollArea::vertical()
             .id_salt("service-editor")
             .max_height(height)
@@ -2288,6 +2293,7 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                     ui.small("Source and configuration are saved separately. Deployment remains an explicit action.");
                 }
             });
+        }
     });
     if import {
         if let Some(label) = edit.form.visible_here().into_iter().find_map(|i| {
@@ -2925,6 +2931,90 @@ mod tests {
             .find(|f| f.label == label)
             .unwrap()
             .value = value.into();
+    }
+    #[test]
+    fn multiline_service_editor_keeps_actions_and_help_above_the_dock() {
+        use super::super::backend::Backend;
+        for size in [egui::vec2(1024.0, 680.0), egui::vec2(1280.0, 800.0)] {
+            for raw in ["".to_owned(), "KEY=  preserved \r\nNEXT=value\n".to_owned(),
+                format!("LONG={}\n{}", "x".repeat(2000), "KEY=value\n".repeat(100))]
+            {
+                let ctx = egui::Context::default();
+                super::super::theme::apply(&ctx, super::super::theme::Mode::Dark);
+                let mut backend = Backend::new(ctx.clone(), super::super::Runtime::default());
+                let target = Target {
+                    project: "project".into(), service: "service".into(),
+                    service_type: "app".into(), section: "environment".into(),
+                    ..Default::default()
+                };
+                let mut state = State { section: "environment".into(), ..Default::default() };
+                state.editor = Some(make_editor(Form::new(
+                    FormKind::ProjectCreate, "Environment",
+                    vec![Field::editor("Environment", "original")],
+                ).with_note("Values may contain secrets. Save replaces the complete environment; deploy or restart to apply."), Intent::Environment));
+                state.editor.as_mut().unwrap().form.fields[0].value = raw.clone();
+                let mut opened = Vec::new();
+                let mut reload = false;
+                let mut cx = PageContext {
+                    target: &target, servers: &[], accounts: &[],
+                    server_config: std::path::Path::new(""), cloudflare_config: std::path::Path::new(""),
+                    watchlist: std::path::Path::new(""), doc: 1,
+                    backend: &mut backend, opened: &mut opened, reload: &mut reload,
+                };
+                let mut measured = None;
+                let mut output = ctx.run_ui(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                }, |ui| {
+                    egui::Panel::top("menubar").exact_size(32.0).show(ui, |_| {});
+                    egui::Panel::bottom("statusbar").exact_size(24.0).show(ui, |_| {});
+                    egui::Panel::left("activitybar").exact_size(46.0).show(ui, |_| {});
+                    egui::Panel::left("explorer").exact_size(252.0).show(ui, |_| {});
+                    egui::Panel::bottom("utility").exact_size(220.0).show(ui, |_| {});
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 4)))
+                        .show(ui, |ui| {
+                            ui.allocate_space(egui::vec2(ui.available_width(), 32.0));
+                            ui.separator();
+                            ui.label(target.label());
+                            let bounds = ui.available_rect_before_wrap();
+                            service(ui, &mut state, &mut cx);
+                            editor(ui, &mut state, &mut cx);
+                            measured = Some((bounds, ui.min_rect()));
+                        });
+                });
+                output.textures_delta.clear();
+                let (bounds, content) = measured.expect("service editor must render");
+                assert!(content.max.y <= bounds.max.y + 0.5,
+                    "editor exceeds body: size={size:?}, raw_bytes={}, bounds={bounds:?}, content={content:?}", raw.len());
+                assert!(content.max.x <= bounds.max.x + 0.5,
+                    "editor exceeds width: size={size:?}, raw_bytes={}, bounds={bounds:?}, content={content:?}", raw.len());
+                for text in ["Save changes", "Discard", "Import text file…",
+                    "Tab moves focus. Empty content is saved as empty; Discard leaves the original unchanged."]
+                {
+                    let shape = output.shapes.iter().find_map(|clipped| match &clipped.shape {
+                        egui::epaint::Shape::Text(shape) if shape.galley.text() == text =>
+                            Some((clipped.clip_rect, shape)),
+                        _ => None,
+                    }).unwrap_or_else(|| panic!("missing {text}"));
+                    assert!(shape.0.contains_rect(shape.1.galley.rect.translate(shape.1.pos.to_vec2())),
+                        "{text} is clipped at {size:?}");
+                }
+                if !raw.is_empty() {
+                    let (clip, text) = output.shapes.iter().find_map(|clipped| match &clipped.shape {
+                        egui::epaint::Shape::Text(shape) if shape.galley.text() == raw =>
+                            Some((clipped.clip_rect, shape)),
+                        _ => None,
+                    }).expect("multiline editor must paint its content");
+                    assert!(clip.height() > 80.0,
+                        "editor has no useful line box: size={size:?}, raw_bytes={}, clip={clip:?}, text_rect={:?}", raw.len(), text.galley.rect);
+                    if raw.lines().count() > 3 {
+                        assert!(text.galley.rect.height() > clip.height(), "long content must scroll internally");
+                    }
+                }
+                assert_eq!(state.editor.as_ref().unwrap().form.fields[0].value, raw);
+            }
+        }
     }
     #[test]
     fn section_caption_tracks_bound_documents_and_retained_editors() {

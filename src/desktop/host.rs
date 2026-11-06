@@ -25,6 +25,7 @@ struct Editor {
     kind: EditKind,
     form: Form,
     initial: Vec<String>,
+    discard: bool,
 }
 
 enum EditKind {
@@ -44,6 +45,7 @@ impl Editor {
             kind,
             form,
             initial,
+            discard: false,
         }
     }
 
@@ -53,6 +55,11 @@ impl Editor {
             .iter()
             .map(|f| &f.value)
             .ne(self.initial.iter())
+    }
+
+    fn cancel(&mut self) -> bool {
+        self.discard = self.dirty();
+        !self.discard
     }
 }
 
@@ -508,6 +515,16 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
         state.backup_type = cx.target.service_type.clone();
     }
     load_watch(state, cx);
+    ui.ctx().request_repaint_after(Duration::from_millis(500));
+    // Editors own the document viewport, never the space left below a resource table.
+    if state.review.is_some() {
+        review(ui, state, cx);
+        return;
+    }
+    if state.editor.is_some() {
+        editor(ui, state, cx);
+        return;
+    }
     ui.horizontal_wrapped(|ui| {
         for &(id, title) in SECTIONS {
             ui.selectable_value(&mut state.section, id.to_string(), title);
@@ -541,23 +558,19 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
     }
     egui::ScrollArea::vertical()
         .id_salt("host-workspace")
-        .show(ui, |ui| {
-            match state.section.as_str() {
-                "overview" => system(ui, state, cx),
-                "metrics" => metrics(ui, state, cx),
-                "storage" => storage(ui, state, cx),
-                "nodes" => nodes(ui, state, cx),
-                "domains" => domains(ui, state, cx),
-                "certificates" => certificates(ui, state, cx),
-                "notifications" => notifications(ui, state, cx),
-                "actions" => actions(ui, state, cx),
-                "uptime" => uptime(ui, state, cx),
-                "maintenance" => maintenance(ui, state, cx),
-                "backups" => backups(ui, state, cx),
-                _ => {}
-            }
-            editor(ui, state, cx);
-            review(ui, state, cx);
+        .show(ui, |ui| match state.section.as_str() {
+            "overview" => system(ui, state, cx),
+            "metrics" => metrics(ui, state, cx),
+            "storage" => storage(ui, state, cx),
+            "nodes" => nodes(ui, state, cx),
+            "domains" => domains(ui, state, cx),
+            "certificates" => certificates(ui, state, cx),
+            "notifications" => notifications(ui, state, cx),
+            "actions" => actions(ui, state, cx),
+            "uptime" => uptime(ui, state, cx),
+            "maintenance" => maintenance(ui, state, cx),
+            "backups" => backups(ui, state, cx),
+            _ => {}
         });
     ui.ctx().request_repaint_after(Duration::from_millis(500));
 }
@@ -2132,11 +2145,33 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     let Some(mut edit) = state.editor.take() else {
         return;
     };
-    ui.separator();
-    ui.heading(&edit.form.title);
-    if edit.dirty() {
-        ui.weak("Unsaved changes");
-    }
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - if edit.dirty() { 132.0 } else { 0.0 }).max(80.0);
+        ui.add_sized(
+            [width, 20.0],
+            egui::Label::new(egui::RichText::new(&edit.form.title).strong()).truncate(),
+        );
+        if edit.dirty() {
+            ui.label(egui::RichText::new("Unsaved changes").color(ui.visuals().warn_fg_color));
+        }
+    });
+    let host = &cx.target.server.as_ref().unwrap().name;
+    let target = match &edit.kind {
+        EditKind::Domain(id) => {
+            format!("Host: {host} · Domain: {}", id.as_deref().unwrap_or("new"))
+        }
+        EditKind::Check(url) => format!("Host: {host} · Request: {url}"),
+        EditKind::Schedule {
+            id,
+            project,
+            service,
+        } => format!(
+            "Host: {host} · {project}/{service} · Schedule: {}",
+            id.as_deref().unwrap_or("new"),
+        ),
+    };
+    ui.add(egui::Label::new(&target).truncate())
+        .on_hover_text(&target);
     if let EditKind::Domain(_) = &edit.kind {
         let projects = inventory_projects(state);
         if let Some(f) = edit.form.fields.iter_mut().find(|f| f.label == "Project") {
@@ -2152,138 +2187,171 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             f.set_options(choices);
         }
     }
-    if let EditKind::Schedule {
-        project, service, ..
-    } = &edit.kind
-    {
-        ui.label(format!("Schedule target: {project}/{service}"));
-    }
-    if matches!(edit.kind, EditKind::Check(_)) {
-        ui.checkbox(
-            &mut state.reveal_check_secrets,
-            "Reveal request headers and body",
-        );
-        if !state.reveal_check_secrets {
-            for f in &mut edit.form.fields {
-                if matches!(f.label, "Headers" | "Body") {
-                    f.kind = crate::form::FieldKind::Secret;
-                }
-            }
-        } else {
-            for f in &mut edit.form.fields {
-                if matches!(f.label, "Headers" | "Body") {
-                    f.kind = crate::form::FieldKind::Editor;
-                }
-            }
-        }
-    }
     let busy = cx.busy("host-mutation") || cx.busy("watch-save");
-    let form_id = edit.form.title.clone();
-    ui.push_id(form_id, |ui| {
-        ui.add_enabled_ui(!busy, |ui| {
-            widgets::form_fields(ui, &mut edit.form);
-        });
-    });
+    let mut save = false;
     let mut discard = false;
-    ui.horizontal(|ui| {
-        let busy = cx.busy("host-mutation") || cx.busy("watch-save");
-        if ui
-            .add_enabled(!busy, egui::Button::new("Save changes"))
-            .clicked()
-        {
-            match &edit.kind {
-                EditKind::Domain(id) => match form::domain_body(&edit.form) {
-                    Ok(body) => {
-                        state.editor_request = Some("host-mutation");
-                        cx.request(
-                            "host-mutation",
-                            Req::DomainSave {
-                                id: id.clone(),
-                                body,
-                            },
-                        );
-                        edit.form.error = None;
-                    }
-                    Err(e) => edit.form.error = Some(e),
-                },
-                EditKind::Check(url) => match form::check_body(url, &edit.form) {
-                    Ok(check) => {
-                        let host = cx.target.server.as_ref().unwrap().name.clone();
-                        state.editor_request = Some("watch-save");
-                        let path = cx.watchlist_path().to_owned();
-                        cx.background("watch-save", "Saving enrolled request", move || {
-                            let store = crate::config::Watchlist::new(path);
-                            store.put(&host, check)?;
-                            Ok(Payload::Json(serde_json::to_value(store.all(&host))?))
-                        });
-                        edit.form.error = None;
-                    }
-                    Err(e) => edit.form.error = Some(e),
-                },
-                EditKind::Schedule {
-                    id,
-                    project,
-                    service,
-                } => {
-                    let database = edit.form.by_label("Database");
-                    let schedule = edit.form.by_label("Cron schedule");
-                    let provider = edit.form.by_label("Storage provider");
-                    if !crate::backup::is_named(&database)
-                        || schedule.is_empty()
-                        || !state
-                            .rows("providers")
-                            .iter()
-                            .any(|p| field(p, "/id") == provider)
-                    {
-                        edit.form.error = Some(
-                            "A named database, cron schedule and available provider are required."
-                                .into(),
-                        );
-                    } else {
-                        let mut body = crate::backup::schedule_body(
-                            project,
-                            service,
-                            &database,
-                            &schedule,
-                            edit.form.is_on_label("Enabled"),
-                            &provider,
-                            &edit.form.by_label("Provider path"),
-                        );
-                        if let Some(original) =
-                            edit.form.original.as_ref().and_then(Value::as_object)
-                        {
-                            let mut merged = Value::Object(original.clone());
-                            for (k, v) in body.as_object().unwrap() {
-                                merged[k] = v.clone();
-                            }
-                            body = merged;
-                        }
-                        if let Some(id) = id {
-                            body["id"] = json!(id);
-                        }
-                        state.editor_request = Some("host-mutation");
-                        cx.rpc(
-                            "host-mutation",
-                            "databaseBackups",
-                            if id.is_some() {
-                                "updateDatabaseBackup"
-                            } else {
-                                "createDatabaseBackup"
-                            },
+    if !busy
+        && !egui::Popup::is_any_open(ui.ctx())
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
+        discard = edit.cancel();
+    }
+    ui.add_enabled_ui(!busy, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            save = ui.button("Save changes").clicked();
+            if ui.button("Cancel").clicked() {
+                discard = edit.cancel();
+            }
+            if edit.form.error.is_some() {
+                ui.colored_label(ui.visuals().error_fg_color, "Validation error — see form");
+            }
+            if !state.mutation_error.is_empty() {
+                ui.colored_label(ui.visuals().error_fg_color, "Save failed — see form");
+            }
+        });
+        if edit.discard {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Discard unsaved changes?");
+                if ui.button("Discard changes").clicked() {
+                    discard = true;
+                }
+                if ui.button("Keep editing").clicked() {
+                    edit.discard = false;
+                }
+            });
+        }
+    });
+    if busy {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Saving; wait before leaving this editor.");
+        });
+    }
+    if save {
+        match &edit.kind {
+            EditKind::Domain(id) => match form::domain_body(&edit.form) {
+                Ok(body) => {
+                    state.editor_request = Some("host-mutation");
+                    cx.request(
+                        "host-mutation",
+                        Req::DomainSave {
+                            id: id.clone(),
                             body,
-                        );
-                        edit.form.error = None;
+                        },
+                    );
+                    edit.form.error = None;
+                }
+                Err(e) => edit.form.error = Some(e),
+            },
+            EditKind::Check(url) => match form::check_body(url, &edit.form) {
+                Ok(check) => {
+                    let host = cx.target.server.as_ref().unwrap().name.clone();
+                    state.editor_request = Some("watch-save");
+                    let path = cx.watchlist_path().to_owned();
+                    cx.background("watch-save", "Saving enrolled request", move || {
+                        let store = crate::config::Watchlist::new(path);
+                        store.put(&host, check)?;
+                        Ok(Payload::Json(serde_json::to_value(store.all(&host))?))
+                    });
+                    edit.form.error = None;
+                }
+                Err(e) => edit.form.error = Some(e),
+            },
+            EditKind::Schedule {
+                id,
+                project,
+                service,
+            } => {
+                let database = edit.form.by_label("Database");
+                let schedule = edit.form.by_label("Cron schedule");
+                let provider = edit.form.by_label("Storage provider");
+                if !crate::backup::is_named(&database)
+                    || schedule.is_empty()
+                    || !state
+                        .rows("providers")
+                        .iter()
+                        .any(|p| field(p, "/id") == provider)
+                {
+                    edit.form.error = Some(
+                        "A named database, cron schedule and available provider are required."
+                            .into(),
+                    );
+                } else {
+                    let mut body = crate::backup::schedule_body(
+                        project,
+                        service,
+                        &database,
+                        &schedule,
+                        edit.form.is_on_label("Enabled"),
+                        &provider,
+                        &edit.form.by_label("Provider path"),
+                    );
+                    if let Some(original) = edit.form.original.as_ref().and_then(Value::as_object) {
+                        let mut merged = Value::Object(original.clone());
+                        for (k, v) in body.as_object().unwrap() {
+                            merged[k] = v.clone();
+                        }
+                        body = merged;
                     }
+                    if let Some(id) = id {
+                        body["id"] = json!(id);
+                    }
+                    state.editor_request = Some("host-mutation");
+                    cx.rpc(
+                        "host-mutation",
+                        "databaseBackups",
+                        if id.is_some() {
+                            "updateDatabaseBackup"
+                        } else {
+                            "createDatabaseBackup"
+                        },
+                        body,
+                    );
+                    edit.form.error = None;
                 }
             }
         }
-        if ui
-            .add_enabled(!busy, egui::Button::new("Discard editor"))
-            .clicked()
-        {
-            discard = true;
-        }
-    });
+    }
+    ui.separator();
+    let height = ui.available_height().max(24.0);
+    egui::ScrollArea::vertical()
+        .id_salt(("host-editor", &edit.form.title))
+        .max_height(height)
+        .min_scrolled_height(24.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if matches!(edit.kind, EditKind::Domain(_)) {
+                let refresh = ui
+                    .add_enabled(!cx.busy("inventory"), egui::Button::new("Refresh inventory").small())
+                    .clicked();
+                inventory(state, cx, refresh);
+                state.status(ui, cx, "inventory");
+            }
+            if !state.message.is_empty() {
+                ui.label(&state.message);
+            }
+            if !state.mutation_error.is_empty() {
+                widgets::error(ui, &state.mutation_error);
+            }
+            ui.add_enabled_ui(!busy, |ui| {
+                if matches!(edit.kind, EditKind::Check(_)) {
+                    ui.checkbox(
+                        &mut state.reveal_check_secrets,
+                        "Reveal request headers and body",
+                    );
+                    for f in &mut edit.form.fields {
+                        if matches!(f.label, "Headers" | "Body") {
+                            f.kind = if state.reveal_check_secrets {
+                                crate::form::FieldKind::Editor
+                            } else {
+                                crate::form::FieldKind::Secret
+                            };
+                        }
+                    }
+                }
+                widgets::form_fields_sized(ui, &mut edit.form, (height - 64.0).max(24.0));
+            });
+        });
     if !discard {
         state.editor = Some(edit);
     }
@@ -2293,34 +2361,56 @@ fn review(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     let Some(mut review) = state.review.take() else {
         return;
     };
-    ui.separator();
-    let scope = format!(
-        "Host: {}\n{}",
-        cx.target
-            .server
-            .as_ref()
-            .map(|s| s.name.as_str())
-            .unwrap_or("Unknown"),
-        review.target
-    );
+    ui.add(egui::Label::new(egui::RichText::new(&review.title).strong()).truncate());
+    let host = format!("Host: {}", cx.target.server.as_ref().unwrap().name);
+    ui.add(egui::Label::new(&host).truncate())
+        .on_hover_text(&host);
+    let resource_id = match &review.apply {
+        Apply::Rpc { body, .. } => body.get("id").and_then(Value::as_str),
+        Apply::KillAction(id) => Some(id.as_str()),
+        Apply::Worker(req) => match req.as_ref() {
+            Req::DomainDelete(id) | Req::DomainSetPrimary(id) => Some(id.as_str()),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(id) = resource_id {
+        ui.add(egui::Label::new(format!("Target ID: {id}")).truncate())
+            .on_hover_text(id);
+    }
     let approved = ui
         .add_enabled_ui(!cx.busy("host-mutation") && !cx.busy("checks"), |ui| {
-            widgets::confirm(
-                ui,
-                &review.title,
-                &scope,
-                if review.typed.is_empty() {
-                    None
-                } else {
-                    Some(review.typed.as_str())
-                },
-                &mut review.entry,
+            if !review.typed.is_empty() {
+                let prompt = format!("Type {} to confirm this target:", review.typed);
+                let label = ui
+                    .add(egui::Label::new(&prompt).truncate())
+                    .on_hover_text(&prompt);
+                ui.add(egui::TextEdit::singleline(&mut review.entry).desired_width(f32::INFINITY))
+                    .labelled_by(label.id);
+            }
+            ui.add_enabled(
+                review.typed.is_empty() || review.entry == review.typed,
+                egui::Button::new("Confirm").fill(ui.visuals().error_fg_color.gamma_multiply(0.20)),
             )
+            .clicked()
         })
         .inner;
     let dismiss = ui
         .button("Dismiss review (does not cancel remote work)")
-        .clicked();
+        .clicked()
+        || ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    ui.separator();
+    egui::ScrollArea::vertical()
+        .id_salt("host-review-details")
+        .max_height(ui.available_height().max(24.0))
+        .min_scrolled_height(24.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(&review.target).wrap());
+            if !state.mutation_error.is_empty() {
+                widgets::error(ui, &state.mutation_error);
+            }
+        });
     if approved && !cx.busy("host-mutation") {
         match review.apply {
             Apply::Rpc { group, op, body } => cx.rpc("host-mutation", group, op, body),
@@ -2455,6 +2545,191 @@ mod tests {
         assert!(editor.dirty());
         editor.form.fields[0].value = "a.test".into();
         assert!(!editor.dirty());
+    }
+
+    #[test]
+    fn cancelling_each_host_editor_preserves_dirty_values_until_explicit_discard() {
+        for kind in [
+            EditKind::Domain(None),
+            EditKind::Domain(Some("domain-id".into())),
+            EditKind::Check("https://example.test".into()),
+            EditKind::Schedule {
+                id: None,
+                project: "shop".into(),
+                service: "db".into(),
+            },
+            EditKind::Schedule {
+                id: Some("schedule-id".into()),
+                project: "shop".into(),
+                service: "db".into(),
+            },
+        ] {
+            let mut edit = Editor::new(
+                kind,
+                Form::new(
+                    FormKind::DomainCreate,
+                    "Editor",
+                    vec![Field::text("Value", "original")],
+                ),
+            );
+            assert!(edit.cancel());
+            assert!(!edit.discard);
+            edit.form.fields[0].value = "draft".into();
+            assert!(!edit.cancel());
+            assert!(edit.discard);
+            assert_eq!(edit.form.fields[0].value, "draft");
+            assert_eq!(edit.initial, vec!["original"]);
+            edit.discard = false; // Keep editing must not replace the saved baseline.
+            assert!(edit.dirty());
+            edit.form.fields[0].value = "original".into();
+            assert!(edit.cancel());
+            assert!(!edit.discard);
+        }
+    }
+
+    #[test]
+    fn domain_draft_recovers_inventory_and_escape_closes_dropdown_before_discard() {
+        use super::super::backend::{Backend, Runtime};
+        use super::super::model::Target;
+        use httpmock::{Method::POST, MockServer};
+
+        fn frame(
+            ctx: &egui::Context,
+            state: &mut State,
+            cx: &mut PageContext<'_>,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| show(ui, state, cx),
+            );
+            // Headless frames have no renderer to consume texture uploads.
+            output.textures_delta.clear();
+            output
+        }
+
+        fn text_position(output: &egui::FullOutput, text: &str) -> egui::Pos2 {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.text() == text => {
+                    Some(shape.pos + shape.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            }).unwrap_or_else(|| panic!("Missing rendered text: {text}"))
+        }
+
+        fn click(
+            ctx: &egui::Context,
+            state: &mut State,
+            cx: &mut PageContext<'_>,
+            pos: egui::Pos2,
+        ) {
+            for pressed in [true, false] {
+                frame(ctx, state, cx, vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+            }
+        }
+
+        let server = MockServer::start();
+        let inventory = server.mock(|when, then| {
+            when.method(POST).path("/api/rpc/projects/listProjectsAndServices");
+            then.status(200).json_body(json!({"json":{
+                "projects":[{"name":"shop"}],
+                "services":[{"projectName":"shop","name":"web"}]
+            }}));
+        });
+        let target = Target {
+            server: Some(crate::config::Server {
+                name: "fixture".into(),
+                url: server.base_url(),
+                token: "fixture-token".into(),
+                default: false,
+                ssh: None,
+            }),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let mut backend = Backend::new(ctx.clone(), Runtime::default());
+        let mut opened = Vec::new();
+        let mut reload = false;
+        let path = std::path::Path::new("unused-fixture-path");
+        let mut cx = PageContext {
+            target: &target,
+            servers: &[],
+            accounts: &[],
+            server_config: path,
+            cloudflare_config: path,
+            watchlist: path,
+            doc: 1,
+            backend: &mut backend,
+            opened: &mut opened,
+            reload: &mut reload,
+        };
+        let mut state = State {
+            section: "domains".into(),
+            watch_requested: true,
+            ..Default::default()
+        };
+        state.snapshots.insert("inventory".into(), Snapshot {
+            error: Some("Inventory unavailable".into()),
+            requested: true,
+            input: Some(Value::Null),
+            ..Default::default()
+        });
+        domain_editor(&mut state, None);
+        state.editor.as_mut().unwrap().form.fields[0].value = "draft.example.test".into();
+
+        let output = frame(&ctx, &mut state, &mut cx, vec![]);
+        text_position(&output, "Inventory unavailable");
+        let retry = text_position(&output, "Refresh inventory");
+        click(&ctx, &mut state, &mut cx, retry);
+        assert!(cx.busy("inventory"));
+        let loading = frame(&ctx, &mut state, &mut cx, vec![]);
+        text_position(&loading, "Loading…");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while cx.busy("inventory") && Instant::now() < deadline {
+            cx.backend.pump();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let output = frame(&ctx, &mut state, &mut cx, vec![]);
+        assert!(state.snapshots["inventory"].error.is_none());
+        let edit = state.editor.as_ref().unwrap();
+        assert_eq!(edit.form.by_label("Host"), "draft.example.test");
+        assert_eq!(edit.form.by_label("Project"), "shop");
+        assert_eq!(edit.form.by_label("Service"), "web");
+        inventory.assert_hits(1);
+
+        let dropdown = text_position(&output, "shop");
+        click(&ctx, &mut state, &mut cx, dropdown);
+        assert!(egui::Popup::is_any_open(&ctx));
+        let escape = |pressed| vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }];
+        frame(&ctx, &mut state, &mut cx, escape(true));
+        assert!(!egui::Popup::is_any_open(&ctx));
+        assert!(!state.editor.as_ref().unwrap().discard);
+        frame(&ctx, &mut state, &mut cx, escape(false));
+        frame(&ctx, &mut state, &mut cx, escape(true));
+        let edit = state.editor.as_ref().unwrap();
+        assert!(edit.discard);
+        assert_eq!(edit.form.by_label("Host"), "draft.example.test");
     }
 }
 
