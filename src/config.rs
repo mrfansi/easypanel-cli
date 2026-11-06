@@ -233,7 +233,7 @@ impl ServerConfig {
         self.save(&servers)
     }
 
-    fn save(&self, servers: &[Server]) -> Result<()> {
+    pub(crate) fn save(&self, servers: &[Server]) -> Result<()> {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
