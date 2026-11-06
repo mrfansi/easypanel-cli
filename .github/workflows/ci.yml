@@ -28,6 +28,54 @@ jobs:
       - name: Test
         run: cargo test
 
+  desktop:
+    name: Desktop (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.target }}
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libegl1-mesa-dev libgl1-mesa-dev
+      # Explicit --bin keeps Unix-only CLI/TUI code out of the Windows build.
+      - name: Build desktop
+        run: cargo build --locked --release --features desktop --bin easypanel-desktop --target ${{ matrix.target }}
+      - name: Package Linux executable or macOS app
+        if: runner.os != 'Windows'
+        run: bash scripts/package-desktop.sh ${{ matrix.target }}
+      - name: Package Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-desktop.ps1
+      - name: Clippy desktop
+        if: runner.os == 'Linux'
+        run: cargo clippy --locked --features desktop --bin easypanel-desktop -- -D warnings
+      - name: Test desktop
+        if: runner.os == 'Linux'
+        run: cargo test --locked --features desktop --bin easypanel-desktop
+
   audit:
     runs-on: ubuntu-latest
     steps:
