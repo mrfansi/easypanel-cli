@@ -10,13 +10,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Optional native desktop app for Linux x86_64, macOS Apple Silicon/Intel and
-  Windows x86_64. Its mouse-first workspace reuses saved connections and supports
-  server editing, project/service search, reported state, service details/logs and
-  start/stop/restart with confirmation for disruptive actions. CLI/TUI workflows
-  remain available separately; this does not claim full TUI feature parity.
+  Windows x86_64, with an IDE-style resource explorer, persistent target-bound
+  documents, typed configuration editors, command palette and resizable
+  task/log/terminal utilities. Replaces the limited connection/service/log
+  workspace with existing CLI/TUI workflows: project/service configuration and
+  lifecycle/bulk actions; live logs and container/database/privileged host
+  terminals; database browsing/query results, backup schedules/history/restores,
+  dumps/downloads/copies, configuration clone/migrate/diff/export; host monitoring,
+  routing, certificates, notifications, actions, uptime and maintenance; independent
+  Cloudflare accounts, analytics, DNS, Tunnels, R2 and Workers. Scope follows the
+  existing product, not every vendor API; CLI/TUI entry points remain available.
+- Native file choosers and OS clipboard integration; SSH connection editing and
+  testing; profile-scoped sibling Cloudflare/uptime files beside `--config`.
 - Desktop build CI and separate release archives, including an ad-hoc-signed,
   non-notarized macOS `.app`. Manual release runs remain artifacts-only; publishing
   requires the complete CLI and desktop artifact sets.
+
+### Fixed
+
+- Share forms, validation, operations and session transport across CLI/TUI/desktop
+  without routing graphical workflows through the terminal renderer.
+- Recover partial service creation through desktop/TUI Source settings, retrying
+  only the unfinished source or auto-deploy stage without creating the service again.
+- Bound IDE chrome and editor working areas; keep edit actions separate from
+  scrolling content and avoid recursively locking focus state when opening a terminal.
+- Use per-run identifiers for new dump object keys and dump/restore temporary
+  files, retaining historical dump-key parsing. Local dump downloads refuse existing
+  paths and remove partial files on transfer failure.
+- Resolve source/destination engine, database and storage facts before desktop
+  restores/copies; show destructive scope and require typed confirmation.
+  Recheck the confirmed facts before execution. Failed or timed-out transfers
+  can leave partial writes; no rollback is promised.
 
 ### Security
 
@@ -24,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rustls-webpki` 0.103.16, `webpki-roots` 1.0.10) and memory-safety fixes
   (`lru` 0.18.2, `event-listener` 5.4.2, `tokio` 1.53.3); replace yanked
   `async-executor` and `chacha20` releases with 1.14.1 and 0.10.2.
+- Serialize read/modify/write transactions for server, Cloudflare and uptime
+  stores with OS file locks and atomic replacement; create Unix temporary files
+  privately before writing credentials and retain corrupt-file write guards.
+- Redact nested known credential fields and file-mount contents in project
+  exports without altering configuration-transfer payloads. Opaque scripts and
+  inline commands still need a human secret review before sharing.
+- Remove presigned storage URLs from dump-download HTTP errors.
 
 ## [0.98.23] — 2026-09-27
 

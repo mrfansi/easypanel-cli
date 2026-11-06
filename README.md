@@ -14,9 +14,10 @@ EasyPanel's web panel shows you one server at a time. This shows you all of them
 host's CPU, memory and disk side by side, every service across every project in one
 searchable table, and every domain on the box — without clicking through a hierarchy.
 
-Prefer a graphical interface? The [native desktop app](#native-desktop) has a
-mouse-first connection sidebar, project navigation, searchable services and a
-details/logs workspace. It is not a terminal wrapper or a copy of the TUI layout.
+Prefer a graphical interface? The [native desktop app](#native-desktop) puts the
+existing CLI/TUI workflows in an IDE-style workspace: resource explorer, persistent
+target-bound tabs, typed editors, and dockable logs and terminals. It is not a
+terminal wrapper or a copy of the TUI layout.
 
 ## 📸 Screenshots
 
@@ -34,7 +35,7 @@ details/logs workspace. It is not a terminal wrapper or a copy of the TUI layout
 
 <sub>The screenshots are the real TUI, rendered to SVG with [`docs/ansi2svg.py`](docs/ansi2svg.py) from a throwaway demo project; the server label is renamed. Regenerate with `tmux capture-pane -e -p | python3 docs/ansi2svg.py "Title" > out.svg`.</sub>
 
-**CLI/TUI features — the desktop app has the focused scope described below:**
+**Workflow highlights** (the shortcuts below are for the CLI/TUI; desktop uses graphical controls):
 
 - **Clone a service** (`c`) — copy a service's whole config (image/source, build, env,
   resources, mounts, ports, and a database's advanced config file) into a new service, in
@@ -45,8 +46,8 @@ details/logs workspace. It is not a terminal wrapper or a copy of the TUI layout
   config goes over: image/source, build, env, mounts, ports, resources, a database's
   advanced config file and credentials, and the domains. Moving between hosts is
   painful in the web panel, which has no export and no import — you retype everything.
-  (`easypanel project export <name>` writes that same config to a git-committable JSON
-  file, secrets redacted — see the CLI section.)
+  (`easypanel project export <name>` writes a redacted configuration snapshot —
+  review opaque scripts for embedded secrets before sharing; see the CLI section.)
   **Config only, never data:** volume contents and database rows live on the origin
   host's disk and the API does not expose them, so plan to move those yourself
   (`mysqldump`, a volume copy). Domains come over pointing at their existing hostnames —
@@ -151,17 +152,61 @@ The optional `easypanel-desktop` binary is a native Rust eframe/egui application
 for Linux, macOS and Windows; it does not need a browser, terminal UI or local web
 server. The CLI/TUI remain separate and do not require the desktop feature.
 
-Desktop core workflows:
+Open **Connections** to add, edit, test or choose a server, then expand its projects
+and services in the **Explorer**. Opening a resource keeps its server/account and
+project/service context attached to that document: choosing another resource does
+not retarget an open tab. Editors retain unsaved changes while you switch tabs and
+ask before discarding them. Reopen documents after changing connection credentials.
 
-- Add or edit a connection with a masked API token; reuse existing saved servers.
-- Choose a server/project, search services, refresh and inspect service details.
-- Read reported service state (unavailable state is shown as unknown).
-- Start, stop or restart supported services; stop/restart ask for confirmation.
-- Read, refresh and copy service logs.
+- **Project and service configuration:** create/delete projects and services;
+  deploy, rebuild, start, stop, restart and bulk actions; source/GitHub repository,
+  branch and auto-deploy settings; build/deployment options, resource limits,
+  environment and file-env, database config files, mounts and file contents,
+  ports, domains, basic auth and redirects. Typed forms provide Save/Discard rather
+  than a raw API/JSON console.
+- **Logs and terminals:** live logs with follow/pause/filter/copy, cross-service
+  log search, embedded container shells and auto-login database shells. Dock
+  sessions in the resizable bottom **Logs**/**Terminal** pane or open them as
+  documents; **Tasks** shows background progress and outcomes.
+- **Databases and transfers:** browse databases, tables/collections and row
+  previews; run SQL/mongosh statements in a query editor with results; reveal/copy
+  credentials; manage database backup schedules, immediate backups, completed
+  history and restores, including cross-host restores. Non-locking MySQL/MariaDB
+  dumps, downloads, restores and database copies use remote storage. Separate
+  workflows clone service configuration, migrate services/projects, compare hosts
+  and export redacted project snapshots. Configuration transfer does **not** copy
+  database rows or volume contents.
+- **Host operations:** fleet health, system/service metrics, nodes and storage;
+  domain routing and bulk rewrites; certificate and notification listing/removal;
+  action history, details, logs and kill; enrolled uptime requests/results;
+  Docker maintenance; existing volume backup listing/run/delete operations.
+  The privileged host terminal requires an explicit root-access review.
+- **Cloudflare:** independent account editing/testing/defaults, analytics, zones
+  and DNS records with filtering/bulk actions; Tunnels, connector install tokens,
+  published routes, origin settings and DNS sync; R2 buckets, folders, file
+  upload/download and bulk operations; Workers script download/deploy/replace/delete
+  in module or service-worker mode, settings metadata and deployment history.
+  Connector tokens must still be installed on the origin; desktop does not run
+  `cloudflared` for you.
 
-This is **not full TUI parity**: embedded terminals, database browsing, migration,
-Cloudflare management and the other advanced terminal workflows above remain in
-the CLI/TUI. There is no desktop updater or telemetry.
+Use **Cmd** on macOS or **Ctrl** on Linux/Windows: **K** opens the command palette,
+**B** toggles Explorer and **J** toggles utilities. **Cmd/Ctrl+Shift+P** opens the
+palette even from a focused terminal. Terminal selection uses the OS clipboard:
+**Cmd+C** on macOS or **Ctrl+Shift+C** elsewhere copies; **Ctrl+C** remains a shell
+interrupt. Paste uses the platform clipboard shortcut.
+
+Review the displayed source/destination and type the requested target before
+destructive transfers. Queries run exactly as entered with the database account's
+privileges; they are not read-only and receive no automatic LIMIT. Row previews
+are capped at 200; there is no cell editor, DDL builder or Redis table grid.
+Restores/copies can overwrite data, have **no rollback**, and can leave partial
+writes. Closing a document does not cancel remote work; inspect the target after
+a timeout before retrying.
+
+Desktop covers the workflows exposed by this CLI/TUI, **not every EasyPanel or
+Cloudflare vendor API**. Existing engine, permission and upload limits still
+apply. The `easypanel` CLI and no-argument TUI entry points remain unchanged;
+neither requires the desktop feature. There is no desktop updater or telemetry.
 
 #### Build and run locally
 
@@ -186,32 +231,45 @@ Use **Rust 1.95 or newer** with the host platform's C/C++ linker and SDK:
   Ubuntu 22.04 and are not static/musl or universally portable binaries; older
   distributions may need a local build.
 
+  Native file choosers use [rfd's XDG Desktop Portal backend](https://docs.rs/rfd/0.17.2/rfd/#linux--bsd-backends).
+  Install `xdg-desktop-portal` plus a GTK, GNOME or KDE file-chooser backend and
+  keep the desktop session's D-Bus service available. The wlroots-only backend
+  does not provide this interface; rfd also recommends `zenity` for its fallback.
+
 From the repository root (all platforms):
 
 ```bash
 cargo run --locked --features desktop --bin easypanel-desktop
-cargo run --locked --features desktop --bin easypanel-desktop -- --config /path/to/servers.json
+cargo run --locked --features desktop --bin easypanel-desktop -- --config /path/to/profile/servers.json
 ```
 
 For example, an isolated configuration on Windows PowerShell:
 
 ```powershell
-cargo run --locked --features desktop --bin easypanel-desktop -- --config "$env:USERPROFILE\.config\easypanel\desktop-servers.json"
+cargo run --locked --features desktop --bin easypanel-desktop -- --config "$env:USERPROFILE\.config\easypanel\desktop\servers.json"
 ```
 
-Without `--config`, desktop uses exactly the CLI/TUI's existing
-`ServerConfig::default_path`: `$HOME/.config/easypanel/servers.json`, falling back
-to `%USERPROFILE%\.config\easypanel\servers.json` when `HOME` is absent (normally
-Windows). Existing server entries and SSH settings are reused, not imported into
-a second store; desktop selection does not change the CLI's default server.
-The connection editor does not configure SSH hops; existing tunnel settings are
-preserved. Tunnel-backed connections additionally need the system `ssh` executable
-and the connection's host-trust/authentication setup.
+Without `--config`, desktop uses the CLI/TUI's existing
+`$HOME/.config/easypanel/servers.json`, falling back to
+`%USERPROFILE%\.config\easypanel\servers.json` when `HOME` is absent. It reuses
+saved entries rather than importing them into another store. Cloudflare accounts
+and uptime checks use sibling `cloudflare.json` and `checks.json` files.
+`--config` relocates **all three** to the chosen server file's directory; use a
+separate directory for an isolated profile. Merely renaming `servers.json` within
+the normal directory still shares the Cloudflare and uptime files.
 
-The file contains API tokens and potentially SSH secrets in plaintext. Unix
-writes use mode `0600`; on Windows, protect its folder with your account's ACLs.
-Do not share it or include it in a release archive. Use `--config` for a separate
-file rather than experimenting against your normal credentials.
+Choosing a resource does not change CLI defaults; **Make default** / **Set CLI
+default account** are explicit actions. The connection editor supports direct or
+SSH transport, host/port/user, agent/SSH-config, key with optional passphrase,
+password and timeout, plus connection testing. SSH connections need the system
+`ssh` executable, working authentication and an already trusted host key; unknown
+host keys are not accepted silently. The panel URL is its address **from the SSH
+host**, for example `http://localhost:3000`.
+
+These files can contain API tokens, SSH secrets and sensitive uptime headers/body
+in plaintext. Writes use OS transaction locks and atomic replacement; Unix files
+are created with mode `0600`. On Windows, protect the directory with your account's
+ACLs. Do not share these files or include them in release archives.
 
 #### Desktop packages
 
@@ -261,6 +319,9 @@ Packages are written to `dist/`. The Unix script uses system `tar` on Linux and
 `plutil`, `codesign`, `ditto` and `unzip` on macOS; Windows uses PowerShell's
 `Compress-Archive`. No bundler or installer is required. Cross-building an Intel
 macOS bundle on Apple Silicon does not verify it runs on Intel hardware.
+Build/package checks do not prove native interaction, clipboard/file-chooser
+integration or live remote workflows work on each platform; those need runtime
+verification in the target graphical environment.
 The CI matrix builds all four desktop targets independently of the Unix CLI.
 The release workflow packages both sets and requires exactly seven nonempty
 archives before tag-triggered publication. **Manual workflow runs only build,
@@ -622,7 +683,7 @@ on a separate lane and can't block your keystrokes.
 
 ```bash
 easypanel project list|create|inspect|destroy
-easypanel project export <name> [--file <path>|-]   # config → git-committable JSON
+easypanel project export <name> [--file <path>|-]   # config → redacted JSON; review before sharing
 
 # Lifecycle
 easypanel service create|deploy|restart|start|stop|destroy <project> <service> [--type app]
@@ -854,15 +915,16 @@ easypanel project export harisenin-net --file -        # to stdout
 ```
 
 EasyPanel has no export and no import, so there is nowhere to get your config for review
-or a record. This writes one: every service's source, build, deploy block, resource
-limits, **env keys** (never the values), domains, mounts and ports — a stable JSON you can
-commit to git, diff across time, or read in a review.
+or a record. This writes a stable configuration snapshot: every service's source,
+build, deploy block, resource limits, **env keys**, domains, mounts and ports.
+Volatile per-deploy fields are omitted so a diff shows configuration changes.
 
-It is **safe to commit**: env is reduced to its keys, the deploy token is dropped, and any
-secret-named field (a private registry `password`) is masked `••••••••` — the same rule
-the on-screen views enforce. Volatile, per-deploy noise (the last commit hash, the
-deployment URL, the primary-domain id) is left out so a diff shows configuration changes,
-not deploy churn. Config only — it never carries data or the secret values themselves.
+Export reduces env to keys, omits exact `token` fields, recursively masks known
+secret-named fields (including nested source/build/deploy credentials), and masks
+file-mount contents while keeping their paths and configuration. It contains no
+database rows or volume data. **Review before sharing or committing:** arbitrary
+scripts, inline commands and other opaque text can still contain embedded secrets;
+known-field redaction is not a guarantee that every secret has been removed.
 
 (This is export only; applying a file back to a host is not built yet.)
 
