@@ -158,9 +158,17 @@ project/service context attached to that document: choosing another resource doe
 not retarget an open tab. Editors retain unsaved changes while you switch tabs and
 ask before discarding them. Reopen documents after changing connection credentials.
 
+Confirmed service/project deletion blocks matching open documents and captured
+reviews without discarding drafts. Explicitly refresh a recreated resource before
+using its configuration again; already-running remote processes are not cancelled.
+
 Edit configuration, choose **Save changes**, then explicitly **Deploy** or
 **Restart** as appropriate to apply it. Unsaved edits block Deploy, Start and
 Restart; saving configuration is separate from those lifecycle actions.
+
+Environment text is preserved exactly across service kinds. WordPress/Box
+structured environments and Compose file settings are handled by the shared
+operations; the editable `.env` path applies only to app services.
 
 - **Project and service configuration:** create/delete projects and services;
   deploy, rebuild, start, stop, restart and bulk actions; source/GitHub repository,
@@ -249,6 +257,12 @@ Use **Rust 1.95 or newer** with the host platform's C/C++ linker and SDK:
   Install `xdg-desktop-portal` plus a GTK, GNOME or KDE file-chooser backend and
   keep the desktop session's D-Bus service available. The wlroots-only backend
   does not provide this interface; rfd also recommends `zenity` for its fallback.
+
+CJK user text uses validated installed system-font fallbacks while keeping the
+bundled primary UI and terminal fonts. Supported paths include macOS system CJK
+fonts, Windows `%WINDIR%\Fonts\msyh.ttc`, and Linux
+`/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`. Without a supported CJK
+font the app still runs, but those glyphs may be unavailable.
 
 From the repository root (all platforms):
 
@@ -509,7 +523,7 @@ edits where the mount lands; the row says how big the file is (`file /etc/app/co
 the buffer truncates the file, which the panel accepts — it does not mean "cancel".
 
 The pre-menu keys still work if you have the muscle memory: `E` `.` (edit env, toggle
-`.env` file), `P` `M` `F` (add port, mount, redirect), `f` (view redirects), `U` `B` `A`
+an app's `.env` file), `P` `M` `F` (add port, mount, redirect), `f` (view redirects), `U` `B` `A`
 `L` `H` (source, build, auto deploy, resource limits, basic auth), `R` `S` `T` (restart,
 stop, start), `X` (delete project).
 
@@ -641,8 +655,8 @@ command in PATH** from the command palette.
 **Basics → Source → Build → Environment → Domains.** `Enter` advances a step, `Esc` goes
 back, and the title shows where you are (`2/5 Source`). A database is a single step —
 it has no source or build to configure. Every field is optional except the name; leave
-source empty for a bare app you'll configure later, and the *Create .env file* toggle in
-Environment writes the vars as a `.env` file (the dashboard's "Create env file").
+source empty for a bare app you'll configure later. For app services, the
+*Create .env file* toggle in Environment writes the vars as a `.env` file.
 
 Creating the service does **not** deploy it. It appears in the table in about a second,
 and you press `d` to deploy when you're ready — the same order the dashboard uses.
