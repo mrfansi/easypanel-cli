@@ -1,1009 +1,2100 @@
 mod backend;
+mod cloudflare;
+mod connections;
+mod data;
+mod host;
+mod model;
+mod services;
+mod terminal;
+mod theme;
+mod widgets;
 
-use crate::{config::Server, filter::FilterMatcher};
-use backend::{ConnectionForm, Inventory, Job, Reply, Service, Worker};
-use eframe::egui::{self, Color32, RichText, TextStyle};
-use std::{path::PathBuf, sync::mpsc::TryRecvError};
+use crate::{
+    cloudflare::CloudflareAccount,
+    config::{CloudflareConfig, Server, ServerConfig},
+};
+pub(crate) use backend::Runtime;
+use backend::{Backend, Lane, TaskStatus, TrustContext};
+use eframe::egui::{self, RichText};
+use model::{DocId, OpenPage, PageContext, PageKind, Payload, Target};
+use serde_json::{json, Value};
+use std::{collections::HashMap, path::PathBuf};
+use theme::{Icon, Palette};
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-struct Scope {
-    server: u64,
-    service: u64,
+enum PageState {
+    Services(Box<services::State>),
+    Host(Box<host::State>),
+    Cloudflare(Box<cloudflare::State>),
+    Data(Box<data::State>),
+    Terminal(Box<terminal::State>),
 }
-
-impl Scope {
-    fn accepts(self, request: Self, service: bool) -> bool {
-        self.server == request.server && (!service || self.service == request.service)
+impl PageState {
+    fn new(kind: &PageKind) -> Self {
+        match kind {
+            PageKind::Fleet | PageKind::Host => Self::Host(Box::default()),
+            PageKind::Cloudflare => Self::Cloudflare(Box::default()),
+            PageKind::Data => Self::Data(Box::default()),
+            PageKind::Terminal => Self::Terminal(Box::default()),
+            _ => Self::Services(Box::default()),
+        }
+    }
+    fn is_dirty(&self) -> bool {
+        match self {
+            Self::Services(s) => s.is_dirty(),
+            Self::Host(s) => s.is_dirty(),
+            Self::Cloudflare(s) => s.is_dirty(),
+            Self::Data(s) => s.is_dirty(),
+            Self::Terminal(s) => s.is_dirty(),
+        }
+    }
+    fn running_session(&self) -> bool {
+        matches!(self, Self::Terminal(s) if s.has_running_session())
     }
 }
-
-#[derive(Clone, Copy)]
-enum Request {
-    Load,
-    Save,
-    Inventory,
-    Details,
+struct Document {
+    id: DocId,
+    page: OpenPage,
+    state: PageState,
+    docked: bool,
+}
+impl Document {
+    fn service_section(&self) -> Option<&'static str> {
+        match &self.state {
+            PageState::Services(state) if self.page.kind == PageKind::Service => {
+                Some(state.section_label(&self.page.target))
+            }
+            _ => None,
+        }
+    }
+    fn caption(&self) -> String {
+        self.service_section().map_or_else(
+            || self.page.title.clone(),
+            |section| format!("{} / {section}", self.page.target.service),
+        )
+    }
+    fn breadcrumb(&self) -> String {
+        let mut label = self.page.target.label();
+        if let Some(section) = self.service_section() {
+            if self.page.target.section.is_empty() {
+                label.push_str(" / ");
+            } else {
+                label.truncate(label.len() - self.page.target.section.len());
+            }
+            label.push_str(section);
+        }
+        label
+    }
+}
+#[derive(Default)]
+struct Catalog {
+    data: Option<Value>,
+    error: Option<String>,
+    requested: bool,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Utility {
+    Tasks,
     Logs,
-    Action,
+    Terminal,
+}
+#[derive(Clone, Copy)]
+enum Close {
+    Document(DocId),
+    Application,
 }
 
-struct Pending {
-    request: Request,
-    scope: Scope,
-    label: String,
+enum PaletteCommand {
+    Open(OpenPage),
+    ServiceAction {
+        target: Target,
+        title: String,
+        action: services::QuickAction,
+    },
 }
-
-struct Confirmation {
-    server: Server,
-    service: Service,
-    action: &'static str,
-    scope: Scope,
+impl PaletteCommand {
+    fn title(&self) -> &str {
+        match self {
+            Self::Open(page) => &page.title,
+            Self::ServiceAction { title, .. } => title,
+        }
+    }
+    fn target(&self) -> &Target {
+        match self {
+            Self::Open(page) => &page.target,
+            Self::ServiceAction { target, .. } => target,
+        }
+    }
 }
 
 pub struct Desktop {
     path: PathBuf,
-    worker: Worker,
-    pending: Option<Pending>,
+    cf_path: PathBuf,
+    checks_path: PathBuf,
+    backend: Backend,
     servers: Vec<Server>,
-    selected_server: Option<String>,
-    project: Option<String>,
-    selected: Option<Service>,
-    scope: Scope,
-    inventory: Inventory,
-    search: String,
-    focus_search: bool,
-    needs_inventory: bool,
-    needs_details: bool,
-    needs_logs: bool,
-    enabled: Option<bool>,
-    details_loaded: bool,
-    log_text: String,
-    logs_loaded: bool,
-    logs_tab: bool,
-    config_loaded: bool,
-    config_error: Option<String>,
-    inventory_error: Option<String>,
-    details_error: Option<String>,
-    logs_error: Option<String>,
-    editor: Option<ConnectionForm>,
-    editor_error: Option<String>,
-    editor_focus: bool,
-    confirmation: Option<Confirmation>,
-    notice: Option<String>,
+    accounts: Vec<CloudflareAccount>,
+    config_errors: Vec<String>,
+    loaded: bool,
+    reload: bool,
+    generation: u64,
+    catalog: HashMap<String, Catalog>,
+    documents: Vec<Document>,
+    next_doc: DocId,
+    active: Option<DocId>,
+    utility_doc: Option<DocId>,
+    last_logs_doc: Option<DocId>,
+    last_terminal_doc: Option<DocId>,
+    utility: Utility,
+    explorer_visible: bool,
+    utility_visible: bool,
+    last_explorer_doc: Option<DocId>,
+    explorer_filter: String,
+    palette_open: bool,
+    palette_query: String,
+    palette_selection: usize,
+    palette_focus: bool,
+    focus: Option<u8>,
+    close: Option<Close>,
+    allow_quit: bool,
+    mode: theme::Mode,
+    applied_theme: Option<bool>,
+    shortcuts_open: bool,
 }
-
 impl Desktop {
     pub fn new(cc: &eframe::CreationContext<'_>, path: PathBuf) -> Self {
-        let mut style = (*cc.egui_ctx.global_style()).clone();
-        style.visuals = egui::Visuals::light();
-        style.visuals.panel_fill = Color32::from_rgb(244, 246, 248);
-        style.visuals.override_text_color = Some(Color32::from_rgb(22, 44, 61));
-        style.visuals.selection.bg_fill = Color32::from_rgb(220, 231, 255);
-        style.visuals.selection.stroke.color = Color32::from_rgb(36, 94, 204);
-        style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-        style.spacing.button_padding = egui::vec2(12.0, 8.0);
-        style.spacing.interact_size.y = 32.0;
-        style
-            .text_styles
-            .insert(TextStyle::Body, egui::FontId::proportional(15.0));
-        style
-            .text_styles
-            .insert(TextStyle::Button, egui::FontId::proportional(15.0));
-        style
-            .text_styles
-            .insert(TextStyle::Heading, egui::FontId::proportional(22.0));
-        cc.egui_ctx.set_global_style(style);
-        let worker = Worker::new(path.clone(), cc.egui_ctx.clone());
+        Self::with_runtime(cc, path, Runtime::default())
+    }
+    pub(crate) fn with_runtime(
+        cc: &eframe::CreationContext<'_>,
+        path: PathBuf,
+        runtime: Runtime,
+    ) -> Self {
+        let cf_path = path.with_file_name("cloudflare.json");
+        let checks_path = path.with_file_name("checks.json");
         let mut app = Self {
             path,
-            worker,
-            pending: None,
+            cf_path,
+            checks_path,
+            backend: Backend::new(cc.egui_ctx.clone(), runtime),
             servers: Vec::new(),
-            selected_server: None,
-            project: None,
-            selected: None,
-            scope: Scope::default(),
-            inventory: Inventory::default(),
-            search: String::new(),
-            focus_search: false,
-            needs_inventory: false,
-            needs_details: false,
-            needs_logs: false,
-            enabled: None,
-            details_loaded: false,
-            log_text: String::new(),
-            logs_loaded: false,
-            logs_tab: false,
-            config_loaded: false,
-            config_error: None,
-            inventory_error: None,
-            details_error: None,
-            logs_error: None,
-            editor: None,
-            editor_error: None,
-            editor_focus: false,
-            confirmation: None,
-            notice: None,
+            accounts: Vec::new(),
+            config_errors: Vec::new(),
+            loaded: false,
+            reload: true,
+            generation: 0,
+            catalog: HashMap::new(),
+            documents: Vec::new(),
+            next_doc: 1,
+            active: None,
+            utility_doc: None,
+            last_logs_doc: None,
+            last_terminal_doc: None,
+            utility: Utility::Tasks,
+            explorer_visible: true,
+            utility_visible: false,
+            last_explorer_doc: None,
+            explorer_filter: String::new(),
+            palette_open: false,
+            palette_query: String::new(),
+            palette_selection: 0,
+            palette_focus: false,
+            focus: None,
+            close: None,
+            allow_quit: false,
+            mode: theme::Mode::System,
+            applied_theme: None,
+            shortcuts_open: false,
         };
-        app.dispatch(Job::Load, Request::Load, "Loading connections".into());
+        theme::apply(&cc.egui_ctx, app.mode);
+        cc.egui_ctx
+            .send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
+                1024.0, 680.0,
+            )));
+        cc.egui_ctx
+            .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1280.0, 800.0)));
+        app.open(OpenPage {
+            kind: PageKind::Fleet,
+            target: Target::default(),
+            title: "Fleet health".into(),
+        });
+        app.load_connections();
         app
     }
-
-    fn server(&self) -> Option<&Server> {
-        self.servers
-            .iter()
-            .find(|s| Some(&s.name) == self.selected_server.as_ref())
-    }
-
-    fn safe_text(&self, text: &str) -> String {
-        let secrets: Vec<&str> = self
-            .servers
-            .iter()
-            .flat_map(|s| {
-                std::iter::once(s.token.as_str())
-                    .chain(s.ssh.as_ref().and_then(|ssh| ssh.secret.as_deref()))
-            })
-            .collect();
-        backend::redact(text, &secrets)
-    }
-
-    fn dispatch(&mut self, job: Job, request: Request, label: String) {
-        if self.pending.is_some() {
+    fn load_connections(&mut self) {
+        if self.backend.busy(0, "connections") {
             return;
         }
-        match self.worker.send(job) {
-            Ok(()) => {
-                self.pending = Some(Pending {
-                    request,
-                    scope: self.scope,
-                    label,
-                })
-            }
-            Err(error) => match request {
-                Request::Load => {
-                    self.config_loaded = true;
-                    self.config_error = Some(error);
-                }
-                Request::Save => self.editor_error = Some(error),
-                Request::Inventory => self.inventory_error = Some(error),
-                Request::Details => self.details_error = Some(error),
-                Request::Logs => self.logs_error = Some(error),
-                Request::Action => self.notice = Some(error),
-            },
-        }
+        self.reload = false;
+        let path = self.path.clone();
+        let cf = self.cf_path.clone();
+        self.backend.submit(0, "connections", "Read connection profiles", TrustContext { target: "Local configuration".into(), secrets: Vec::new() }, Lane::Interactive, Box::new(move |_| {
+            let servers = ServerConfig::new(path).try_all();
+            let accounts = CloudflareConfig::new(cf).try_all();
+            let (servers, server_error) = match servers { Ok(v) => (Some(v), None), Err(e) => (None, Some(e.to_string())) };
+            let (accounts, account_error) = match accounts { Ok(v) => (Some(v), None), Err(e) => (None, Some(e.to_string())) };
+            Ok(Payload::Json(json!({"servers":servers,"accounts":accounts,"server_error":server_error,"account_error":account_error})))
+        }));
     }
-
-    fn clear_service(&mut self) {
-        self.scope.service = self.scope.service.wrapping_add(1);
-        self.selected = None;
-        self.enabled = None;
-        self.details_loaded = false;
-        self.log_text.clear();
-        self.logs_loaded = false;
-        self.details_error = None;
-        self.logs_error = None;
-        self.needs_details = false;
-        self.needs_logs = false;
-        self.confirmation = None;
-    }
-
-    fn select_server(&mut self, name: String) {
-        self.scope.server = self.scope.server.wrapping_add(1);
-        self.selected_server = Some(name);
-        self.project = None;
-        self.clear_service();
-        self.inventory = Inventory::default();
-        self.inventory_error = None;
-        self.notice = None;
-        self.needs_inventory = true;
-    }
-
-    fn select_service(&mut self, service: Service) {
-        self.clear_service();
-        self.selected = Some(service);
-        self.needs_details = true;
-        self.needs_logs = self.logs_tab;
-    }
-
-    fn receive(&mut self) {
-        let result = match self.worker.rx.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
-                if self.pending.take().is_some() {
-                    self.config_loaded = true;
-                    self.notice =
-                        Some("The request worker closed. Reopen EasyPanel to reconnect.".into());
-                }
-                return;
-            }
-        };
-        let Some(pending) = self.pending.take() else {
-            return;
-        };
-        let service_request = matches!(pending.request, Request::Details | Request::Logs);
-        if !matches!(
-            pending.request,
-            Request::Load | Request::Save | Request::Action
-        ) && !self.scope.accepts(pending.scope, service_request)
-        {
-            return;
-        }
-        match result {
-            Ok(Reply::Connections(servers)) => {
-                self.config_loaded = true;
-                self.config_error = None;
-                let saved = matches!(pending.request, Request::Save);
-                let name = if saved {
-                    self.editor.as_ref().map(|form| form.name.trim().to_owned())
-                } else {
-                    self.selected_server
-                        .clone()
-                        .filter(|name| servers.iter().any(|s| &s.name == name))
-                        .or_else(|| {
-                            servers
-                                .iter()
-                                .find(|s| s.default)
-                                .or(servers.first())
-                                .map(|s| s.name.clone())
-                        })
-                };
-                self.servers = servers;
-                if saved {
-                    self.editor = None;
-                    self.editor_error = None;
-                }
-                if let Some(name) = name {
-                    self.select_server(name);
-                }
-            }
-            Ok(Reply::Inventory(inventory)) => {
-                if self
-                    .project
-                    .as_ref()
-                    .is_some_and(|p| !inventory.projects.contains(p))
-                {
-                    self.project = None;
-                    self.clear_service();
-                }
-                if self
-                    .selected
-                    .as_ref()
-                    .is_some_and(|s| !inventory.services.contains(s))
-                {
-                    self.clear_service();
-                }
-                self.inventory = inventory;
-                self.inventory_error = None;
-            }
-            Ok(Reply::Details(enabled)) => {
-                self.enabled = enabled;
-                self.details_loaded = true;
-                self.details_error = None;
-            }
-            Ok(Reply::Logs(text)) => {
-                self.log_text = self.safe_text(&text);
-                self.logs_loaded = true;
-                self.logs_error = None;
-            }
-            Ok(Reply::Action) => {
-                self.notice = Some(format!(
-                    "{} completed. Refreshing runtime status; readiness may take a moment.",
-                    pending.label
-                ));
-                if self.scope.accepts(pending.scope, false) {
-                    self.needs_inventory = true;
-                    if self.scope.accepts(pending.scope, true) {
-                        self.enabled = None;
-                        self.details_loaded = false;
-                        self.details_error = None;
-                        self.needs_details = true;
-                    }
-                }
-            }
-            Err(error) => {
-                let mut error = self.safe_text(&error);
-                if let Some(form) = &self.editor {
-                    error = backend::redact(&error, &[form.token.as_str()]);
-                }
-                match pending.request {
-                    Request::Load => {
-                        self.config_loaded = true;
-                        self.config_error = Some(error);
-                    }
-                    Request::Save => self.editor_error = Some(error),
-                    Request::Inventory => self.inventory_error = Some(error),
-                    Request::Details => self.details_error = Some(error),
-                    Request::Logs => self.logs_error = Some(error),
-                    Request::Action => {
-                        self.notice = Some(format!(
-                            "{}: {error}. Outcome may be partial; refresh before retrying.",
-                            pending.label
-                        ));
-                        if self.scope.accepts(pending.scope, false) {
-                            self.needs_inventory = true;
-                            if self.scope.accepts(pending.scope, true) {
-                                self.enabled = None;
-                                self.details_loaded = false;
-                                self.details_error = None;
-                                self.needs_details = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     fn pump(&mut self) {
-        if self.pending.is_some()
-            || !(self.needs_inventory || self.needs_details || self.needs_logs)
-        {
-            return;
-        }
-        let Some(server) = self.server().cloned() else {
-            return;
-        };
-        if self.needs_inventory {
-            self.needs_inventory = false;
-            self.dispatch(
-                Job::Inventory(server),
-                Request::Inventory,
-                "Loading projects, services and runtime status".into(),
-            );
-        } else if let Some(service) = self.selected.clone() {
-            if self.needs_details {
-                self.needs_details = false;
-                self.dispatch(
-                    Job::Details(server, service),
-                    Request::Details,
-                    "Loading service details".into(),
-                );
-            } else if self.needs_logs {
-                self.needs_logs = false;
-                self.dispatch(
-                    Job::Logs(server, service),
-                    Request::Logs,
-                    "Loading recent logs".into(),
-                );
+        self.backend.pump();
+        let mut opened = Vec::new();
+        for document in &mut self.documents {
+            if let PageState::Terminal(state) = &mut document.state {
+                let mut cx = PageContext {
+                    target: &document.page.target,
+                    servers: &self.servers,
+                    accounts: &self.accounts,
+                    server_config: &self.path,
+                    cloudflare_config: &self.cf_path,
+                    watchlist: &self.checks_path,
+                    doc: document.id,
+                    backend: &mut self.backend,
+                    opened: &mut opened,
+                    reload: &mut self.reload,
+                };
+                state.tick(&mut cx);
             }
         }
-    }
-
-    fn sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.heading("EasyPanel");
-        ui.label("Desktop console");
-        ui.add_space(16.0);
-        ui.strong("Connections");
-        let mut selected_server = None;
-        for server in &self.servers {
-            if ui
-                .add(
-                    egui::Button::selectable(
-                        self.selected_server.as_ref() == Some(&server.name),
-                        &server.name,
-                    )
-                    .truncate(),
-                )
-                .on_hover_text(&server.name)
-                .clicked()
-            {
-                selected_server = Some(server.name.clone());
-            }
+        for page in opened {
+            self.open(page);
         }
-        if let Some(name) = selected_server {
-            self.select_server(name);
-        }
-        let can_edit = self.config_loaded && self.config_error.is_none() && self.pending.is_none();
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(can_edit, egui::Button::new("Add server..."))
-                .clicked()
-            {
-                self.editor = Some(ConnectionForm::default());
-                self.editor_error = None;
-                self.editor_focus = true;
-            }
-            if ui
-                .add_enabled(
-                    can_edit && self.server().is_some(),
-                    egui::Button::new("Edit..."),
-                )
-                .clicked()
-            {
-                if let Some(server) = self.server() {
-                    self.editor = Some(ConnectionForm {
-                        original: Some(server.name.clone()),
-                        name: server.name.clone(),
-                        url: server.url.clone(),
-                        token: server.token.clone(),
-                    });
-                    self.editor_error = None;
-                    self.editor_focus = true;
-                }
-            }
-        });
-        ui.separator();
-        ui.strong("Projects");
-        if ui
-            .selectable_label(self.project.is_none(), "All projects")
-            .clicked()
-        {
-            self.project = None;
-            self.clear_service();
-        }
-        let mut selected_project = None;
-        for project in &self.inventory.projects {
-            if ui
-                .add(
-                    egui::Button::selectable(self.project.as_ref() == Some(project), project)
-                        .truncate(),
-                )
-                .on_hover_text(project)
-                .clicked()
-            {
-                selected_project = Some(project.clone());
-            }
-        }
-        if let Some(project) = selected_project {
-            self.project = Some(project);
-            self.clear_service();
-        }
-        ui.add_space(16.0);
-        ui.small("Connections use the CLI's configuration. Selecting a server here does not change the CLI default.");
-    }
-
-    fn content(&mut self, ui: &mut egui::Ui) {
-        ui.heading(
-            self.selected_server
-                .as_deref()
-                .unwrap_or("Connect to EasyPanel"),
-        );
-        ui.label(self.project.as_deref().unwrap_or("All projects"));
-        ui.add_space(8.0);
-        if let Some(error) = &self.config_error {
-            error_text(ui, "Could not read connections", error);
-            ui.label("The file has not been changed. Repair it, then reload connections.");
-            ui.label(self.path.display().to_string());
-            if ui
-                .add_enabled(
-                    self.pending.is_none(),
-                    egui::Button::new("Reload connections"),
-                )
-                .clicked()
-            {
-                self.dispatch(Job::Load, Request::Load, "Reloading connections".into());
-            }
-            return;
-        }
-        if !self.config_loaded {
-            ui.label("Loading your saved connections...");
-            return;
-        }
-        if self.servers.is_empty() {
-            ui.add_space(32.0);
-            ui.heading("Manage your services in one place");
-            ui.label(
-                "Add an EasyPanel server URL and API token to see its projects, services and logs.",
-            );
-            if ui.button("Add your first server...").clicked() {
-                self.editor = Some(ConnectionForm::default());
-                self.editor_error = None;
-                self.editor_focus = true;
-            }
-            return;
-        }
-        ui.horizontal(|ui| {
-            ui.label("Search services");
-            let search = ui.add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Name, project or type")
-                    .desired_width((ui.available_width() - 110.0).max(140.0)),
-            );
-            if self.focus_search {
-                search.request_focus();
-                self.focus_search = false;
-            }
-            if ui
-                .add_enabled(self.pending.is_none(), egui::Button::new("Refresh"))
-                .clicked()
-            {
-                self.needs_inventory = true;
-                self.needs_details = self.selected.is_some();
-            }
-        });
-        if let Some(error) = &self.inventory_error {
-            error_text(ui, "Could not refresh services", error);
-        }
-        if let Some(error) = &self.inventory.status_error {
-            ui.label(
-                RichText::new(
-                    "Runtime status unavailable; configuration is not a running-state signal.",
-                )
-                .color(Color32::from_rgb(135, 81, 0)),
-            );
-            ui.small(self.safe_text(error));
-        }
-        ui.add_space(8.0);
-        let matcher = FilterMatcher::new(&self.search);
-        let visible: Vec<usize> = self
-            .inventory
-            .services
-            .iter()
-            .enumerate()
-            .filter_map(|(i, s)| {
-                (self.project.as_ref().is_none_or(|p| p == &s.project)
-                    && matcher.matches_any([s.name.as_str(), s.project.as_str(), s.kind.as_str()]))
-                .then_some(i)
-            })
-            .collect();
-        ui.label(format!("{} services", visible.len()));
-        let list_height = (ui.available_height() * 0.43).max(110.0);
-        let mut chosen = None;
-        egui::ScrollArea::both()
-            .id_salt("service_list")
-            .max_height(list_height)
-            .show(ui, |ui| {
-                egui::Grid::new("services")
-                    .num_columns(4)
-                    .spacing([20.0, 8.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("Service");
-                        ui.strong("Project");
-                        ui.strong("Type");
-                        ui.strong("Runtime");
-                        ui.end_row();
-                        for index in visible.iter().copied() {
-                            let service = &self.inventory.services[index];
-                            if ui
-                                .add_sized(
-                                    [170.0, 32.0],
-                                    egui::Button::selectable(
-                                        self.selected.as_ref() == Some(service),
-                                        &service.name,
-                                    )
-                                    .truncate(),
-                                )
-                                .on_hover_text(&service.name)
-                                .clicked()
-                            {
-                                chosen = Some(service.clone());
-                            }
-                            ui.label(&service.project);
-                            ui.label(&service.kind);
-                            ui.label(self.inventory.status(service));
-                            ui.end_row();
+        if let Some(result) = self.backend.take(0, "connections") {
+            self.loaded = true;
+            match result {
+                Ok(Payload::Json(data)) => {
+                    self.config_errors.clear();
+                    for name in ["server_error", "account_error"] {
+                        if let Some(error) = data[name].as_str() {
+                            self.config_errors.push(error.to_owned());
                         }
-                    });
-                if visible.is_empty() {
-                    ui.add_space(16.0);
-                    ui.label(if !self.search.is_empty() {
-                        "No services match this search. Clear or change the search."
-                    } else if self.needs_inventory
-                        || matches!(
-                            self.pending.as_ref().map(|p| p.request),
-                            Some(Request::Inventory)
-                        )
+                    }
+                    if !data["servers"].is_null() {
+                        match serde_json::from_value(data["servers"].clone()) {
+                            Ok(servers) => self.servers = servers,
+                            Err(e) => self.config_errors.push(e.to_string()),
+                        }
+                    }
+                    if !data["accounts"].is_null() {
+                        match serde_json::from_value(data["accounts"].clone()) {
+                            Ok(accounts) => self.accounts = accounts,
+                            Err(e) => self.config_errors.push(e.to_string()),
+                        }
+                    }
+                    self.generation += 1;
+                    self.catalog.clear();
+                    self.backend.close(0);
+                }
+                Err(error) => self.config_errors.push(error),
+                _ => self
+                    .config_errors
+                    .push("Unexpected connection response. Reload profiles.".into()),
+            }
+        }
+        for server in &self.servers {
+            let key = format!("catalog:{}:{}", self.generation, server.name);
+            if let Some(result) = self.backend.take(0, &key) {
+                let catalog = self.catalog.entry(server.name.clone()).or_default();
+                match result {
+                    Ok(Payload::Json(data))
+                        if data.get("projects").is_some_and(Value::is_array)
+                            && data.get("services").is_some_and(Value::is_array) =>
                     {
-                        "Loading services..."
+                        catalog.data = Some(data);
+                        catalog.error = None;
+                    }
+                    Ok(_) => {
+                        catalog.error = Some(
+                            "The panel returned an invalid resource inventory. Refresh to retry."
+                                .into(),
+                        )
+                    }
+                    Err(error) => catalog.error = Some(error),
+                }
+            }
+        }
+        if self.reload {
+            self.load_connections();
+        }
+    }
+    fn open(&mut self, page: OpenPage) {
+        if let Some(document) = self
+            .documents
+            .iter()
+            .find(|doc| doc.page.kind == page.kind && doc.page.target.same_resource(&page.target))
+        {
+            let id = document.id;
+            if document.docked {
+                self.reveal_utility(
+                    if matches!(page.target.section.as_str(), "logs" | "log-search") {
+                        Utility::Logs
                     } else {
-                        "No services in this project. Choose another project or refresh."
+                        Utility::Terminal
+                    },
+                );
+                self.utility_doc = Some(id);
+            } else {
+                self.active = Some(id);
+            }
+            return;
+        }
+        let id = self.next_doc;
+        self.next_doc += 1;
+        let docked = page.kind == PageKind::Terminal;
+        let state = PageState::new(&page.kind);
+        if docked {
+            self.reveal_utility(
+                if matches!(page.target.section.as_str(), "logs" | "log-search") {
+                    Utility::Logs
+                } else {
+                    Utility::Terminal
+                },
+            );
+            self.utility_doc = Some(id);
+        } else {
+            self.active = Some(id);
+        }
+        self.documents.push(Document {
+            id,
+            page,
+            state,
+            docked,
+        });
+    }
+    fn reveal_utility(&mut self, utility: Utility) {
+        match self.utility {
+            Utility::Logs => self.last_logs_doc = self.utility_doc,
+            Utility::Terminal => self.last_terminal_doc = self.utility_doc,
+            Utility::Tasks => {}
+        }
+        if utility != self.utility {
+            self.utility_doc = match utility {
+                Utility::Logs => self.last_logs_doc,
+                Utility::Terminal => self.last_terminal_doc,
+                Utility::Tasks => self.utility_doc,
+            };
+        }
+        self.utility = utility;
+        self.utility_visible = true;
+    }
+    fn request_close(&mut self, id: DocId) {
+        if let Some(document) = self.documents.iter().find(|doc| doc.id == id) {
+            if document.state.is_dirty() || document.state.running_session() {
+                self.close = Some(Close::Document(id));
+            } else {
+                self.remove_document(id);
+            }
+        }
+    }
+    fn remove_document(&mut self, id: DocId) {
+        self.documents.retain(|doc| doc.id != id);
+        self.backend.close(id);
+        if self.last_logs_doc == Some(id) {
+            self.last_logs_doc = None;
+        }
+        if self.last_terminal_doc == Some(id) {
+            self.last_terminal_doc = None;
+        }
+        if self.active == Some(id) {
+            self.active = self
+                .documents
+                .iter()
+                .rev()
+                .find(|doc| !doc.docked)
+                .map(|doc| doc.id);
+        }
+        if self.utility_doc == Some(id) {
+            self.utility_doc = self
+                .documents
+                .iter()
+                .rev()
+                .find(|doc| {
+                    doc.docked
+                        && matches!(doc.page.target.section.as_str(), "logs" | "log-search")
+                            == (self.utility == Utility::Logs)
+                })
+                .map(|doc| doc.id);
+        }
+    }
+    fn open_palette(&mut self) {
+        self.palette_open = true;
+        self.palette_focus = true;
+        self.palette_selection = 0;
+        self.palette_query.clear();
+    }
+    fn current_target(&self) -> Option<Target> {
+        self.documents
+            .iter()
+            .find(|doc| Some(doc.id) == self.active)
+            .map(|doc| doc.page.target.clone())
+    }
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.allow_quit
+            && (self
+                .documents
+                .iter()
+                .any(|doc| doc.state.is_dirty() || doc.state.running_session())
+                || self.backend.active() > 0)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.close = Some(Close::Application);
+        }
+        if self.palette_open || self.close.is_some() {
+            return;
+        }
+        let terminal_focus = ctx.data(|data| {
+            data.get_temp::<bool>(egui::Id::unique("desktop-terminal-focus"))
+                .unwrap_or(false)
+        });
+        let consume = |key, shift| {
+            ctx.input_mut(|i| {
+                i.consume_shortcut(&egui::KeyboardShortcut::new(
+                    egui::Modifiers {
+                        command: true,
+                        shift,
+                        ..Default::default()
+                    },
+                    key,
+                ))
+            })
+        };
+        if consume(egui::Key::P, true)
+            || (!terminal_focus && (consume(egui::Key::P, false) || consume(egui::Key::K, false)))
+        {
+            self.open_palette();
+        }
+        if !terminal_focus {
+            if consume(egui::Key::W, false) {
+                if let Some(id) = self.active {
+                    self.request_close(id);
+                }
+            }
+            if consume(egui::Key::B, false) {
+                self.explorer_visible = !self.explorer_visible;
+            }
+            if consume(egui::Key::J, false) {
+                self.utility_visible = !self.utility_visible;
+            }
+        }
+        for (key, focus) in [
+            (egui::Key::Num1, 1),
+            (egui::Key::Num2, 2),
+            (egui::Key::Num3, 3),
+        ] {
+            if consume(key, false) {
+                self.focus = Some(focus);
+                if focus == 1 {
+                    self.explorer_visible = true;
+                }
+                if focus == 3 {
+                    self.utility_visible = true;
+                    ctx.data_mut(|data| {
+                        data.insert_temp(egui::Id::unique("desktop-terminal-focus-request"), true)
                     });
+                }
+            }
+        }
+        if consume(egui::Key::Tab, false) {
+            let visible: Vec<_> = self
+                .documents
+                .iter()
+                .filter(|doc| !doc.docked)
+                .map(|doc| doc.id)
+                .collect();
+            if !visible.is_empty() {
+                let index = visible
+                    .iter()
+                    .position(|id| Some(*id) == self.active)
+                    .map_or(0, |i| (i + 1) % visible.len());
+                self.active = Some(visible[index]);
+            }
+        }
+    }
+    fn menu(&mut self, ui: &mut egui::Ui, palette: Palette, opened: &mut Vec<OpenPage>) {
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.label(RichText::new("EasyPanel").strong());
+            ui.menu_button("File", |ui| {
+                if ui.button("Manage connections").clicked() {
+                    opened.push(connection_page());
+                    ui.close();
+                }
+                if ui.button("Cloudflare accounts").clicked() {
+                    opened.push(account_page());
+                    ui.close();
+                }
+                if ui.button("Reload profiles").clicked() {
+                    self.reload = true;
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Close document    Cmd/Ctrl W").clicked() {
+                    if let Some(id) = self.active {
+                        self.request_close(id);
+                    }
+                    ui.close();
+                }
+                if ui.button("Quit").clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    ui.close();
                 }
             });
-        if let Some(service) = chosen {
-            self.select_service(service);
-        }
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .id_salt("service_inspector")
-            .show(ui, |ui| self.inspector(ui));
-    }
-
-    fn inspector(&mut self, ui: &mut egui::Ui) {
-        let Some(service) = self.selected.clone() else {
-            ui.add_space(16.0);
-            ui.strong("Select a service");
-            ui.label("View its state, manage its lifecycle, or read recent logs.");
-            return;
-        };
-        ui.label(RichText::new(&service.name).size(18.0).strong());
-        ui.label(format!(
-            "Project: {}    Type: {}",
-            service.project, service.kind
-        ));
-        ui.label(format!("Runtime: {}", self.inventory.status(&service)));
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.logs_tab, false, "Overview");
-            if ui
-                .selectable_value(&mut self.logs_tab, true, "Logs")
-                .clicked()
-                && !self.logs_loaded
-            {
-                self.needs_logs = true;
-            }
-        });
-        if self.logs_tab {
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(self.pending.is_none(), egui::Button::new("Refresh logs"))
-                    .clicked()
-                {
-                    self.needs_logs = true;
+            ui.menu_button("View", |ui| {
+                ui.checkbox(
+                    &mut self.explorer_visible,
+                    "Resource explorer    Cmd/Ctrl B",
+                );
+                ui.checkbox(&mut self.utility_visible, "Utility pane    Cmd/Ctrl J");
+                for (utility, title) in [
+                    (Utility::Tasks, "Tasks"),
+                    (Utility::Logs, "Logs"),
+                    (Utility::Terminal, "Terminal sessions"),
+                ] {
+                    if ui.button(title).clicked() {
+                        self.reveal_utility(utility);
+                        ui.close();
+                    }
                 }
+                if ui.button("Command palette    Cmd/Ctrl K").clicked() {
+                    self.open_palette();
+                    ui.close();
+                }
+                ui.separator();
+                for (mode, title) in [
+                    (theme::Mode::System, "System theme"),
+                    (theme::Mode::Light, "Light theme"),
+                    (theme::Mode::Dark, "Dark theme"),
+                ] {
+                    if ui.selectable_value(&mut self.mode, mode, title).changed() {
+                        self.applied_theme = None;
+                    }
+                }
+            });
+            ui.menu_button("Help", |ui| {
+                if ui.button("Keyboard shortcuts").clicked() {
+                    self.shortcuts_open = true;
+                    ui.close();
+                }
+                ui.label(format!("EasyPanel {}", env!("CARGO_PKG_VERSION")));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(
-                        self.logs_loaded && !self.log_text.is_empty(),
-                        egui::Button::new("Copy logs"),
+                    .add_sized(
+                        [ui.available_width().min(340.0), 24.0],
+                        egui::Button::new(
+                            RichText::new("Search resources and commands    Cmd/Ctrl K")
+                                .color(palette.muted),
+                        )
+                        .fill(palette.explorer),
                     )
                     .clicked()
                 {
-                    ui.ctx().copy_text(self.log_text.clone());
+                    self.open_palette();
                 }
-                ui.small("Most recent 200 lines. Refresh to update.");
             });
-            if let Some(error) = &self.logs_error {
-                error_text(ui, "Could not load logs", error);
-            }
-            if !self.logs_loaded {
-                if self.logs_error.is_none() {
-                    ui.label("Waiting for recent logs...");
+        });
+    }
+    fn explorer(&mut self, ui: &mut egui::Ui, palette: Palette, opened: &mut Vec<OpenPage>) {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        let reveal_active = self.active != self.last_explorer_doc;
+        self.last_explorer_doc = self.active;
+        let current = self
+            .documents
+            .iter()
+            .find(|doc| Some(doc.id) == self.active);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Explorer").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::icon(
+                    ui,
+                    Icon::Refresh,
+                    "Refresh explorer inventory",
+                    false,
+                    palette,
+                )
+                .clicked()
+                {
+                    for c in self.catalog.values_mut() {
+                        c.requested = false;
+                    }
                 }
-            } else if self.log_text.is_empty() {
-                ui.label("No recent log lines returned by this service.");
-            } else {
-                // A borrowed string keeps logs selectable and copyable, but read-only.
-                let mut text = self.log_text.as_str();
-                ui.add(
-                    egui::TextEdit::multiline(&mut text)
-                        .font(TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(10),
-                );
-            }
-        } else {
-            if let Some(error) = &self.details_error {
-                error_text(ui, "Could not load details", error);
-            }
-            if self.details_error.is_none() {
-                ui.label(match (self.details_loaded, self.enabled) {
-                    (false, _) => "Loading service configuration...",
-                    (true, Some(true)) => "Configuration: Enabled (not a runtime health check)",
-                    (true, Some(false)) => "Configuration: Disabled",
-                    (true, None) => "Configuration: No enabled flag reported",
-                });
-            }
-            ui.horizontal(|ui| {
-                for (action, title) in [
-                    ("start", "Start"),
-                    ("stop", "Stop..."),
-                    ("restart", "Restart..."),
-                ] {
-                    if ui
-                        .add_enabled(
-                            self.pending.is_none() && !self.needs_inventory,
-                            egui::Button::new(title),
+            });
+        });
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut self.explorer_filter)
+                .hint_text("Filter resources")
+                .desired_width(f32::INFINITY),
+        );
+        if self.focus == Some(1) {
+            response.request_focus();
+            self.focus = None;
+        }
+        ui.add_space(8.0);
+        let needle = self.explorer_filter.to_lowercase();
+        let mut load = Vec::new();
+        egui::ScrollArea::vertical()
+            .id_salt("resource-explorer")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.label(RichText::new("EasyPanel").strong());
+                if explorer_link(ui, "Fleet health", false).clicked() {
+                    opened.push(OpenPage {
+                        kind: PageKind::Fleet,
+                        target: Target::default(),
+                        title: "Fleet health".into(),
+                    });
+                }
+                if explorer_link(ui, "Connections", false).clicked() {
+                    opened.push(connection_page());
+                }
+                if self.loaded && self.servers.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                "No servers. Add a connection to discover projects and services.",
+                            )
+                            .small()
+                            .color(palette.muted),
                         )
-                        .clicked()
-                    {
-                        if let Some(server) = self.server().cloned() {
-                            if action == "start" {
-                                let label = format!(
-                                    "Start on {}: {}/{}",
-                                    server.name, service.project, service.name
-                                );
-                                self.dispatch(
-                                    Job::Action(server, service.clone(), action),
-                                    Request::Action,
-                                    label,
-                                );
-                            } else {
-                                self.confirmation = Some(Confirmation {
-                                    server,
-                                    service: service.clone(),
-                                    action,
-                                    scope: self.scope,
+                        .wrap(),
+                    );
+                }
+                for server in &self.servers {
+                    let catalog = self.catalog.entry(server.name.clone()).or_default();
+                    let server_matches = server.name.to_lowercase().contains(&needle);
+                    let current_server = current.is_some_and(|doc| {
+                        doc.page
+                            .target
+                            .server
+                            .as_ref()
+                            .is_some_and(|s| s.name == server.name)
+                    });
+                    explorer_group(
+                        ui,
+                        egui::Id::unique(("server", self.generation, &server.name)),
+                        &server.name,
+                        server.default || current_server,
+                        reveal_active && current_server,
+                        |ui| {
+                            if !catalog.requested {
+                                load.push(server.clone());
+                                catalog.requested = true;
+                            }
+                            let target = Target {
+                                server: Some(server.clone()),
+                                ..Target::default()
+                            };
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Projects").strong());
+                                if ui.small_button("Manage").clicked() {
+                                    opened.push(page(
+                                        PageKind::Project,
+                                        &target,
+                                        "services",
+                                        "Projects",
+                                    ));
+                                }
+                            });
+                            if let Some(error) = &catalog.error {
+                                widgets::error(ui, error);
+                                if ui.button("Retry inventory").clicked() {
+                                    catalog.requested = false;
+                                }
+                            }
+                            if let Some(data) = &catalog.data {
+                                if let (Some(projects), Some(resources)) =
+                                    (data["projects"].as_array(), data["services"].as_array())
+                                {
+                                    for project in projects {
+                                        let Some(name) = project
+                                            .get("name")
+                                            .and_then(Value::as_str)
+                                            .or_else(|| project.as_str())
+                                        else {
+                                            continue;
+                                        };
+                                        let project_match =
+                                            server_matches || name.to_lowercase().contains(&needle);
+                                        let children: Vec<_> = resources
+                                            .iter()
+                                            .filter(|r| r["projectName"].as_str() == Some(name))
+                                            .collect();
+                                        if !project_match
+                                            && !children.iter().any(|r| {
+                                                r["name"].as_str().is_some_and(|n| {
+                                                    n.to_lowercase().contains(&needle)
+                                                })
+                                            })
+                                        {
+                                            continue;
+                                        }
+                                        let current_project = current_server
+                                            && current
+                                                .is_some_and(|doc| doc.page.target.project == name);
+                                        explorer_group(
+                                            ui,
+                                            egui::Id::unique(("project", &server.name, name)),
+                                            name,
+                                            !needle.is_empty() || current_project,
+                                            reveal_active && current_project,
+                                            |ui| {
+                                                let project_target = Target {
+                                                    project: name.into(),
+                                                    ..target.clone()
+                                                };
+                                                if explorer_link(ui, "Project settings", false)
+                                                    .clicked()
+                                                {
+                                                    opened.push(page(
+                                                        PageKind::Project,
+                                                        &project_target,
+                                                        "overview",
+                                                        name,
+                                                    ));
+                                                }
+                                                for resource in &children {
+                                                    let Some(service) = resource["name"].as_str()
+                                                    else {
+                                                        continue;
+                                                    };
+                                                    if !project_match
+                                                        && !service.to_lowercase().contains(&needle)
+                                                    {
+                                                        continue;
+                                                    }
+                                                    let service_target = Target {
+                                                        service: service.into(),
+                                                        service_type: resource["type"]
+                                                            .as_str()
+                                                            .unwrap_or("")
+                                                            .into(),
+                                                        resource: (*resource).clone(),
+                                                        ..project_target.clone()
+                                                    };
+                                                    let selected =
+                                                        self.documents.iter().any(|doc| {
+                                                            Some(doc.id) == self.active
+                                                                && doc.page.target.same_resource(
+                                                                    &Target {
+                                                                        section: doc
+                                                                            .page
+                                                                            .target
+                                                                            .section
+                                                                            .clone(),
+                                                                        ..service_target.clone()
+                                                                    },
+                                                                )
+                                                        });
+                                                    let response =
+                                                        explorer_link(ui, service, selected);
+                                                    if response.clicked() {
+                                                        opened.push(page(
+                                                            PageKind::Service,
+                                                            &service_target,
+                                                            "overview",
+                                                            service,
+                                                        ));
+                                                    }
+                                                    response.context_menu(|ui| {
+                                                        resource_actions(
+                                                            ui,
+                                                            &service_target,
+                                                            opened,
+                                                        );
+                                                    });
+                                                }
+                                            },
+                                        );
+                                    }
+                                    if projects.is_empty() {
+                                        ui.small("No projects. Use Manage to create one.");
+                                    }
+                                }
+                            } else if catalog.error.is_none() {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.small("Loading projects…");
                                 });
                             }
+                            ui.add_space(4.0);
+                            explorer_group(
+                                ui,
+                                egui::Id::unique(("host-tools", &server.name)),
+                                "Host tools",
+                                false,
+                                false,
+                                |ui| {
+                                    for (section, title) in HOST_SECTIONS {
+                                        if (server_matches
+                                            || title.to_lowercase().contains(&needle))
+                                            && explorer_link(ui, title, false).clicked()
+                                        {
+                                            opened.push(page(
+                                                PageKind::Host,
+                                                &target,
+                                                section,
+                                                title,
+                                            ));
+                                        }
+                                    }
+                                },
+                            );
+                        },
+                    );
+                }
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(RichText::new("Cloudflare").strong());
+                if explorer_link(ui, "Accounts", false).clicked() {
+                    opened.push(account_page());
+                }
+                if self.loaded && self.accounts.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                "Add an account to manage DNS, tunnels, storage and Workers.",
+                            )
+                            .small()
+                            .color(palette.muted),
+                        )
+                        .wrap(),
+                    );
+                }
+                for account in &self.accounts {
+                    let target = Target {
+                        account: Some(account.clone()),
+                        ..Target::default()
+                    };
+                    explorer_group(
+                        ui,
+                        egui::Id::unique(("cf-account", &account.name)),
+                        &account.name,
+                        account.default,
+                        false,
+                        |ui| {
+                            for (section, title) in CF_SECTIONS {
+                                if (needle.is_empty()
+                                    || account.name.to_lowercase().contains(&needle)
+                                    || title.to_lowercase().contains(&needle))
+                                    && explorer_link(ui, title, false).clicked()
+                                {
+                                    opened.push(page(
+                                        PageKind::Cloudflare,
+                                        &target,
+                                        section,
+                                        title,
+                                    ));
+                                }
+                            }
+                        },
+                    );
+                }
+            });
+        for server in load {
+            let key = format!("catalog:{}:{}", self.generation, server.name);
+            let secrets = vec![
+                server.token.clone(),
+                server
+                    .ssh
+                    .as_ref()
+                    .and_then(|s| s.secret.clone())
+                    .unwrap_or_default(),
+            ];
+            self.backend.submit(
+                0,
+                &key,
+                "Discover projects and services",
+                TrustContext {
+                    target: server.name.clone(),
+                    secrets,
+                },
+                Lane::Interactive,
+                Box::new(move |_| {
+                    Ok(Payload::Json(
+                        crate::client::EasypanelClient::for_server(&server).call(
+                            "projects",
+                            "listProjectsAndServices",
+                            Value::Null,
+                        )?,
+                    ))
+                }),
+            );
+        }
+    }
+    fn tabs(&mut self, ui: &mut egui::Ui, palette: Palette) {
+        let mut close = None;
+        egui::ScrollArea::horizontal()
+            .id_salt("documents")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for document in self.documents.iter().filter(|doc| !doc.docked) {
+                        let active = self.active == Some(document.id);
+                        let mut title = document.caption();
+                        if document.state.is_dirty() {
+                            title.push_str(" •");
                         }
+                        egui::Frame::new()
+                            .fill(if active {
+                                palette.canvas
+                            } else {
+                                palette.explorer
+                            })
+                            .inner_margin(egui::Margin::symmetric(8, 0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let width = (title.chars().count() as f32 * 6.8 + 16.0)
+                                        .clamp(100.0, 260.0);
+                                    if ui
+                                        .add_sized(
+                                            [width, 32.0],
+                                            egui::Button::new(title)
+                                                .truncate()
+                                                .frame(false)
+                                                .selected(active),
+                                        )
+                                        .on_hover_text(document.breadcrumb())
+                                        .clicked()
+                                    {
+                                        self.active = Some(document.id);
+                                    }
+                                    if theme::icon(
+                                        ui,
+                                        Icon::Close,
+                                        "Close document",
+                                        false,
+                                        palette,
+                                    )
+                                    .clicked()
+                                    {
+                                        close = Some(document.id);
+                                    }
+                                });
+                            });
+                    }
+                });
+            });
+        if let Some(id) = close {
+            self.request_close(id);
+        }
+    }
+    fn document(&mut self, ui: &mut egui::Ui, opened: &mut Vec<OpenPage>) {
+        let Some(document) = self
+            .documents
+            .iter_mut()
+            .find(|doc| Some(doc.id) == self.active && !doc.docked)
+        else {
+            ui.heading("Workspace");
+            ui.label("Open a resource from the explorer or search commands.");
+            if ui.button("Manage connections").clicked() {
+                opened.push(connection_page());
+            }
+            return;
+        };
+        if document.page.kind == PageKind::Service {
+            let breadcrumb = document.breadcrumb();
+            let response = ui
+                .add_sized(
+                    [ui.available_width(), 20.0],
+                    egui::Label::new(
+                        RichText::new(&breadcrumb)
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    )
+                    .truncate()
+                    .sense(egui::Sense::click()),
+                )
+                .on_hover_text(&breadcrumb);
+            if self.focus == Some(2) {
+                response.request_focus();
+                self.focus = None;
+            }
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                let response = ui.add(
+                    egui::Label::new(
+                        RichText::new(document.page.target.label())
+                            .color(ui.visuals().weak_text_color()),
+                    )
+                    .sense(egui::Sense::click()),
+                );
+                if self.focus == Some(2) {
+                    response.request_focus();
+                    self.focus = None;
+                }
+                if document.page.target.server.is_some() {
+                    resource_actions(ui, &document.page.target, opened);
+                }
+                if document.page.kind == PageKind::Terminal && ui.button("Dock session").clicked() {
+                    match self.utility {
+                        Utility::Logs => self.last_logs_doc = self.utility_doc,
+                        Utility::Terminal => self.last_terminal_doc = self.utility_doc,
+                        Utility::Tasks => {}
+                    }
+                    document.docked = true;
+                    self.utility_doc = Some(document.id);
+                    self.utility =
+                        if matches!(document.page.target.section.as_str(), "logs" | "log-search") {
+                            Utility::Logs
+                        } else {
+                            Utility::Terminal
+                        };
+                    self.utility_visible = true;
+                    self.active = None;
+                }
+            });
+            ui.separator();
+        }
+        if document.page.kind == PageKind::Fleet && self.servers.is_empty() {
+            ui.add_space(16.0);
+            ui.heading("Connect your infrastructure");
+            ui.label("Add an EasyPanel server or a Cloudflare account to begin.");
+            ui.add_space(12.0);
+            let palette = Palette::for_dark(ui.visuals().dark_mode);
+            ui.horizontal(|ui| {
+                if theme::primary(ui, "Manage connections", palette).clicked() {
+                    opened.push(connection_page());
+                }
+                if ui.button("Cloudflare accounts").clicked() {
+                    opened.push(account_page());
+                }
+            });
+            ui.add_space(24.0);
+            ui.label("Documents stay attached to their original target while you browse other resources.");
+            ui.label(
+                "Open service configuration, database queries, logs and transfers side by side.",
+            );
+            return;
+        }
+        let mut cx = PageContext {
+            target: &document.page.target,
+            servers: &self.servers,
+            accounts: &self.accounts,
+            server_config: &self.path,
+            cloudflare_config: &self.cf_path,
+            watchlist: &self.checks_path,
+            doc: document.id,
+            backend: &mut self.backend,
+            opened,
+            reload: &mut self.reload,
+        };
+        ui.push_id(document.id, |ui| match &mut document.state {
+            PageState::Services(state) if document.page.kind == PageKind::Connections => {
+                services::show_connections(ui, state, &mut cx)
+            }
+            PageState::Services(state) => services::show(ui, state, &mut cx),
+            PageState::Host(state) if document.page.kind == PageKind::Fleet => {
+                host::show_fleet(ui, state, &mut cx)
+            }
+            PageState::Host(state) => host::show(ui, state, &mut cx),
+            PageState::Cloudflare(state) => cloudflare::show(ui, state, &mut cx),
+            PageState::Data(state) => data::show(ui, state, &mut cx),
+            PageState::Terminal(state) => terminal::show(ui, state, &mut cx),
+        });
+        if self.active.is_none() {
+            self.active = self
+                .documents
+                .iter()
+                .rev()
+                .find(|doc| !doc.docked)
+                .map(|doc| doc.id);
+        }
+    }
+    fn utility(&mut self, ui: &mut egui::Ui, palette: Palette, opened: &mut Vec<OpenPage>) {
+        let mut close = None;
+        ui.horizontal(|ui| {
+            for (tab, title) in [
+                (Utility::Tasks, "Tasks"),
+                (Utility::Logs, "Logs"),
+                (Utility::Terminal, "Terminal"),
+            ] {
+                let response = ui.selectable_label(self.utility == tab, title);
+                if self.focus == Some(3) && self.utility == tab {
+                    response.request_focus();
+                    self.focus = None;
+                }
+                if response.clicked() {
+                    self.reveal_utility(tab);
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::icon(ui, Icon::Close, "Hide utility pane", false, palette).clicked() {
+                    self.utility_visible = false;
+                }
+                if self.utility != Utility::Tasks
+                    && theme::icon(
+                        ui,
+                        Icon::Maximize,
+                        "Open session as document",
+                        false,
+                        palette,
+                    )
+                    .clicked()
+                {
+                    if let Some(document) = self
+                        .documents
+                        .iter_mut()
+                        .find(|doc| Some(doc.id) == self.utility_doc)
+                    {
+                        document.docked = false;
+                        self.active = Some(document.id);
+                        self.utility_doc = None;
                     }
                 }
             });
-            if crate::lifecycle::is_database(&service.kind) {
-                ui.small("Database restart disables, then enables the service. Availability may be interrupted.");
-            }
-            ui.small("Actions request a state change. Refresh checks the actual replica state.");
-        }
-    }
-
-    fn editor(&mut self, ctx: &egui::Context) {
-        let Some(mut form) = self.editor.take() else {
-            return;
-        };
-        let mut save = false;
-        let mut cancel = false;
-        let saving = matches!(
-            self.pending.as_ref().map(|p| p.request),
-            Some(Request::Save)
-        );
-        let response = egui::Modal::new(egui::Id::unique("connection_editor")).show(ctx, |ui| {
-            let width = 450.0_f32.min(ctx.content_rect().width() - 64.0);
-            ui.set_width(width);
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-            ui.heading(if form.original.is_some() { "Edit server connection" } else { "Add server connection" });
-            let label = ui.label("Server name");
-            let name = ui.add_enabled(!saving, egui::TextEdit::singleline(&mut form.name).desired_width(width)).labelled_by(label.id);
-            if self.editor_focus { name.request_focus(); self.editor_focus = false; }
-            let label = ui.label("Panel URL");
-            ui.add_enabled(!saving, egui::TextEdit::singleline(&mut form.url).hint_text("https://panel.example.com").desired_width(width)).labelled_by(label.id);
-            let label = ui.label("API token");
-            ui.add_enabled(!saving, egui::TextEdit::singleline(&mut form.token).password(true).desired_width(width)).labelled_by(label.id);
-            ui.small("Stored in the same local credentials file as the CLI. Existing SSH settings and CLI defaults are preserved.");
-            if let Some(error) = &self.editor_error { error_text(ui, "Connection not saved", error); }
-            ui.horizontal(|ui| {
-                save = ui.add_enabled(self.pending.is_none(), egui::Button::new("Save connection")).clicked();
-                cancel = ui.add_enabled(!saving, egui::Button::new("Cancel")).clicked();
-                if saving { ui.spinner(); ui.label("Saving connection..."); }
-            });
         });
-        if (cancel || response.should_close()) && !saving {
-            self.editor_error = None;
-            return;
-        }
-        if save {
-            if form.name.trim().is_empty()
-                || form.url.trim().is_empty()
-                || form.token.trim().is_empty()
+        ui.separator();
+        if self.utility == Utility::Tasks {
+            let mut include_polling = ui.data_mut(|d| {
+                d.get_temp::<bool>(egui::Id::unique("show-polling-tasks"))
+                    .unwrap_or(false)
+            });
+            ui.checkbox(&mut include_polling, "Include background refreshes");
+            ui.data_mut(|d| d.insert_temp(egui::Id::unique("show-polling-tasks"), include_polling));
+            if self
+                .backend
+                .tasks
+                .iter()
+                .all(|task| task.polling && !include_polling)
             {
-                self.editor_error = Some("Enter a name, panel URL and API token.".into());
-            } else {
-                // Submission is a snapshot; editing and dismissal are disabled until saved.
-                form.name = form.name.trim().to_owned();
-                self.dispatch(
-                    Job::Save(form.clone()),
-                    Request::Save,
-                    "Saving connection".into(),
+                ui.label(
+                    RichText::new(
+                        "No background operations. Targets, progress and outcomes appear here.",
+                    )
+                    .color(palette.muted),
                 );
             }
-        }
-        self.editor = Some(form);
-    }
-
-    fn confirm(&mut self, ctx: &egui::Context) {
-        let Some(confirmation) = self.confirmation.take() else {
+            egui::ScrollArea::vertical()
+                .id_salt("task-center")
+                .show(ui, |ui| {
+                    for task in self
+                        .backend
+                        .tasks
+                        .iter()
+                        .filter(|task| include_polling || !task.polling)
+                    {
+                        ui.push_id(task.id, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                let (status, color) = match task.status {
+                                    TaskStatus::Queued => ("Queued", palette.muted),
+                                    TaskStatus::Running => ("Running", palette.accent),
+                                    TaskStatus::Complete => ("Completed", palette.success),
+                                    TaskStatus::Partial => ("Partial", palette.warning),
+                                    TaskStatus::Failed => ("Failed", palette.error),
+                                };
+                                ui.label(RichText::new(status).color(color));
+                                if ui.selectable_label(false, &task.label).clicked() {
+                                    if let Some(document) =
+                                        self.documents.iter().find(|doc| doc.id == task.doc)
+                                    {
+                                        if document.docked {
+                                            self.utility_doc = Some(document.id);
+                                            self.utility = if matches!(
+                                                document.page.target.section.as_str(),
+                                                "logs" | "log-search"
+                                            ) {
+                                                Utility::Logs
+                                            } else {
+                                                Utility::Terminal
+                                            };
+                                        } else {
+                                            self.active = Some(document.id);
+                                        }
+                                    }
+                                }
+                                ui.label(RichText::new(&task.target).small().color(palette.muted));
+                                ui.label(
+                                    RichText::new(format!("{}s", task.started.elapsed().as_secs()))
+                                        .small()
+                                        .color(palette.muted),
+                                );
+                            });
+                            ui.add(egui::Label::new(&task.progress).wrap());
+                            ui.separator();
+                        });
+                    }
+                });
             return;
-        };
-        if !self.scope.accepts(confirmation.scope, true) {
-            return;
         }
-        let mut confirmed = false;
-        let mut cancel = false;
-        let title = if confirmation.action == "stop" {
-            "Stop service"
+        let logs = self.utility == Utility::Logs;
+        egui::ScrollArea::horizontal()
+            .id_salt("utility-sessions")
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for document in self.documents.iter().filter(|doc| {
+                        doc.docked
+                            && matches!(doc.page.target.section.as_str(), "logs" | "log-search")
+                                == logs
+                    }) {
+                        if ui
+                            .add_sized(
+                                [180.0, 24.0],
+                                egui::Button::new(&document.page.title)
+                                    .truncate()
+                                    .selected(self.utility_doc == Some(document.id)),
+                            )
+                            .on_hover_text(document.page.target.label())
+                            .clicked()
+                        {
+                            self.utility_doc = Some(document.id);
+                        }
+                        if ui
+                            .small_button("Close")
+                            .on_hover_text("Close this session")
+                            .clicked()
+                        {
+                            close = Some(document.id);
+                        }
+                    }
+                });
+            });
+        if let Some(id) = close {
+            self.request_close(id);
+        }
+        let selected = self
+            .documents
+            .iter()
+            .position(|doc| {
+                doc.docked
+                    && Some(doc.id) == self.utility_doc
+                    && matches!(doc.page.target.section.as_str(), "logs" | "log-search") == logs
+            })
+            .or_else(|| {
+                self.documents.iter().position(|doc| {
+                    doc.docked
+                        && matches!(doc.page.target.section.as_str(), "logs" | "log-search") == logs
+                })
+            });
+        if let Some(index) = selected {
+            let document = &mut self.documents[index];
+            self.utility_doc = Some(document.id);
+            let target_label = document.page.target.label();
+            ui.add(
+                egui::Label::new(RichText::new(&target_label).small().color(palette.muted))
+                    .truncate(),
+            )
+            .on_hover_text(&target_label);
+            if let PageState::Terminal(state) = &mut document.state {
+                let mut cx = PageContext {
+                    target: &document.page.target,
+                    servers: &self.servers,
+                    accounts: &self.accounts,
+                    server_config: &self.path,
+                    cloudflare_config: &self.cf_path,
+                    watchlist: &self.checks_path,
+                    doc: document.id,
+                    backend: &mut self.backend,
+                    opened,
+                    reload: &mut self.reload,
+                };
+                ui.push_id(document.id, |ui| terminal::show_utility(ui, state, &mut cx));
+            }
         } else {
-            "Restart service"
+            ui.label(if logs {
+                "Open live logs or search logs from a service or host resource."
+            } else {
+                "Open a container, database or host terminal from its resource."
+            });
+            if let Some(target) = self.current_target().filter(|t| t.server.is_some()) {
+                if ui
+                    .button(if logs {
+                        "Open target logs"
+                    } else {
+                        "Open target terminal"
+                    })
+                    .clicked()
+                {
+                    let section = if logs {
+                        if target.service.is_empty() {
+                            "log-search"
+                        } else {
+                            "logs"
+                        }
+                    } else if target.service.is_empty() {
+                        "host"
+                    } else {
+                        "container"
+                    };
+                    opened.push(page(
+                        PageKind::Terminal,
+                        &target,
+                        section,
+                        if logs { "Logs" } else { "Terminal" },
+                    ));
+                }
+            }
+        }
+        self.focus = self.focus.filter(|focus| *focus != 3);
+    }
+    fn command_palette(&mut self, ctx: &egui::Context) {
+        if !self.palette_open {
+            return;
+        }
+        let mut commands: Vec<_> = [
+            connection_page(),
+            account_page(),
+            OpenPage {
+                kind: PageKind::Fleet,
+                target: Target::default(),
+                title: "Fleet health".into(),
+            },
+        ]
+        .into_iter()
+        .map(PaletteCommand::Open)
+        .collect();
+        for server in &self.servers {
+            let target = Target {
+                server: Some(server.clone()),
+                ..Target::default()
+            };
+            for (section, title) in HOST_SECTIONS {
+                commands.push(PaletteCommand::Open(page(
+                    PageKind::Host,
+                    &target,
+                    section,
+                    &format!("{} / {title}", server.name),
+                )));
+            }
+            if let Some(data) = self.catalog.get(&server.name).and_then(|c| c.data.as_ref()) {
+                if let Some(resources) = data["services"].as_array() {
+                    for resource in resources {
+                        let (Some(project), Some(service), Some(kind)) = (
+                            resource["projectName"].as_str(),
+                            resource["name"].as_str(),
+                            resource["type"].as_str(),
+                        ) else {
+                            continue;
+                        };
+                        let target = Target {
+                            project: project.into(),
+                            service: service.into(),
+                            service_type: kind.into(),
+                            resource: resource.clone(),
+                            ..target.clone()
+                        };
+                        commands.push(PaletteCommand::Open(page(
+                            PageKind::Service,
+                            &target,
+                            "overview",
+                            &format!("{} / {project} / {service}", server.name),
+                        )));
+                    }
+                }
+            }
+        }
+        for account in &self.accounts {
+            let target = Target {
+                account: Some(account.clone()),
+                ..Target::default()
+            };
+            for (section, title) in CF_SECTIONS {
+                commands.push(PaletteCommand::Open(page(
+                    PageKind::Cloudflare,
+                    &target,
+                    section,
+                    &format!("{} / {title}", account.name),
+                )));
+            }
+        }
+        if let Some(target) = self.current_target() {
+            for (kind, section, title) in context_actions(&target) {
+                commands.push(PaletteCommand::Open(page(kind, &target, section, title)));
+            }
+            if target.server.is_some() && !target.service.is_empty() {
+                for (action, verb, title) in [
+                    (services::QuickAction::Deploy, "deploy", "Deploy service"),
+                    (
+                        services::QuickAction::Rebuild,
+                        "deploy",
+                        "Rebuild service without cache",
+                    ),
+                    (services::QuickAction::Start, "start", "Start service"),
+                    (services::QuickAction::Stop, "stop", "Stop service"),
+                    (services::QuickAction::Restart, "restart", "Restart service"),
+                    (services::QuickAction::Destroy, "destroy", "Destroy service"),
+                ] {
+                    if crate::lifecycle::ops(&target.service_type, verb).is_some() {
+                        commands.push(PaletteCommand::ServiceAction {
+                            target: target.clone(),
+                            title: format!("{} / {title}", target.service),
+                            action,
+                        });
+                    }
+                }
+            }
+        }
+        let mut selected = None;
+        let palette_id = egui::Id::unique("command-palette");
+        let response = egui::Modal::new(palette_id)
+            .area(
+                egui::Modal::default_area(palette_id).anchor(egui::Align2::CENTER_TOP, [0.0, 70.0]),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(600.0_f32.min(ctx.content_rect().width() - 48.0));
+                ui.heading("Go to resource or command");
+                let search = ui.add(
+                    egui::TextEdit::singleline(&mut self.palette_query)
+                        .hint_text("Search hosts, services, accounts and contextual workspaces")
+                        .desired_width(f32::INFINITY),
+                );
+                if self.palette_focus {
+                    search.request_focus();
+                    self.palette_focus = false;
+                }
+                if search.changed() {
+                    self.palette_selection = 0;
+                }
+                let needle = self.palette_query.to_lowercase();
+                let filtered: Vec<_> = commands
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, command)| {
+                        needle.split_whitespace().all(|word| {
+                            command.title().to_lowercase().contains(word)
+                                || command.target().label().to_lowercase().contains(word)
+                        })
+                    })
+                    .collect();
+                self.palette_selection =
+                    self.palette_selection.min(filtered.len().saturating_sub(1));
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                    self.palette_selection =
+                        (self.palette_selection + 1).min(filtered.len().saturating_sub(1));
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                    self.palette_selection = self.palette_selection.saturating_sub(1);
+                }
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(420.0)
+                    .show(ui, |ui| {
+                        for (index, (command_index, command)) in filtered.iter().enumerate() {
+                            let response = ui
+                                .selectable_label(self.palette_selection == index, command.title())
+                                .on_hover_text(command.target().label());
+                            if response.clicked() {
+                                selected = Some(*command_index);
+                            }
+                            if self.palette_selection == index
+                                && ui.input(|i| {
+                                    i.key_pressed(egui::Key::ArrowDown)
+                                        || i.key_pressed(egui::Key::ArrowUp)
+                                })
+                            {
+                                response.scroll_to_me(Some(egui::Align::Center));
+                            }
+                        }
+                        if filtered.is_empty() {
+                            ui.label("No matches. Clear the filter or use the explorer.");
+                        }
+                    });
+                ui.small("Up / Down to choose · Enter to open · Escape to dismiss");
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !filtered.is_empty() {
+                    selected = Some(filtered[self.palette_selection].0);
+                }
+            });
+        if let Some(index) = selected {
+            self.execute_palette(commands.swap_remove(index));
+            self.palette_open = false;
+        } else {
+            self.palette_open = !response.should_close();
+        }
+    }
+    fn execute_palette(&mut self, command: PaletteCommand) {
+        let PaletteCommand::ServiceAction { target, action, .. } = command else {
+            if let PaletteCommand::Open(page) = command {
+                self.open(page);
+            }
+            return;
         };
-        let response = egui::Modal::new(egui::Id::unique("confirm_action")).show(ctx, |ui| {
-            ui.set_width(420.0_f32.min(ctx.content_rect().width() - 64.0));
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-            ui.heading(format!("{title}?"));
-            ui.label(format!("Server: {}", confirmation.server.name));
-            ui.label(format!("Project: {}", confirmation.service.project));
-            ui.label(format!("Service: {}", confirmation.service.name));
-            ui.label("This interrupts the service and may disconnect active users.");
+        self.open(page(
+            PageKind::Service,
+            &target,
+            "overview",
+            &target.service,
+        ));
+        let mut opened = Vec::new();
+        if let Some(document) = self
+            .documents
+            .iter_mut()
+            .find(|doc| Some(doc.id) == self.active)
+        {
+            if let PageState::Services(state) = &mut document.state {
+                let mut cx = PageContext {
+                    target: &document.page.target,
+                    servers: &self.servers,
+                    accounts: &self.accounts,
+                    server_config: &self.path,
+                    cloudflare_config: &self.cf_path,
+                    watchlist: &self.checks_path,
+                    doc: document.id,
+                    backend: &mut self.backend,
+                    opened: &mut opened,
+                    reload: &mut self.reload,
+                };
+                services::quick_action(state, &mut cx, action);
+            }
+        }
+        for page in opened {
+            self.open(page);
+        }
+    }
+    fn close_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(close) = self.close else {
+            return;
+        };
+        let mut confirmed = false;
+        let mut dismissed = false;
+        egui::Modal::new(egui::Id::unique("close-workspace")).show(ctx, |ui| {
+            ui.set_width(480.0_f32.min(ctx.content_rect().width() - 48.0));
+            ui.heading("Close workspace?");
+            match close {
+                Close::Document(id) => {
+                    if let Some(document) = self.documents.iter().find(|doc| doc.id == id) {
+                        ui.label(RichText::new(&document.page.title).strong()); ui.add(egui::Label::new(document.page.target.label()).wrap());
+                        if document.state.is_dirty() { ui.label("This document has unsaved changes. Closing discards those edits."); }
+                        if document.state.running_session() { ui.label("Closing disconnects this terminal. Remote processes may continue running."); }
+                        ui.small("Started background operations continue and remain visible in Tasks.");
+                    }
+                }
+                Close::Application => { ui.label("Unsaved edits will be discarded and terminal sessions disconnected."); if self.backend.active() > 0 { ui.label("Background operations are still running. Quitting stops local work; remote operations may continue with a partial outcome."); } }
+            }
+            ui.add_space(12.0);
             ui.horizontal(|ui| {
-                cancel = ui.button("Cancel").clicked();
-                confirmed = ui
-                    .add_enabled(self.pending.is_none(), egui::Button::new(title))
-                    .clicked();
+                if ui.button("Keep open").clicked() {
+                    dismissed = true;
+                }
+                if ui.button(match close { Close::Document(_) => "Discard and close", Close::Application => "Quit anyway" }).clicked() {
+                    confirmed = true;
+                }
             });
         });
         if confirmed {
-            let label = format!(
-                "{title} on {}: {}/{}",
-                confirmation.server.name, confirmation.service.project, confirmation.service.name
-            );
-            self.dispatch(
-                Job::Action(
-                    confirmation.server,
-                    confirmation.service,
-                    confirmation.action,
-                ),
-                Request::Action,
-                label,
-            );
-        } else if !cancel && !response.should_close() {
-            self.confirmation = Some(confirmation);
+            self.close = None;
+            match close {
+                Close::Document(id) => self.remove_document(id),
+                Close::Application => {
+                    self.allow_quit = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        if dismissed || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.close = None;
         }
     }
 }
-
 impl eframe::App for Desktop {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.receive();
+        self.pump();
         let ctx = ui.ctx().clone();
-        if self.editor.is_none()
-            && self.confirmation.is_none()
-            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::F))
-        {
-            self.focus_search = true;
-        }
-        egui::Panel::bottom("activity").show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("activity_messages")
-                .max_height(96.0)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    if let Some(pending) = &self.pending {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.add(egui::Label::new(&pending.label).wrap());
-                        });
-                    } else {
-                        ui.small("Ready");
-                    }
-                    if let Some(notice) = &self.notice {
-                        ui.add(
-                            egui::Label::new(self.safe_text(notice))
-                                .wrap()
-                                .selectable(true),
-                        );
-                    }
-                });
-        });
-        egui::Panel::left("navigation")
-            .default_size(230.0)
-            .min_size(220.0)
-            .max_size(260.0)
+        self.shortcuts(&ctx);
+        let dark = match self.mode {
+            theme::Mode::System => ctx.theme() == egui::Theme::Dark,
+            theme::Mode::Light => false,
+            theme::Mode::Dark => true,
+        };
+        let palette = if self.applied_theme != Some(dark) {
+            self.applied_theme = Some(dark);
+            theme::apply(&ctx, self.mode)
+        } else {
+            Palette::for_dark(dark)
+        };
+        let mut opened = Vec::new();
+        ctx.data_mut(|data| data.insert_temp(egui::Id::unique("desktop-terminal-focus"), false));
+        egui::Panel::top("menubar")
+            .exact_size(32.0)
             .frame(
                 egui::Frame::new()
-                    .fill(Color32::from_rgb(233, 238, 243))
-                    .inner_margin(16.0),
+                    .fill(palette.chrome)
+                    .inner_margin(egui::Margin::symmetric(10, 2)),
+            )
+            .show(ui, |ui| self.menu(ui, palette, &mut opened));
+        egui::Panel::bottom("statusbar")
+            .exact_size(24.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(palette.chrome)
+                    .inner_margin(egui::Margin::symmetric(10, 2)),
             )
             .show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.sidebar(ui));
+                ui.spacing_mut().interact_size.y = 20.0;
+                ui.spacing_mut().button_padding.y = 2.0;
+                ui.horizontal(|ui| {
+                    if self.backend.active() > 0 {
+                        ui.spinner();
+                    }
+                    if ui
+                        .small_button(format!(
+                            "{} hosts / {} accounts",
+                            self.servers.len(),
+                            self.accounts.len()
+                        ))
+                        .clicked()
+                    {
+                        opened.push(connection_page());
+                    }
+                    let dirty = self
+                        .documents
+                        .iter()
+                        .filter(|doc| doc.state.is_dirty())
+                        .count();
+                    if dirty > 0 {
+                        ui.label(
+                            RichText::new(format!("{dirty} unsaved"))
+                                .small()
+                                .color(palette.warning),
+                        );
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button(format!("Tasks · {} active", self.backend.active()))
+                            .clicked()
+                        {
+                            self.reveal_utility(Utility::Tasks);
+                        }
+                    });
+                });
             });
+        egui::Panel::left("activitybar")
+            .exact_size(46.0)
+            .resizable(false)
+            .frame(egui::Frame::new().fill(palette.chrome).inner_margin(7))
+            .show(ui, |ui| {
+                if theme::icon(
+                    ui,
+                    Icon::Server,
+                    "Resource explorer",
+                    self.explorer_visible,
+                    palette,
+                )
+                .clicked()
+                {
+                    self.explorer_visible = !self.explorer_visible;
+                }
+                if theme::icon(ui, Icon::Cloud, "Cloudflare accounts", false, palette).clicked() {
+                    opened.push(account_page());
+                }
+                if theme::icon(
+                    ui,
+                    Icon::Search,
+                    "Search resources and commands",
+                    self.palette_open,
+                    palette,
+                )
+                .clicked()
+                {
+                    self.open_palette();
+                }
+                if theme::icon(
+                    ui,
+                    Icon::Terminal,
+                    "Terminal sessions",
+                    self.utility_visible && self.utility == Utility::Terminal,
+                    palette,
+                )
+                .clicked()
+                {
+                    self.reveal_utility(Utility::Terminal);
+                }
+                if theme::icon(
+                    ui,
+                    Icon::Tasks,
+                    "Tasks",
+                    self.utility_visible && self.utility == Utility::Tasks,
+                    palette,
+                )
+                .clicked()
+                {
+                    self.reveal_utility(Utility::Tasks);
+                }
+                ui.separator();
+                if theme::icon(ui, Icon::Settings, "Manage connections", false, palette).clicked() {
+                    opened.push(connection_page());
+                }
+            });
+        if self.explorer_visible {
+            egui::Panel::left("explorer")
+                .default_size(252.0)
+                .size_range(220.0..=280.0)
+                .resizable(true)
+                .frame(egui::Frame::new().fill(palette.explorer).inner_margin(10))
+                .show(ui, |ui| self.explorer(ui, palette, &mut opened));
+        }
+        if self.utility_visible {
+            egui::Panel::bottom("utility")
+                .default_size(220.0)
+                .size_range(130.0..=utility_height_limit(ui.available_height()))
+                .resizable(true)
+                .frame(
+                    egui::Frame::new()
+                        .fill(palette.canvas)
+                        .inner_margin(egui::Margin::symmetric(12, 5)),
+                )
+                .show(ui, |ui| {
+                    // Child content must not expand the user's chosen splitter height.
+                    let rect = ui.available_rect_before_wrap();
+                    let mut content = ui.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt("utility-content")
+                            .max_rect(rect),
+                    );
+                    content.shrink_clip_rect(rect);
+                    self.utility(&mut content, palette, &mut opened);
+                    ui.advance_cursor_after_rect(rect);
+                });
+        }
         egui::CentralPanel::default()
-            .frame(
+            .frame(egui::Frame::new().fill(palette.canvas).inner_margin(0))
+            .show(ui, |ui| {
+                self.tabs(ui, palette);
+                ui.separator();
                 egui::Frame::new()
-                    .fill(Color32::from_rgb(244, 246, 248))
-                    .inner_margin(24.0),
-            )
-            .show(ui, |ui| self.content(ui));
-        self.editor(&ctx);
-        self.confirm(&ctx);
-        self.pump();
-        if self.pending.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    .inner_margin(egui::Margin::symmetric(12, 4))
+                    .show(ui, |ui| {
+                        for error in &self.config_errors {
+                            widgets::error(ui, error);
+                        }
+                        if !self.config_errors.is_empty()
+                            && ui.button("Reload connection profiles").clicked()
+                        {
+                            self.reload = true;
+                        }
+                        if !self.loaded {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Reading connection profiles…");
+                            });
+                        } else {
+                            self.document(ui, &mut opened);
+                        }
+                    });
+            });
+        for page in opened {
+            self.open(page);
+        }
+        self.command_palette(&ctx);
+        self.close_confirmation(&ctx);
+        if self.shortcuts_open {
+            egui::Window::new("Keyboard shortcuts")
+                .open(&mut self.shortcuts_open)
+                .resizable(false)
+                .show(&ctx, |ui| {
+                    for (keys, action) in [
+                        ("Cmd/Ctrl K or P", "Search resources and commands"),
+                        ("Cmd/Ctrl Shift P", "Palette, including from terminals"),
+                        ("Cmd/Ctrl W", "Close active document"),
+                        ("Cmd/Ctrl B", "Show or hide explorer"),
+                        ("Cmd/Ctrl J", "Show or hide utilities"),
+                        ("Cmd/Ctrl 1 / 2 / 3", "Focus explorer / document / utility"),
+                        ("Cmd/Ctrl Tab", "Next document"),
+                        ("Escape", "Dismiss palette or confirmation"),
+                    ] {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(keys).strong());
+                            ui.label(action);
+                        });
+                    }
+                });
         }
     }
 }
 
-fn error_text(ui: &mut egui::Ui, title: &str, error: &str) {
-    ui.label(
-        RichText::new(title)
-            .strong()
-            .color(Color32::from_rgb(165, 44, 44)),
+const HOST_SECTIONS: &[(&str, &str)] = &[
+    ("overview", "Host overview"),
+    ("metrics", "Monitoring"),
+    ("nodes", "Nodes"),
+    ("storage", "Storage"),
+    ("domains", "Domains"),
+    ("uptime", "Uptime checks"),
+    ("actions", "Action history"),
+    ("certificates", "Certificates"),
+    ("notifications", "Notifications"),
+    ("backups", "Backups"),
+    ("maintenance", "Maintenance"),
+];
+const CF_SECTIONS: &[(&str, &str)] = &[
+    ("analytics", "Analytics"),
+    ("zones", "Zones and DNS"),
+    ("tunnels", "Tunnels"),
+    ("r2", "R2 storage"),
+    ("workers", "Workers"),
+];
+fn connection_page() -> OpenPage {
+    OpenPage {
+        kind: PageKind::Connections,
+        target: Target::default(),
+        title: "Connections".into(),
+    }
+}
+fn account_page() -> OpenPage {
+    OpenPage {
+        kind: PageKind::Cloudflare,
+        target: Target {
+            section: "accounts".into(),
+            ..Target::default()
+        },
+        title: "Cloudflare accounts".into(),
+    }
+}
+fn page(kind: PageKind, target: &Target, section: &str, title: &str) -> OpenPage {
+    let identity = if !target.service.is_empty() {
+        Some(target.service.as_str())
+    } else if !target.project.is_empty() {
+        Some(target.project.as_str())
+    } else {
+        target
+            .account
+            .as_ref()
+            .map(|a| a.name.as_str())
+            .or_else(|| target.server.as_ref().map(|s| s.name.as_str()))
+    };
+    let title = identity
+        .filter(|identity| !title.contains(*identity))
+        .map_or_else(
+            || title.to_owned(),
+            |identity| format!("{identity} / {title}"),
+        );
+    OpenPage {
+        kind,
+        target: Target {
+            section: section.into(),
+            ..target.clone()
+        },
+        title,
+    }
+}
+fn utility_height_limit(available_height: f32) -> f32 {
+    (available_height - 320.0).max(130.0)
+}
+
+fn explorer_group(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    title: &str,
+    default_open: bool,
+    reveal: bool,
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        ui.make_persistent_id(id),
+        default_open,
     );
-    ui.add(egui::Label::new(error).wrap());
+    if reveal {
+        state.set_open(true);
+    }
+    let mut clicked = false;
+    let mut header = state.show_header(ui, |ui| {
+        clicked = explorer_link(ui, title, false).clicked();
+    });
+    if clicked {
+        header.toggle();
+    }
+    header.body(body);
+}
+
+fn explorer_link(ui: &mut egui::Ui, title: &str, selected: bool) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 27.0), egui::Sense::click());
+    if selected || response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(
+            rect,
+            3.0,
+            if selected {
+                ui.visuals().selection.bg_fill
+            } else {
+                ui.visuals().widgets.hovered.bg_fill
+            },
+        );
+    }
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.shrink(1.0),
+            3.0,
+            ui.visuals().selection.stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    let galley = egui::WidgetText::from(title).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (rect.width() - 14.0).max(0.0),
+        egui::TextStyle::Body,
+    );
+    let text_pos = egui::pos2(rect.left() + 7.0, rect.center().y - galley.size().y * 0.5);
+    ui.painter()
+        .with_clip_rect(rect)
+        .galley(text_pos, galley, ui.visuals().text_color());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, title)
+    });
+    response.on_hover_text(title)
+}
+fn context_actions(target: &Target) -> Vec<(PageKind, &'static str, &'static str)> {
+    if target.server.is_none() {
+        return Vec::new();
+    }
+    let mut actions = vec![(PageKind::Terminal, "log-search", "Search all service logs")];
+    if !target.service.is_empty() {
+        actions.push((PageKind::Service, "environment", "Edit service environment"));
+        if target.service_type == "app" {
+            actions.extend([
+                (PageKind::Service, "source", "Edit service source"),
+                (PageKind::Service, "build", "Edit service build"),
+                (PageKind::Service, "deploy", "Deployment settings"),
+            ]);
+        }
+        if crate::lifecycle::has_resource_limits(&target.service_type) {
+            actions.push((PageKind::Service, "resources", "Edit service resources"));
+        }
+        actions.extend([
+            (PageKind::Terminal, "logs", "Live logs"),
+            (PageKind::Terminal, "container", "Container terminal"),
+            (PageKind::Data, "clone", "Clone configuration"),
+            (PageKind::Data, "migrate", "Migrate configuration"),
+            (PageKind::Data, "diff", "Compare configurations"),
+        ]);
+        if matches!(
+            target.service_type.as_str(),
+            "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
+        ) {
+            actions.extend([
+                (PageKind::Data, "database", "Database explorer"),
+                (PageKind::Data, "credentials", "Database credentials"),
+                (PageKind::Terminal, "db", "Database terminal"),
+                (PageKind::Data, "dumps", "Database dumps"),
+                (PageKind::Data, "restore", "Restore database"),
+                (PageKind::Data, "copy", "Copy databases"),
+            ]);
+        }
+    } else {
+        actions.push((PageKind::Terminal, "host", "Privileged host terminal"));
+        if !target.project.is_empty() {
+            actions.extend([
+                (
+                    PageKind::Data,
+                    "project-diff",
+                    "Compare project configuration",
+                ),
+                (
+                    PageKind::Data,
+                    "export-project",
+                    "Export project configuration",
+                ),
+            ]);
+        }
+    }
+    actions
+}
+fn resource_actions(ui: &mut egui::Ui, target: &Target, opened: &mut Vec<OpenPage>) {
+    if !target.service.is_empty() {
+        if ui.button("Live logs").clicked() {
+            opened.push(page(PageKind::Terminal, target, "logs", "Live logs"));
+        }
+        if ui.button("Terminal").clicked() {
+            opened.push(page(
+                PageKind::Terminal,
+                target,
+                "container",
+                "Container terminal",
+            ));
+        }
+    }
+    ui.menu_button("Open workspace", |ui| {
+        for (kind, section, title) in context_actions(target) {
+            if ui.button(title).clicked() {
+                opened.push(page(kind, target, section, title));
+                ui.close();
+            }
+        }
+    });
 }
 
 #[cfg(test)]
-mod tests {
+mod layout_tests {
     use super::*;
 
     #[test]
-    fn navigation_discards_previous_server_and_service_responses() {
-        let before = Scope {
-            server: 1,
-            service: 1,
-        };
-        let new_service = Scope {
-            server: 1,
-            service: 2,
-        };
-        let new_server = Scope {
-            server: 2,
-            service: 3,
-        };
-        assert!(!new_service.accepts(before, true));
-        assert!(new_service.accepts(before, false));
-        assert!(!new_server.accepts(before, false));
-        assert!(before.accepts(before, true));
-    }
-
-    fn test_app(worker: Worker) -> Desktop {
-        Desktop {
-            path: PathBuf::from("unused-test-config.json"),
-            worker,
-            pending: None,
-            servers: Vec::new(),
-            selected_server: None,
-            project: None,
-            selected: Some(Service {
-                project: "old".into(),
-                name: "old".into(),
-                kind: "app".into(),
-            }),
-            scope: Scope::default(),
-            inventory: Inventory::default(),
-            search: String::new(),
-            focus_search: false,
-            needs_inventory: false,
-            needs_details: true,
-            needs_logs: true,
-            enabled: Some(true),
-            details_loaded: true,
-            log_text: "private old logs".into(),
-            logs_loaded: true,
-            logs_tab: true,
-            config_loaded: true,
-            config_error: None,
-            inventory_error: None,
-            details_error: Some("old".into()),
-            logs_error: Some("old".into()),
-            editor: None,
-            editor_error: None,
-            editor_focus: false,
-            confirmation: None,
-            notice: None,
+    fn utility_resize_keeps_a_minimum_document_viewport() {
+        for available in [624.0, 744.0, 1024.0] {
+            assert_eq!(available - utility_height_limit(available), 320.0);
+            assert!(utility_height_limit(available) >= 220.0);
         }
+        assert_eq!(utility_height_limit(300.0), 130.0);
     }
 
     #[test]
-    fn changing_selection_clears_private_previous_service_data() {
-        let mut app = test_app(Worker::with_result(Ok(Reply::Action)));
-        app.select_service(Service {
-            project: "new".into(),
-            name: "new".into(),
-            kind: "mysql".into(),
-        });
-        assert!(app.log_text.is_empty());
-        assert!(!app.logs_loaded && !app.details_loaded);
-        assert!(app.enabled.is_none() && app.details_error.is_none() && app.logs_error.is_none());
-        assert!(app.needs_details && app.needs_logs);
-    }
-
-    #[test]
-    fn partially_failed_action_invalidates_configuration_and_refreshes_same_service() {
-        let mut app = test_app(Worker::with_result(Err("enableService failed".into())));
-        app.needs_details = false;
-        app.pending = Some(Pending {
-            request: Request::Action,
-            scope: app.scope,
-            label: "Restart on prod: shop/db".into(),
-        });
-
-        app.receive();
-
-        assert!(app.enabled.is_none());
-        assert!(!app.details_loaded);
-        assert!(app.details_error.is_none());
-        assert!(app.needs_inventory && app.needs_details);
-        assert!(app.pending.is_none());
-        let notice = app.notice.as_deref().unwrap();
-        assert!(notice.contains("prod: shop/db") && notice.contains("enableService failed"));
-    }
-
-    #[test]
-    fn old_action_error_does_not_invalidate_new_service_configuration() {
-        let mut app = test_app(Worker::with_result(Err("enableService failed".into())));
-        app.needs_details = false;
-        app.pending = Some(Pending {
-            request: Request::Action,
-            scope: Scope {
-                server: 0,
-                service: 9,
+    fn service_caption_and_breadcrumb_follow_section_without_retargeting() {
+        let document = Document {
+            id: 1,
+            page: OpenPage {
+                kind: PageKind::Service,
+                target: Target {
+                    project: "commerce".into(),
+                    service: "api-é".into(),
+                    service_type: "app".into(),
+                    section: "environment".into(),
+                    ..Target::default()
+                },
+                title: "api-é / overview".into(),
             },
-            label: "Restart on prod: shop/db".into(),
+            state: PageState::Services(Box::default()),
+            docked: false,
+        };
+        assert_eq!(document.caption(), "api-é / Environment");
+        assert_eq!(
+            document.breadcrumb(),
+            "Workspace / commerce / api-é / Environment"
+        );
+        assert_eq!(
+            document.page.target.label(),
+            "Workspace / commerce / api-é / environment"
+        );
+    }
+
+    #[test]
+    fn explorer_reveal_preserves_a_later_manual_collapse() {
+        egui::__run_test_ui(|ui| {
+            ui.set_width(220.0);
+            let id = egui::Id::unique("layout-test-group");
+            let state_id = ui.make_persistent_id(id);
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                state_id,
+                false,
+            );
+            state.set_open(false);
+            state.store(ui.ctx());
+            explorer_group(
+                ui,
+                id,
+                "An intentionally very long host identity",
+                true,
+                false,
+                |_| {},
+            );
+            assert!(
+                !egui::collapsing_header::CollapsingState::load(ui.ctx(), state_id)
+                    .unwrap()
+                    .is_open()
+            );
+            let reveal_id = egui::Id::unique("layout-test-reveal");
+            explorer_group(
+                ui,
+                reveal_id,
+                "A second intentionally long host identity",
+                false,
+                true,
+                |_| {},
+            );
+            assert!(egui::collapsing_header::CollapsingState::load(
+                ui.ctx(),
+                ui.make_persistent_id(reveal_id)
+            )
+            .unwrap()
+            .is_open());
+            assert!(ui.min_rect().width() <= 220.0);
         });
-
-        app.receive();
-
-        assert_eq!(app.enabled, Some(true));
-        assert!(app.details_loaded && !app.needs_details);
-        assert!(app.needs_inventory);
-        assert!(app.notice.as_deref().unwrap().contains("prod: shop/db"));
     }
 }

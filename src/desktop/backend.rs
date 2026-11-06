@@ -1,500 +1,831 @@
-use crate::{
-    client::EasypanelClient,
-    config::{Server, ServerConfig},
-    lifecycle, logs,
-};
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Value};
+use super::model::{DocId, Payload};
+use eframe::egui;
 use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    sync::mpsc::{self, Receiver, SyncSender},
+    collections::{HashMap, VecDeque},
+    sync::{
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+        Arc, Mutex,
+    },
+    time::Instant,
 };
 
-impl ServerConfig {
-    /// Save a desktop connection without changing the CLI default or SSH settings.
-    /// Read and replace in one write so a rename cannot lose a credential halfway.
-    pub fn save_connection(
-        &self,
-        original: Option<&str>,
-        name: &str,
-        url: &str,
-        token: &str,
-    ) -> Result<()> {
-        let mut servers = self.try_all()?;
-        if name.trim().is_empty() || token.trim().is_empty() {
-            anyhow::bail!("Enter a server name and API token.");
-        }
-        let parsed = reqwest::Url::parse(url)?;
-        if !matches!(parsed.scheme(), "http" | "https")
-            || parsed.host_str().is_none()
-            || !parsed.username().is_empty()
-            || parsed.password().is_some()
-            || parsed.query().is_some()
-            || parsed.fragment().is_some()
-        {
-            anyhow::bail!("Use an HTTP(S) panel URL without credentials, query, or fragment.");
-        }
-        if servers
-            .iter()
-            .any(|s| s.name == name && Some(s.name.as_str()) != original)
-        {
-            anyhow::bail!("A server called '{name}' already exists.");
-        }
-        if let Some(original) = original {
-            let server = servers
-                .iter_mut()
-                .find(|s| s.name == original)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("The connection changed. Reload connections and try again.")
-                })?;
-            if let Some(ssh) = &server.ssh {
-                crate::tunnel::validate(ssh, url)?;
-            }
-            server.name = name.to_owned();
-            server.url = url.trim_end_matches('/').to_owned();
-            server.token = token.to_owned();
-        } else {
-            servers.push(Server {
-                name: name.to_owned(),
-                url: url.trim_end_matches('/').to_owned(),
-                token: token.to_owned(),
-                default: false,
-                ssh: None,
-            });
-        }
-        self.save(&servers)
-    }
-}
+pub(super) type RequestId = u64;
+pub(super) type Outcome = Result<Payload, String>;
+pub(super) type Sink = Arc<dyn Fn(crate::worker::Resp) + Send + Sync>;
+type Run = Box<dyn FnOnce(Sink) -> anyhow::Result<Payload> + Send>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Service {
-    pub project: String,
-    pub name: String,
-    pub kind: String,
+#[derive(Clone)]
+pub(crate) struct Runtime {
+    pub make_cf_client: Arc<dyn Fn(&str) -> crate::cloudflare::CloudflareClient + Send + Sync>,
 }
-
-impl Service {
-    fn input(&self) -> Value {
-        json!({"projectName": self.project, "serviceName": self.name})
-    }
-}
-
-#[derive(Default)]
-pub struct Inventory {
-    pub projects: Vec<String>,
-    pub services: Vec<Service>,
-    pub replicas: BTreeMap<String, (i64, i64)>,
-    pub status_error: Option<String>,
-}
-
-impl Inventory {
-    pub fn status(&self, service: &Service) -> String {
-        match self
-            .replicas
-            .get(&format!("{}_{}", service.project, service.name))
-        {
-            Some((actual, desired)) if *desired == 0 && *actual == 0 => {
-                "Stopped (0 replicas)".into()
-            }
-            Some((actual, desired)) if actual == desired => format!("Running ({actual}/{desired})"),
-            Some((actual, desired)) => format!("Not ready ({actual}/{desired} replicas)"),
-            None => "Unknown".into(),
+impl Default for Runtime {
+    fn default() -> Self {
+        Self {
+            make_cf_client: Arc::new(crate::cloudflare::CloudflareClient::new),
         }
     }
 }
 
-#[derive(Clone, Default)]
-pub struct ConnectionForm {
-    pub original: Option<String>,
-    pub name: String,
-    pub url: String,
-    pub token: String,
+#[derive(Clone, Copy)]
+pub(super) enum Lane {
+    Interactive,
+    Poll,
+    Transfer,
 }
 
-pub enum Job {
-    Load,
-    Save(ConnectionForm),
-    Inventory(Server),
-    Details(Server, Service),
-    Logs(Server, Service),
-    Action(Server, Service, &'static str),
+pub(super) struct TrustContext {
+    pub target: String,
+    pub secrets: Vec<String>,
 }
 
-pub enum Reply {
-    Connections(Vec<Server>),
-    Inventory(Inventory),
-    Details(Option<bool>),
-    Logs(String),
-    Action,
+struct Work {
+    doc: DocId,
+    request: RequestId,
+    run: Run,
+}
+enum Event {
+    Message(DocId, RequestId, crate::worker::Resp),
+    Finished(DocId, RequestId, Outcome),
 }
 
-pub struct Worker {
-    tx: SyncSender<Job>,
-    pub rx: Receiver<std::result::Result<Reply, String>>,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TaskStatus {
+    Queued,
+    Running,
+    Complete,
+    Partial,
+    Failed,
+}
+pub(super) struct Task {
+    pub id: RequestId,
+    pub doc: DocId,
+    pub label: String,
+    pub target: String,
+    pub progress: String,
+    pub status: TaskStatus,
+    pub started: Instant,
+    pub polling: bool,
+    secrets: Arc<[String]>,
+}
+struct Slot {
+    request: RequestId,
+    busy: bool,
+    progress: String,
+    result: Option<Outcome>,
+    secrets: Arc<[String]>,
 }
 
-impl Worker {
-    pub fn new(path: PathBuf, ctx: eframe::egui::Context) -> Self {
-        let (tx, jobs) = mpsc::sync_channel(1);
-        let (results, rx) = mpsc::sync_channel(1);
-        // No join on exit: an in-flight HTTP/SSH request has its own timeout and
-        // must not hold the window open. Disconnected channels end the worker.
-        let spawned = std::thread::Builder::new()
-            .name("desktop-api".into())
-            .spawn(move || {
-                while let Ok(job) = jobs.recv() {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        execute(&path, job)
-                    }))
-                    .unwrap_or_else(|_| {
-                        Err(anyhow::anyhow!(
-                            "The request worker stopped unexpectedly. Refresh to retry."
-                        ))
-                    })
-                    .map_err(|e| e.to_string());
-                    if results.send(result).is_err() {
-                        break;
-                    }
-                    ctx.request_repaint();
-                }
-            });
-        // A failed spawn drops both worker channel ends; the UI reports the
-        // disconnected worker on its first request rather than panicking.
-        drop(spawned);
-        Self { tx, rx }
-    }
-    #[cfg(test)]
-    pub(super) fn with_result(result: std::result::Result<Reply, String>) -> Self {
-        let (tx, _jobs) = mpsc::sync_channel(1);
-        let (results, rx) = mpsc::sync_channel(1);
-        assert!(results.send(result).is_ok());
-        Self { tx, rx }
-    }
-
-    pub fn send(&self, job: Job) -> std::result::Result<(), String> {
-        self.tx
-            .try_send(job)
-            .map_err(|_| "The request worker is unavailable. Close and reopen EasyPanel.".into())
-    }
+pub(super) struct Backend {
+    interactive: SyncSender<Work>,
+    poll: SyncSender<Work>,
+    transfer: SyncSender<Work>,
+    events: Receiver<Event>,
+    slots: HashMap<(DocId, String), Slot>,
+    pub tasks: VecDeque<Task>,
+    next_request: RequestId,
+    pub runtime: Runtime,
 }
 
-fn execute(path: &std::path::Path, job: Job) -> Result<Reply> {
-    let config = ServerConfig::new(path.to_owned());
-    match job {
-        Job::Load => Ok(Reply::Connections(config.try_all()?)),
-        Job::Save(form) => {
-            config.save_connection(
-                form.original.as_deref(),
-                form.name.trim(),
-                form.url.trim(),
-                form.token.trim(),
-            )?;
-            Ok(Reply::Connections(config.try_all()?))
+impl Backend {
+    pub fn new(ctx: egui::Context, runtime: Runtime) -> Self {
+        let (events_tx, events) = mpsc::sync_channel(256);
+        let interactive = pool(4, 32, events_tx.clone(), ctx.clone());
+        let poll = pool(3, 32, events_tx.clone(), ctx.clone());
+        let transfer = pool(3, 24, events_tx, ctx);
+        Self {
+            interactive,
+            poll,
+            transfer,
+            events,
+            slots: HashMap::new(),
+            tasks: VecDeque::new(),
+            next_request: 1,
+            runtime,
         }
-        Job::Inventory(server) => with_client(&server, |client| {
-            let data = client.call("projects", "listProjectsAndServices", Value::Null)?;
-            let mut inventory = parse_inventory(&data)?;
-            match client.call("monitorOld", "getDockerTaskStats", Value::Null) {
-                Ok(stats) => inventory.replicas = parse_replicas(&stats),
-                Err(error) => inventory.status_error = Some(error.to_string()),
-            }
-            Ok(Reply::Inventory(inventory))
-        }),
-        Job::Details(server, service) => with_client(&server, |client| {
-            let data = client.call(
-                &format!("services/{}", service.kind),
-                "inspectService",
-                service.input(),
-            )?;
-            if !data.is_object() {
-                bail!("The panel returned invalid service details. Refresh to retry.");
-            }
-            Ok(Reply::Details(data.get("enabled").and_then(Value::as_bool)))
-        }),
-        Job::Logs(server, service) => with_client(&server, |client| {
-            let data = client.call(
-                "logs",
-                "queryServiceLogs",
-                json!({
-                    "projectName": service.project, "serviceName": service.name, "limit": 200
-                }),
-            )?;
-            let text = logs::format(&data).join("\n");
-            let mut bounded: String = text.chars().take(262_144).collect();
-            if text.chars().count() > 262_144 {
-                bounded.push_str("\n[Display limited to 256 Ki characters]");
-            }
-            Ok(Reply::Logs(redact(&bounded, &[server.token.as_str()])))
-        }),
-        Job::Action(server, service, action) => with_client(&server, |client| {
-            run_action(client, &service, action)?;
-            Ok(Reply::Action)
-        }),
     }
-}
 
-fn with_client(
-    server: &Server,
-    run: impl FnOnce(&EasypanelClient) -> Result<Reply>,
-) -> Result<Reply> {
-    let url =
-        reqwest::Url::parse(&server.url).context("Invalid panel URL. Edit this connection.")?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        bail!("Invalid panel URL. Use HTTP(S) without embedded credentials, query, or fragment.");
-    }
-    let secrets = [
-        server.token.as_str(),
-        server
-            .ssh
-            .as_ref()
-            .and_then(|ssh| ssh.secret.as_deref())
-            .unwrap_or(""),
-    ];
-    run(&EasypanelClient::for_server(server))
-        .map_err(|e| anyhow::anyhow!(redact(&e.to_string(), &secrets)))
-}
-
-pub fn redact(text: &str, secrets: &[&str]) -> String {
-    let mut text = text.to_owned();
-    for secret in secrets.iter().filter(|s| !s.is_empty()) {
-        text = text.replace(secret, "[redacted]");
-    }
-    text
-}
-
-fn parse_inventory(data: &Value) -> Result<Inventory> {
-    let projects = data
-        .get("projects")
-        .and_then(Value::as_array)
-        .context("The panel returned no project list. Refresh to retry.")?;
-    let services = data
-        .get("services")
-        .and_then(Value::as_array)
-        .context("The panel returned no service list. Refresh to retry.")?;
-    let mut inventory = Inventory::default();
-    for project in projects {
-        inventory.projects.push(
-            project
-                .get("name")
-                .and_then(Value::as_str)
-                .context("Invalid project name in panel response.")?
-                .to_owned(),
+    pub fn submit(
+        &mut self,
+        doc: DocId,
+        key: &str,
+        label: &str,
+        trust: TrustContext,
+        lane: Lane,
+        run: Run,
+    ) {
+        let slot_key = (doc, key.to_owned());
+        if self.slots.get(&slot_key).is_some_and(|slot| slot.busy) {
+            return;
+        }
+        let request = self.next_request;
+        self.next_request += 1;
+        let secrets: Arc<[String]> = trust.secrets.into();
+        self.slots.insert(
+            slot_key.clone(),
+            Slot {
+                request,
+                busy: true,
+                progress: "Queued".into(),
+                result: None,
+                secrets: secrets.clone(),
+            },
         );
-    }
-    for service in services {
-        let get = |field| {
-            service
-                .get(field)
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .context("Invalid service in panel response.")
+        let sender = match lane {
+            Lane::Interactive => &self.interactive,
+            Lane::Poll => &self.poll,
+            Lane::Transfer => &self.transfer,
         };
-        inventory.services.push(Service {
-            project: get("projectName")?,
-            name: get("name")?,
-            kind: get("type")?,
+        let result = sender.try_send(Work { doc, request, run });
+        let (status, progress) = match result {
+            Ok(()) => (TaskStatus::Queued, "Queued".to_string()),
+            Err(TrySendError::Full(_)) => (
+                TaskStatus::Failed,
+                "The operation queue is full. Wait for a task to finish, then retry.".to_string(),
+            ),
+            Err(TrySendError::Disconnected(_)) => (
+                TaskStatus::Failed,
+                "The background worker stopped. Restart the application.".to_string(),
+            ),
+        };
+        if status == TaskStatus::Failed {
+            let slot = self.slots.get_mut(&slot_key).unwrap();
+            slot.busy = false;
+            slot.result = Some(Err(progress.clone()));
+        }
+        self.tasks.push_front(Task {
+            id: request,
+            doc,
+            label: label.to_owned(),
+            target: trust.target,
+            progress,
+            status,
+            started: Instant::now(),
+            polling: matches!(lane, Lane::Poll),
+            secrets,
+        });
+        self.trim_tasks();
+    }
+
+    pub fn pump(&mut self) {
+        for _ in 0..512 {
+            let Ok(event) = self.events.try_recv() else {
+                break;
+            };
+            let (doc, request) = match &event {
+                Event::Message(doc, request, _) | Event::Finished(doc, request, _) => {
+                    (*doc, *request)
+                }
+            };
+            let task = self.tasks.iter_mut().find(|task| task.id == request);
+            // A closed document discards payloads, not the task's final outcome.
+            let slot = self
+                .slots
+                .iter_mut()
+                .find(|((id, _), slot)| *id == doc && slot.request == request)
+                .map(|(_, slot)| slot);
+            let secrets = task
+                .as_ref()
+                .map(|task| task.secrets.clone())
+                .or_else(|| slot.as_ref().map(|slot| slot.secrets.clone()))
+                .unwrap_or_default();
+            match event {
+                Event::Message(_, _, crate::worker::Resp::Progress(message)) => {
+                    let message = redact(&message, &secrets);
+                    if let Some(task) = task {
+                        if matches!(task.status, TaskStatus::Queued | TaskStatus::Running) {
+                            task.progress = message.clone();
+                            task.status = TaskStatus::Running;
+                        }
+                    }
+                    if let Some(slot) = slot {
+                        if slot.busy {
+                            slot.progress = message;
+                        }
+                    }
+                }
+                Event::Message(_, _, response) => {
+                    if let Some(message) = response_error(&response) {
+                        let message = redact(message, &secrets);
+                        if let Some(task) = task {
+                            task.status = TaskStatus::Failed;
+                            task.progress = message.clone();
+                        }
+                        if let Some(slot) = slot {
+                            slot.result = Some(Err(message));
+                        }
+                    }
+                }
+                Event::Finished(_, _, result) => {
+                    let result = sanitize(result, &secrets);
+                    if let Some(task) = task {
+                        // Terminal errors win over all subsequent progress/completion for this request.
+                        if !matches!(task.status, TaskStatus::Failed | TaskStatus::Partial) {
+                            let (status, message) = outcome_summary(&result);
+                            task.status = status;
+                            task.progress = redact(&message, &secrets);
+                        }
+                    }
+                    if let Some(slot) = slot {
+                        slot.busy = false;
+                        if slot.result.is_none() {
+                            slot.result = Some(result);
+                        }
+                    }
+                }
+            }
+        }
+        self.trim_tasks();
+    }
+
+    pub fn take(&mut self, doc: DocId, key: &str) -> Option<Outcome> {
+        self.slots.get_mut(&(doc, key.to_owned()))?.result.take()
+    }
+    pub fn busy(&self, doc: DocId, key: &str) -> bool {
+        self.slots
+            .get(&(doc, key.to_owned()))
+            .is_some_and(|slot| slot.busy)
+    }
+    pub fn progress(&self, doc: DocId, key: &str) -> Option<&str> {
+        self.slots
+            .get(&(doc, key.to_owned()))
+            .map(|slot| slot.progress.as_str())
+    }
+    pub fn close(&mut self, doc: DocId) {
+        self.slots.retain(|(id, _), _| *id != doc);
+    }
+    pub fn active(&self) -> usize {
+        self.tasks
+            .iter()
+            .filter(|t| !t.polling && matches!(t.status, TaskStatus::Queued | TaskStatus::Running))
+            .count()
+    }
+    fn trim_tasks(&mut self) {
+        while self.tasks.len() > 300 {
+            let Some(index) = self.tasks.iter().rposition(|task| {
+                matches!(
+                    task.status,
+                    TaskStatus::Complete | TaskStatus::Partial | TaskStatus::Failed
+                )
+            }) else {
+                break;
+            };
+            self.tasks.remove(index);
+        }
+    }
+}
+
+fn pool(
+    count: usize,
+    capacity: usize,
+    events: SyncSender<Event>,
+    ctx: egui::Context,
+) -> SyncSender<Work> {
+    let (tx, rx) = mpsc::sync_channel::<Work>(capacity);
+    let rx = Arc::new(Mutex::new(rx));
+    for _ in 0..count {
+        let rx = rx.clone();
+        let events = events.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || loop {
+            let work = {
+                match rx.lock() {
+                    Ok(receiver) => receiver.recv(),
+                    Err(_) => return,
+                }
+            };
+            let Ok(Work { doc, request, run }) = work else {
+                return;
+            };
+            let event_tx = events.clone();
+            let wake = ctx.clone();
+            let sink: Sink = Arc::new(move |response| {
+                let event = Event::Message(doc, request, response);
+                // Progress is expendable under backpressure; failures are not.
+                match event {
+                    Event::Message(_, _, crate::worker::Resp::Progress(_)) => {
+                        let _ = event_tx.try_send(event);
+                    }
+                    _ => {
+                        let _ = event_tx.send(event);
+                    }
+                }
+                wake.request_repaint();
+            });
+            sink(crate::worker::Resp::Progress("Running".into()));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(sink)))
+                .map_err(|_| {
+                    "The operation stopped unexpectedly. Inspect the target before retrying."
+                        .to_owned()
+                })
+                .and_then(|result| result.map_err(|error| error.to_string()));
+            if events.send(Event::Finished(doc, request, result)).is_err() {
+                return;
+            }
+            ctx.request_repaint();
         });
     }
-    inventory.projects.sort();
-    inventory.projects.dedup();
-    inventory
-        .services
-        .sort_by(|a, b| (&a.project, &a.name).cmp(&(&b.project, &b.name)));
-    Ok(inventory)
+    tx
 }
 
-fn parse_replicas(data: &Value) -> BTreeMap<String, (i64, i64)> {
-    data.as_object()
-        .into_iter()
-        .flatten()
-        .filter_map(|(name, entry)| {
-            let actual = entry.get("actual")?.as_i64()?;
-            let desired = entry.get("desired")?.as_i64()?;
-            (actual >= 0 && desired >= 0).then(|| (name.clone(), (actual, desired)))
+fn response_error(response: &crate::worker::Resp) -> Option<&str> {
+    use crate::worker::{CfResp, Resp};
+    match response {
+        Resp::Err(message)
+        | Resp::StatsErr(message)
+        | Resp::DomainsErr(message)
+        | Resp::AllServicesErr(message)
+        | Resp::DbmsFailed { message }
+        | Resp::Branches(Err(message))
+        | Resp::HostStat {
+            data: Err(message), ..
+        }
+        | Resp::SshTested(Err(message))
+        | Resp::Cf(CfResp::Err(message) | CfResp::WebAnalyticsErr(message)) => Some(message),
+        _ => None,
+    }
+}
+fn sanitize(result: Outcome, secrets: &[String]) -> Outcome {
+    use crate::worker::{CfResp, Resp};
+    let mut result = result.map_err(|message| redact(&message, secrets));
+    if let Ok(Payload::Worker(response)) = &mut result {
+        match response {
+            Resp::Err(message)
+            | Resp::StatsErr(message)
+            | Resp::DomainsErr(message)
+            | Resp::AllServicesErr(message)
+            | Resp::DbmsFailed { message }
+            | Resp::Branches(Err(message))
+            | Resp::HostStat {
+                data: Err(message), ..
+            }
+            | Resp::SshTested(Err(message))
+            | Resp::Done(message, _)
+            | Resp::Cf(
+                CfResp::Err(message)
+                | CfResp::WebAnalyticsErr(message)
+                | CfResp::Done(message)
+                | CfResp::Status(message),
+            ) => *message = redact(message, secrets),
+            Resp::BulkDone { failed, .. }
+            | Resp::DomainsEdited { failed, .. }
+            | Resp::DomainsDeleted { failed, .. }
+            | Resp::Cf(CfResp::BulkDone { failed, .. }) => {
+                for (_, message) in failed {
+                    *message = redact(message, secrets);
+                }
+            }
+            Resp::MaintInfo(rows) => {
+                for (_, result) in rows {
+                    if let Err(message) = result {
+                        *message = redact(message, secrets);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    result
+}
+fn outcome_summary(result: &Outcome) -> (TaskStatus, String) {
+    use crate::worker::{CfResp, Resp};
+    match result {
+        Err(error) => (TaskStatus::Failed, error.clone()),
+        Ok(Payload::Worker(response)) => {
+            if let Some(error) = response_error(response) {
+                return (TaskStatus::Failed, error.into());
+            }
+            let bulk = match response {
+                Resp::BulkDone { ok, failed, .. } => Some((ok.len(), failed)),
+                Resp::DomainsEdited { ok, failed }
+                | Resp::DomainsDeleted { ok, failed }
+                | Resp::Cf(CfResp::BulkDone { ok, failed }) => Some((*ok, failed)),
+                _ => None,
+            };
+            if let Some((ok, failed)) = bulk {
+                let mut message = if matches!(response, Resp::BulkDone { action, .. } if action == "deploy")
+                {
+                    format!("{ok} deployment requests dispatched, {} refused. Builds may still be running; inspect service logs for deployment results.", failed.len())
+                } else {
+                    format!("{ok} completed, {} failed.", failed.len())
+                };
+                for (target, error) in failed {
+                    message.push_str(&format!("\n{target}: {error}"));
+                }
+                return (
+                    if failed.is_empty() {
+                        TaskStatus::Complete
+                    } else if ok == 0 {
+                        TaskStatus::Failed
+                    } else {
+                        TaskStatus::Partial
+                    },
+                    message,
+                );
+            }
+            match response {
+                Resp::ServiceCreated {
+                    project,
+                    service,
+                    stype,
+                    notes,
+                    pending,
+                } => {
+                    let mut message = format!("Created {project}/{service} ({stype}).");
+                    let repair = pending.is_some() || !notes.is_empty();
+                    if repair {
+                        message.push_str(" Configuration needs attention; repair this service rather than creating it again.");
+                        if let Some(phase) = pending {
+                            message.push_str(match phase {
+                                crate::worker::ServiceSetupPhase::Source => {
+                                    " Source setup is pending."
+                                }
+                                crate::worker::ServiceSetupPhase::AutoDeploy => {
+                                    " Source is saved; auto-deploy setup is pending."
+                                }
+                            });
+                        }
+                        for note in notes {
+                            message.push('\n');
+                            message.push_str(note);
+                        }
+                    }
+                    (
+                        if repair {
+                            TaskStatus::Partial
+                        } else {
+                            TaskStatus::Complete
+                        },
+                        message,
+                    )
+                }
+                Resp::MaintInfo(rows) => {
+                    let failed = rows.iter().filter(|(_, result)| result.is_err()).count();
+                    let mut message =
+                        format!("{} completed, {failed} failed.", rows.len() - failed);
+                    for (target, result) in rows {
+                        if let Err(error) = result {
+                            message.push_str(&format!("\n{target}: {error}"));
+                        }
+                    }
+                    (
+                        if failed == 0 {
+                            TaskStatus::Complete
+                        } else if failed == rows.len() {
+                            TaskStatus::Failed
+                        } else {
+                            TaskStatus::Partial
+                        },
+                        message,
+                    )
+                }
+                Resp::Done(message, _)
+                | Resp::Cf(CfResp::Done(message) | CfResp::Status(message)) => {
+                    (TaskStatus::Complete, message.clone())
+                }
+                Resp::Notes { msg, notes, .. } => (
+                    TaskStatus::Complete,
+                    format!("{msg}\\n{}", notes.join("\\n")),
+                ),
+                Resp::ProjectEnvSaved(_) => (
+                    TaskStatus::Complete,
+                    "Environment saved. Deploy services to apply the changed configuration.".into(),
+                ),
+                _ => (TaskStatus::Complete, "Completed".into()),
+            }
+        }
+        _ => (TaskStatus::Complete, "Completed".into()),
+    }
+}
+pub(super) fn redact(text: &str, secrets: &[String]) -> String {
+    secrets
+        .iter()
+        .filter(|s| !s.is_empty())
+        .fold(text.to_owned(), |text, secret| {
+            text.replace(secret, "[redacted]")
         })
-        .collect()
-}
-
-fn run_action(client: &EasypanelClient, service: &Service, action: &str) -> Result<()> {
-    if !matches!(action, "start" | "stop" | "restart") {
-        bail!("Unsupported desktop action.");
-    }
-    let operations = lifecycle::ops(&service.kind, action)
-        .context("This service does not support that action.")?;
-    for operation in operations {
-        client.call(&format!("services/{}", service.kind), operation, service.input())
-            .map_err(|error| anyhow::anyhow!("{action} did not complete at {operation}: {error}; refresh status before retrying"))?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use httpmock::prelude::*;
-    use std::fs;
-
-    fn temp_config() -> (tempfile::TempDir, ServerConfig) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = path_of(&dir);
-        (dir, ServerConfig::new(path))
-    }
-
-    fn path_of(dir: &tempfile::TempDir) -> PathBuf {
-        dir.path().join("servers.json")
-    }
-    #[test]
-    fn desktop_edit_preserves_ssh_and_defaults_without_duplicate_overwrite() {
-        let (dir, cfg) = temp_config();
-        let hop = crate::tunnel::SshTunnel {
-            host: "ssh.example.com".into(),
-            ..Default::default()
+    fn queued() -> (Backend, SyncSender<Event>) {
+        let (work, _) = mpsc::sync_channel(1);
+        let (events_tx, events) = mpsc::sync_channel(16);
+        let mut backend = Backend {
+            interactive: work.clone(),
+            poll: work.clone(),
+            transfer: work,
+            events,
+            slots: HashMap::new(),
+            tasks: VecDeque::new(),
+            next_request: 10,
+            runtime: Runtime::default(),
         };
-        cfg.add(
-            "prod",
-            "http://localhost:3000",
-            "old-token",
-            Some(hop.clone()),
-        )
-        .unwrap();
-        cfg.save_connection(
-            Some("prod"),
-            "renamed",
-            "http://localhost:4000/",
-            "new-token",
-        )
-        .unwrap();
-        let server = cfg.get("renamed").unwrap();
-        assert_eq!(server.ssh, Some(hop));
-        assert!(server.default);
-        assert_eq!(server.url, "http://localhost:4000");
-        let before = fs::read(path_of(&dir)).unwrap();
-        assert!(cfg
-            .save_connection(None, "renamed", "https://other.test", "other-token")
-            .is_err());
-        assert_eq!(fs::read(path_of(&dir)).unwrap(), before);
-        assert!(cfg
-            .save_connection(Some("renamed"), "renamed", "https://remote.test", "token")
-            .is_err());
-        assert_eq!(fs::read(path_of(&dir)).unwrap(), before);
-        cfg.save_connection(None, "extra", "http://localhost:3000", "extra-token")
-            .unwrap();
-        assert_eq!(cfg.default().unwrap().name, "renamed");
-    }
-
-    #[test]
-    fn desktop_never_overwrites_corrupt_config_or_chooses_a_cli_default() {
-        let (dir, cfg) = temp_config();
-        cfg.save_connection(None, "first", "https://panel.test", "token")
-            .unwrap();
-        assert!(cfg.default().is_none());
-        fs::write(path_of(&dir), "not json").unwrap();
-        assert!(cfg
-            .save_connection(None, "second", "https://panel.test", "token")
-            .is_err());
-        assert_eq!(fs::read_to_string(path_of(&dir)).unwrap(), "not json");
-    }
-
-    #[test]
-    fn desktop_rejects_unsafe_urls_before_writing_credentials() {
-        let (dir, cfg) = temp_config();
-        for url in [
-            "file:///tmp/panel",
-            "https://user:password@panel.test",
-            "https://panel.test/?token=secret",
-            "https://panel.test/#secret",
-        ] {
-            assert!(cfg.save_connection(None, "unsafe", url, "token").is_err());
-        }
-        assert!(!path_of(&dir).exists());
-    }
-
-    #[test]
-    fn runtime_status_never_treats_enabled_configuration_as_running() {
-        let mut inventory = parse_inventory(&json!({"projects":[{"name":"p"}],"services":[{"projectName":"p","name":"db","type":"mysql","enabled":true}]})).unwrap();
-        assert_eq!(inventory.status(&inventory.services[0]), "Unknown");
-        inventory.replicas = parse_replicas(&json!({"p_db":{"actual":0,"desired":1}}));
-        assert_eq!(
-            inventory.status(&inventory.services[0]),
-            "Not ready (0/1 replicas)"
+        let secrets: Arc<[String]> = vec!["private".into()].into();
+        backend.slots.insert(
+            (7, "fetch".into()),
+            Slot {
+                request: 9,
+                busy: true,
+                progress: String::new(),
+                result: None,
+                secrets: secrets.clone(),
+            },
         );
-        assert!(parse_replicas(&json!({"p_db":{"actual":-1,"desired":1}})).is_empty());
-    }
-
-    #[test]
-    fn database_restart_stops_at_first_failure() {
-        let server = MockServer::start();
-        let disable = server.mock(|when, then| {
-            when.method(POST)
-                .path("/api/rpc/services/mysql/disableService");
-            then.status(400)
-                .json_body(json!({"json":{"message":"denied"}}));
+        backend.tasks.push_back(Task {
+            id: 9,
+            doc: 7,
+            label: "Transfer".into(),
+            target: "host/db".into(),
+            progress: String::new(),
+            status: TaskStatus::Running,
+            started: Instant::now(),
+            polling: false,
+            secrets,
         });
-        let enable = server.mock(|when, then| {
-            when.method(POST)
-                .path("/api/rpc/services/mysql/enableService");
-            then.status(200).json_body(json!({"json":null}));
-        });
-        let client = EasypanelClient::new(&server.base_url(), "token");
-        let service = Service {
-            project: "p".into(),
-            name: "db".into(),
-            kind: "mysql".into(),
-        };
-        assert!(run_action(&client, &service, "restart").is_err());
-        disable.assert_hits(1);
-        enable.assert_hits(0);
+        (backend, events_tx)
     }
     #[test]
-    fn database_restart_reports_failed_enable_after_successful_disable() {
-        let server = MockServer::start();
-        let disable = server.mock(|when, then| {
-            when.method(POST)
-                .path("/api/rpc/services/mysql/disableService");
-            then.status(200).json_body(json!({"json":null}));
-        });
-        let enable = server.mock(|when, then| {
-            when.method(POST)
-                .path("/api/rpc/services/mysql/enableService");
-            then.status(400)
-                .json_body(json!({"json":{"message":"cannot enable"}}));
-        });
-        let client = EasypanelClient::new(&server.base_url(), "token");
-        let service = Service {
-            project: "p".into(),
-            name: "db".into(),
-            kind: "mysql".into(),
-        };
-        let error = run_action(&client, &service, "restart")
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("enableService") && error.contains("cannot enable"));
-        disable.assert_hits(1);
-        enable.assert_hits(1);
+    fn submission_keeps_target_and_secret_redaction_together() {
+        let (mut backend, tx) = queued();
+        let (work_tx, work_rx) = mpsc::sync_channel(1);
+        backend.interactive = work_tx;
+        backend.submit(
+            8,
+            "load",
+            "Load settings",
+            TrustContext {
+                target: "other-host/app".into(),
+                secrets: vec!["other-secret".into()],
+            },
+            Lane::Interactive,
+            Box::new(|_| Ok(Payload::Text(String::new()))),
+        );
+        let work = work_rx.try_recv().unwrap();
+        assert_eq!(work.doc, 8);
+        assert_eq!(backend.tasks[0].target, "other-host/app");
+        assert_eq!(backend.tasks[0].label, "Load settings");
+        assert!(backend.busy(8, "load"));
+        assert!(tx
+            .send(Event::Finished(
+                8,
+                work.request,
+                Err("other-secret failed".into())
+            ))
+            .is_ok());
+        backend.pump();
+        assert_eq!(backend.tasks[0].progress, "[redacted] failed");
+        assert!(matches!(
+            backend.take(8, "load"),
+            Some(Err(error)) if error == "[redacted] failed"
+        ));
     }
-
     #[test]
-    fn credentials_are_removed_from_displayed_text() {
-        assert_eq!(
-            redact("failure secret123", &["", "secret123"]),
-            "failure [redacted]"
+    fn closed_document_keeps_redacted_late_failure_in_tasks() {
+        let (mut backend, tx) = queued();
+        backend.close(7);
+        assert!(tx
+            .send(Event::Finished(7, 9, Err("private failed".into())))
+            .is_ok());
+        backend.pump();
+        assert!(backend.take(7, "fetch").is_none());
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Failed));
+        assert_eq!(backend.tasks[0].progress, "[redacted] failed");
+        assert_eq!(backend.active(), 0);
+    }
+    #[test]
+    fn asynchronous_failure_cannot_regress_to_running_or_success() {
+        let (mut backend, tx) = queued();
+        assert!(tx
+            .send(Event::Message(
+                7,
+                9,
+                crate::worker::Resp::Err("private failed".into())
+            ))
+            .is_ok());
+        assert!(tx
+            .send(Event::Message(
+                7,
+                9,
+                crate::worker::Resp::Progress("still running".into())
+            ))
+            .is_ok());
+        assert!(tx
+            .send(Event::Finished(7, 9, Ok(Payload::Text("accepted".into()))))
+            .is_ok());
+        backend.pump();
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Failed));
+        assert_eq!(backend.tasks[0].progress, "[redacted] failed");
+        assert!(matches!(backend.take(7, "fetch"), Some(Err(_))));
+    }
+    #[test]
+    fn structured_failures_and_partial_bulk_keep_typed_page_payload() {
+        let (mut backend, tx) = queued();
+        assert!(tx
+            .send(Event::Finished(
+                7,
+                9,
+                Ok(Payload::Worker(crate::worker::Resp::Cf(
+                    crate::worker::CfResp::BulkDone {
+                        ok: 1,
+                        failed: vec![("record".into(), "private refused".into())]
+                    }
+                )))
+            ))
+            .is_ok());
+        backend.pump();
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Partial));
+        assert!(matches!(
+            backend.take(7, "fetch"),
+            Some(Ok(Payload::Worker(crate::worker::Resp::Cf(
+                crate::worker::CfResp::BulkDone { .. }
+            ))))
+        ));
+        let (mut backend, tx) = queued();
+        assert!(tx
+            .send(Event::Finished(
+                7,
+                9,
+                Ok(Payload::Worker(crate::worker::Resp::StatsErr(
+                    "private refused".into()
+                )))
+            ))
+            .is_ok());
+        backend.pump();
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Failed));
+        assert!(matches!(
+            backend.take(7, "fetch"),
+            Some(Ok(Payload::Worker(crate::worker::Resp::StatsErr(_))))
+        ));
+    }
+    #[test]
+    fn superseded_request_does_not_replace_current_result() {
+        let (mut backend, tx) = queued();
+        backend.slots.get_mut(&(7, "fetch".into())).unwrap().request = 10;
+        assert!(tx
+            .send(Event::Finished(7, 9, Ok(Payload::Text("old".into()))))
+            .is_ok());
+        backend.pump();
+        assert!(backend.busy(7, "fetch"));
+        assert!(backend.take(7, "fetch").is_none());
+    }
+    #[test]
+    fn text_result_stays_private_to_document_and_never_enters_task_history() {
+        let (mut backend, tx) = queued();
+        let connector_token = "new-generated-connector-token";
+        assert!(tx
+            .send(Event::Finished(
+                7,
+                9,
+                Ok(Payload::Text(connector_token.into()))
+            ))
+            .is_ok());
+        backend.pump();
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Complete));
+        assert_eq!(backend.tasks[0].progress, "Completed");
+        assert!(!backend.tasks[0].progress.contains(connector_token));
+        assert!(
+            matches!(backend.take(7, "fetch"), Some(Ok(Payload::Text(value))) if value == connector_token)
         );
     }
-
     #[test]
-    fn malformed_inventory_is_an_error_not_an_empty_success() {
-        assert!(parse_inventory(&json!({"unexpected":[]})).is_err());
-        assert!(parse_inventory(&json!({"projects":[],"services":[{}]})).is_err());
-        assert!(parse_inventory(&json!({"projects":[],"services":[]}))
-            .unwrap()
-            .services
-            .is_empty());
+    fn created_service_with_repair_notes_is_partial_not_creation_failure() {
+        let (mut backend, tx) = queued();
+        assert!(tx
+            .send(Event::Finished(
+                7,
+                9,
+                Ok(Payload::Worker(crate::worker::Resp::ServiceCreated {
+                    project: "shop".into(),
+                    service: "api".into(),
+                    stype: "app".into(),
+                    notes: vec!["Source configuration needs repair.".into()],
+                    pending: Some(crate::worker::ServiceSetupPhase::Source),
+                }))
+            ))
+            .is_ok());
+        backend.pump();
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Partial));
+        assert!(backend.tasks[0]
+            .progress
+            .starts_with("Created shop/api (app)."));
+        assert!(backend.tasks[0]
+            .progress
+            .contains("rather than creating it again"));
+        assert!(matches!(
+            backend.take(7, "fetch"),
+            Some(Ok(Payload::Worker(
+                crate::worker::Resp::ServiceCreated { .. }
+            )))
+        ));
+    }
+    #[test]
+    fn bulk_deploy_completion_reports_dispatch_not_finished_builds() {
+        let (mut backend, tx) = queued();
+        assert!(tx
+            .send(Event::Finished(
+                7,
+                9,
+                Ok(Payload::Worker(crate::worker::Resp::BulkDone {
+                    action: "deploy".into(),
+                    ok: vec!["shop/api".into()],
+                    failed: vec![],
+                }))
+            ))
+            .is_ok());
+        backend.pump();
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Complete));
+        assert!(backend.tasks[0]
+            .progress
+            .contains("deployment requests dispatched"));
+        assert!(backend.tasks[0]
+            .progress
+            .contains("Builds may still be running"));
+        assert!(!backend.tasks[0].progress.contains("completed"));
+    }
+    #[test]
+    fn completed_service_setup_reports_created_target() {
+        let (mut backend, tx) = queued();
+        assert!(tx
+            .send(Event::Finished(
+                7,
+                9,
+                Ok(Payload::Worker(crate::worker::Resp::ServiceCreated {
+                    project: "shop".into(),
+                    service: "api".into(),
+                    stype: "app".into(),
+                    notes: vec![],
+                    pending: None,
+                }))
+            ))
+            .is_ok());
+        backend.pump();
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Complete));
+        assert_eq!(backend.tasks[0].progress, "Created shop/api (app).");
+    }
+}
+
+#[cfg(test)]
+mod late_event_tests {
+    use super::*;
+    #[test]
+    fn late_error_after_completion_is_retained_and_progress_cannot_hide_it() {
+        let (work, _) = mpsc::sync_channel(1);
+        let (events_tx, events) = mpsc::sync_channel(8);
+        let mut backend = Backend {
+            interactive: work.clone(),
+            poll: work.clone(),
+            transfer: work,
+            events,
+            slots: HashMap::new(),
+            tasks: VecDeque::new(),
+            next_request: 2,
+            runtime: Runtime::default(),
+        };
+        backend.slots.insert(
+            (1, "deploy".into()),
+            Slot {
+                request: 1,
+                busy: true,
+                progress: String::new(),
+                result: None,
+                secrets: Arc::from([]),
+            },
+        );
+        backend.tasks.push_back(Task {
+            id: 1,
+            doc: 1,
+            label: "Deploy".into(),
+            target: "host/project/service".into(),
+            progress: String::new(),
+            status: TaskStatus::Running,
+            started: Instant::now(),
+            polling: false,
+            secrets: Arc::from([]),
+        });
+        assert!(events_tx
+            .send(Event::Finished(1, 1, Ok(Payload::Text("Accepted".into()))))
+            .is_ok());
+        backend.pump();
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Complete));
+        assert!(backend.take(1, "deploy").is_some());
+        assert!(events_tx
+            .send(Event::Message(
+                1,
+                1,
+                crate::worker::Resp::Err("Late deployment failure".into())
+            ))
+            .is_ok());
+        assert!(events_tx
+            .send(Event::Message(
+                1,
+                1,
+                crate::worker::Resp::Progress("Old progress".into())
+            ))
+            .is_ok());
+        backend.pump();
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Failed));
+        assert_eq!(backend.tasks[0].progress, "Late deployment failure");
+        assert!(matches!(backend.take(1, "deploy"), Some(Err(_))));
     }
 }
