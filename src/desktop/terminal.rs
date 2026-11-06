@@ -1732,10 +1732,18 @@ mod tests {
                         ..Default::default()
                     },
                     |ui| {
-                        egui::Panel::top("menubar").exact_size(32.0).show(ui, |_| {});
-                        egui::Panel::bottom("statusbar").exact_size(24.0).show(ui, |_| {});
-                        egui::Panel::left("activitybar").exact_size(46.0).show(ui, |_| {});
-                        egui::Panel::left("explorer").exact_size(252.0).show(ui, |_| {});
+                        egui::Panel::top("menubar")
+                            .exact_size(32.0)
+                            .show(ui, |_| {});
+                        egui::Panel::bottom("statusbar")
+                            .exact_size(24.0)
+                            .show(ui, |_| {});
+                        egui::Panel::left("activitybar")
+                            .exact_size(46.0)
+                            .show(ui, |_| {});
+                        egui::Panel::left("explorer")
+                            .exact_size(252.0)
+                            .show(ui, |_| {});
                         egui::Panel::bottom("utility")
                             .exact_size(220.0)
                             .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 5)))
@@ -1753,12 +1761,22 @@ mod tests {
                     "{size:?}: utility bounds {utility_rect:?} exceed {} points",
                     size.x - 298.0 - 24.0,
                 );
-                assert!(root_rect.max.x <= size.x + 0.5, "{size:?}: root {root_rect:?}");
-                assert!(root_rect.max.y <= size.y + 0.5, "{size:?}: root {root_rect:?}");
+                assert!(
+                    root_rect.max.x <= size.x + 0.5,
+                    "{size:?}: root {root_rect:?}"
+                );
+                assert!(
+                    root_rect.max.y <= size.y + 0.5,
+                    "{size:?}: root {root_rect:?}"
+                );
                 let PageState::Terminal(state) = &app.documents[0].state else {
                     unreachable!();
                 };
-                assert!(state.size.1 >= 7, "actual utility has only {} rows", state.size.1);
+                assert!(
+                    state.size.1 >= 7,
+                    "actual utility has only {} rows",
+                    state.size.1
+                );
                 assert!(opened.is_empty());
             }
         }

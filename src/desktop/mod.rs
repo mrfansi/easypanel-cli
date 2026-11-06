@@ -1014,13 +1014,15 @@ impl Desktop {
         } else {
             ui.horizontal_wrapped(|ui| {
                 let breadcrumb = document.breadcrumb();
-                let response = ui.add(
-                    egui::Label::new(
-                        RichText::new(&breadcrumb).color(ui.visuals().weak_text_color()),
+                let response = ui
+                    .add(
+                        egui::Label::new(
+                            RichText::new(&breadcrumb).color(ui.visuals().weak_text_color()),
+                        )
+                        .truncate()
+                        .sense(egui::Sense::click()),
                     )
-                    .truncate()
-                    .sense(egui::Sense::click()),
-                ).on_hover_text(&breadcrumb);
+                    .on_hover_text(&breadcrumb);
                 if self.focus == Some(2) {
                     response.request_focus();
                     self.focus = None;
@@ -1122,14 +1124,22 @@ impl Desktop {
             }
             if self.utility != Utility::Tasks {
                 let logs = self.utility == Utility::Logs;
-                let selected = self.documents.iter().find(|doc| {
-                    doc.docked
-                        && Some(doc.id) == self.utility_doc
-                        && matches!(doc.page.target.section.as_str(), "logs" | "log-search") == logs
-                }).or_else(|| self.documents.iter().find(|doc| {
-                    doc.docked
-                        && matches!(doc.page.target.section.as_str(), "logs" | "log-search") == logs
-                }));
+                let selected = self
+                    .documents
+                    .iter()
+                    .find(|doc| {
+                        doc.docked
+                            && Some(doc.id) == self.utility_doc
+                            && matches!(doc.page.target.section.as_str(), "logs" | "log-search")
+                                == logs
+                    })
+                    .or_else(|| {
+                        self.documents.iter().find(|doc| {
+                            doc.docked
+                                && matches!(doc.page.target.section.as_str(), "logs" | "log-search")
+                                    == logs
+                        })
+                    });
                 if let Some(document) = selected {
                     self.utility_doc = Some(document.id);
                     let target = document.page.target.label();
@@ -1148,15 +1158,27 @@ impl Desktop {
                                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                                     for document in self.documents.iter().filter(|doc| {
                                         doc.docked
-                                            && matches!(doc.page.target.section.as_str(), "logs" | "log-search") == logs
+                                            && matches!(
+                                                doc.page.target.section.as_str(),
+                                                "logs" | "log-search"
+                                            ) == logs
                                     }) {
-                                        ui.selectable_value(&mut self.utility_doc, Some(document.id), document.page.target.label());
+                                        ui.selectable_value(
+                                            &mut self.utility_doc,
+                                            Some(document.id),
+                                            document.page.target.label(),
+                                        );
                                     }
                                 })
-                                .response.on_hover_text(target);
+                                .response
+                                .on_hover_text(target);
                         },
                     );
-                    if ui.small_button("Close").on_hover_text("Close selected session").clicked() {
+                    if ui
+                        .small_button("Close")
+                        .on_hover_text("Close selected session")
+                        .clicked()
+                    {
                         close = self.utility_doc;
                     }
                 }
