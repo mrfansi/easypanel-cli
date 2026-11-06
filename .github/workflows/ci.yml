@@ -85,8 +85,4 @@ jobs:
       # Sengaja TANPA --deny warnings: `cargo audit` polos gagal pada kerentanan
       # sungguhan dan hanya mencatat peringatan "unmaintained". CI yang merah
       # terus-menerus berhenti dibaca, lalu kerentanan sungguhan lewat.
-      #
-      # Hari ini: 0 kerentanan, 1 peringatan — async-std, lewat httpmock, sebuah
-      # DEV-dependency yang tak pernah ikut ke biner yang dirilis. (lru unsound
-      # dan paste hilang saat ratatui naik ke 0.30.)
       - run: cargo audit
