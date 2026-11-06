@@ -965,6 +965,11 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
     }
     flush_reads(state, cx);
     poll_runtime(ui, state, cx);
+    if state.confirmation.is_some() {
+        feedback(ui, state, cx);
+        confirmation(ui, state, cx);
+        return;
+    }
     if cx.target.service.is_empty() && state.editor.is_none() {
         ui.horizontal_wrapped(|ui| {
             if ui
@@ -1029,7 +1034,9 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
         service(ui, state, cx);
     }
     editor(ui, state, cx);
-    confirmation(ui, state, cx);
+    if state.confirmation.is_some() {
+        ui.ctx().request_repaint();
+    }
     flush_reads(state, cx);
 }
 fn feedback(ui: &mut egui::Ui, state: &mut State, cx: &PageContext<'_>) {
@@ -2630,7 +2637,15 @@ fn confirmation(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) 
     let Some(confirm) = &state.confirmation else {
         return;
     };
-    ui.separator();
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(&confirm.title)
+                .strong()
+                .color(ui.visuals().warn_fg_color),
+        )
+        .truncate(),
+    )
+    .on_hover_text(&confirm.title);
     let typed = confirm.typed.then_some(
         if matches!(confirm.action, ConfirmAction::Request(Req::Bulk { .. })) {
             "DESTROY"
@@ -2644,18 +2659,38 @@ fn confirmation(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) 
     ui.add_enabled_ui(
         !cx.busy("mutation") && (!indexed || state.editor.is_none()),
         |ui| {
-            apply = widgets::confirm(
-                ui,
-                &confirm.title,
-                &confirm.target,
-                typed,
-                &mut state.confirmation_entry,
-            );
-            if ui.button("Cancel").clicked() {
-                cancel = true;
+            if let Some(expected) = typed {
+                let prompt = format!("Type {expected} to confirm this target:");
+                let label = ui
+                    .add(egui::Label::new(&prompt).truncate())
+                    .on_hover_text(&prompt);
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.confirmation_entry)
+                        .desired_width(f32::INFINITY),
+                )
+                .labelled_by(label.id);
             }
+            ui.horizontal_wrapped(|ui| {
+                apply = ui
+                    .add_enabled(
+                        typed.is_none_or(|expected| state.confirmation_entry == expected),
+                        egui::Button::new("Confirm")
+                            .fill(ui.visuals().error_fg_color.gamma_multiply(0.20)),
+                    )
+                    .clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
         },
     );
+    ui.separator();
+    egui::ScrollArea::vertical()
+        .id_salt("service-review-details")
+        .max_height(ui.available_height().max(24.0))
+        .min_scrolled_height(24.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(&confirm.target).wrap());
+        });
     if apply {
         if let Some(confirm) = state.confirmation.take() {
             match confirm.action {
@@ -2743,6 +2778,11 @@ fn atomic_export(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
 
 pub(super) fn show_connections(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     pump(state, cx);
+    if state.confirmation.is_some() {
+        feedback(ui, state, cx);
+        confirmation(ui, state, cx);
+        return;
+    }
     ui.horizontal(|ui| {
         ui.heading("Connections");
         if ui
@@ -2860,7 +2900,9 @@ pub(super) fn show_connections(ui: &mut egui::Ui, state: &mut State, cx: &mut Pa
     }
     feedback(ui, state, cx);
     editor(ui, state, cx);
-    confirmation(ui, state, cx);
+    if state.confirmation.is_some() {
+        ui.ctx().request_repaint();
+    }
 }
 fn connection_form(server: Option<&Server>) -> Form {
     let entry = server.cloned().map(form::ServerEntry::from);
@@ -2933,21 +2975,256 @@ mod tests {
             .value = value.into();
     }
     #[test]
+    fn service_review_stays_visible_and_guards_two_hundred_captured_targets() {
+        use super::super::backend::Backend;
+        fn frame(
+            ctx: &egui::Context,
+            state: &mut State,
+            cx: &mut PageContext<'_>,
+            size: egui::Vec2,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            let mut measured = None;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Panel::top("menubar")
+                        .exact_size(32.0)
+                        .show(ui, |_| {});
+                    egui::Panel::bottom("statusbar")
+                        .exact_size(24.0)
+                        .show(ui, |_| {});
+                    egui::Panel::left("activitybar")
+                        .exact_size(46.0)
+                        .show(ui, |_| {});
+                    egui::Panel::left("explorer")
+                        .exact_size(252.0)
+                        .show(ui, |_| {});
+                    egui::Panel::bottom("utility")
+                        .exact_size(220.0)
+                        .show(ui, |_| {});
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 4)))
+                        .show(ui, |ui| {
+                            ui.allocate_space(egui::vec2(ui.available_width(), 32.0));
+                            ui.separator();
+                            let bounds = ui.available_rect_before_wrap();
+                            show(ui, state, cx);
+                            measured = Some((bounds, ui.min_rect()));
+                        });
+                },
+            );
+            output.textures_delta.clear();
+            let (bounds, content) = measured.unwrap();
+            assert!(
+                content.max.y <= bounds.max.y + 0.5,
+                "{content:?} exceeds {bounds:?}"
+            );
+            assert!(
+                content.max.x <= bounds.max.x + 0.5,
+                "{content:?} exceeds {bounds:?}"
+            );
+            output
+        }
+        fn text_bounds(output: &egui::FullOutput, text: &str) -> (egui::Rect, egui::Rect) {
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(shape) if shape.galley.text() == text => Some((
+                        shape.galley.rect.translate(shape.pos.to_vec2()),
+                        clipped.clip_rect,
+                    )),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing {text}"))
+        }
+        fn click(
+            ctx: &egui::Context,
+            state: &mut State,
+            cx: &mut PageContext<'_>,
+            size: egui::Vec2,
+            pos: egui::Pos2,
+        ) {
+            for pressed in [true, false] {
+                frame(
+                    ctx,
+                    state,
+                    cx,
+                    size,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+        }
+        for size in [egui::vec2(1024.0, 680.0), egui::vec2(1280.0, 800.0)] {
+            for service in ["", "selected-service"] {
+                let ctx = egui::Context::default();
+                super::super::theme::apply(&ctx, super::super::theme::Mode::Dark);
+                let target = Target {
+                    service: service.into(),
+                    service_type: "app".into(),
+                    ..Default::default()
+                };
+                let mut backend = Backend::new(ctx.clone(), super::super::Runtime::default());
+                let mut opened = Vec::new();
+                let mut reload = false;
+                let path = std::path::Path::new("");
+                let mut cx = PageContext {
+                    target: &target,
+                    servers: &[],
+                    accounts: &[],
+                    server_config: path,
+                    cloudflare_config: path,
+                    watchlist: path,
+                    doc: 1,
+                    backend: &mut backend,
+                    opened: &mut opened,
+                    reload: &mut reload,
+                };
+                let targets: Vec<_> = (0..200)
+                    .map(|i| {
+                        (
+                            "project-with-a-long-identity".to_owned(),
+                            format!("service-with-a-long-captured-identity-{i}"),
+                            "app".to_owned(),
+                        )
+                    })
+                    .collect();
+                let names = targets
+                    .iter()
+                    .map(|(p, s, _)| format!("{p}/{s}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let mut state = State {
+                    initialized: true,
+                    last_poll: Some(Instant::now()),
+                    projects: vec!["project-with-a-long-identity".into()],
+                    services: targets
+                        .iter()
+                        .map(|(p, s, k)| {
+                            json!({
+                                "projectName": p, "name": s, "type": k
+                            })
+                        })
+                        .collect(),
+                    ..Default::default()
+                };
+                state.confirm(
+                    "Destroy 200 services",
+                    names.clone(),
+                    true,
+                    ConfirmAction::Request(Req::Bulk {
+                        targets: targets.clone(),
+                        action: "destroy".into(),
+                        force: false,
+                    }),
+                );
+                state.confirmation_entry = "DESTRO".into();
+                let output = frame(&ctx, &mut state, &mut cx, size, Vec::new());
+                for text in [
+                    "Destroy 200 services",
+                    "Type DESTROY to confirm this target:",
+                    "Confirm",
+                    "Cancel",
+                ] {
+                    let (rect, clip) = text_bounds(&output, text);
+                    assert!(clip.contains_rect(rect), "{text} must remain visible");
+                }
+                assert!(!output.shapes.iter().any(|clipped| matches!(&clipped.shape,
+                    egui::epaint::Shape::Text(shape) if ["New project", "Deploy"].contains(&shape.galley.text()))));
+                let (details, clip) = text_bounds(&output, &names);
+                assert!(
+                    details.height() > clip.height(),
+                    "target list must scroll inside review"
+                );
+                click(
+                    &ctx,
+                    &mut state,
+                    &mut cx,
+                    size,
+                    text_bounds(&output, "Confirm").0.center(),
+                );
+                let confirmation = state
+                    .confirmation
+                    .as_ref()
+                    .expect("partial guard must not submit");
+                let ConfirmAction::Request(Req::Bulk {
+                    targets: captured, ..
+                }) = &confirmation.action
+                else {
+                    panic!("captured bulk action must be preserved");
+                };
+                assert_eq!(captured, &targets);
+                click(
+                    &ctx,
+                    &mut state,
+                    &mut cx,
+                    size,
+                    text_bounds(&output, "Cancel").0.center(),
+                );
+                assert!(state.confirmation.is_none());
+                assert_eq!(state.services.len(), 200);
+                state.confirm(
+                    "Destroy 200 services",
+                    names,
+                    true,
+                    ConfirmAction::Request(Req::Bulk {
+                        targets,
+                        action: "destroy".into(),
+                        force: false,
+                    }),
+                );
+                state.confirmation_entry = "DESTROY".into();
+                let output = frame(&ctx, &mut state, &mut cx, size, Vec::new());
+                click(
+                    &ctx,
+                    &mut state,
+                    &mut cx,
+                    size,
+                    text_bounds(&output, "Confirm").0.center(),
+                );
+                assert!(
+                    state.confirmation.is_none(),
+                    "exact guard must submit captured action"
+                );
+            }
+        }
+    }
+    #[test]
     fn multiline_service_editor_keeps_actions_and_help_above_the_dock() {
         use super::super::backend::Backend;
         for size in [egui::vec2(1024.0, 680.0), egui::vec2(1280.0, 800.0)] {
-            for raw in ["".to_owned(), "KEY=  preserved \r\nNEXT=value\n".to_owned(),
-                format!("LONG={}\n{}", "x".repeat(2000), "KEY=value\n".repeat(100))]
-            {
+            for raw in [
+                "".to_owned(),
+                "KEY=  preserved \r\nNEXT=value\n".to_owned(),
+                format!("LONG={}\n{}", "x".repeat(2000), "KEY=value\n".repeat(100)),
+            ] {
                 let ctx = egui::Context::default();
                 super::super::theme::apply(&ctx, super::super::theme::Mode::Dark);
                 let mut backend = Backend::new(ctx.clone(), super::super::Runtime::default());
                 let target = Target {
-                    project: "project".into(), service: "service".into(),
-                    service_type: "app".into(), section: "environment".into(),
+                    project: "project".into(),
+                    service: "service".into(),
+                    service_type: "app".into(),
+                    section: "environment".into(),
                     ..Default::default()
                 };
-                let mut state = State { section: "environment".into(), ..Default::default() };
+                let mut state = State {
+                    section: "environment".into(),
+                    ..Default::default()
+                };
                 state.editor = Some(make_editor(Form::new(
                     FormKind::ProjectCreate, "Environment",
                     vec![Field::editor("Environment", "original")],
@@ -2956,33 +3233,52 @@ mod tests {
                 let mut opened = Vec::new();
                 let mut reload = false;
                 let mut cx = PageContext {
-                    target: &target, servers: &[], accounts: &[],
-                    server_config: std::path::Path::new(""), cloudflare_config: std::path::Path::new(""),
-                    watchlist: std::path::Path::new(""), doc: 1,
-                    backend: &mut backend, opened: &mut opened, reload: &mut reload,
+                    target: &target,
+                    servers: &[],
+                    accounts: &[],
+                    server_config: std::path::Path::new(""),
+                    cloudflare_config: std::path::Path::new(""),
+                    watchlist: std::path::Path::new(""),
+                    doc: 1,
+                    backend: &mut backend,
+                    opened: &mut opened,
+                    reload: &mut reload,
                 };
                 let mut measured = None;
-                let mut output = ctx.run_ui(egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                    ..Default::default()
-                }, |ui| {
-                    egui::Panel::top("menubar").exact_size(32.0).show(ui, |_| {});
-                    egui::Panel::bottom("statusbar").exact_size(24.0).show(ui, |_| {});
-                    egui::Panel::left("activitybar").exact_size(46.0).show(ui, |_| {});
-                    egui::Panel::left("explorer").exact_size(252.0).show(ui, |_| {});
-                    egui::Panel::bottom("utility").exact_size(220.0).show(ui, |_| {});
-                    egui::CentralPanel::default()
-                        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 4)))
-                        .show(ui, |ui| {
-                            ui.allocate_space(egui::vec2(ui.available_width(), 32.0));
-                            ui.separator();
-                            ui.label(target.label());
-                            let bounds = ui.available_rect_before_wrap();
-                            service(ui, &mut state, &mut cx);
-                            editor(ui, &mut state, &mut cx);
-                            measured = Some((bounds, ui.min_rect()));
-                        });
-                });
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::Panel::top("menubar")
+                            .exact_size(32.0)
+                            .show(ui, |_| {});
+                        egui::Panel::bottom("statusbar")
+                            .exact_size(24.0)
+                            .show(ui, |_| {});
+                        egui::Panel::left("activitybar")
+                            .exact_size(46.0)
+                            .show(ui, |_| {});
+                        egui::Panel::left("explorer")
+                            .exact_size(252.0)
+                            .show(ui, |_| {});
+                        egui::Panel::bottom("utility")
+                            .exact_size(220.0)
+                            .show(ui, |_| {});
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 4)))
+                            .show(ui, |ui| {
+                                ui.allocate_space(egui::vec2(ui.available_width(), 32.0));
+                                ui.separator();
+                                ui.label(target.label());
+                                let bounds = ui.available_rect_before_wrap();
+                                service(ui, &mut state, &mut cx);
+                                editor(ui, &mut state, &mut cx);
+                                measured = Some((bounds, ui.min_rect()));
+                            });
+                    },
+                );
                 output.textures_delta.clear();
                 let (bounds, content) = measured.expect("service editor must render");
                 assert!(content.max.y <= bounds.max.y + 0.5,
@@ -3001,15 +3297,23 @@ mod tests {
                         "{text} is clipped at {size:?}");
                 }
                 if !raw.is_empty() {
-                    let (clip, text) = output.shapes.iter().find_map(|clipped| match &clipped.shape {
-                        egui::epaint::Shape::Text(shape) if shape.galley.text() == raw =>
-                            Some((clipped.clip_rect, shape)),
-                        _ => None,
-                    }).expect("multiline editor must paint its content");
+                    let (clip, text) = output
+                        .shapes
+                        .iter()
+                        .find_map(|clipped| match &clipped.shape {
+                            egui::epaint::Shape::Text(shape) if shape.galley.text() == raw => {
+                                Some((clipped.clip_rect, shape))
+                            }
+                            _ => None,
+                        })
+                        .expect("multiline editor must paint its content");
                     assert!(clip.height() > 80.0,
                         "editor has no useful line box: size={size:?}, raw_bytes={}, clip={clip:?}, text_rect={:?}", raw.len(), text.galley.rect);
                     if raw.lines().count() > 3 {
-                        assert!(text.galley.rect.height() > clip.height(), "long content must scroll internally");
+                        assert!(
+                            text.galley.rect.height() > clip.height(),
+                            "long content must scroll internally"
+                        );
                     }
                 }
                 assert_eq!(state.editor.as_ref().unwrap().form.fields[0].value, raw);
