@@ -158,6 +158,10 @@ project/service context attached to that document: choosing another resource doe
 not retarget an open tab. Editors retain unsaved changes while you switch tabs and
 ask before discarding them. Reopen documents after changing connection credentials.
 
+Edit configuration, choose **Save changes**, then explicitly **Deploy** or
+**Restart** as appropriate to apply it. Unsaved edits block Deploy, Start and
+Restart; saving configuration is separate from those lifecycle actions.
+
 - **Project and service configuration:** create/delete projects and services;
   deploy, rebuild, start, stop, restart and bulk actions; source/GitHub repository,
   branch and auto-deploy settings; build/deployment options, resource limits,
@@ -174,8 +178,11 @@ ask before discarding them. Reopen documents after changing connection credentia
   history and restores, including cross-host restores. Non-locking MySQL/MariaDB
   dumps, downloads, restores and database copies use remote storage. Separate
   workflows clone service configuration, migrate services/projects, compare hosts
-  and export redacted project snapshots. Configuration transfer does **not** copy
-  database rows or volume contents.
+  and export redacted project snapshots. Choose **Database**, **Backups & data
+  transfer** or **Configuration**, then select the operation from **Task**.
+  **Focus query** expands the query editor; **Show results** returns to the
+  resizable split view. Configuration transfer does **not** copy database rows
+  or volume contents.
 - **Host operations:** fleet health, system/service metrics, nodes and storage;
   domain routing and bulk rewrites; certificate and notification listing/removal;
   action history, details, logs and kill; enrolled uptime requests/results;
@@ -202,6 +209,13 @@ are capped at 200; there is no cell editor, DDL builder or Redis table grid.
 Restores/copies can overwrite data, have **no rollback**, and can leave partial
 writes. Closing a document does not cancel remote work; inspect the target after
 a timeout before retrying.
+
+Local query saves, **Save redacted project…**, and dump downloads refuse existing
+paths. **Export project…** from a project document can atomically replace its
+destination only after explicit **Export** review. Reviewed single-file R2/Worker
+downloads can atomically replace regular files; marked R2 folder downloads refuse
+existing paths. Review opaque scripts and inline commands in exported configuration
+for embedded secrets before sharing; known-field redaction is not exhaustive.
 
 Desktop covers the workflows exposed by this CLI/TUI, **not every EasyPanel or
 Cloudflare vendor API**. Existing engine, permission and upload limits still
@@ -1013,13 +1027,28 @@ ingress configuration. The list shows each tunnel's status, config source, creat
 date, target `<tunnel-id>.cfargotunnel.com`, and id. The config view shows the
 hostnames/services published through that tunnel, including the catch-all rule.
 Route add/edit/delete performs Cloudflare's required read-modify-write on
-`config.ingress` and keeps a catch-all rule at the end. In the TUI, route forms split
-Cloudflare's service value into **Service Type** plus **Service URL** and expose origin
-request settings as normal form fields instead of raw JSON. Pass `--dns` on add/edit to
+`config.ingress` and keeps a catch-all rule at the end. TUI and native desktop route
+forms split Cloudflare's service value into **Service Type** plus **Service URL** and
+expose origin request settings as normal form fields instead of raw JSON. Pass `--dns` on add/edit to
 create or update the public CNAME to the tunnel target; pass `--delete-dns` on delete
 to remove matching CNAME records. If the hostname spans multiple zones, pass
 `--zone <zone-name-or-id>`. Tunnel delete uses typed-name confirmation in both CLI and
 TUI.
+
+Origin timeout/keep-alive durations use integer **seconds**, not duration strings;
+Keep Alive Connections is an integer count. Blank numeric fields inherit.
+Optional boolean choices distinguish **Inherit**, **Enabled** and **Disabled**:
+Disabled writes an explicit `false`, rather than inheriting a global `true`.
+Access inheritance applies to the entire object: **Require** validates team/AUD
+inputs; **Disable requirement** writes `required:false`, retaining existing
+team/AUD values (or supplying empty required members for a new disabled object).
+Proxy Type **regular** writes an explicit empty-string override, distinct from
+**Inherit**. Unchanged valid values, empty-string overrides and unknown/nested
+options survive unrelated edits; changing a text field to blank removes that key.
+Malformed stored numeric values must be corrected or cleared before saving.
+**Clear origin request** explicitly removes the entire route override.
+Proxy Address/Port are documented by Cloudflare for locally managed tunnels;
+their remote REST support is not established here, and existing values are preserved.
 
 **R2 (object storage) — buckets and objects:**
 
