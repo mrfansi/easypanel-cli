@@ -24,7 +24,8 @@ use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, RwLock, RwLockReadGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,8 @@ use std::time::{Duration, Instant};
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How much of `ssh`'s stderr is kept for the error message.
 const STDERR_KEEP: usize = 2048;
+/// Bound a blocking socket operation before checking for shutdown again.
+const SHUTDOWN_POLL: Duration = Duration::from_millis(100);
 
 /// The URL a tunnelled panel is written as when none is given.
 pub const DEFAULT_REMOTE_URL: &str = "http://localhost:3000";
@@ -91,6 +94,44 @@ impl Drop for Tunnel {
 type Slot = Arc<Mutex<Option<Tunnel>>>;
 
 static REGISTRY: LazyLock<Mutex<HashMap<String, Slot>>> = LazyLock::new(Default::default);
+static SHUTDOWN: LazyLock<Shutdown> = LazyLock::new(Default::default);
+
+#[derive(Default)]
+struct Shutdown {
+    cancelled: AtomicBool,
+    opening: RwLock<()>,
+}
+
+impl Shutdown {
+    fn check(&self) -> Result<()> {
+        if self.cancelled.load(Ordering::Acquire) {
+            bail!("SSH tunnels are shutting down");
+        }
+        Ok(())
+    }
+
+    fn begin(&self) -> Result<RwLockReadGuard<'_, ()>> {
+        self.check()?;
+        let opening = self.opening.read().unwrap_or_else(PoisonError::into_inner);
+        self.check()?;
+        Ok(opening)
+    }
+
+    fn close_all(&self, registry: &Mutex<HashMap<String, Slot>>) {
+        // Cancel before waiting: an opener holds its slot until its child is reaped.
+        self.cancelled.store(true, Ordering::Release);
+        drop(self.opening.write().unwrap_or_else(PoisonError::into_inner));
+        let slots: Vec<Slot> = registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain()
+            .map(|(_, s)| s)
+            .collect();
+        for slot in slots {
+            slot.lock().unwrap_or_else(PoisonError::into_inner).take();
+        }
+    }
+}
 
 /// Is this usable as the host (or user) argument of `ssh`?
 ///
@@ -375,9 +416,10 @@ pub fn base_url(tunnel: &SshTunnel, url: &str) -> Result<String> {
 /// Open a throwaway tunnel and say what happened — the form's and `server
 /// test`'s "Test SSH tunnel". Never touches the shared tunnels.
 pub fn test(tunnel: &SshTunnel, url: &str) -> Result<String> {
+    let _opening = SHUTDOWN.begin()?;
     validate(tunnel, url)?;
     let (remote, _) = forward_target(url)?;
-    let (_t, probe) = open(tunnel, &remote)?;
+    let (_t, probe) = open(tunnel, &remote, &SHUTDOWN)?;
     let who = tunnel.describe();
     Ok(match probe {
         Probe::Answered => format!("SSH to {who} OK — the panel answered at {remote}"),
@@ -389,6 +431,7 @@ pub fn test(tunnel: &SshTunnel, url: &str) -> Result<String> {
 }
 
 fn local_port(tunnel: &SshTunnel, remote: &str) -> Result<u16> {
+    let _opening = SHUTDOWN.begin()?;
     let slot = REGISTRY
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -398,6 +441,7 @@ fn local_port(tunnel: &SshTunnel, remote: &str) -> Result<u16> {
     // Per-tunnel lock: two hosts open in parallel, two users of one host wait for
     // the same tunnel instead of each starting their own.
     let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    SHUTDOWN.check()?;
     if let Some(t) = slot.as_mut() {
         if t.alive() {
             return Ok(t.port);
@@ -405,13 +449,14 @@ fn local_port(tunnel: &SshTunnel, remote: &str) -> Result<u16> {
     }
     // Dead (the connection dropped, the laptop slept): reap it and dial again.
     *slot = None;
-    let (t, _) = open(tunnel, remote)?;
+    let (t, _) = open(tunnel, remote, &SHUTDOWN)?;
     let port = t.port;
     *slot = Some(t);
     Ok(port)
 }
 
-fn open(tunnel: &SshTunnel, remote: &str) -> Result<(Tunnel, Probe)> {
+fn open(tunnel: &SshTunnel, remote: &str, shutdown: &Shutdown) -> Result<(Tunnel, Probe)> {
+    shutdown.check()?;
     tunnel.validate()?;
     let who = tunnel.describe();
     // Bind-and-release to find a free port. ExitOnForwardFailure turns the rare
@@ -420,6 +465,7 @@ fn open(tunnel: &SshTunnel, remote: &str) -> Result<(Tunnel, Probe)> {
     let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?
         .local_addr()?
         .port();
+    shutdown.check()?;
     let mut child = tunnel
         .command(port, remote)?
         .spawn()
@@ -445,25 +491,37 @@ fn open(tunnel: &SshTunnel, remote: &str) -> Result<(Tunnel, Probe)> {
             }
         })
     });
-    let mut t = Tunnel {
+    let t = Tunnel {
         child,
         port,
         stderr,
         reader,
     };
+    wait_for_open(t, &who, remote, tunnel.timeout(), shutdown)
+}
 
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+fn wait_for_open(
+    mut t: Tunnel,
+    who: &str,
+    remote: &str,
+    timeout: u64,
+    shutdown: &Shutdown,
+) -> Result<(Tunnel, Probe)> {
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, t.port));
     // Connecting is bounded by ConnectTimeout; authenticating on top of it is not,
     // so allow some more before calling it stuck.
-    let limit = Duration::from_secs(tunnel.timeout() + 15);
+    let limit = Duration::from_secs(timeout + 15);
     let deadline = Instant::now() + limit;
     loop {
+        shutdown.check()?;
         if let Ok(Some(status)) = t.child.try_wait() {
             bail!("SSH tunnel to {who} failed ({status}){}", t.reason());
         }
         // ssh only listens once it has authenticated, so a connect is the signal.
-        if let Ok(stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
-            return match probe(stream) {
+        if let Ok(stream) = TcpStream::connect_timeout(&addr, SHUTDOWN_POLL) {
+            let result = probe(stream, shutdown)?;
+            shutdown.check()?;
+            return match result {
                 Probe::Closed => bail!(
                     "SSH to {who} works, but it could not reach the panel at {remote} from there{}",
                     t.reason()
@@ -478,7 +536,7 @@ fn open(tunnel: &SshTunnel, remote: &str) -> Result<(Tunnel, Probe)> {
                 t.reason()
             );
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(SHUTDOWN_POLL);
     }
 }
 
@@ -493,35 +551,37 @@ enum Probe {
 
 /// Ask the far side something, so a wrong remote port fails HERE with ssh's
 /// reason, instead of later as an opaque "connection closed" from the client.
-fn probe(mut stream: TcpStream) -> Probe {
-    let _ = stream.set_read_timeout(Some(PROBE_TIMEOUT));
+fn probe(mut stream: TcpStream, shutdown: &Shutdown) -> Result<Probe> {
+    shutdown.check()?;
+    stream.set_read_timeout(Some(SHUTDOWN_POLL))?;
+    stream.set_write_timeout(Some(SHUTDOWN_POLL))?;
     if stream
         .write_all(b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n")
         .is_err()
     {
-        return Probe::Closed;
+        return Ok(Probe::Closed);
     }
+    let deadline = Instant::now() + PROBE_TIMEOUT;
     let mut byte = [0u8; 1];
-    match stream.read(&mut byte) {
-        Ok(0) => Probe::Closed,
-        Ok(_) => Probe::Answered,
-        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => Probe::Silent,
-        Err(_) => Probe::Closed,
+    loop {
+        shutdown.check()?;
+        match stream.read(&mut byte) {
+            Ok(0) => return Ok(Probe::Closed),
+            Ok(_) => return Ok(Probe::Answered),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if Instant::now() >= deadline {
+                    return Ok(Probe::Silent);
+                }
+            }
+            Err(_) => return Ok(Probe::Closed),
+        }
     }
 }
 
-/// Stop every tunnel. Called on the way out; a tunnel left behind would be an
-/// `ssh` process holding a port open with no one to use it.
+/// Stop every tunnel and prevent any new ones. Called only on the way out; a
+/// tunnel left behind would be an `ssh` process holding a port open with no user.
 pub fn close_all() {
-    let slots: Vec<Slot> = REGISTRY
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .drain()
-        .map(|(_, s)| s)
-        .collect();
-    for slot in slots {
-        slot.lock().unwrap_or_else(PoisonError::into_inner).take();
-    }
+    SHUTDOWN.close_all(&REGISTRY);
 }
 
 #[cfg(test)]
@@ -533,6 +593,134 @@ mod tests {
             host: host.into(),
             ..Default::default()
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_cancels_pending_opens_and_reaps_their_children() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::mpsc;
+
+        for (registered, probing) in [(true, false), (true, true), (false, true)] {
+            let shutdown = Shutdown::default();
+            let slot = Slot::default();
+            let registry = Mutex::new(HashMap::new());
+            if registered {
+                registry
+                    .lock()
+                    .unwrap()
+                    .insert("pending".into(), slot.clone());
+            }
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let listener = probing.then_some(listener);
+            let dir = tempfile::tempdir().unwrap();
+            let executable = dir.path().join("ssh");
+            std::fs::write(&executable, "#!/bin/sh\nexec /bin/sleep 300\n").unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let child = Command::new(executable)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let pid = child.id() as libc::pid_t;
+            let pending = Tunnel {
+                child,
+                port,
+                stderr: Arc::new(Mutex::new(String::new())),
+                reader: None,
+            };
+            thread::scope(|scope| {
+                let shutdown = &shutdown;
+                let slot = &slot;
+                let registry = &registry;
+                let (started_tx, started_rx) = mpsc::channel();
+                let opener = scope.spawn(move || {
+                    let _opening = shutdown.begin().unwrap();
+                    let _slot = slot.lock().unwrap();
+                    started_tx.send(()).unwrap();
+                    wait_for_open(pending, "test", "localhost:3000", 300, shutdown)
+                });
+                let started = started_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+
+                let mut peer = listener.and_then(|listener| {
+                    listener.set_nonblocking(true).unwrap();
+                    let until = Instant::now() + Duration::from_secs(2);
+                    loop {
+                        match listener.accept() {
+                            Ok((peer, _)) => break Some(peer),
+                            Err(e)
+                                if e.kind() == ErrorKind::WouldBlock && Instant::now() < until =>
+                            {
+                                thread::sleep(Duration::from_millis(10));
+                            }
+                            Err(_) => break None,
+                        }
+                    }
+                });
+                // A received request proves shutdown happens inside the silent read,
+                // not merely before the opening worker first gets scheduled.
+                let ready = started
+                    && peer.as_mut().map_or(!probing, |peer| {
+                        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                        let mut request = [0; b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n".len()];
+                        peer.read_exact(&mut request).is_ok()
+                    });
+                let (closed_tx, closed_rx) = mpsc::channel();
+                let closer = scope.spawn(move || {
+                    shutdown.close_all(registry);
+                    closed_tx.send(()).unwrap();
+                });
+                let timely = closed_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+                let mut status = 0;
+                let reaped = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+                let error = std::io::Error::last_os_error().raw_os_error();
+                if reaped == 0 {
+                    // Rescue a regression before joining: never leave the test's child
+                    // running, or make the test itself wait the 315-second deadline.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+                closer.join().unwrap();
+                let result = opener.join().unwrap();
+                assert!(ready, "opening did not reach the expected phase");
+                assert!(timely, "shutdown waited for the connection/probe deadline");
+                assert_eq!(
+                    (reaped, error),
+                    (-1, Some(libc::ECHILD)),
+                    "child not reaped"
+                );
+                assert!(result.err().unwrap().to_string().contains("shutting down"));
+                assert!(registry.lock().unwrap().is_empty());
+                assert!(
+                    shutdown.begin().is_err(),
+                    "new opens allowed after shutdown"
+                );
+                assert!(open(&tunnel("unused"), "localhost:3000", shutdown).is_err());
+                drop(peer);
+            });
+        }
+    }
+
+    #[test]
+    fn a_short_probe_poll_still_waits_for_the_panel_answer() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        thread::scope(|scope| {
+            let server = scope.spawn(move || {
+                let mut request = [0; b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n".len()];
+                peer.read_exact(&mut request).unwrap();
+                thread::sleep(SHUTDOWN_POLL * 3);
+                peer.write_all(b"H").unwrap();
+            });
+            assert!(matches!(
+                probe(stream, &Shutdown::default()),
+                Ok(Probe::Answered)
+            ));
+            server.join().unwrap();
+        });
     }
 
     #[test]
