@@ -1669,6 +1669,102 @@ mod tests {
     }
 
     #[test]
+    fn actual_utility_chrome_leaves_useful_terminal_rows_at_default_dock_height() {
+        use super::super::{backend::Backend, theme, Desktop, Document, PageState, Utility};
+        for size in [Vec2::new(1024.0, 680.0), Vec2::new(1280.0, 800.0)] {
+            for mode in [theme::Mode::Light, theme::Mode::Dark] {
+                let ctx = egui::Context::default();
+                let palette = theme::apply(&ctx, mode);
+                let mut app = Desktop {
+                    path: Default::default(),
+                    cf_path: Default::default(),
+                    checks_path: Default::default(),
+                    backend: Backend::new(ctx.clone(), super::super::Runtime::default()),
+                    servers: Vec::new(),
+                    accounts: Vec::new(),
+                    config_errors: Vec::new(),
+                    loaded: true,
+                    reload: false,
+                    generation: 0,
+                    catalog: HashMap::new(),
+                    documents: vec![Document {
+                        id: 1,
+                        page: OpenPage {
+                            kind: PageKind::Terminal,
+                            target: Target {
+                                project: "operations-with-a-long-project-name".into(),
+                                service: "service-with-a-long-identity".into(),
+                                section: "container".into(),
+                                ..Default::default()
+                            },
+                            title: "service-with-a-long-identity · container".into(),
+                        },
+                        state: PageState::Terminal(Box::default()),
+                        docked: true,
+                    }],
+                    next_doc: 2,
+                    active: None,
+                    utility_doc: Some(1),
+                    last_logs_doc: None,
+                    last_terminal_doc: Some(1),
+                    utility: Utility::Terminal,
+                    explorer_visible: true,
+                    utility_visible: true,
+                    last_explorer_doc: None,
+                    explorer_filter: String::new(),
+                    palette_open: false,
+                    palette_query: String::new(),
+                    palette_selection: 0,
+                    palette_focus: false,
+                    focus: None,
+                    close: None,
+                    allow_quit: false,
+                    mode,
+                    applied_theme: None,
+                    shortcuts_open: false,
+                };
+                let mut opened = Vec::new();
+                let mut utility_rect = Rect::NOTHING;
+                let mut root_rect = Rect::NOTHING;
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::Panel::top("menubar").exact_size(32.0).show(ui, |_| {});
+                        egui::Panel::bottom("statusbar").exact_size(24.0).show(ui, |_| {});
+                        egui::Panel::left("activitybar").exact_size(46.0).show(ui, |_| {});
+                        egui::Panel::left("explorer").exact_size(252.0).show(ui, |_| {});
+                        egui::Panel::bottom("utility")
+                            .exact_size(220.0)
+                            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 5)))
+                            .show(ui, |ui| {
+                                app.utility(ui, palette, &mut opened);
+                                utility_rect = ui.min_rect();
+                            });
+                        egui::CentralPanel::default().show(ui, |_| {});
+                        root_rect = ui.min_rect();
+                    },
+                );
+                output.textures_delta.clear();
+                assert!(
+                    utility_rect.width() <= size.x - 298.0 - 24.0 + 0.5,
+                    "{size:?}: utility bounds {utility_rect:?} exceed {} points",
+                    size.x - 298.0 - 24.0,
+                );
+                assert!(root_rect.max.x <= size.x + 0.5, "{size:?}: root {root_rect:?}");
+                assert!(root_rect.max.y <= size.y + 0.5, "{size:?}: root {root_rect:?}");
+                let PageState::Terminal(state) = &app.documents[0].state else {
+                    unreachable!();
+                };
+                assert!(state.size.1 >= 7, "actual utility has only {} rows", state.size.1);
+                assert!(opened.is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn terminal_controls_repeats_and_printable_events_do_not_double_send() {
         let ctrl = Modifiers {
             ctrl: true,

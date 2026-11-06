@@ -73,6 +73,9 @@ impl Document {
         )
     }
     fn breadcrumb(&self) -> String {
+        if let PageState::Cloudflare(state) = &self.state {
+            return state.breadcrumb(&self.page.target);
+        }
         let mut label = self.page.target.label();
         if let Some(section) = self.service_section() {
             if self.page.target.section.is_empty() {
@@ -1010,13 +1013,14 @@ impl Desktop {
             }
         } else {
             ui.horizontal_wrapped(|ui| {
+                let breadcrumb = document.breadcrumb();
                 let response = ui.add(
                     egui::Label::new(
-                        RichText::new(document.page.target.label())
-                            .color(ui.visuals().weak_text_color()),
+                        RichText::new(&breadcrumb).color(ui.visuals().weak_text_color()),
                     )
+                    .truncate()
                     .sense(egui::Sense::click()),
-                );
+                ).on_hover_text(&breadcrumb);
                 if self.focus == Some(2) {
                     response.request_focus();
                     self.focus = None;
@@ -1114,6 +1118,47 @@ impl Desktop {
                 }
                 if response.clicked() {
                     self.reveal_utility(tab);
+                }
+            }
+            if self.utility != Utility::Tasks {
+                let logs = self.utility == Utility::Logs;
+                let selected = self.documents.iter().find(|doc| {
+                    doc.docked
+                        && Some(doc.id) == self.utility_doc
+                        && matches!(doc.page.target.section.as_str(), "logs" | "log-search") == logs
+                }).or_else(|| self.documents.iter().find(|doc| {
+                    doc.docked
+                        && matches!(doc.page.target.section.as_str(), "logs" | "log-search") == logs
+                }));
+                if let Some(document) = selected {
+                    self.utility_doc = Some(document.id);
+                    let target = document.page.target.label();
+                    let width = (ui.available_width() - 150.0).clamp(120.0, 360.0);
+                    // ComboBox::width is a minimum; truncation needs a bounded child.
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 32.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            egui::ComboBox::from_id_salt("utility-sessions")
+                                .width(width)
+                                .selected_text(&target)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    ui.set_max_width(600.0);
+                                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                                    for document in self.documents.iter().filter(|doc| {
+                                        doc.docked
+                                            && matches!(doc.page.target.section.as_str(), "logs" | "log-search") == logs
+                                    }) {
+                                        ui.selectable_value(&mut self.utility_doc, Some(document.id), document.page.target.label());
+                                    }
+                                })
+                                .response.on_hover_text(target);
+                        },
+                    );
+                    if ui.small_button("Close").on_hover_text("Close selected session").clicked() {
+                        close = self.utility_doc;
+                    }
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1216,38 +1261,6 @@ impl Desktop {
             return;
         }
         let logs = self.utility == Utility::Logs;
-        egui::ScrollArea::horizontal()
-            .id_salt("utility-sessions")
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for document in self.documents.iter().filter(|doc| {
-                        doc.docked
-                            && matches!(doc.page.target.section.as_str(), "logs" | "log-search")
-                                == logs
-                    }) {
-                        if ui
-                            .add_sized(
-                                [180.0, 24.0],
-                                egui::Button::new(&document.page.title)
-                                    .truncate()
-                                    .selected(self.utility_doc == Some(document.id)),
-                            )
-                            .on_hover_text(document.page.target.label())
-                            .clicked()
-                        {
-                            self.utility_doc = Some(document.id);
-                        }
-                        if ui
-                            .small_button("Close")
-                            .on_hover_text("Close this session")
-                            .clicked()
-                        {
-                            close = Some(document.id);
-                        }
-                    }
-                });
-            });
         if let Some(id) = close {
             self.request_close(id);
         }
@@ -1268,12 +1281,6 @@ impl Desktop {
         if let Some(index) = selected {
             let document = &mut self.documents[index];
             self.utility_doc = Some(document.id);
-            let target_label = document.page.target.label();
-            ui.add(
-                egui::Label::new(RichText::new(&target_label).small().color(palette.muted))
-                    .truncate(),
-            )
-            .on_hover_text(&target_label);
             if let PageState::Terminal(state) = &mut document.state {
                 let mut cx = PageContext {
                     target: &document.page.target,
