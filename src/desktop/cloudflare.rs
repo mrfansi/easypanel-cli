@@ -121,9 +121,16 @@ impl State {
                 _ => None,
             }
         } else {
-            target.resource.get("name").or_else(|| target.resource.get("id")).and_then(Value::as_str)
+            target
+                .resource
+                .get("name")
+                .or_else(|| target.resource.get("id"))
+                .and_then(Value::as_str)
         };
-        let account = target.account.as_ref().map_or("Cloudflare", |a| a.name.as_str());
+        let account = target
+            .account
+            .as_ref()
+            .map_or("Cloudflare", |a| a.name.as_str());
         match resource {
             Some(resource) => format!("{account} / {resource} / {label}"),
             None => format!("{account} / {label}"),
@@ -142,11 +149,31 @@ impl State {
 
     fn source_is_current(&self, key: &str) -> bool {
         match self.section.as_str() {
-            "zones" => key == if self.zone.is_some() { "records" } else { "zones" },
-            "tunnels" => key == if self.tunnel.is_some() { "config" } else { "tunnels" },
-            "r2" => key == if self.bucket.is_some() { "objects" } else { "buckets" },
-            "workers" => key == "workers"
-                || (self.worker.is_some() && matches!(key, "settings" | "deployments")),
+            "zones" => {
+                key == if self.zone.is_some() {
+                    "records"
+                } else {
+                    "zones"
+                }
+            }
+            "tunnels" => {
+                key == if self.tunnel.is_some() {
+                    "config"
+                } else {
+                    "tunnels"
+                }
+            }
+            "r2" => {
+                key == if self.bucket.is_some() {
+                    "objects"
+                } else {
+                    "buckets"
+                }
+            }
+            "workers" => {
+                key == "workers"
+                    || (self.worker.is_some() && matches!(key, "settings" | "deployments"))
+            }
             "analytics" => matches!(key, "analytics" | "sites"),
             _ => false,
         }
@@ -595,11 +622,26 @@ fn scope_identity(ui: &mut egui::Ui, state: &State, cx: &PageContext<'_>) {
     }
     ui.add(egui::Label::new(state.breadcrumb(cx.target)).wrap());
     if let Some(account) = &cx.target.account {
-        ui.add(egui::Label::new(format!("Account ID: {}", account.account_id.as_deref().unwrap_or("Zone-scoped token • no account ID"))).wrap());
+        ui.add(
+            egui::Label::new(format!(
+                "Account ID: {}",
+                account
+                    .account_id
+                    .as_deref()
+                    .unwrap_or("Zone-scoped token • no account ID")
+            ))
+            .wrap(),
+        );
     }
     let resource = match state.section.as_str() {
-        "zones" => state.zone.as_ref().map(|zone| ("Zone ID", zone.id.as_str())),
-        "tunnels" => state.tunnel.as_ref().map(|tunnel| ("Tunnel ID", tunnel.id.as_str())),
+        "zones" => state
+            .zone
+            .as_ref()
+            .map(|zone| ("Zone ID", zone.id.as_str())),
+        "tunnels" => state
+            .tunnel
+            .as_ref()
+            .map(|tunnel| ("Tunnel ID", tunnel.id.as_str())),
         _ => None,
     };
     if let Some((label, id)) = resource {
@@ -628,7 +670,9 @@ fn feedback(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         if let Some(e) = state.errors.get(key) {
             widgets::error(ui, &format!("{key}: {e}"));
             if state.source_is_current(key)
-                && ui.add_enabled(!cx.busy(key), egui::Button::new(format!("Retry {key}"))).clicked()
+                && ui
+                    .add_enabled(!cx.busy(key), egui::Button::new(format!("Retry {key}")))
+                    .clicked()
             {
                 state.loaded.remove(key);
                 let target = cx.target;
@@ -644,10 +688,15 @@ fn feedback(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             });
         }
     }
-    let navigation_notice = "Save/discard the current edit, or wait for the scoped operation before changing product.";
+    let navigation_notice =
+        "Save/discard the current edit, or wait for the scoped operation before changing product.";
     if !state.status.is_empty()
-        && (state.status != navigation_notice || state.is_dirty() || state.confirmation.is_some()
-            || cx.busy("mutation") || cx.busy("transfer") || cx.busy("account"))
+        && (state.status != navigation_notice
+            || state.is_dirty()
+            || state.confirmation.is_some()
+            || cx.busy("mutation")
+            || cx.busy("transfer")
+            || cx.busy("account"))
     {
         ui.separator();
         ui.add(egui::Label::new(&state.status).wrap());
@@ -1745,7 +1794,8 @@ fn editor(
     ui.add(egui::Label::new(egui::RichText::new(&form.title).strong()).truncate())
         .on_hover_text(&form.title);
     let identity = state.breadcrumb(cx.target);
-    ui.add(egui::Label::new(&identity).truncate()).on_hover_text(&identity);
+    ui.add(egui::Label::new(&identity).truncate())
+        .on_hover_text(&identity);
     let mut apply = false;
     let mut discard = false;
     ui.horizontal_wrapped(|ui| {
@@ -2004,20 +2054,32 @@ fn review(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     };
     ui.add(egui::Label::new(egui::RichText::new(&review.title).strong()).truncate())
         .on_hover_text(&review.title);
-    ui.add(egui::Label::new(&review.target).truncate()).on_hover_text(&review.target);
+    ui.add(egui::Label::new(&review.target).truncate())
+        .on_hover_text(&review.target);
     let busy = cx.busy("mutation") || cx.busy("transfer") || cx.busy("account");
-    let approved = ui.add_enabled_ui(!busy, |ui| {
-        if let Some(expected) = &review.typed {
-            let prompt = format!("Type {expected} to confirm this target:");
-            let label = ui.add(egui::Label::new(&prompt).truncate()).on_hover_text(&prompt);
-            ui.add(egui::TextEdit::singleline(&mut state.confirm_entry).desired_width(f32::INFINITY))
+    let approved = ui
+        .add_enabled_ui(!busy, |ui| {
+            if let Some(expected) = &review.typed {
+                let prompt = format!("Type {expected} to confirm this target:");
+                let label = ui
+                    .add(egui::Label::new(&prompt).truncate())
+                    .on_hover_text(&prompt);
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.confirm_entry)
+                        .desired_width(f32::INFINITY),
+                )
                 .labelled_by(label.id);
-        }
-        ui.add_enabled(
-            review.typed.as_ref().is_none_or(|expected| state.confirm_entry == *expected),
-            egui::Button::new("Confirm").fill(ui.visuals().error_fg_color.gamma_multiply(0.20)),
-        ).clicked()
-    }).inner;
+            }
+            ui.add_enabled(
+                review
+                    .typed
+                    .as_ref()
+                    .is_none_or(|expected| state.confirm_entry == *expected),
+                egui::Button::new("Confirm").fill(ui.visuals().error_fg_color.gamma_multiply(0.20)),
+            )
+            .clicked()
+        })
+        .inner;
     let cancel = ui.button("Back / cancel review").clicked();
     ui.separator();
     egui::ScrollArea::vertical()
@@ -2311,11 +2373,17 @@ mod tests {
             ..Default::default()
         };
         let mut state = State::default();
-        assert_eq!(state.breadcrumb(&target), "fixture / example.test / Zones & DNS");
+        assert_eq!(
+            state.breadcrumb(&target),
+            "fixture / example.test / Zones & DNS"
+        );
         state.zone = Some(serde_json::from_value(target.resource.clone()).unwrap());
         state.initialized = true;
         state.section = "zones".into();
-        assert_eq!(state.breadcrumb(&target), "fixture / example.test / Zones & DNS");
+        assert_eq!(
+            state.breadcrumb(&target),
+            "fixture / example.test / Zones & DNS"
+        );
         state.section = "analytics".into();
         assert_eq!(state.breadcrumb(&target), "fixture / Analytics");
         state.section = "r2".into();
@@ -2331,7 +2399,9 @@ mod tests {
             section: "zones".into(),
             ..Default::default()
         };
-        state.errors.insert("zones".into(), "Failed to load zones".into());
+        state
+            .errors
+            .insert("zones".into(), "Failed to load zones".into());
         assert!(state.source_is_current("zones"));
         state.section = "workers".into();
         state.edit(Form::new(
@@ -2347,7 +2417,10 @@ mod tests {
         assert!(state.source_is_current("settings"));
         assert!(state.source_is_current("deployments"));
         assert_eq!(state.errors["zones"], "Failed to load zones");
-        assert_eq!(state.editor.as_ref().unwrap().by_label("Worker name"), "changed-worker");
+        assert_eq!(
+            state.editor.as_ref().unwrap().by_label("Worker name"),
+            "changed-worker"
+        );
         assert!(state.is_dirty());
         state.section = "accounts".into();
         assert!(!state.source_is_current("zones"));

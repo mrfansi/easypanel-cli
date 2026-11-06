@@ -2322,7 +2322,10 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         .show(ui, |ui| {
             if matches!(edit.kind, EditKind::Domain(_)) {
                 let refresh = ui
-                    .add_enabled(!cx.busy("inventory"), egui::Button::new("Refresh inventory").small())
+                    .add_enabled(
+                        !cx.busy("inventory"),
+                        egui::Button::new("Refresh inventory").small(),
+                    )
                     .clicked();
                 inventory(state, cx, refresh);
                 state.status(ui, cx, "inventory");
@@ -2616,12 +2619,16 @@ mod tests {
         }
 
         fn text_position(output: &egui::FullOutput, text: &str) -> egui::Pos2 {
-            output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::epaint::Shape::Text(shape) if shape.galley.text() == text => {
-                    Some(shape.pos + shape.galley.rect.center().to_vec2())
-                }
-                _ => None,
-            }).unwrap_or_else(|| panic!("Missing rendered text: {text}"))
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(shape) if shape.galley.text() == text => {
+                        Some(shape.pos + shape.galley.rect.center().to_vec2())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("Missing rendered text: {text}"))
         }
 
         fn click(
@@ -2631,21 +2638,27 @@ mod tests {
             pos: egui::Pos2,
         ) {
             for pressed in [true, false] {
-                frame(ctx, state, cx, vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ]);
+                frame(
+                    ctx,
+                    state,
+                    cx,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
             }
         }
 
         let server = MockServer::start();
         let inventory = server.mock(|when, then| {
-            when.method(POST).path("/api/rpc/projects/listProjectsAndServices");
+            when.method(POST)
+                .path("/api/rpc/projects/listProjectsAndServices");
             then.status(200).json_body(json!({"json":{
                 "projects":[{"name":"shop"}],
                 "services":[{"projectName":"shop","name":"web"}]
@@ -2683,12 +2696,15 @@ mod tests {
             watch_requested: true,
             ..Default::default()
         };
-        state.snapshots.insert("inventory".into(), Snapshot {
-            error: Some("Inventory unavailable".into()),
-            requested: true,
-            input: Some(Value::Null),
-            ..Default::default()
-        });
+        state.snapshots.insert(
+            "inventory".into(),
+            Snapshot {
+                error: Some("Inventory unavailable".into()),
+                requested: true,
+                input: Some(Value::Null),
+                ..Default::default()
+            },
+        );
         domain_editor(&mut state, None);
         state.editor.as_mut().unwrap().form.fields[0].value = "draft.example.test".into();
 
@@ -2715,13 +2731,15 @@ mod tests {
         let dropdown = text_position(&output, "shop");
         click(&ctx, &mut state, &mut cx, dropdown);
         assert!(egui::Popup::is_any_open(&ctx));
-        let escape = |pressed| vec![egui::Event::Key {
-            key: egui::Key::Escape,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }];
+        let escape = |pressed| {
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]
+        };
         frame(&ctx, &mut state, &mut cx, escape(true));
         assert!(!egui::Popup::is_any_open(&ctx));
         assert!(!state.editor.as_ref().unwrap().discard);
