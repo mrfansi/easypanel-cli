@@ -61,55 +61,48 @@ impl BackupFile {
 pub fn history(actions: &[Value], project: &str, service: &str) -> Vec<BackupFile> {
     actions
         .iter()
-        .filter(|a| {
-            field(a, "/type") == "backup"
-                && field(a, "/status") == "done"
-                && field(a, "/projectName") == project
-                && field(a, "/serviceName") == service
+        .filter(|action| {
+            history_text(action, "/projectName") == Some(project)
+                && history_text(action, "/serviceName") == Some(service)
         })
-        .filter_map(|a| {
-            let path = field(a, "/meta/path");
-            if path.is_empty() {
-                return None;
-            }
-            Some(BackupFile {
-                when: field(a, "/createdAt"),
-                database: field(a, "/meta/databaseName"),
-                path,
-                storage_provider_id: field(a, "/meta/storageProviderId"),
-            })
+        .filter_map(history_file)
+        .collect()
+}
+
+/// Every restorable backup on a host, retaining its source project/service.
+pub fn history_all(actions: &[Value]) -> Vec<(String, BackupFile)> {
+    actions
+        .iter()
+        .filter_map(|action| {
+            let project = history_text(action, "/projectName")?;
+            let service = history_text(action, "/serviceName")?;
+            let file = history_file(action)?;
+            Some((format!("{project}/{service}"), file))
         })
         .collect()
 }
 
-/// Every restorable backup on a host, whatever project it came from.
-///
-/// Restoring ACROSS hosts must not assume the two sides use the same names: a
-/// backup of `shop/db` is a perfectly good thing to load into `shop-staging/db`
-/// on another machine. Filtering the source by the destination's names would
-/// have shown an empty list and explained nothing. The project and service are
-/// carried in the row instead, so the user can see where each one came from.
-pub fn history_all(actions: &[Value]) -> Vec<(String, BackupFile)> {
-    actions
-        .iter()
-        .filter(|a| field(a, "/type") == "backup" && field(a, "/status") == "done")
-        .filter_map(|a| {
-            let path = field(a, "/meta/path");
-            if path.is_empty() {
-                return None;
-            }
-            let origin = format!("{}/{}", field(a, "/projectName"), field(a, "/serviceName"));
-            Some((
-                origin,
-                BackupFile {
-                    when: field(a, "/createdAt"),
-                    database: field(a, "/meta/databaseName"),
-                    path,
-                    storage_provider_id: field(a, "/meta/storageProviderId"),
-                },
-            ))
-        })
-        .collect()
+// `output::field` supplies a display sentinel for absent/wrong-shaped metadata,
+// which must never turn into an executable restore argument.
+fn history_text<'a>(action: &'a Value, pointer: &str) -> Option<&'a str> {
+    action
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .filter(|value| is_named(value))
+}
+
+fn history_file(action: &Value) -> Option<BackupFile> {
+    if action.get("type").and_then(Value::as_str) != Some("backup")
+        || action.get("status").and_then(Value::as_str) != Some("done")
+    {
+        return None;
+    }
+    Some(BackupFile {
+        when: field(action, "/createdAt"),
+        database: history_text(action, "/meta/databaseName")?.to_string(),
+        path: history_text(action, "/meta/path")?.to_string(),
+        storage_provider_id: history_text(action, "/meta/storageProviderId")?.to_string(),
+    })
 }
 
 /// The body for `createDatabaseBackup` / `updateDatabaseBackup`.
@@ -140,14 +133,27 @@ pub fn restore_body(
     database: &str,
     provider: &str,
     path: &str,
-) -> Value {
-    json!({
+) -> Result<Value, String> {
+    for (label, value) in [
+        ("Project", project),
+        ("Service", service),
+        ("Database", database),
+        ("Storage provider", provider),
+        ("Backup path", path),
+    ] {
+        if !is_named(value) {
+            return Err(format!("{label} is required for restore"));
+        }
+    }
+    // A known path need not appear in the bounded action history. Keep the exact
+    // provider key, including spaces or an absolute path for a local provider.
+    Ok(json!({
         "projectName": project,
         "serviceName": service,
         "databaseName": database,
         "storageProviderId": provider,
         "path": path,
-    })
+    }))
 }
 
 /// Does the target service currently hold `database`, per `getServiceDatabases`?
@@ -201,7 +207,7 @@ pub fn can_back_up(stype: &str) -> bool {
 /// `field()` yields "-" for an absent value, and an empty or "-" name is
 /// rejected by the endpoint — so neither belongs in a list of things to back up.
 pub fn is_named(database: &str) -> bool {
-    !database.is_empty() && database != "-"
+    !database.trim().is_empty() && database.trim() != "-"
 }
 
 /// MySQL/MariaDB and PostgreSQL keep their own bookkeeping schemas; nobody wants
@@ -342,6 +348,60 @@ mod tests {
     }
 
     #[test]
+    fn malformed_history_metadata_cannot_be_offered_for_restore() {
+        for key in ["path", "databaseName", "storageProviderId"] {
+            for value in [
+                Value::Null,
+                json!(42),
+                json!([]),
+                json!({}),
+                json!(""),
+                json!("   "),
+                json!("-"),
+                json!(" - "),
+            ] {
+                let mut malformed = action("backup", "done", "db", "shopco/good.sql.gz");
+                malformed["meta"][key] = value;
+                assert!(
+                    history(&[malformed.clone()], "shopco", "db").is_empty(),
+                    "invalid {key}"
+                );
+                assert!(history_all(&[malformed]).is_empty(), "invalid {key}");
+            }
+            let mut missing = action("backup", "done", "db", "shopco/good.sql.gz");
+            missing["meta"].as_object_mut().unwrap().remove(key);
+            assert!(
+                history(&[missing.clone()], "shopco", "db").is_empty(),
+                "missing {key}"
+            );
+            assert!(history_all(&[missing]).is_empty(), "missing {key}");
+        }
+        for key in ["projectName", "serviceName"] {
+            let mut missing = action("backup", "done", "db", "shopco/good.sql.gz");
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(history_all(&[missing]).is_empty(), "missing origin {key}");
+        }
+    }
+
+    #[test]
+    fn restore_accepts_known_manual_paths_but_rejects_missing_arguments() {
+        for path in [
+            "unknown-to-history/custom backup.dump",
+            "/var/backups/manual.sql.gz",
+            "folder/日本語.sql",
+        ] {
+            let body =
+                restore_body("target", "database-service", "shop", "provider", path).unwrap();
+            assert_eq!(body["path"], path);
+        }
+        for invalid in ["", "   ", "-", " - "] {
+            assert!(restore_body("target", "db", invalid, "provider", "file.sql").is_err());
+            assert!(restore_body("target", "db", "shop", invalid, "file.sql").is_err());
+            assert!(restore_body("target", "db", "shop", "provider", invalid).is_err());
+        }
+    }
+
+    #[test]
     fn an_action_without_a_path_is_not_a_restorable_backup() {
         let actions = vec![action("backup", "done", "db", "")];
         assert!(history(&actions, "shopco", "db").is_empty());
@@ -418,7 +478,7 @@ mod tests {
     fn a_restore_names_its_target_not_its_origin() {
         // The target service is whatever the user picked — restoring into a
         // DIFFERENT service is the point, not an accident.
-        let b = restore_body("proj", "target-db", "shop", "prov1", "proj/a.sql.gz");
+        let b = restore_body("proj", "target-db", "shop", "prov1", "proj/a.sql.gz").unwrap();
         assert_eq!(b["serviceName"], json!("target-db"));
         assert_eq!(b["databaseName"], json!("shop"));
         assert_eq!(b["path"], json!("proj/a.sql.gz"));
