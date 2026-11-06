@@ -1704,6 +1704,7 @@ mod tests {
                     }],
                     next_doc: 2,
                     active: None,
+                    last_tab_view: None,
                     utility_doc: Some(1),
                     last_logs_doc: None,
                     last_terminal_doc: Some(1),

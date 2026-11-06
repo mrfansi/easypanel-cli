@@ -19,6 +19,8 @@ pub(super) struct State {
     loaded: HashSet<String>,
     errors: HashMap<String, String>,
     status: String,
+    status_is_success: bool,
+    mutation_may_be_partial: bool,
     zones: Vec<Zone>,
     records: Vec<Record>,
     tunnels: Vec<CloudflareTunnel>,
@@ -45,6 +47,9 @@ pub(super) struct State {
     objects: Vec<R2Object>,
     truncated: bool,
     worker: Option<String>,
+    worker_generation: u64,
+    worker_reads: HashMap<String, WorkerScope>,
+    worker_delete: Option<WorkerScope>,
     settings: Option<WorkerSettingsBundle>,
     deployments: Vec<WorkerDeployment>,
     marked: HashSet<String>,
@@ -53,6 +58,9 @@ pub(super) struct State {
     confirmation: Option<Review>,
     confirm_entry: String,
     file: Option<PathBuf>,
+    file_target: Option<(CloudflareAccount, Option<String>)>,
+    picker: Option<PendingPicker>,
+    draft_generation: u64,
     token: Option<TunnelToken>,
     token_request: Option<(String, String)>,
     reveal_token: bool,
@@ -95,6 +103,45 @@ enum Action {
     },
     RemoveAccount(String),
     DefaultAccount(String),
+}
+
+enum PickerIntent {
+    Upload,
+    MarkedDownload(Vec<String>),
+    Deploy(String),
+    Download { bucket: Option<String>, key: String },
+}
+
+struct PendingPicker {
+    account: CloudflareAccount,
+    section: String,
+    bucket: Option<String>,
+    prefix: String,
+    worker: Option<String>,
+    selected: Option<String>,
+    draft_generation: u64,
+    intent: PickerIntent,
+}
+
+struct WorkerScope {
+    account: CloudflareAccount,
+    worker: String,
+    generation: u64,
+}
+
+impl WorkerScope {
+    fn is_current(&self, state: &State, account: Option<&CloudflareAccount>) -> bool {
+        state.section == "workers"
+            && state.worker.as_ref() == Some(&self.worker)
+            && state.worker_generation == self.generation
+            && account.is_some_and(|account| same_account(account, &self.account))
+    }
+}
+
+fn same_account(left: &CloudflareAccount, right: &CloudflareAccount) -> bool {
+    left.name == right.name
+        && left.account_id == right.account_id
+        && left.api_token == right.api_token
 }
 
 impl State {
@@ -179,6 +226,59 @@ impl State {
         }
     }
 
+    fn select_worker(&mut self, worker: Option<String>) {
+        self.worker_generation += 1;
+        self.worker = worker;
+        self.settings = None;
+        self.deployments.clear();
+        self.settings_selected = None;
+        self.selected = None;
+        for key in ["settings", "deployments"] {
+            self.loaded.remove(key);
+            self.errors.remove(key);
+        }
+    }
+
+    fn worker_scope(&self, account: &CloudflareAccount, worker: &str) -> WorkerScope {
+        WorkerScope {
+            account: account.clone(),
+            worker: worker.into(),
+            generation: self.worker_generation,
+        }
+    }
+
+    fn track_worker_delete(&mut self, req: &CfReq, account: Option<&CloudflareAccount>) {
+        self.worker_delete = match (req, account) {
+            (
+                CfReq::WorkerDelete {
+                    token,
+                    account_id,
+                    name,
+                    ..
+                },
+                Some(account),
+            ) => {
+                let mut scope = self.worker_scope(account, name);
+                scope.account.api_token.clone_from(token);
+                scope.account.account_id = Some(account_id.clone());
+                Some(scope)
+            }
+            _ => None,
+        };
+    }
+
+    fn worker_deleted(&mut self, scope: WorkerScope, account: Option<&CloudflareAccount>) {
+        if !account.is_some_and(|account| same_account(account, &scope.account)) {
+            return;
+        }
+        self.workers.retain(|worker| worker.id != scope.worker);
+        self.loaded.remove("workers");
+        if scope.is_current(self, account) {
+            self.select_worker(None);
+            self.mutation_finished();
+        }
+    }
+
     fn accept_token(&mut self, current_account_id: &str, value: String) {
         let Some((account_id, tunnel_id)) = self.token_request.take() else {
             return;
@@ -206,7 +306,22 @@ impl State {
         self.truncated = false;
     }
 
+    fn set_status(&mut self, status: String, success: bool) {
+        self.status = status;
+        self.status_is_success = success;
+    }
+
+    fn clear_success(&mut self) {
+        if self.status_is_success {
+            self.status.clear();
+            self.status_is_success = false;
+        }
+    }
+
     fn edit(&mut self, form: Form) {
+        self.clear_success();
+        self.draft_generation += 1;
+        self.file_target = None;
         self.baseline = form.fields.iter().map(|f| f.value.clone()).collect();
         self.editor = Some(form);
         self.file = None;
@@ -221,6 +336,8 @@ impl State {
         details: Vec<String>,
         action: Action,
     ) {
+        self.clear_success();
+        self.draft_generation += 1;
         self.confirm_entry.clear();
         self.confirmation = Some(Review {
             title: title.into(),
@@ -231,7 +348,116 @@ impl State {
         });
     }
 
+    fn begin_picker(
+        &mut self,
+        cx: &PageContext<'_>,
+        account: &CloudflareAccount,
+        intent: PickerIntent,
+    ) -> bool {
+        if self.picker.is_some() || cx.busy("native-picker") {
+            return false;
+        }
+        self.errors.remove("native-picker");
+        self.picker = Some(PendingPicker {
+            account: account.clone(),
+            section: self.section.clone(),
+            bucket: self.bucket.clone(),
+            prefix: self.prefix.clone(),
+            worker: self.worker.clone(),
+            selected: self.selected.clone(),
+            draft_generation: self.draft_generation,
+            intent,
+        });
+        true
+    }
+
+    fn accept_picker(&mut self, account: Option<&CloudflareAccount>, path: Option<PathBuf>) {
+        let Some(request) = self.picker.take() else {
+            return;
+        };
+        let Some(path) = path else { return };
+        if !account.is_some_and(|account| same_account(account, &request.account))
+            || self.section != request.section
+            || self.bucket != request.bucket
+            || self.prefix != request.prefix
+            || self.worker != request.worker
+            || self.selected != request.selected
+            || self.draft_generation != request.draft_generation
+            || self.editor.is_some()
+            || self.confirmation.is_some()
+        {
+            self.set_status("File selection not applied: the Cloudflare target or draft changed. Choose again for the current target.".into(), false);
+            return;
+        }
+        match request.intent {
+            PickerIntent::Upload => {
+                let key = format!(
+                    "{}{}",
+                    request.prefix,
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                self.edit(Form::new(FormKind::R2Upload, "Upload R2 object", vec![Field::text("Object key", &key)]).with_note("PUT replaces an existing object with this exact key. Maximum REST upload size: 300 MB."));
+                self.file = Some(path);
+                self.file_target = Some((request.account, request.bucket));
+            }
+            PickerIntent::Deploy(name) => {
+                self.edit(Form::new(FormKind::CfWorkerDeploy, "Deploy / replace Worker script", vec![Field::text("Worker name", &name), Field::choice("Mode", &["module", "service-worker"], "module")]).with_note("Uploads one file. Existing script content with this name is replaced; settings remain separate."));
+                self.file = Some(path);
+                self.file_target = Some((request.account, None));
+            }
+            PickerIntent::MarkedDownload(keys) => {
+                let Some(bucket) = request.bucket else { return };
+                let files = keys
+                    .into_iter()
+                    .map(|key| {
+                        let destination = path.join(safe_basename(&key));
+                        (key, destination)
+                    })
+                    .collect::<Vec<_>>();
+                self.review(
+                    &request.account,
+                    "Download marked R2 objects",
+                    &bucket,
+                    false,
+                    files
+                        .iter()
+                        .map(|(key, path)| {
+                            format!("{key} → {} (existing paths are refused)", path.display())
+                        })
+                        .collect(),
+                    Action::Download {
+                        account: request.account.clone(),
+                        bucket: Some(bucket.clone()),
+                        files,
+                        overwrite: false,
+                    },
+                );
+            }
+            PickerIntent::Download { bucket, key } => {
+                self.review(&request.account, "Save download (replace chosen destination)", &key, false, vec![format!("Destination: {}", path.display()), "An existing regular file at this exact destination will be replaced only after a successful download. Symlinks and directories are refused.".into()], Action::Download { account: request.account.clone(), bucket, files: vec![(key.clone(), path)], overwrite: true });
+            }
+        }
+    }
+
     fn receive(&mut self, cx: &mut PageContext<'_>) {
+        if let Some(result) = cx.take("native-picker") {
+            match result {
+                Ok(Payload::ChosenPath(path)) => {
+                    self.accept_picker(cx.target.account.as_ref(), path)
+                }
+                Err(error) => {
+                    self.picker = None;
+                    self.errors.insert("native-picker".into(), error);
+                }
+                Ok(_) => {
+                    self.picker = None;
+                    self.errors.insert(
+                        "native-picker".into(),
+                        "Unexpected file selection response; no local state changed".into(),
+                    );
+                }
+            }
+        }
         for key in [
             "zones",
             "records",
@@ -250,6 +476,28 @@ impl State {
             "transfer",
         ] {
             let Some(result) = cx.take(key) else { continue };
+            if matches!(key, "settings" | "deployments") {
+                let scope = self.worker_reads.remove(key);
+                let reply_worker = match &result {
+                    Ok(Payload::Worker(Resp::Cf(
+                        CfResp::WorkerSettings { worker, .. }
+                        | CfResp::WorkerDeployments { worker, .. },
+                    ))) => Some(worker.as_str()),
+                    _ => None,
+                };
+                if !scope.as_ref().is_some_and(|scope| {
+                    scope.is_current(self, cx.target.account.as_ref())
+                        && reply_worker.is_none_or(|worker| worker == scope.worker)
+                }) {
+                    self.loaded.remove(key);
+                    continue;
+                }
+            }
+            let worker_delete = if key == "mutation" {
+                self.worker_delete.take()
+            } else {
+                None
+            };
             match result {
                 Err(e) => {
                     if key == "token" {
@@ -269,7 +517,7 @@ impl State {
                             text,
                         );
                     } else {
-                        self.status = text;
+                        self.set_status(text, true);
                     }
                     if key == "account" {
                         self.editor = None;
@@ -279,6 +527,7 @@ impl State {
                     if key == "transfer" {
                         self.editor = None;
                         self.file = None;
+                        self.file_target = None;
                         self.baseline.clear();
                         self.loaded.remove("objects");
                         self.loaded.remove("workers");
@@ -297,15 +546,18 @@ impl State {
                         value.get("failed").cloned().unwrap_or_else(|| json!([])),
                     )
                     .unwrap_or_default();
-                    self.status = format!(
-                        "{} files saved; {} failed.\n{}",
-                        saved.len(),
-                        self.failed.len(),
-                        saved
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join("\n")
+                    self.set_status(
+                        format!(
+                            "{} files saved; {} failed.\n{}",
+                            saved.len(),
+                            self.failed.len(),
+                            saved
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        ),
+                        self.failed.is_empty(),
                     );
                     self.marked = self.failed.iter().map(|(key, _)| key.clone()).collect();
                 }
@@ -359,23 +611,29 @@ impl State {
                             }
                         }
                         CfResp::Done(text) => {
-                            self.status = text;
-                            self.mutation_finished();
+                            self.set_status(text, !self.mutation_may_be_partial);
+                            if let Some(scope) = worker_delete {
+                                self.worker_deleted(scope, cx.target.account.as_ref());
+                            } else {
+                                self.mutation_finished();
+                            }
                         }
                         CfResp::BulkDone { ok, failed } => {
-                            self.status = format!("{ok} succeeded; {} failed. Failed items remain marked; refresh before retrying.", failed.len());
+                            self.set_status(format!("{ok} succeeded; {} failed. Failed items remain marked; refresh before retrying.", failed.len()), failed.is_empty());
                             self.marked = failed.iter().map(|(id, _)| id.clone()).collect();
                             self.failed = failed;
                             self.mutation_finished();
                         }
-                        CfResp::Status(text) => self.status = text,
+                        CfResp::Status(text) => self.set_status(text, false),
                         CfResp::Err(e) | CfResp::WebAnalyticsErr(e) => {
                             self.errors.insert(key.into(), e);
                             if key == "mutation" {
                                 self.loaded.remove("config");
                             }
                         }
-                        CfResp::Viewer { title: _, lines } => self.status = lines.join("\n"),
+                        CfResp::Viewer { title: _, lines } => {
+                            self.set_status(lines.join("\n"), false)
+                        }
                     }
                 }
                 Ok(_) => {
@@ -391,6 +649,7 @@ impl State {
     fn mutation_finished(&mut self) {
         self.editor = None;
         self.file = None;
+        self.file_target = None;
         self.baseline.clear();
         for key in [
             "zones",
@@ -496,6 +755,8 @@ impl State {
             if let (Some(name), Some(id)) = (&self.worker, &account.account_id) {
                 if !self.loaded.contains("settings") && !cx.busy("settings") {
                     self.loaded.insert("settings".into());
+                    self.worker_reads
+                        .insert("settings".into(), self.worker_scope(account, name));
                     cx.cloudflare(
                         "settings",
                         CfReq::WorkerSettings {
@@ -507,6 +768,8 @@ impl State {
                 }
                 if !self.loaded.contains("deployments") && !cx.busy("deployments") {
                     self.loaded.insert("deployments".into());
+                    self.worker_reads
+                        .insert("deployments".into(), self.worker_scope(account, name));
                     cx.cloudflare(
                         "deployments",
                         CfReq::WorkerDeployments {
@@ -570,7 +833,7 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
     ui.horizontal_wrapped(|ui| {
         for (section, title) in [("zones", "Zones & DNS"), ("tunnels", "Tunnels"), ("r2", "R2 storage"), ("workers", "Workers"), ("analytics", "Analytics"), ("accounts", "Accounts")] {
             if ui.selectable_label(state.section == section, title).clicked() && state.section != section {
-                if state.is_dirty() || state.confirmation.is_some() || cx.busy("mutation") || cx.busy("transfer") || cx.busy("account") { state.status = "Save/discard the current edit, or wait for the scoped operation before changing product.".into(); }
+                if state.is_dirty() || state.confirmation.is_some() || cx.busy("mutation") || cx.busy("transfer") || cx.busy("account") { state.set_status("Save/discard the current edit, or wait for the scoped operation before changing product.".into(), false); }
                 else { state.section = section.into(); state.editor = None; state.baseline.clear(); state.filter.clear(); state.selected = None; state.marked.clear(); state.token = None; }
             }
         }
@@ -620,7 +883,6 @@ fn scope_identity(ui: &mut egui::Ui, state: &State, cx: &PageContext<'_>) {
     if state.section == "accounts" {
         return;
     }
-    ui.add(egui::Label::new(state.breadcrumb(cx.target)).wrap());
     if let Some(account) = &cx.target.account {
         ui.add(
             egui::Label::new(format!(
@@ -666,6 +928,7 @@ fn feedback(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         "mutation",
         "transfer",
         "account",
+        "native-picker",
     ] {
         if let Some(e) = state.errors.get(key) {
             widgets::error(ui, &format!("{key}: {e}"));
@@ -874,6 +1137,7 @@ fn analytics(ui: &mut egui::Ui, state: &mut State) {
             &["Country", "Requests", "Bytes"],
             &rows,
             &mut None,
+            100.0,
         );
         if state.detailed {
             for (name, metrics) in [
@@ -901,7 +1165,7 @@ fn analytics(ui: &mut egui::Ui, state: &mut State) {
     }
     egui::CollapsingHeader::new("Web Analytics sites").show(ui, |ui| {
         let rows = state.sites.iter().map(|s| vec![s.host.clone(), s.zone_name.clone(), s.enabled.to_string(), s.auto_install.to_string(), s.page_views_24h.map(|v| v.to_string()).unwrap_or_else(|| "Not returned".into()), s.visits_24h.map(|v| v.to_string()).unwrap_or_else(|| "Not returned".into())]).collect::<Vec<_>>();
-        widgets::table(ui, "cf-sites", &["Host", "Zone", "Enabled", "Auto install", "Page views / 24h", "Visits / 24h"], &rows, &mut None);
+        widgets::table(ui, "cf-sites", &["Host", "Zone", "Enabled", "Auto install", "Page views / 24h", "Visits / 24h"], &rows, &mut None, 100.0);
         ui.label("Site metadata is separate from account traffic totals. Missing optional totals are not zero.");
     });
 }
@@ -941,7 +1205,7 @@ fn resource_table<'a>(
     selected: &mut Option<String>,
 ) -> Option<usize> {
     let mut index = selected_row(keys.clone(), selected.as_deref());
-    if let Some(clicked) = widgets::table(ui, id, columns, rows, &mut index) {
+    if let Some(clicked) = widgets::table(ui, id, columns, rows, &mut index, 100.0) {
         *selected = keys.clone().nth(clicked).map(str::to_owned);
     }
     index
@@ -1392,15 +1656,30 @@ fn route_form(tunnel_id: &str, rule: Option<&TunnelIngressRule>) -> Form {
 fn r2(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>, account: &CloudflareAccount) {
     if let Some(bucket) = state.bucket.clone() {
         ui.horizontal_wrapped(|ui| {
-            if ui.button("All buckets").clicked() { state.bucket = None; state.selected = None; state.marked.clear(); }
-            ui.strong(&bucket); ui.label(if state.prefix.is_empty() { "/" } else { &state.prefix });
-            if !state.prefix.is_empty() && ui.button("Parent folder").clicked() { state.browse_prefix(parent_prefix(&state.prefix)); }
-            if ui.button("Upload file…").clicked() {
-                if let Some(path) = rfd::FileDialog::new().set_title("Upload file to R2").pick_file() {
-                    let key = format!("{}{}", state.prefix, path.file_name().unwrap_or_default().to_string_lossy());
-                    state.edit(Form::new(FormKind::R2Upload, "Upload R2 object", vec![Field::text("Object key", &key)]).with_note("PUT replaces an existing object with this exact key. Maximum REST upload size: 300 MB."));
-                    state.file = Some(path);
-                }
+            if ui.button("All buckets").clicked() {
+                state.bucket = None;
+                state.selected = None;
+                state.marked.clear();
+            }
+            ui.strong(&bucket);
+            ui.label(if state.prefix.is_empty() {
+                "/"
+            } else {
+                &state.prefix
+            });
+            if !state.prefix.is_empty() && ui.button("Parent folder").clicked() {
+                state.browse_prefix(parent_prefix(&state.prefix));
+            }
+            if ui.button("Upload file…").clicked()
+                && state.begin_picker(cx, account, PickerIntent::Upload)
+            {
+                cx.background("native-picker", "Choose R2 upload file", || {
+                    Ok(Payload::ChosenPath(
+                        rfd::FileDialog::new()
+                            .set_title("Upload file to R2")
+                            .pick_file(),
+                    ))
+                });
             }
         });
         ui.horizontal(|ui| {
@@ -1493,7 +1772,7 @@ fn r2(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>, account: &
                         state.marked.insert(object.key.clone());
                     }
                     if ui.button("Download file…").clicked() {
-                        choose_download(state, account, Some(bucket.clone()), &object.key);
+                        choose_download(state, cx, account, Some(bucket.clone()), &object.key);
                     }
                     if ui.button("Delete file…").clicked() {
                         state.review(
@@ -1516,34 +1795,20 @@ fn r2(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>, account: &
         if !state.marked.is_empty() {
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Download marked files…").clicked() {
-                    if let Some(dir) = rfd::FileDialog::new()
-                        .set_title("Download marked R2 files into folder")
-                        .pick_folder()
-                    {
-                        let files = state
-                            .objects
-                            .iter()
-                            .filter(|o| state.marked.contains(&o.key))
-                            .map(|o| (o.key.clone(), dir.join(safe_basename(&o.key))))
-                            .collect::<Vec<_>>();
-                        state.review(
-                            account,
-                            "Download marked R2 objects",
-                            &bucket,
-                            false,
-                            files
-                                .iter()
-                                .map(|(k, p)| {
-                                    format!("{k} → {} (existing paths are refused)", p.display())
-                                })
-                                .collect(),
-                            Action::Download {
-                                account: account.clone(),
-                                bucket: Some(bucket.clone()),
-                                files,
-                                overwrite: false,
-                            },
-                        );
+                    let keys = state
+                        .objects
+                        .iter()
+                        .filter(|object| state.marked.contains(&object.key))
+                        .map(|object| object.key.clone())
+                        .collect();
+                    if state.begin_picker(cx, account, PickerIntent::MarkedDownload(keys)) {
+                        cx.background("native-picker", "Choose R2 download folder", || {
+                            Ok(Payload::ChosenPath(
+                                rfd::FileDialog::new()
+                                    .set_title("Download marked R2 files into folder")
+                                    .pick_folder(),
+                            ))
+                        });
                     }
                 }
                 if ui.button("Delete marked files…").clicked() {
@@ -1631,32 +1896,28 @@ fn r2(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>, account: &
             });
         }
     }
-    let _ = cx;
 }
 
 fn workers(
     ui: &mut egui::Ui,
     state: &mut State,
-    _cx: &mut PageContext<'_>,
+    cx: &mut PageContext<'_>,
     account: &CloudflareAccount,
 ) {
     ui.horizontal_wrapped(|ui| {
         ui.heading("Workers");
         if ui.button("Deploy JavaScript file…").clicked() {
-            deploy_form(state, "");
+            deploy_form(state, cx, account, "");
         }
         if state.worker.is_some() && ui.button("All scripts").clicked() {
-            state.worker = None;
-            state.settings = None;
-            state.deployments.clear();
-            state.selected = None;
+            state.select_worker(None);
         }
     });
     if let Some(name) = state.worker.clone() {
         ui.strong(&name);
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Download script…").clicked() { choose_download(state, account, None, &name); }
-            if ui.button("Replace script…").clicked() { deploy_form(state, &name); }
+            if ui.button("Download script…").clicked() { choose_download(state, cx, account, None, &name); }
+            if ui.button("Replace script…").clicked() { deploy_form(state, cx, account, &name); }
             if ui.button("Delete script…").clicked() { state.edit(Form::new(FormKind::CfWorkerDelete { name: name.clone() }, format!("Delete Worker {name}"), vec![Field::boolean("Force", false)]).with_note("Force deletes even when resources reference this Worker. Typed confirmation follows.")); }
         });
         egui::CollapsingHeader::new("Settings, bindings, secret metadata & schedules").default_open(true).show(ui, |ui| {
@@ -1725,37 +1986,40 @@ fn workers(
         if let Some(w) = selected {
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Settings & deployments").clicked() {
-                    state.worker = Some(w.id.clone());
-                    state.settings = None;
-                    state.deployments.clear();
-                    state.loaded.remove("settings");
-                    state.loaded.remove("deployments");
-                    state.selected = None;
+                    state.select_worker(Some(w.id.clone()));
                 }
                 if ui.button("Download script…").clicked() {
-                    choose_download(state, account, None, &w.id);
+                    choose_download(state, cx, account, None, &w.id);
                 }
                 if ui.button("Replace script…").clicked() {
-                    deploy_form(state, &w.id);
+                    deploy_form(state, cx, account, &w.id);
                 }
             });
         }
     }
 }
 
-fn deploy_form(state: &mut State, name: &str) {
-    if let Some(path) = rfd::FileDialog::new()
-        .set_title("Select Worker JavaScript file")
-        .add_filter("JavaScript", &["js", "mjs"])
-        .pick_file()
-    {
-        state.edit(Form::new(FormKind::CfWorkerDeploy, "Deploy / replace Worker script", vec![Field::text("Worker name", name), Field::choice("Mode", &["module", "service-worker"], "module")]).with_note("Uploads one file. Existing script content with this name is replaced; settings remain separate."));
-        state.file = Some(path);
+fn deploy_form(
+    state: &mut State,
+    cx: &mut PageContext<'_>,
+    account: &CloudflareAccount,
+    name: &str,
+) {
+    if state.begin_picker(cx, account, PickerIntent::Deploy(name.into())) {
+        cx.background("native-picker", "Choose Worker JavaScript file", || {
+            Ok(Payload::ChosenPath(
+                rfd::FileDialog::new()
+                    .set_title("Select Worker JavaScript file")
+                    .add_filter("JavaScript", &["js", "mjs"])
+                    .pick_file(),
+            ))
+        });
     }
 }
 
 fn choose_download(
     state: &mut State,
+    cx: &mut PageContext<'_>,
     account: &CloudflareAccount,
     bucket: Option<String>,
     key: &str,
@@ -1765,13 +2029,22 @@ fn choose_download(
     } else {
         format!("{}.js", safe_basename(key))
     };
-    if let Some(path) = rfd::FileDialog::new()
-        .set_title("Save downloaded content")
-        .set_file_name(&filename)
-        .save_file()
-    {
-        // Always review replacement; existence checks and all filesystem IO run in the task.
-        state.review(account, "Save download (replace chosen destination)", key, false, vec![format!("Destination: {}", path.display()), "An existing regular file at this exact destination will be replaced only after a successful download. Symlinks and directories are refused.".into()], Action::Download { account: account.clone(), bucket, files: vec![(key.into(), path)], overwrite: true });
+    if state.begin_picker(
+        cx,
+        account,
+        PickerIntent::Download {
+            bucket,
+            key: key.into(),
+        },
+    ) {
+        cx.background("native-picker", "Choose download destination", move || {
+            Ok(Payload::ChosenPath(
+                rfd::FileDialog::new()
+                    .set_title("Save downloaded content")
+                    .set_file_name(&filename)
+                    .save_file(),
+            ))
+        });
     }
 }
 
@@ -1793,9 +2066,6 @@ fn editor(
     }
     ui.add(egui::Label::new(egui::RichText::new(&form.title).strong()).truncate())
         .on_hover_text(&form.title);
-    let identity = state.breadcrumb(cx.target);
-    ui.add(egui::Label::new(&identity).truncate())
-        .on_hover_text(&identity);
     let mut apply = false;
     let mut discard = false;
     ui.horizontal_wrapped(|ui| {
@@ -1834,6 +2104,7 @@ fn editor(
     if discard {
         state.editor = None;
         state.file = None;
+        state.file_target = None;
         state.baseline.clear();
         state.confirmation = None;
         return;
@@ -1850,6 +2121,34 @@ fn editor(
             }
         }
     }
+}
+
+fn dns_create_details(body: &Value) -> Vec<String> {
+    let mut details = vec![
+        format!("Type: {}", body["type"].as_str().unwrap_or_default()),
+        format!("Name: {}", body["name"].as_str().unwrap_or_default()),
+    ];
+    if let Some(content) = body.get("content") {
+        details.push(format!("Content: {}", content.as_str().unwrap_or_default()));
+    }
+    details.push(if body["ttl"].as_u64() == Some(1) {
+        "TTL: automatic (1)".into()
+    } else {
+        format!("TTL: {} seconds", body["ttl"])
+    });
+    if let Some(priority) = body.get("priority") {
+        details.push(format!("Priority: {priority}"));
+    }
+    if let Some(proxied) = body.get("proxied").and_then(Value::as_bool) {
+        details.push(format!(
+            "Proxied: {proxied}{}",
+            if proxied { "" } else { " (DNS only)" }
+        ));
+    }
+    if let Some(data) = body.get("data").filter(|data| !data.is_null()) {
+        details.push(format!("Data: {data}"));
+    }
+    details
 }
 
 fn prepare(
@@ -1879,6 +2178,17 @@ fn prepare(
             .any(|r| state.marked.contains(&r.id) && !r.kind.eq_ignore_ascii_case("MX"))
     {
         bail!("Priority changes require only MX records. Unmark other record types before reviewing this batch.");
+    }
+    if matches!(f.kind, FormKind::R2Upload | FormKind::CfWorkerDeploy) {
+        let (original_account, original_bucket) = state
+            .file_target
+            .as_ref()
+            .context("Choose a local file for this target")?;
+        if !same_account(account, original_account)
+            || (matches!(f.kind, FormKind::R2Upload) && &state.bucket != original_bucket)
+        {
+            bail!("The Cloudflare target changed. Discard this draft and choose a file for the current target.");
+        }
     }
     // Native paths stay PathBuf; these transfers also support reviewed replacement.
     match &f.kind {
@@ -1991,15 +2301,9 @@ fn prepare(
         CfReq::TunnelCreate { name, .. } => ("Create tunnel", name.clone(), false, Vec::new()),
         CfReq::CreateRecord { body, .. } => (
             "Create DNS record",
-            get("Name"),
+            body["name"].as_str().unwrap_or_default().to_owned(),
             false,
-            vec![format!(
-                "{} {} → {}; TTL {}",
-                get("Type"),
-                get("Name"),
-                get("Content"),
-                body["ttl"]
-            )],
+            dns_create_details(body),
         ),
         CfReq::PatchRecord { id, body, .. } => (
             "Patch DNS record",
@@ -2052,53 +2356,67 @@ fn review(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     let Some(review) = state.confirmation.as_ref() else {
         return;
     };
+    let create_dns = matches!(&review.action, Action::Cf(CfReq::CreateRecord { .. }));
+    let control_rows = if review.typed.is_some() { 3.0 } else { 1.0 };
+    let controls_height =
+        ui.spacing().interact_size.y * control_rows + ui.spacing().item_spacing.y * 4.0;
     ui.add(egui::Label::new(egui::RichText::new(&review.title).strong()).truncate())
         .on_hover_text(&review.title);
-    ui.add(egui::Label::new(&review.target).truncate())
-        .on_hover_text(&review.target);
-    let busy = cx.busy("mutation") || cx.busy("transfer") || cx.busy("account");
-    let approved = ui
-        .add_enabled_ui(!busy, |ui| {
-            if let Some(expected) = &review.typed {
-                let prompt = format!("Type {expected} to confirm this target:");
-                let label = ui
-                    .add(egui::Label::new(&prompt).truncate())
-                    .on_hover_text(&prompt);
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.confirm_entry)
-                        .desired_width(f32::INFINITY),
-                )
-                .labelled_by(label.id);
-            }
-            ui.add_enabled(
-                review
-                    .typed
-                    .as_ref()
-                    .is_none_or(|expected| state.confirm_entry == *expected),
-                egui::Button::new("Confirm").fill(ui.visuals().error_fg_color.gamma_multiply(0.20)),
-            )
-            .clicked()
-        })
-        .inner;
-    let cancel = ui.button("Back / cancel review").clicked();
-    ui.separator();
     egui::ScrollArea::vertical()
         .id_salt("cf-review-items")
-        .max_height(ui.available_height().max(24.0))
+        .max_height((ui.available_height() - controls_height).max(24.0))
         .min_scrolled_height(24.0)
-        .auto_shrink([false, false])
+        .auto_shrink([false, true])
         .show(ui, |ui| {
             scope_identity(ui, state, cx);
             let review = state.confirmation.as_ref().unwrap();
-            ui.add(egui::Label::new(&review.target).wrap());
-            if let Some(expected) = &review.typed {
-                ui.add(egui::Label::new(format!("Type {expected} to confirm this target:")).wrap());
+            if !create_dns {
+                ui.add(egui::Label::new(&review.target).wrap());
             }
             for line in &review.details {
                 ui.add(egui::Label::new(line).wrap());
             }
             feedback(ui, state, cx);
         });
+    ui.separator();
+    let review = state.confirmation.as_ref().unwrap();
+    let busy = cx.busy("mutation") || cx.busy("transfer") || cx.busy("account");
+    if let Some(expected) = &review.typed {
+        ui.add_enabled_ui(!busy, |ui| {
+            let prompt = format!("Type {expected} to confirm this target:");
+            let label = ui
+                .add(egui::Label::new(&prompt).truncate())
+                .on_hover_text(&prompt);
+            ui.add(
+                egui::TextEdit::singleline(&mut state.confirm_entry).desired_width(f32::INFINITY),
+            )
+            .labelled_by(label.id);
+        });
+    }
+    let mut approved = false;
+    let mut cancel = false;
+    ui.horizontal_wrapped(|ui| {
+        approved = ui
+            .add_enabled(
+                !busy
+                    && review
+                        .typed
+                        .as_ref()
+                        .is_none_or(|expected| state.confirm_entry == *expected),
+                egui::Button::new(if create_dns {
+                    "Create DNS record"
+                } else {
+                    "Confirm"
+                })
+                .fill(if create_dns {
+                    ui.visuals().selection.bg_fill
+                } else {
+                    ui.visuals().error_fg_color.gamma_multiply(0.20)
+                }),
+            )
+            .clicked();
+        cancel = ui.button("Back / cancel review").clicked();
+    });
     if cancel {
         state.confirmation = None;
         return;
@@ -2112,7 +2430,12 @@ fn review(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     state.errors.remove("transfer");
     let config_path = cx.cloudflare_config_path().to_owned();
     match review.action {
-        Action::Cf(req) => cx.cloudflare("mutation", req),
+        Action::Cf(req) => {
+            // R2 deletion can report partial failure inside an opaque Done message.
+            state.mutation_may_be_partial = matches!(&req, CfReq::R2Delete { .. });
+            state.track_worker_delete(&req, cx.target.account.as_ref());
+            cx.cloudflare("mutation", req);
+        }
         Action::RemoveAccount(name) => {
             cx.background("account", "Remove stored Cloudflare account", move || {
                 super::connections::remove_cf_account(&CloudflareConfig::new(config_path), &name)?;
@@ -2291,6 +2614,138 @@ fn safe_download(
 mod tests {
     use super::*;
 
+    fn picker_fixture(intent: PickerIntent) -> (State, CloudflareAccount) {
+        let account = CloudflareAccount {
+            name: "fixture".into(),
+            api_token: "not-a-real-token".into(),
+            account_id: Some("account-a".into()),
+            default: false,
+        };
+        let state = State {
+            section: "r2".into(),
+            bucket: Some("assets".into()),
+            prefix: "original/".into(),
+            picker: Some(PendingPicker {
+                account: account.clone(),
+                section: "r2".into(),
+                bucket: Some("assets".into()),
+                prefix: "original/".into(),
+                worker: None,
+                selected: None,
+                draft_generation: 0,
+                intent,
+            }),
+            ..Default::default()
+        };
+        (state, account)
+    }
+
+    #[test]
+    fn cancelled_picker_only_clears_request_and_preserves_newer_draft() {
+        let (mut state, account) = picker_fixture(PickerIntent::Upload);
+        state.edit(record_form(None));
+        state.editor.as_mut().unwrap().fields[1].value = "newer draft".into();
+        let baseline = state.baseline.clone();
+        state.accept_picker(Some(&account), None);
+        assert!(state.picker.is_none());
+        assert_eq!(
+            state.editor.as_ref().unwrap().fields[1].value,
+            "newer draft"
+        );
+        assert_eq!(state.baseline, baseline);
+        assert!(state.confirmation.is_none() && state.file.is_none());
+    }
+
+    #[test]
+    fn late_picker_rejects_changed_resource_account_and_discarded_new_draft() {
+        for change in 0..5 {
+            let (mut state, mut account) = picker_fixture(PickerIntent::Upload);
+            match change {
+                0 => state.bucket = Some("other-bucket".into()),
+                1 => account.account_id = Some("other-account".into()),
+                2 => state.worker = Some("other-worker".into()),
+                3 => state.prefix = "other-prefix/".into(),
+                _ => {
+                    state.edit(record_form(None));
+                    state.editor = None;
+                }
+            }
+            state.accept_picker(Some(&account), Some("chosen.txt".into()));
+            assert!(state.picker.is_none());
+            assert!(state.editor.is_none() && state.confirmation.is_none() && state.file.is_none());
+            assert!(state.status.contains("not applied"));
+        }
+    }
+
+    #[test]
+    fn marked_picker_reviews_original_keys_with_safe_names_and_no_overwrite() {
+        let (mut state, account) = picker_fixture(PickerIntent::MarkedDownload(vec![
+            "original/../first.txt".into(),
+            "original/CON.js".into(),
+        ]));
+        state.marked.insert("newly-marked.txt".into());
+        let dir = PathBuf::from("chosen folder");
+        state.accept_picker(Some(&account), Some(dir.clone()));
+        let review = state.confirmation.as_ref().unwrap();
+        let Action::Download {
+            files, overwrite, ..
+        } = &review.action
+        else {
+            panic!("Expected download review")
+        };
+        assert!(!overwrite);
+        assert_eq!(
+            files,
+            &vec![
+                ("original/../first.txt".into(), dir.join("first.txt")),
+                ("original/CON.js".into(), dir.join("download")),
+            ]
+        );
+        assert!(state.editor.is_none() && state.file.is_none());
+    }
+
+    #[test]
+    fn chosen_upload_requires_review_and_refuses_later_account_or_bucket_retarget() {
+        let (mut state, mut account) = picker_fixture(PickerIntent::Upload);
+        state.accept_picker(Some(&account), Some("local.txt".into()));
+        assert!(state.confirmation.is_none());
+        assert_eq!(
+            state.editor.as_ref().unwrap().by_label("Object key"),
+            "original/local.txt"
+        );
+        assert!(matches!(
+            prepare(&state, &account).unwrap().4,
+            Action::Upload { .. }
+        ));
+        state.bucket = Some("other-bucket".into());
+        assert!(prepare(&state, &account).is_err());
+        state.bucket = Some("assets".into());
+        account.account_id = Some("other-account".into());
+        assert!(prepare(&state, &account).is_err());
+    }
+
+    #[test]
+    fn chosen_worker_file_opens_replacement_draft_without_deploying() {
+        let (mut state, account) = picker_fixture(PickerIntent::Deploy("original-worker".into()));
+        state.section = "workers".into();
+        state.bucket = None;
+        state.prefix.clear();
+        let request = state.picker.as_mut().unwrap();
+        request.section = state.section.clone();
+        request.bucket = None;
+        request.prefix.clear();
+        state.accept_picker(Some(&account), Some("script.mjs".into()));
+        assert!(state.confirmation.is_none());
+        assert_eq!(
+            state.editor.as_ref().unwrap().by_label("Worker name"),
+            "original-worker"
+        );
+        assert!(matches!(
+            prepare(&state, &account).unwrap().4,
+            Action::Deploy { .. }
+        ));
+    }
+
     #[test]
     fn failed_stream_preserves_existing_file_and_paths_with_spaces() {
         let dir = tempfile::tempdir().unwrap();
@@ -2440,7 +2895,7 @@ mod tests {
             "https://origin:443",
             "/api",
             Some(json!({
-                "originServerName": "origin.example.test", "connectTimeout": "45s",
+                "originServerName": "origin.example.test", "connectTimeout": 45,
                 "futureOption": { "keep": true }, "access": { "required": true, "teamName": "team", "audTag": ["aud"], "futureAccess": 7 }
             })),
         );
@@ -2474,7 +2929,7 @@ mod tests {
         assert!(!dns);
         assert_eq!(origin["futureOption"]["keep"], true);
         assert_eq!(origin["access"]["futureAccess"], 7);
-        assert_eq!(origin["connectTimeout"], "45s");
+        assert_eq!(origin["connectTimeout"], 45);
         assert_eq!(origin["httpHostHeader"], "internal.example.test");
     }
 
@@ -2617,5 +3072,759 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("only MX"));
+    }
+
+    fn dns_fixture() -> (State, CloudflareAccount) {
+        let account = CloudflareAccount {
+            name: "review-account".into(),
+            api_token: "fixture-token".into(),
+            account_id: Some("account-id".into()),
+            default: false,
+        };
+        let mut state = State {
+            initialized: true,
+            section: "zones".into(),
+            zone: Some(Zone {
+                id: "zone-id".into(),
+                name: "example.test".into(),
+                status: "active".into(),
+            }),
+            ..Default::default()
+        };
+        state.edit(record_form(None));
+        (state, account)
+    }
+
+    fn with_context(
+        ctx: &egui::Context,
+        target: &super::super::model::Target,
+        run: impl FnOnce(&mut PageContext<'_>),
+    ) {
+        let mut backend = super::super::backend::Backend::new(
+            ctx.clone(),
+            super::super::backend::Runtime::default(),
+        );
+        let mut opened = Vec::new();
+        let mut reload = false;
+        let path = Path::new("unused-fixture-config");
+        run(&mut PageContext {
+            target,
+            servers: &[],
+            accounts: &[],
+            server_config: path,
+            cloudflare_config: path,
+            watchlist: path,
+            doc: 1,
+            backend: &mut backend,
+            opened: &mut opened,
+            reload: &mut reload,
+        });
+    }
+
+    fn deliver(state: &mut State, cx: &mut PageContext<'_>, key: &str, payload: Payload) {
+        deliver_result(state, cx, key, Ok(payload));
+    }
+
+    fn deliver_result(
+        state: &mut State,
+        cx: &mut PageContext<'_>,
+        key: &str,
+        result: Result<Payload>,
+    ) {
+        cx.background(key, "Fixture outcome", move || result);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while cx.busy(key) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture did not finish"
+            );
+            cx.backend.pump();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        state.receive(cx);
+    }
+
+    #[test]
+    fn dns_create_review_facts_match_validated_request_and_back_edit_replaces_them() {
+        for kind in ["A", "AAAA", "CNAME", "TXT", "NS", "MX"] {
+            for proxied in [false, true] {
+                let (mut state, account) = dns_fixture();
+                let f = state.editor.as_mut().unwrap();
+                f.fields[0].value = kind.into();
+                f.fields[1].value = "  full.record.example.test  ".into();
+                f.fields[2].value = "  submitted-content  ".into();
+                f.fields[3].value = if proxied { "120" } else { "1" }.into();
+                f.fields[4].value = if proxied { "yes" } else { "no" }.into();
+                f.fields[5].value = if kind == "MX" { "65535" } else { "" }.into();
+                let (title, resource, typed, details, action) = prepare(&state, &account).unwrap();
+                let Action::Cf(CfReq::CreateRecord { zone_id, body, .. }) = &action else {
+                    panic!("Expected create request");
+                };
+                assert_eq!(zone_id, "zone-id");
+                assert_eq!(resource, body["name"].as_str().unwrap());
+                assert_eq!(resource, "full.record.example.test");
+                let facts = details
+                    .iter()
+                    .filter_map(|line| line.split_once(": "))
+                    .collect::<HashMap<_, _>>();
+                for (label, key) in [("Type", "type"), ("Name", "name"), ("Content", "content")] {
+                    assert_eq!(facts[label], body[key].as_str().unwrap());
+                }
+                assert!(facts["TTL"].contains(&body["ttl"].to_string()));
+                assert_eq!(facts["TTL"].contains("automatic"), body["ttl"] == 1);
+                assert_eq!(facts.contains_key("Proxied"), body.get("proxied").is_some());
+                if let Some(value) = body.get("proxied").and_then(Value::as_bool) {
+                    assert!(facts["Proxied"].starts_with(&value.to_string()));
+                    assert_eq!(facts["Proxied"].contains("DNS only"), !value);
+                }
+                assert_eq!(
+                    facts.get("Priority").copied(),
+                    body.get("priority").map(|_| "65535")
+                );
+                assert_eq!(
+                    body,
+                    &record_body(
+                        kind,
+                        &resource,
+                        "submitted-content",
+                        if proxied { 120 } else { 1 },
+                        proxied,
+                        (kind == "MX").then_some(65535)
+                    )
+                );
+                state.review(&account, &title, &resource, typed, details, action);
+                state.confirmation = None;
+                let f = state.editor.as_mut().unwrap();
+                f.fields[1].value = "changed.example.test".into();
+                f.fields[2].value = "changed-content".into();
+                let (_, resource, _, details, action) = prepare(&state, &account).unwrap();
+                assert_eq!(resource, "changed.example.test");
+                assert!(!details
+                    .iter()
+                    .any(|line| line.contains("full.record.example.test")
+                        || line.contains("submitted-content")));
+                let Action::Cf(CfReq::CreateRecord { body, .. }) = action else {
+                    panic!("Expected edited create request");
+                };
+                assert!(details.contains(&format!("Name: {}", body["name"].as_str().unwrap())));
+                assert!(
+                    details.contains(&format!("Content: {}", body["content"].as_str().unwrap()))
+                );
+            }
+        }
+        let body = json!({"type":"SRV","name":"_service._tcp.example.test","ttl":1,"data":{"priority":10,"weight":5,"port":443,"target":"origin.example.test"}});
+        let details = dns_create_details(&body);
+        let data = details
+            .iter()
+            .find_map(|line| line.strip_prefix("Data: "))
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(data).unwrap(), body["data"]);
+    }
+
+    #[test]
+    fn new_forms_and_reviews_clear_only_success_notices_without_losing_outcome_history() {
+        let ctx = egui::Context::default();
+        let target = super::super::model::Target::default();
+        with_context(&ctx, &target, |cx| {
+            for (key, payload, opaque_partial, success) in [
+                (
+                    "mutation",
+                    Payload::Worker(Resp::Cf(CfResp::Done("A record created".into()))),
+                    false,
+                    true,
+                ),
+                (
+                    "account",
+                    Payload::Text("Account saved".into()),
+                    false,
+                    true,
+                ),
+                (
+                    "mutation",
+                    Payload::Worker(Resp::Cf(CfResp::BulkDone {
+                        ok: 2,
+                        failed: vec![],
+                    })),
+                    false,
+                    true,
+                ),
+                (
+                    "transfer",
+                    Payload::Json(json!({"saved":["one"],"failed":[]})),
+                    false,
+                    true,
+                ),
+                (
+                    "mutation",
+                    Payload::Worker(Resp::Cf(CfResp::BulkDone {
+                        ok: 1,
+                        failed: vec![("record-id".into(), "denied".into())],
+                    })),
+                    false,
+                    false,
+                ),
+                (
+                    "transfer",
+                    Payload::Json(json!({"saved":["one"],"failed":[["two","denied"]]})),
+                    false,
+                    false,
+                ),
+                (
+                    "mutation",
+                    Payload::Worker(Resp::Cf(CfResp::Done(
+                        "1 deleted; one failure remains".into(),
+                    ))),
+                    true,
+                    false,
+                ),
+                (
+                    "mutation",
+                    Payload::Worker(Resp::Cf(CfResp::Status(
+                        "Remote operation still requires inspection".into(),
+                    ))),
+                    false,
+                    false,
+                ),
+            ] {
+                let (mut state, account) = dns_fixture();
+                state.mutation_may_be_partial = opaque_partial;
+                state.errors.insert(
+                    "records".into(),
+                    "Refresh failed; previous data retained".into(),
+                );
+                deliver(&mut state, cx, key, payload);
+                let notice = state.status.clone();
+                let errors = state.errors.clone();
+                let failed = state.failed.clone();
+                let history = cx.backend.tasks.len();
+                state.edit(record_form(None));
+                assert_eq!(state.status.is_empty(), success);
+                if !success {
+                    assert_eq!(state.status, notice);
+                }
+                assert_eq!(state.errors, errors);
+                assert_eq!(state.failed, failed);
+                state.set_status(notice.clone(), success);
+                state.review(
+                    &account,
+                    "Review next operation",
+                    "resource",
+                    false,
+                    vec![],
+                    Action::DefaultAccount(account.name.clone()),
+                );
+                assert_eq!(state.status.is_empty(), success);
+                if !success {
+                    assert_eq!(state.status, notice);
+                }
+                assert_eq!(state.errors, errors);
+                assert_eq!(state.failed, failed);
+                assert_eq!(cx.backend.tasks.len(), history);
+            }
+            let (mut state, account) = dns_fixture();
+            let (release, blocked) = std::sync::mpsc::channel();
+            cx.background("transfer", "Remote work still running", move || {
+                blocked.recv()?;
+                Ok(Payload::Text("Transfer finished".into()))
+            });
+            state.edit(record_form(None));
+            state.review(
+                &account,
+                "Review next operation",
+                "resource",
+                false,
+                vec![],
+                Action::DefaultAccount(account.name.clone()),
+            );
+            assert!(cx.busy("transfer"), "new task must not cancel remote work");
+            release.send(()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while cx.busy("transfer") {
+                assert!(std::time::Instant::now() < deadline);
+                cx.backend.pump();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+    }
+
+    #[test]
+    fn dns_review_facts_precede_fixed_actions_at_minimum_and_normal_workspace_sizes() {
+        for size in [egui::vec2(1024.0, 680.0), egui::vec2(1280.0, 800.0)] {
+            for dark in [false, true] {
+                for long_feedback in [false, true] {
+                    let ctx = egui::Context::default();
+                    super::super::theme::apply(
+                        &ctx,
+                        if dark {
+                            super::super::theme::Mode::Dark
+                        } else {
+                            super::super::theme::Mode::Light
+                        },
+                    );
+                    let (mut state, account) = dns_fixture();
+                    let f = state.editor.as_mut().unwrap();
+                    f.fields[1].value = format!("{}example.test", "long-record-name.".repeat(8));
+                    f.fields[2].value = "192.0.2.1".into();
+                    let (title, resource, typed, details, action) =
+                        prepare(&state, &account).unwrap();
+                    let expected_facts = details.clone();
+                    state.review(&account, &title, &resource, typed, details, action);
+                    if long_feedback {
+                        state.errors.insert(
+                            "records".into(),
+                            "Refresh failed; previous records remain available. ".repeat(100),
+                        );
+                    }
+                    let target = super::super::model::Target {
+                        account: Some(account),
+                        section: "records".into(),
+                        ..Default::default()
+                    };
+                    with_context(&ctx, &target, |cx| {
+                        let mut measured = None;
+                        let mut output = ctx.run_ui(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    size,
+                                )),
+                                ..Default::default()
+                            },
+                            |ui| {
+                                egui::Panel::top("menu").exact_size(32.0).show(ui, |_| {});
+                                egui::Panel::bottom("status")
+                                    .exact_size(24.0)
+                                    .show(ui, |_| {});
+                                egui::Panel::left("explorer")
+                                    .exact_size(298.0)
+                                    .show(ui, |_| {});
+                                egui::Panel::bottom("utility")
+                                    .exact_size(220.0)
+                                    .show(ui, |_| {});
+                                egui::CentralPanel::default()
+                                    .frame(egui::Frame::new().inner_margin(12))
+                                    .show(ui, |ui| {
+                                        ui.allocate_space(egui::vec2(ui.available_width(), 96.0));
+                                        let bounds = ui.available_rect_before_wrap();
+                                        review(ui, &mut state, cx);
+                                        measured = Some((bounds, ui.min_rect()));
+                                    });
+                            },
+                        );
+                        output.textures_delta.clear();
+                        let (bounds, content) = measured.unwrap();
+                        assert!(
+                            content.max.x <= bounds.max.x + 0.5,
+                            "{size:?}: review exceeds width"
+                        );
+                        assert!(
+                            content.max.y <= bounds.max.y + 0.5,
+                            "{size:?}: review exceeds height"
+                        );
+                        let painted = |text: &str| {
+                            output
+                                .shapes
+                                .iter()
+                                .rev()
+                                .find_map(|clipped| match &clipped.shape {
+                                    egui::epaint::Shape::Text(shape)
+                                        if shape.galley.text() == text =>
+                                    {
+                                        Some((
+                                            clipped.clip_rect,
+                                            shape.galley.rect.translate(shape.pos.to_vec2()),
+                                        ))
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| panic!("Missing review control or fact: {text}"))
+                        };
+                        let (clip, create) = painted("Create DNS record");
+                        assert!(clip.contains_rect(create) && bounds.contains_rect(create));
+                        let (clip, back) = painted("Back / cancel review");
+                        assert!(clip.contains_rect(back) && bounds.contains_rect(back));
+                        for fact in &expected_facts {
+                            let (clip, rect) = painted(fact);
+                            if !long_feedback {
+                                assert!(clip.contains_rect(rect), "{size:?}: fact clipped: {fact}");
+                            }
+                            let visible = rect.intersect(clip);
+                            if visible.is_positive() {
+                                assert!(
+                                    create.min.y >= visible.max.y,
+                                    "Create action precedes review facts"
+                                );
+                            }
+                        }
+                        assert!(
+                            state.confirmation.is_some(),
+                            "rendering does not submit a request"
+                        );
+                    });
+                }
+            }
+        }
+    }
+
+    fn worker_fixture() -> (State, CloudflareAccount) {
+        let (_, account) = dns_fixture();
+        let mut state = State {
+            initialized: true,
+            section: "workers".into(),
+            workers: vec![
+                WorkerScript {
+                    id: "deleted-worker".into(),
+                    ..Default::default()
+                },
+                WorkerScript {
+                    id: "other-worker".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        state.select_worker(Some("deleted-worker".into()));
+        (state, account)
+    }
+
+    fn worker_settings(marker: &str) -> WorkerSettingsBundle {
+        WorkerSettingsBundle {
+            version: WorkerVersionSettings {
+                usage_model: marker.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn worker_delete_request(state: &mut State, account: &CloudflareAccount) -> CfReq {
+        state.edit(Form::new(
+            FormKind::CfWorkerDelete {
+                name: "deleted-worker".into(),
+            },
+            "Delete Worker",
+            vec![Field::boolean("Force", false)],
+        ));
+        let (_, _, typed, _, action) = prepare(state, account).unwrap();
+        assert!(typed);
+        let Action::Cf(req) = action else {
+            panic!("Expected Worker deletion")
+        };
+        assert!(matches!(&req, CfReq::WorkerDelete { force: false, .. }));
+        state.track_worker_delete(&req, Some(account));
+        req
+    }
+
+    #[test]
+    fn matching_worker_delete_returns_to_scripts_and_rejects_late_deleted_metadata_and_errors() {
+        let ctx = egui::Context::default();
+        let (mut state, account) = worker_fixture();
+        state.settings = Some(worker_settings("deleted-settings"));
+        state.deployments.push(WorkerDeployment {
+            id: "deleted-deployment".into(),
+            ..Default::default()
+        });
+        for key in ["settings", "deployments"] {
+            state
+                .worker_reads
+                .insert(key.into(), state.worker_scope(&account, "deleted-worker"));
+            state.loaded.insert(key.into());
+            state
+                .errors
+                .insert(key.into(), "old deleted-worker error".into());
+        }
+        state
+            .errors
+            .insert("records".into(), "unrelated DNS error".into());
+        let req = worker_delete_request(&mut state, &account);
+        let CfReq::WorkerDelete {
+            token,
+            account_id,
+            name,
+            ..
+        } = req
+        else {
+            unreachable!()
+        };
+        assert_eq!(token, account.api_token);
+        assert_eq!(Some(account_id), account.account_id);
+        assert_eq!(name, "deleted-worker");
+        let target = super::super::model::Target {
+            account: Some(account.clone()),
+            ..Default::default()
+        };
+        with_context(&ctx, &target, |cx| {
+            deliver(
+                &mut state,
+                cx,
+                "mutation",
+                Payload::Worker(Resp::Cf(CfResp::Done(
+                    "Worker 'deleted-worker' deleted".into(),
+                ))),
+            );
+            let history = cx.backend.tasks.len();
+            assert!(
+                state.worker.is_none() && state.settings.is_none() && state.deployments.is_empty()
+            );
+            assert!(state.editor.is_none() && state.worker_delete.is_none());
+            assert_eq!(
+                state
+                    .workers
+                    .iter()
+                    .map(|worker| worker.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["other-worker"]
+            );
+            assert!(
+                !state.errors.contains_key("settings") && !state.errors.contains_key("deployments")
+            );
+            assert_eq!(state.errors["records"], "unrelated DNS error");
+            assert!(state.status.contains("deleted-worker") && state.status_is_success);
+            let status = state.status.clone();
+            deliver(
+                &mut state,
+                cx,
+                "settings",
+                Payload::Worker(Resp::Cf(CfResp::WorkerSettings {
+                    worker: "deleted-worker".into(),
+                    settings: Box::new(worker_settings("late-deleted-settings")),
+                })),
+            );
+            deliver_result(
+                &mut state,
+                cx,
+                "deployments",
+                Err(anyhow::anyhow!("deleted deployment endpoint returned 404")),
+            );
+            assert!(state.settings.is_none() && state.deployments.is_empty());
+            assert!(
+                !state.errors.contains_key("settings") && !state.errors.contains_key("deployments")
+            );
+            assert_eq!(state.status, status);
+            assert_eq!(cx.backend.tasks.len(), history + 2);
+            assert!(cx
+                .backend
+                .tasks
+                .iter()
+                .any(|task| task.progress.contains("deleted-worker")));
+            state.select_worker(Some("other-worker".into()));
+            state.worker_reads.insert(
+                "settings".into(),
+                state.worker_scope(&account, "other-worker"),
+            );
+            deliver(
+                &mut state,
+                cx,
+                "settings",
+                Payload::Worker(Resp::Cf(CfResp::WorkerSettings {
+                    worker: "other-worker".into(),
+                    settings: Box::new(worker_settings("current-settings")),
+                })),
+            );
+            assert_eq!(
+                state.settings.as_ref().unwrap().version.usage_model,
+                "current-settings"
+            );
+        });
+    }
+
+    #[test]
+    fn late_delete_never_resets_a_new_worker_selection_generation_or_account() {
+        for change in 0..5 {
+            let ctx = egui::Context::default();
+            let (mut state, original_account) = worker_fixture();
+            worker_delete_request(&mut state, &original_account);
+            let mut current_account = original_account.clone();
+            match change {
+                0 => state.select_worker(Some("other-worker".into())),
+                1 => {
+                    state.select_worker(None);
+                    state.select_worker(Some("deleted-worker".into()));
+                }
+                2 => current_account.api_token = "rotated-token".into(),
+                3 => current_account.account_id = Some("other-account-id".into()),
+                _ => current_account.name = "other-account-name".into(),
+            }
+            state.settings = Some(worker_settings("new-selection-settings"));
+            state.deployments.push(WorkerDeployment {
+                id: "new-selection-deployment".into(),
+                ..Default::default()
+            });
+            state
+                .loaded
+                .extend(["settings".into(), "deployments".into()]);
+            state
+                .errors
+                .insert("settings".into(), "new-selection error".into());
+            state.edit(Form::new(
+                FormKind::CfWorkerDeploy,
+                "New Worker draft",
+                vec![Field::text("Worker name", "new-draft")],
+            ));
+            let selected = state.worker.clone();
+            let baseline = state.baseline.clone();
+            let target = super::super::model::Target {
+                account: Some(current_account),
+                ..Default::default()
+            };
+            with_context(&ctx, &target, |cx| {
+                deliver(
+                    &mut state,
+                    cx,
+                    "mutation",
+                    Payload::Worker(Resp::Cf(CfResp::Done(
+                        "Worker 'deleted-worker' deleted".into(),
+                    ))),
+                );
+                assert_eq!(state.worker, selected);
+                assert_eq!(
+                    state.settings.as_ref().unwrap().version.usage_model,
+                    "new-selection-settings"
+                );
+                assert_eq!(state.deployments[0].id, "new-selection-deployment");
+                assert_eq!(state.errors["settings"], "new-selection error");
+                assert!(state.loaded.contains("settings") && state.loaded.contains("deployments"));
+                assert_eq!(
+                    state.editor.as_ref().unwrap().by_label("Worker name"),
+                    "new-draft"
+                );
+                assert_eq!(state.baseline, baseline);
+                assert!(state.worker_delete.is_none());
+                assert_eq!(
+                    state
+                        .workers
+                        .iter()
+                        .any(|worker| worker.id == "deleted-worker"),
+                    change >= 2
+                );
+                assert!(state.status.contains("deleted-worker") && !cx.backend.tasks.is_empty());
+            });
+        }
+    }
+
+    #[test]
+    fn worker_reads_scope_success_transport_and_api_errors_before_touching_current_state() {
+        for key in ["settings", "deployments"] {
+            for change in 0..6 {
+                for outcome in 0..3 {
+                    let ctx = egui::Context::default();
+                    let (mut state, original_account) = worker_fixture();
+                    state.worker_reads.insert(
+                        key.into(),
+                        state.worker_scope(&original_account, "deleted-worker"),
+                    );
+                    let mut account = original_account;
+                    match change {
+                        0 => state.select_worker(Some("other-worker".into())),
+                        1 => {
+                            state.select_worker(None);
+                            state.select_worker(Some("deleted-worker".into()));
+                        }
+                        2 => account.api_token = "rotated-token".into(),
+                        3 => account.account_id = Some("other-account-id".into()),
+                        4 => account.name = "renamed-account".into(),
+                        _ => {}
+                    }
+                    state.settings = Some(worker_settings("current-settings"));
+                    state.deployments = vec![WorkerDeployment {
+                        id: "current-deployment".into(),
+                        ..Default::default()
+                    }];
+                    state
+                        .errors
+                        .insert(key.into(), "current scoped error".into());
+                    let target = super::super::model::Target {
+                        account: Some(account),
+                        ..Default::default()
+                    };
+                    with_context(&ctx, &target, |cx| {
+                        let result = match outcome {
+                            0 if key == "settings" => {
+                                Ok(Payload::Worker(Resp::Cf(CfResp::WorkerSettings {
+                                    worker: "deleted-worker".into(),
+                                    settings: Box::new(worker_settings("received-settings")),
+                                })))
+                            }
+                            0 => Ok(Payload::Worker(Resp::Cf(CfResp::WorkerDeployments {
+                                worker: "deleted-worker".into(),
+                                deployments: vec![WorkerDeployment {
+                                    id: "received-deployment".into(),
+                                    ..Default::default()
+                                }],
+                            }))),
+                            1 => Err(anyhow::anyhow!("transport error from original Worker")),
+                            _ => Ok(Payload::Worker(Resp::Cf(CfResp::Err(
+                                "API error from original Worker".into(),
+                            )))),
+                        };
+                        deliver_result(&mut state, cx, key, result);
+                        assert!(!state.worker_reads.contains_key(key));
+                        if change < 5 {
+                            assert_eq!(state.errors[key], "current scoped error");
+                            assert_eq!(
+                                state.settings.as_ref().unwrap().version.usage_model,
+                                "current-settings"
+                            );
+                            assert_eq!(state.deployments[0].id, "current-deployment");
+                        } else if outcome == 0 {
+                            assert!(!state.errors.contains_key(key));
+                            if key == "settings" {
+                                assert_eq!(
+                                    state.settings.as_ref().unwrap().version.usage_model,
+                                    "received-settings"
+                                );
+                            } else {
+                                assert_eq!(state.deployments[0].id, "received-deployment");
+                            }
+                        } else {
+                            assert!(state.errors[key].contains("original Worker"));
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn refused_worker_deletion_preserves_selection_metadata_and_retry_draft() {
+        for result in [
+            Err(anyhow::anyhow!("delete transport failure")),
+            Ok(Payload::Worker(Resp::Cf(CfResp::Err(
+                "delete refused by API".into(),
+            )))),
+        ] {
+            let ctx = egui::Context::default();
+            let (mut state, account) = worker_fixture();
+            state.settings = Some(worker_settings("still-current"));
+            state.deployments.push(WorkerDeployment {
+                id: "still-current".into(),
+                ..Default::default()
+            });
+            worker_delete_request(&mut state, &account);
+            let target = super::super::model::Target {
+                account: Some(account),
+                ..Default::default()
+            };
+            with_context(&ctx, &target, |cx| {
+                deliver_result(&mut state, cx, "mutation", result);
+                assert_eq!(state.worker.as_deref(), Some("deleted-worker"));
+                assert_eq!(
+                    state.settings.as_ref().unwrap().version.usage_model,
+                    "still-current"
+                );
+                assert_eq!(state.deployments[0].id, "still-current");
+                assert!(state.worker_delete.is_none());
+                assert!(matches!(
+                    state.editor.as_ref().unwrap().kind,
+                    FormKind::CfWorkerDelete { .. }
+                ));
+                assert!(state
+                    .workers
+                    .iter()
+                    .any(|worker| worker.id == "deleted-worker"));
+                assert!(state.errors["mutation"].contains("delete"));
+                assert!(!cx.backend.tasks.is_empty());
+            });
+        }
     }
 }

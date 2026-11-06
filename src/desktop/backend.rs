@@ -390,6 +390,8 @@ fn outcome_summary(result: &Outcome) -> (TaskStatus, String) {
     use crate::worker::{CfResp, Resp};
     match result {
         Err(error) => (TaskStatus::Failed, error.clone()),
+        Ok(Payload::ChosenPath(Some(_))) => (TaskStatus::Complete, "File selected".into()),
+        Ok(Payload::ChosenPath(None)) => (TaskStatus::Complete, "Selection cancelled".into()),
         Ok(Payload::Worker(response)) => {
             if let Some(error) = response_error(response) {
                 return (TaskStatus::Failed, error.into());
@@ -592,6 +594,40 @@ mod tests {
         assert!(matches!(backend.tasks[0].status, TaskStatus::Failed));
         assert_eq!(backend.tasks[0].progress, "[redacted] failed");
         assert_eq!(backend.active(), 0);
+    }
+    #[test]
+    fn cancelled_file_selection_releases_slot_without_claiming_a_save() {
+        let (mut backend, tx) = queued();
+        assert!(tx
+            .send(Event::Finished(7, 9, Ok(Payload::ChosenPath(None))))
+            .is_ok());
+        backend.pump();
+        assert!(!backend.busy(7, "fetch"));
+        assert_eq!(backend.active(), 0);
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Complete));
+        assert_eq!(backend.tasks[0].progress, "Selection cancelled");
+        assert!(matches!(
+            backend.take(7, "fetch"),
+            Some(Ok(Payload::ChosenPath(None)))
+        ));
+    }
+    #[test]
+    fn closed_document_drops_chosen_path_but_keeps_selection_outcome() {
+        let (mut backend, tx) = queued();
+        backend.close(7);
+        assert!(tx
+            .send(Event::Finished(
+                7,
+                9,
+                Ok(Payload::ChosenPath(Some("private/query.sql".into())))
+            ))
+            .is_ok());
+        backend.pump();
+        assert!(backend.take(7, "fetch").is_none());
+        assert!(backend.slots.is_empty());
+        assert_eq!(backend.active(), 0);
+        assert!(matches!(backend.tasks[0].status, TaskStatus::Complete));
+        assert_eq!(backend.tasks[0].progress, "File selected");
     }
     #[test]
     fn asynchronous_failure_cannot_regress_to_running_or_success() {

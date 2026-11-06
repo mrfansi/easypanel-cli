@@ -55,6 +55,9 @@ impl Target {
         parts.join(" / ")
     }
     pub fn same_resource(&self, other: &Self) -> bool {
+        self.section == other.section && self.same_resource_across_sections(other)
+    }
+    pub fn same_resource_across_sections(&self, other: &Self) -> bool {
         // Include endpoint and token identity: editing a connection must not reuse a document bound to old credentials.
         self.server
             .as_ref()
@@ -74,16 +77,19 @@ impl Target {
             && self.project == other.project
             && self.service == other.service
             && self.service_type == other.service_type
-            && self.section == other.section
-            && (self.account.is_none()
-                || self
-                    .resource
+            && if self.account.is_some() {
+                self.resource
                     .get("id")
                     .or_else(|| self.resource.get("name"))
                     == other
                         .resource
                         .get("id")
-                        .or_else(|| other.resource.get("name")))
+                        .or_else(|| other.resource.get("name"))
+            } else {
+                // Typed operation seeds bind document intent; catalog rows are refreshable metadata.
+                (self.resource.get("kind").is_none() && other.resource.get("kind").is_none())
+                    || self.resource == other.resource
+            }
     }
     fn secrets(&self) -> Vec<String> {
         let mut secrets = Vec::new();
@@ -108,6 +114,7 @@ pub(super) enum Payload {
     Json(Value),
     Worker(crate::worker::Resp),
     Text(String),
+    ChosenPath(Option<std::path::PathBuf>),
 }
 pub(super) struct PageContext<'a> {
     pub target: &'a Target,
@@ -367,6 +374,13 @@ mod tests {
     #[test]
     fn refreshed_metadata_reuses_service_and_cloudflare_documents_but_not_other_resources() {
         let a = Target {
+            server: Some(Server {
+                name: "host".into(),
+                url: "https://panel.invalid".into(),
+                token: "token".into(),
+                default: false,
+                ssh: None,
+            }),
             project: "shop".into(),
             service: "api".into(),
             resource: serde_json::json!({"enabled":true}),
@@ -374,6 +388,8 @@ mod tests {
         };
         let mut b = a.clone();
         b.resource = Value::Null;
+        assert!(a.same_resource(&b));
+        b.resource = serde_json::json!({});
         assert!(a.same_resource(&b));
         let a = Target {
             account: Some(CloudflareAccount {
@@ -390,5 +406,88 @@ mod tests {
         assert!(a.same_resource(&b));
         b.resource = serde_json::json!({"id":"zone-b"});
         assert!(!a.same_resource(&b));
+        let mut tunnel = a.clone();
+        tunnel.section = "tunnel-routes".into();
+        tunnel.resource = serde_json::json!({"id":"tunnel-a","name":"before","status":"inactive"});
+        let mut refreshed = tunnel.clone();
+        refreshed.resource = serde_json::json!({"id":"tunnel-a","name":"after","status":"healthy"});
+        assert!(tunnel.same_resource(&refreshed));
+        refreshed.resource = serde_json::json!({"id":"tunnel-b","name":"after"});
+        assert!(!tunnel.same_resource(&refreshed));
+    }
+    #[test]
+    fn marked_comparison_documents_bind_their_partner_seed() {
+        let server = Server {
+            name: "host".into(),
+            url: "https://panel.invalid".into(),
+            token: "token".into(),
+            default: false,
+            ssh: None,
+        };
+        let left = ("shop".into(), "api".into(), "app".into());
+        let right = ("shop".into(), "worker".into(), "app".into());
+        let a = super::super::data::compare_services_page(&server, left.clone(), right.clone());
+        let same = super::super::data::compare_services_page(&server, left.clone(), right);
+        assert!(a.target.same_resource(&same.target));
+        let changed = super::super::data::compare_services_page(
+            &server,
+            left,
+            ("shop".into(), "scheduler".into(), "app".into()),
+        );
+        assert!(!a.target.same_resource(&changed.target));
+        assert!(!changed.target.same_resource(&a.target));
+        let mut unseeded = a.target.clone();
+        unseeded.resource = Value::Null;
+        assert!(!a.target.same_resource(&unseeded));
+        assert!(!unseeded.same_resource(&a.target));
+    }
+    #[test]
+    fn recorded_restore_documents_bind_source_and_backup_path() {
+        let source = Server {
+            name: "source".into(),
+            url: "https://source.invalid".into(),
+            token: "source-token".into(),
+            default: false,
+            ssh: None,
+        };
+        let destination = Target {
+            server: Some(Server {
+                name: "destination".into(),
+                url: "https://destination.invalid".into(),
+                token: "destination-token".into(),
+                default: false,
+                ssh: None,
+            }),
+            project: "shop".into(),
+            service: "database".into(),
+            service_type: "postgres".into(),
+            ..Target::default()
+        };
+        let mut file = crate::backup::BackupFile {
+            when: "2026-11-07".into(),
+            database: "shop".into(),
+            path: "backups/first.sql.gz".into(),
+            storage_provider_id: "storage".into(),
+        };
+        let make_page = |source: &Server, file: &crate::backup::BackupFile| {
+            super::super::data::backup_restore_page(
+                source,
+                destination.clone(),
+                "source-project/database",
+                file,
+                "shop",
+                "destination-storage",
+            )
+        };
+        let a = make_page(&source, &file);
+        assert!(a.target.same_resource(&make_page(&source, &file).target));
+        file.path = "backups/second.sql.gz".into();
+        assert!(!a.target.same_resource(&make_page(&source, &file).target));
+        file.path = "backups/first.sql.gz".into();
+        let mut changed_source = source.clone();
+        changed_source.url = "https://another-source.invalid".into();
+        assert!(!a
+            .target
+            .same_resource(&make_page(&changed_source, &file).target));
     }
 }

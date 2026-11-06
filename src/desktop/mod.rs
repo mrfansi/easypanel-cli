@@ -67,6 +67,15 @@ impl Document {
         }
     }
     fn caption(&self) -> String {
+        if let PageState::Host(state) = &self.state {
+            if self.page.kind == PageKind::Host {
+                let section = state.section_label(&self.page.target);
+                return self.page.target.server.as_ref().map_or_else(
+                    || section.to_owned(),
+                    |server| format!("{} / {section}", server.name),
+                );
+            }
+        }
         self.service_section().map_or_else(
             || self.page.title.clone(),
             |section| format!("{} / {section}", self.page.target.service),
@@ -75,6 +84,11 @@ impl Document {
     fn breadcrumb(&self) -> String {
         if let PageState::Cloudflare(state) = &self.state {
             return state.breadcrumb(&self.page.target);
+        }
+        if let PageState::Host(state) = &self.state {
+            if self.page.kind == PageKind::Host {
+                return state.breadcrumb(&self.page.target);
+            }
         }
         let mut label = self.page.target.label();
         if let Some(section) = self.service_section() {
@@ -144,6 +158,7 @@ pub struct Desktop {
     documents: Vec<Document>,
     next_doc: DocId,
     active: Option<DocId>,
+    last_tab_view: Option<(Option<DocId>, f32, f32)>,
     utility_doc: Option<DocId>,
     last_logs_doc: Option<DocId>,
     last_terminal_doc: Option<DocId>,
@@ -189,6 +204,7 @@ impl Desktop {
             documents: Vec::new(),
             next_doc: 1,
             active: None,
+            last_tab_view: None,
             utility_doc: None,
             last_logs_doc: None,
             last_terminal_doc: None,
@@ -337,6 +353,7 @@ impl Desktop {
                 self.utility_doc = Some(id);
             } else {
                 self.active = Some(id);
+                self.last_tab_view = None;
             }
             return;
         }
@@ -355,6 +372,7 @@ impl Desktop {
             self.utility_doc = Some(id);
         } else {
             self.active = Some(id);
+            self.last_tab_view = None;
         }
         self.documents.push(Document {
             id,
@@ -925,9 +943,15 @@ impl Desktop {
         }
     }
     fn tabs(&mut self, ui: &mut egui::Ui, palette: Palette) {
+        let width = ui.available_width();
+        let reveal = self
+            .last_tab_view
+            .is_none_or(|(active, strip_width, _)| active != self.active || strip_width != width);
+        let mut active_title_width = 0.0;
         let mut close = None;
         egui::ScrollArea::horizontal()
             .id_salt("documents")
+            .animated(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for document in self.documents.iter().filter(|doc| !doc.docked) {
@@ -936,7 +960,13 @@ impl Desktop {
                         if document.state.is_dirty() {
                             title.push_str(" •");
                         }
-                        egui::Frame::new()
+                        let title_width =
+                            (title.chars().count() as f32 * 6.8 + 16.0).clamp(100.0, 260.0);
+                        if active {
+                            active_title_width = title_width;
+                        }
+                        let mut activated = false;
+                        let tab = egui::Frame::new()
                             .fill(if active {
                                 palette.canvas
                             } else {
@@ -945,11 +975,9 @@ impl Desktop {
                             .inner_margin(egui::Margin::symmetric(8, 0))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    let width = (title.chars().count() as f32 * 6.8 + 16.0)
-                                        .clamp(100.0, 260.0);
                                     if ui
                                         .add_sized(
-                                            [width, 32.0],
+                                            [title_width, 32.0],
                                             egui::Button::new(title)
                                                 .truncate()
                                                 .frame(false)
@@ -959,6 +987,7 @@ impl Desktop {
                                         .clicked()
                                     {
                                         self.active = Some(document.id);
+                                        activated = true;
                                     }
                                     if theme::icon(
                                         ui,
@@ -973,9 +1002,20 @@ impl Desktop {
                                     }
                                 });
                             });
+                        if activated {
+                            active_title_width = title_width;
+                        }
+                        // Reveal once on activation or layout changes, not during manual browsing.
+                        let title_resized = self
+                            .last_tab_view
+                            .is_none_or(|(_, _, previous)| previous != title_width);
+                        if (active && (reveal || title_resized)) || activated {
+                            tab.response.scroll_to_me(None);
+                        }
                     }
                 });
             });
+        self.last_tab_view = Some((self.active, width, active_title_width));
         if let Some(id) = close {
             self.request_close(id);
         }
@@ -996,16 +1036,22 @@ impl Desktop {
         if document.page.kind == PageKind::Service {
             let breadcrumb = document.breadcrumb();
             let response = ui
-                .add_sized(
-                    [ui.available_width(), 20.0],
-                    egui::Label::new(
-                        RichText::new(&breadcrumb)
-                            .small()
-                            .color(ui.visuals().weak_text_color()),
-                    )
-                    .truncate()
-                    .sense(egui::Sense::click()),
+                .allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 20.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&breadcrumb)
+                                    .small()
+                                    .color(ui.visuals().weak_text_color()),
+                            )
+                            .truncate()
+                            .sense(egui::Sense::click()),
+                        )
+                    },
                 )
+                .inner
                 .on_hover_text(&breadcrumb);
             if self.focus == Some(2) {
                 response.request_focus();
@@ -1191,7 +1237,7 @@ impl Desktop {
                     && theme::icon(
                         ui,
                         Icon::Maximize,
-                        "Open session as document",
+                        "Focus session in document workspace",
                         false,
                         palette,
                     )
@@ -1536,12 +1582,34 @@ impl Desktop {
             }
             return;
         };
-        self.open(page(
-            PageKind::Service,
-            &target,
-            "overview",
-            &target.service,
-        ));
+        let matches_service = |document: &&Document| {
+            document.page.kind == PageKind::Service
+                && matches!(document.state, PageState::Services(_))
+                && document.page.target.same_resource_across_sections(&target)
+        };
+        let existing = self
+            .documents
+            .iter()
+            .filter(matches_service)
+            .find(|document| Some(document.id) == self.active)
+            .or_else(|| {
+                self.documents
+                    .iter()
+                    .filter(matches_service)
+                    .find(|document| document.state.is_dirty())
+            })
+            .map(|document| document.id);
+        if let Some(id) = existing {
+            self.active = Some(id);
+            self.last_tab_view = None;
+        } else {
+            self.open(page(
+                PageKind::Service,
+                &target,
+                "overview",
+                &target.service,
+            ));
+        }
         let mut opened = Vec::new();
         if let Some(document) = self
             .documents
@@ -1751,7 +1819,7 @@ impl eframe::App for Desktop {
                 .show(ui, |ui| self.explorer(ui, palette, &mut opened));
         }
         if self.utility_visible {
-            egui::Panel::bottom("utility")
+            let panel = egui::Panel::bottom("utility")
                 .default_size(220.0)
                 .size_range(130.0..=utility_height_limit(ui.available_height()))
                 .resizable(true)
@@ -1772,6 +1840,13 @@ impl eframe::App for Desktop {
                     self.utility(&mut content, palette, &mut opened);
                     ui.advance_cursor_after_rect(rect);
                 });
+            let edge = panel.response.rect;
+            // Paint inside the existing resize hit area without another input target or row.
+            ui.painter().hline(
+                edge.center().x - 18.0..=edge.center().x + 18.0,
+                edge.top() + 2.0,
+                egui::Stroke::new(2.0, palette.muted),
+            );
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(palette.canvas).inner_margin(0))
@@ -2080,6 +2155,353 @@ mod layout_tests {
             document.page.target.label(),
             "Workspace / commerce / api-é / environment"
         );
+    }
+
+    #[test]
+    fn service_breadcrumb_is_left_aligned_bounded_and_accessible_at_workspace_sizes() {
+        for width in [1024.0, 1280.0] {
+            for mode in [theme::Mode::Light, theme::Mode::Dark] {
+                for service in ["api", &"long-service-identity-".repeat(12)] {
+                    let ctx = egui::Context::default();
+                    ctx.enable_accesskit();
+                    let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+                    let directory = tempfile::tempdir().unwrap();
+                    let mut app = Desktop::new(&cc, directory.path().join("servers.json"));
+                    theme::apply(&ctx, mode);
+                    app.open(page(
+                        PageKind::Service,
+                        &Target {
+                            project: "commerce".into(),
+                            service: service.into(),
+                            service_type: "app".into(),
+                            ..Target::default()
+                        },
+                        "environment",
+                        "Environment",
+                    ));
+                    let breadcrumb = app.documents.last().unwrap().breadcrumb();
+                    let mut viewport = egui::Rect::NOTHING;
+                    let mut root = egui::Rect::NOTHING;
+                    let mut output = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, 680.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ui| {
+                            egui::Panel::left("test-explorer")
+                                .exact_size(298.0)
+                                .show(ui, |_| {});
+                            egui::CentralPanel::default().show(ui, |ui| {
+                                viewport = ui.available_rect_before_wrap();
+                                app.document(ui, &mut Vec::new());
+                            });
+                            root = ui.min_rect();
+                        },
+                    );
+                    output.textures_delta.clear();
+                    let text = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) if text.galley.text() == breadcrumb => {
+                                Some(text)
+                            }
+                            _ => None,
+                        })
+                        .expect("breadcrumb must be painted");
+                    assert!((text.pos.x - viewport.left()).abs() < 0.5);
+                    assert!(text.galley.size().x <= viewport.width() + 0.5);
+                    assert!(root.right() <= width + 0.5);
+                    let nodes = &output
+                        .platform_output
+                        .accesskit_update
+                        .as_ref()
+                        .unwrap()
+                        .nodes;
+                    // egui exposes Label text as its semantic value, including elided text.
+                    assert!(
+                        nodes
+                            .iter()
+                            .any(|(_, node)| node.value() == Some(breadcrumb.as_str())),
+                        "breadcrumb semantic text missing: {nodes:#?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn utility_focus_control_moves_the_selected_session_without_recreating_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = Desktop::new(&cc, directory.path().join("servers.json"));
+        let palette = theme::apply(&ctx, theme::Mode::Light);
+        let target = Target {
+            project: "operations-with-a-long-project-name".into(),
+            service: "service-with-a-long-identity".into(),
+            ..Target::default()
+        };
+        app.open(page(PageKind::Terminal, &target, "container", "Terminal"));
+        let id = app.utility_doc.unwrap();
+        let index = app.documents.iter().position(|doc| doc.id == id).unwrap();
+        let identity = app.documents[index].page.target.clone();
+        let PageState::Terminal(state) = &app.documents[index].state else {
+            unreachable!();
+        };
+        let original_state = std::ptr::from_ref(state.as_ref());
+        let mut frame = |events| {
+            let mut bounds = egui::Rect::NOTHING;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 680.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Panel::left("test-explorer")
+                        .exact_size(298.0)
+                        .show(ui, |_| {});
+                    egui::Panel::bottom("utility")
+                        .exact_size(220.0)
+                        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 5)))
+                        .show(ui, |ui| {
+                            bounds = ui.available_rect_before_wrap();
+                            app.utility(ui, palette, &mut Vec::new());
+                        });
+                    egui::CentralPanel::default().show(ui, |_| {});
+                },
+            );
+            output.textures_delta.clear();
+            (output, bounds)
+        };
+        let (output, bounds) = frame(Vec::new());
+        let control = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Focus session in document workspace"))
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let control = egui::Rect::from_min_max(
+            egui::pos2(control.x0 as f32, control.y0 as f32),
+            egui::pos2(control.x1 as f32, control.y1 as f32),
+        );
+        assert!(bounds.contains_rect(control));
+        let pos = control.center();
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        assert_eq!(app.active, Some(id));
+        assert!(!app.documents[index].docked);
+        assert!(app.documents[index].page.target.same_resource(&identity));
+        let PageState::Terminal(state) = &app.documents[index].state else {
+            unreachable!();
+        };
+        assert_eq!(original_state, std::ptr::from_ref(state.as_ref()));
+    }
+
+    #[test]
+    fn active_tab_reveals_title_and_close_on_activation_and_resize_but_allows_browsing() {
+        fn frame(
+            ctx: &egui::Context,
+            app: &mut Desktop,
+            width: f32,
+            events: Vec<egui::Event>,
+        ) -> (egui::FullOutput, egui::Rect) {
+            let mut viewport = egui::Rect::NOTHING;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 680.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Panel::left("test-explorer")
+                        .exact_size(298.0)
+                        .show(ui, |_| {});
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ui, |ui| {
+                            viewport = ui.available_rect_before_wrap();
+                            app.tabs(ui, Palette::for_dark(true));
+                        });
+                },
+            );
+            output.textures_delta.clear();
+            (output, viewport)
+        }
+        fn controls(output: &egui::FullOutput, label: &str) -> Vec<egui::Rect> {
+            output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.label() == Some(label))
+                .filter_map(|(_, node)| node.bounds())
+                .map(|rect| {
+                    egui::Rect::from_min_max(
+                        egui::pos2(rect.x0 as f32, rect.y0 as f32),
+                        egui::pos2(rect.x1 as f32, rect.y1 as f32),
+                    )
+                })
+                .collect()
+        }
+        fn tab(output: &egui::FullOutput, title: &str) -> (egui::Rect, egui::Rect) {
+            let title = controls(output, title)[0];
+            let close = controls(output, "Close document")
+                .into_iter()
+                .filter(|rect| rect.min.x >= title.max.x)
+                .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
+                .unwrap();
+            (title, close)
+        }
+        fn click(ctx: &egui::Context, app: &mut Desktop, pos: egui::Pos2) {
+            for pressed in [true, false] {
+                frame(
+                    ctx,
+                    app,
+                    1024.0,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+        }
+        fn browse_left(ctx: &egui::Context, app: &mut Desktop) -> (egui::FullOutput, egui::Rect) {
+            frame(
+                ctx,
+                app,
+                1024.0,
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(500.0, 16.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(2000.0, 0.0),
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Wheel,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            for _ in 0..30 {
+                frame(ctx, app, 1024.0, Vec::new());
+            }
+            frame(ctx, app, 1024.0, Vec::new())
+        }
+
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = Desktop::new(&cc, directory.path().join("servers.json"));
+        let host = Target {
+            server: Some(Server {
+                name: "alpha-fixture-production-with-a-long-host-name".into(),
+                url: "http://127.0.0.1:1".into(),
+                token: "fixture-token".into(),
+                default: false,
+                ssh: None,
+            }),
+            ..Target::default()
+        };
+        app.open(page(PageKind::Host, &host, "overview", "Host overview"));
+        let service = Target {
+            project: "qa-project".into(),
+            service: "qa-web".into(),
+            service_type: "app".into(),
+            ..host
+        };
+        for section in ["overview", "resources", "source", "environment"] {
+            app.open(page(PageKind::Service, &service, section, section));
+        }
+        let environment = app.active;
+        let document_count = app.documents.len();
+        for width in [1280.0, 1024.0] {
+            frame(&ctx, &mut app, width, Vec::new());
+            let (output, viewport) = frame(&ctx, &mut app, width, Vec::new());
+            let (title, close) = tab(&output, "qa-web / Environment");
+            assert!(
+                viewport.contains_rect(title.union(close)),
+                "{width}: {title:?} {close:?}"
+            );
+            assert_eq!(app.active, environment);
+            assert_eq!(app.documents.len(), document_count);
+        }
+
+        let (output, viewport) = browse_left(&ctx, &mut app);
+        let (title, close) = tab(&output, "qa-web / Environment");
+        assert!(
+            !viewport.contains_rect(title.union(close)),
+            "manual scroll snapped back"
+        );
+        assert_eq!(app.active, environment);
+        let fleet = controls(&output, "Fleet health")[0];
+        assert!(viewport.contains_rect(fleet));
+        click(&ctx, &mut app, fleet.center());
+        assert_eq!(app.active, Some(1));
+
+        for _ in 0..2 {
+            app.open(page(
+                PageKind::Service,
+                &service,
+                "environment",
+                "Environment",
+            ));
+            frame(&ctx, &mut app, 1024.0, Vec::new());
+            let (output, viewport) = frame(&ctx, &mut app, 1024.0, Vec::new());
+            let (title, close) = tab(&output, "qa-web / Environment");
+            assert!(viewport.contains_rect(title.union(close)));
+            assert_eq!(app.active, environment);
+            assert_eq!(app.documents.len(), document_count);
+            let (output, viewport) = browse_left(&ctx, &mut app);
+            let (title, close) = tab(&output, "qa-web / Environment");
+            assert!(!viewport.contains_rect(title.union(close)));
+        }
+        app.open(page(
+            PageKind::Service,
+            &service,
+            "environment",
+            "Environment",
+        ));
+        frame(&ctx, &mut app, 1024.0, Vec::new());
+        let (output, viewport) = frame(&ctx, &mut app, 1024.0, Vec::new());
+        let (title, close) = tab(&output, "qa-web / Environment");
+        assert!(viewport.contains_rect(title.union(close)));
+        click(&ctx, &mut app, close.center());
+        assert_eq!(app.documents.len(), document_count - 1);
+        assert!(!app.documents.iter().any(|doc| Some(doc.id) == environment));
     }
 
     #[test]

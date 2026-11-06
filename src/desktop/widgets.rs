@@ -105,12 +105,14 @@ pub(super) fn form_fields_sized(ui: &mut egui::Ui, form: &mut Form, editor_heigh
 }
 
 /// Returns the original row index on click or keyboard activation; sorting never changes target indices.
+/// `reserved_footer` is a finite, nonnegative height budget below a bounded table.
 pub(super) fn table(
     ui: &mut egui::Ui,
     id: &str,
     columns: &[&str],
     rows: &[Vec<String>],
     selected: &mut Option<usize>,
+    reserved_footer: f32,
 ) -> Option<usize> {
     if columns.is_empty() {
         return None;
@@ -158,7 +160,7 @@ pub(super) fn table(
             let order = sorted_rows(rows, sort);
             let available = ui.available_height();
             let height = if available.is_finite() {
-                available - 100.0
+                available - reserved_footer
             } else {
                 ui.ctx().content_rect().height() - 440.0
             };

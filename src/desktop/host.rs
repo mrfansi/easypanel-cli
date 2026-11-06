@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use serde_json::{json, Value};
 
-use super::model::{OpenPage, PageContext, PageKind, Payload};
+use super::model::{OpenPage, PageContext, PageKind, Payload, Target};
 use super::widgets;
 use crate::client::EasypanelClient;
 use crate::form::{self, Field, Form, FormKind};
@@ -97,6 +97,9 @@ pub(super) struct State {
     editor_request: Option<&'static str>,
     review: Option<Review>,
     message: String,
+    message_section: &'static str,
+    message_partial: bool,
+    mutation_section: &'static str,
     mutation_error: String,
     filter: String,
     metrics_filter: String,
@@ -146,6 +149,52 @@ impl State {
             || !self.bulk_plan.is_empty()
             || !self.bulk_find.is_empty()
             || !self.bulk_replace.is_empty()
+    }
+    pub(super) fn section_label(&self, target: &Target) -> &'static str {
+        if target.server.is_none() {
+            return "Fleet";
+        }
+        let section = if self.section.is_empty() {
+            target.section.as_str()
+        } else {
+            self.section.as_str()
+        };
+        SECTIONS
+            .iter()
+            .find(|(id, _)| *id == section)
+            .map_or("System", |(_, label)| *label)
+    }
+
+    pub(super) fn breadcrumb(&self, target: &Target) -> String {
+        match &target.server {
+            Some(server) => format!("{} / {}", server.name, self.section_label(target)),
+            None => "Fleet".into(),
+        }
+    }
+
+    fn clear_success_notice(&mut self) {
+        if !self.message_partial {
+            self.message.clear();
+        }
+    }
+
+    fn notice(&mut self, ui: &mut egui::Ui, target: &Target, allow_success: bool) {
+        if self.message.is_empty()
+            || (!self.message_partial
+                && (!allow_success || self.message_section != self.section_label(target)))
+        {
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!(
+                "{} outcome: {}",
+                self.message_section, self.message
+            ));
+            if ui.small_button("Dismiss notice").clicked() {
+                self.message.clear();
+                self.message_partial = false;
+            }
+        });
     }
 
     fn rpc(
@@ -201,7 +250,7 @@ impl State {
             .unwrap_or_default()
     }
 
-    fn status(&self, ui: &mut egui::Ui, cx: &PageContext<'_>, key: &str) {
+    fn status(&self, ui: &mut egui::Ui, cx: &PageContext<'_>, key: &str, resource: &str) {
         if cx.busy(key) {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -220,7 +269,10 @@ impl State {
                 }
             }
             if let Some(at) = s.fetched {
-                ui.weak(format!("Last received {}s ago", at.elapsed().as_secs()));
+                ui.weak(format!(
+                    "{resource}: received {}s ago",
+                    at.elapsed().as_secs()
+                ));
             }
         }
     }
@@ -234,6 +286,7 @@ impl State {
     }
 
     fn review(&mut self, title: &str, target: String, typed: String, apply: Apply) {
+        self.clear_success_notice();
         self.review = Some(Review {
             title: title.into(),
             target,
@@ -301,17 +354,21 @@ impl State {
                 self.editor_request = None;
             }
             self.mutation_error.clear();
+            self.message.clear();
+            self.message_partial = false;
+            self.message_section = self.mutation_section;
             match result {
                 Err(e) => self.mutation_error = format!("{e}\nA timed-out operation may still be running remotely. Refresh history before retrying; dismissing this review does not cancel it."),
                 Ok(Payload::Worker(Resp::Err(e))) => self.mutation_error = format!("{e}\nFor a timeout or gateway error, the remote outcome is unknown. Refresh Actions before retrying. Dismissing this error does not cancel remote work."),
                 Ok(Payload::Worker(Resp::DomainsEdited { ok, failed }))
                 | Ok(Payload::Worker(Resp::DomainsDeleted { ok, failed })) => {
                     self.message = format!("{ok} domain operations completed");
+                    self.message_partial = !failed.is_empty();
                     for (name, error) in failed { self.mutation_error.push_str(&format!("{name}: {error}\n")); }
                     self.bulk_plan.clear(); self.marked.clear(); self.invalidate();
                 }
                 Ok(Payload::Worker(Resp::Done(message, _))) => { self.message = message; self.invalidate(); if saved_editor { self.editor = None; } }
-                Ok(Payload::Worker(Resp::Notes { msg, notes, .. })) => { self.message = format!("{msg}\n{}", notes.join("\n")); self.invalidate(); }
+                Ok(Payload::Worker(Resp::Notes { msg, notes, .. })) => { self.message_partial = !notes.is_empty(); self.message = format!("{msg}\n{}", notes.join("\n")); self.invalidate(); }
                 Ok(_) => { self.message = "Request accepted. Refresh history to inspect remote completion.".into(); self.invalidate(); if saved_editor { self.editor = None; } }
             }
         }
@@ -330,19 +387,21 @@ impl State {
             if saved_editor {
                 self.editor_request = None;
             }
+            self.clear_success_notice();
             match result {
-                Ok(Payload::Json(v)) => {
-                    match serde_json::from_value(v) {
-                        Ok(watch) => {
-                            self.replace_watch(watch);
-                            if saved_editor {
-                                self.editor = None;
-                            }
+                Ok(Payload::Json(v)) => match serde_json::from_value(v) {
+                    Ok(watch) => {
+                        self.replace_watch(watch);
+                        if saved_editor {
+                            self.editor = None;
+                        }
+                        if !self.message_partial {
+                            self.message_section = "Uptime";
                             self.message = "Watchlist saved; previous answers cleared because the request changed".into();
                         }
-                        Err(e) => self.mutation_error = e.to_string(),
                     }
-                }
+                    Err(e) => self.mutation_error = e.to_string(),
+                },
                 Err(e) => self.mutation_error = e,
                 _ => self.mutation_error = "Unexpected watchlist response".into(),
             }
@@ -448,6 +507,7 @@ pub(super) fn show_fleet(ui: &mut egui::Ui, state: &mut State, cx: &mut PageCont
         ],
         &rows,
         &mut state.fleet_selection,
+        100.0,
     );
     if let Some(server) = state.fleet_selection.and_then(|i| cx.servers.get(i)) {
         let server = server.clone();
@@ -527,18 +587,16 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
     }
     ui.horizontal_wrapped(|ui| {
         for &(id, title) in SECTIONS {
-            ui.selectable_value(&mut state.section, id.to_string(), title);
+            if ui
+                .selectable_value(&mut state.section, id.to_string(), title)
+                .changed()
+            {
+                state.clear_success_notice();
+            }
         }
     });
     ui.separator();
-    if !state.message.is_empty() {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(&state.message);
-            if ui.small_button("Dismiss notice").clicked() {
-                state.message.clear();
-            }
-        });
-    }
+    state.notice(ui, cx.target, true);
     if !state.mutation_error.is_empty() {
         widgets::error(ui, &state.mutation_error);
         if ui
@@ -633,7 +691,7 @@ fn system(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             refresh,
         );
     }
-    state.status(ui, cx, "system");
+    state.status(ui, cx, "system", "System metrics");
     if let Some(v) = state.value("system") {
         let rows = vec![
             vec![
@@ -673,6 +731,7 @@ fn system(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             &["Metric", "Latest", "Capacity"],
             &rows,
             &mut None,
+            100.0,
         );
         for (key, title, pct) in [
             ("cpu", "CPU history (%)", true),
@@ -771,7 +830,14 @@ fn chart(ui: &mut egui::Ui, value: &Value, key: &str, title: &str, percent: bool
                     ]
                 })
                 .collect::<Vec<_>>();
-            widgets::table(ui, key, &["Timestamp", "Measured value"], &rows, &mut None);
+            widgets::table(
+                ui,
+                key,
+                &["Timestamp", "Measured value"],
+                &rows,
+                &mut None,
+                100.0,
+            );
         });
 }
 
@@ -835,7 +901,7 @@ fn metrics(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             refresh,
         );
     }
-    state.status(ui, cx, "metrics");
+    state.status(ui, cx, "metrics", "Service metrics");
     let values = state.rows("metrics");
     ui.horizontal(|ui| {
         ui.label("Filter (text or regex)");
@@ -852,6 +918,7 @@ fn metrics(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         &crate::monitor::MONITOR_HEADERS,
         &rows,
         &mut None,
+        100.0,
     );
     if state.value("metrics").is_some() && values.is_empty() {
         ui.label("No running service metrics reported.");
@@ -868,7 +935,7 @@ fn storage(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         Value::Null,
         refresh,
     );
-    state.status(ui, cx, "storage");
+    state.status(ui, cx, "storage", "Service storage");
     ui.horizontal(|ui| {
         ui.label("Filter (text or regex)");
         ui.text_edit_singleline(&mut state.storage_filter);
@@ -881,13 +948,14 @@ fn storage(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         &crate::monitor::STORAGE_HEADERS,
         &rows,
         &mut None,
+        100.0,
     );
 }
 
 fn nodes(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     let refresh = refresh_toolbar(ui, "Cluster nodes");
     state.rpc(cx, "nodes", "cluster", "listNodes", Value::Null, refresh);
-    state.status(ui, cx, "nodes");
+    state.status(ui, cx, "nodes", "Cluster nodes");
     let rows = state
         .rows("nodes")
         .iter()
@@ -910,6 +978,7 @@ fn nodes(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         &["Hostname", "Role", "State", "Availability", "Address"],
         &rows,
         &mut None,
+        100.0,
     );
     if state.value("nodes").is_some() && rows.is_empty() {
         ui.label("No nodes reported; this host may not be a cluster.");
@@ -968,6 +1037,8 @@ fn domain_editor(state: &mut State, existing: Option<Value>) {
     );
     let mut form = form;
     form.original = existing;
+    state.clear_success_notice();
+    state.section = "domains".into();
     state.editor = Some(Editor::new(EditKind::Domain(id), form));
 }
 
@@ -975,8 +1046,8 @@ fn domains(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     let refresh = refresh_toolbar(ui, "Global domains");
     state.rpc(cx, "domains", "domains", "listDomains", json!({}), refresh);
     inventory(state, cx, refresh);
-    state.status(ui, cx, "inventory");
-    state.status(ui, cx, "domains");
+    state.status(ui, cx, "inventory", "Service inventory");
+    state.status(ui, cx, "domains", "Domains");
     ui.horizontal(|ui| {
         ui.label("Filter");
         if ui.text_edit_singleline(&mut state.filter).changed() {
@@ -1055,6 +1126,7 @@ fn domains(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         ],
         &rows,
         &mut selected,
+        100.0,
     );
     state.selected.insert("domains".into(), selected);
     if let Some(v) = selected.and_then(|i| visible.get(i)).copied() {
@@ -1124,7 +1196,7 @@ fn domains(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         }
         if !state.bulk_error.is_empty() { widgets::error(ui, &state.bulk_error); }
         let rows = state.bulk_plan.iter().map(|p| vec![p.host.clone(), p.before.clone(), p.after.clone()]).collect::<Vec<_>>();
-        widgets::table(ui, "domain-rewrite-review", &["Domain", "Before", "After"], &rows, &mut None);
+        widgets::table(ui, "domain-rewrite-review", &["Domain", "Before", "After"], &rows, &mut None, 100.0);
         if !state.bulk_plan.is_empty() && ui.button("Review applying displayed changes…").clicked() {
             let changes = state.bulk_plan.iter().map(|c| (c.id.clone(), c.host.clone(), c.body.clone())).collect();
             let preview = state.bulk_plan.iter().map(|c| format!("{}\nBefore: {}\nAfter: {}", c.host, c.before, c.after)).collect::<Vec<_>>().join("\n\n");
@@ -1149,7 +1221,7 @@ fn certificates(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) 
         Value::Null,
         refresh,
     );
-    state.status(ui, cx, "certificates");
+    state.status(ui, cx, "certificates", "Certificates");
     let values = state.rows("certificates");
     let rows = values
         .iter()
@@ -1175,6 +1247,7 @@ fn certificates(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) 
         &["Primary domain", "Subject alternative names"],
         &rows,
         &mut selected,
+        100.0,
     );
     state.selected.insert("certificates".into(), selected);
     if let Some(v) = selected.and_then(|i| values.get(i)) {
@@ -1209,7 +1282,7 @@ fn notifications(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>)
         Value::Null,
         refresh,
     );
-    state.status(ui, cx, "notifications");
+    state.status(ui, cx, "notifications", "Notification channels");
     let channels = state
         .value("notifications")
         .and_then(|v| v.get("notificationChannels"))
@@ -1227,6 +1300,7 @@ fn notifications(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>)
         &["Name", "Channel type", "ID"],
         &rows,
         &mut selected,
+        100.0,
     );
     state.selected.insert("notifications".into(), selected);
     if let Some(v) = selected.and_then(|i| channels.get(i)) {
@@ -1364,7 +1438,7 @@ fn actions(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     } else {
         state.rpc(cx, "actions", "actions", "listActions", input, refresh);
     }
-    state.status(ui, cx, "actions");
+    state.status(ui, cx, "actions", "Action history");
     let values = state.rows("actions");
     let (visible, rows) = filtered_actions(&values, &state.action_filter, &state.action_status);
     ui.weak(format!(
@@ -1379,6 +1453,7 @@ fn actions(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         &["Status", "Target", "Type", "Description", "Created", "ID"],
         &rows,
         &mut selected,
+        100.0,
     );
     state.selected.insert("actions".into(), selected);
     if let Some(v) = selected
@@ -1423,7 +1498,7 @@ fn actions(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                 state.action_detail = None;
             }
         });
-        state.status(ui, cx, "action-detail");
+        state.status(ui, cx, "action-detail", "Selected action");
         if let Some(v) = state
             .value("action-detail")
             .filter(|v| field(v, "/id") == id)
@@ -1446,6 +1521,7 @@ fn actions(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                 &["Property", "Value"],
                 &rows,
                 &mut None,
+                100.0,
             );
             let raw = v
                 .get("log")
@@ -1485,6 +1561,8 @@ fn actions(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
 }
 
 fn open_check(state: &mut State, url: &str) {
+    state.clear_success_notice();
+    state.section = "uptime".into();
     state.reveal_check_secrets = false;
     let check = state
         .watch
@@ -1594,6 +1672,7 @@ fn uptime(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         ],
         &rows,
         &mut selected,
+        100.0,
     );
     state.selected.insert("uptime".into(), selected);
     if let Some(url) = selected.and_then(|i| urls.get(i)) {
@@ -1651,14 +1730,15 @@ fn maintenance(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         &["Property", "Value"],
         &rows,
         &mut None,
+        100.0,
     );
-    for op in [
-        "getDockerVersion",
-        "getServerIp",
-        "checkForUpdates",
-        "getDailyDockerCleanup",
+    for (op, resource) in [
+        ("getDockerVersion", "Docker version"),
+        ("getServerIp", "Server IP"),
+        ("checkForUpdates", "Update availability"),
+        ("getDailyDockerCleanup", "Daily cleanup settings"),
     ] {
-        state.status(ui, cx, op);
+        state.status(ui, cx, op, resource);
     }
     ui.separator();
     ui.strong("Host-wide cleanup");
@@ -1682,7 +1762,7 @@ fn maintenance(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     ] {
         if ui.button(label).clicked() {
             let host = cx.target.server.as_ref().unwrap().name.clone();
-            state.review("Confirm Docker maintenance", format!("{consequence} on {host}. This affects the entire host, not a selected service."), host, Apply::Worker(Box::new(Req::MaintAction(op))));
+            state.review(consequence, format!("{consequence} on {host}. This affects the entire host, not a selected service."), host, Apply::Worker(Box::new(Req::MaintAction(op))));
         }
     }
 }
@@ -1701,8 +1781,8 @@ fn backups(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         Value::Null,
         refresh,
     );
-    state.status(ui, cx, "inventory");
-    state.status(ui, cx, "providers");
+    state.status(ui, cx, "inventory", "Service inventory");
+    state.status(ui, cx, "providers", "Storage providers");
     let services = inventory_services(state);
     let mut target = format!("{}/{}", state.backup_project, state.backup_service);
     let old = target.clone();
@@ -1729,6 +1809,7 @@ fn backups(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         ui.selectable_value(&mut state.history_mode, true, "Completed history / restore");
     });
     if target != old {
+        state.clear_success_notice();
         if let Some(service) = services
             .iter()
             .find(|s| format!("{}/{}", field(s, "/projectName"), field(s, "/name")) == target)
@@ -1806,6 +1887,7 @@ fn backups(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             &["Database", "Request outcome", "Details"],
             &state.backup_outcomes,
             &mut None,
+            100.0,
         );
     }
     let providers = state.rows("providers");
@@ -1839,7 +1921,7 @@ fn backups(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     );
     let refresh = ui.button("Refresh schedules").clicked();
     state.rpc(cx, &key, group, op, body, refresh);
-    state.status(ui, cx, &key);
+    state.status(ui, cx, &key, "Backup schedules");
     let schedules = state.rows(&key);
     let rows = schedules
         .iter()
@@ -1875,6 +1957,7 @@ fn backups(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         ],
         &rows,
         &mut selected,
+        100.0,
     );
     state.selected.insert(key, selected);
     ui.horizontal_wrapped(|ui| {
@@ -1914,6 +1997,7 @@ fn backups(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             &["Name", "Type", "Path", "ID"],
             &rows,
             &mut None,
+            100.0,
         );
     });
 }
@@ -1984,6 +2068,8 @@ fn schedule_editor(state: &mut State, existing: Option<Value>) {
     ];
     let mut form = Form::new(FormKind::ProjectCreate, "Database backup schedule", fields);
     form.original = existing;
+    state.clear_success_notice();
+    state.section = "backups".into();
     state.editor = Some(Editor::new(
         EditKind::Schedule {
             id,
@@ -2067,7 +2153,7 @@ fn backup_history(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>
             });
         }
     }
-    state.status(ui, cx, &key);
+    state.status(ui, cx, &key, "Completed backup history");
     let source = state.value(&key);
     let actions = source
         .and_then(|v| v.get("actions"))
@@ -2110,6 +2196,7 @@ fn backup_history(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>
         ],
         &rows,
         &mut selected,
+        100.0,
     );
     state.selected.insert(key.clone(), selected);
     if let Some((origin, file)) = selected.and_then(|i| files.get(i)) {
@@ -2188,6 +2275,14 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         }
     }
     let busy = cx.busy("host-mutation") || cx.busy("watch-save");
+    let save_label = match &edit.kind {
+        EditKind::Domain(None) => "Create domain",
+        EditKind::Schedule { id: None, .. } => "Create schedule",
+        EditKind::Check(url) if !state.watch.iter().any(|check| check.url == *url) => {
+            "Create request"
+        }
+        _ => "Save changes",
+    };
     let mut save = false;
     let mut discard = false;
     if !busy
@@ -2198,7 +2293,7 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     }
     ui.add_enabled_ui(!busy, |ui| {
         ui.horizontal_wrapped(|ui| {
-            save = ui.button("Save changes").clicked();
+            save = ui.button(save_label).clicked();
             if ui.button("Cancel").clicked() {
                 discard = edit.cancel();
             }
@@ -2206,7 +2301,10 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                 ui.colored_label(ui.visuals().error_fg_color, "Validation error — see form");
             }
             if !state.mutation_error.is_empty() {
-                ui.colored_label(ui.visuals().error_fg_color, "Save failed — see form");
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    "Operation needs attention — see details",
+                );
             }
         });
         if edit.discard {
@@ -2232,6 +2330,7 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             EditKind::Domain(id) => match form::domain_body(&edit.form) {
                 Ok(body) => {
                     state.editor_request = Some("host-mutation");
+                    state.mutation_section = state.section_label(cx.target);
                     cx.request(
                         "host-mutation",
                         Req::DomainSave {
@@ -2297,6 +2396,7 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                         body["id"] = json!(id);
                     }
                     state.editor_request = Some("host-mutation");
+                    state.mutation_section = state.section_label(cx.target);
                     cx.rpc(
                         "host-mutation",
                         "databaseBackups",
@@ -2328,11 +2428,9 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                     )
                     .clicked();
                 inventory(state, cx, refresh);
-                state.status(ui, cx, "inventory");
+                state.status(ui, cx, "inventory", "Service inventory");
             }
-            if !state.message.is_empty() {
-                ui.label(&state.message);
-            }
+            state.notice(ui, cx.target, false);
             if !state.mutation_error.is_empty() {
                 widgets::error(ui, &state.mutation_error);
             }
@@ -2393,7 +2491,8 @@ fn review(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             }
             ui.add_enabled(
                 review.typed.is_empty() || review.entry == review.typed,
-                egui::Button::new("Confirm").fill(ui.visuals().error_fg_color.gamma_multiply(0.20)),
+                egui::Button::new(&review.title)
+                    .fill(ui.visuals().error_fg_color.gamma_multiply(0.20)),
             )
             .clicked()
         })
@@ -2410,11 +2509,13 @@ fn review(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.add(egui::Label::new(&review.target).wrap());
+            state.notice(ui, cx.target, false);
             if !state.mutation_error.is_empty() {
                 widgets::error(ui, &state.mutation_error);
             }
         });
     if approved && !cx.busy("host-mutation") {
+        state.mutation_section = state.section_label(cx.target);
         match review.apply {
             Apply::Rpc { group, op, body } => cx.rpc("host-mutation", group, op, body),
             Apply::KillAction(id) => {
@@ -2489,6 +2590,328 @@ fn review(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_host_task_context_never_retargets_the_document() {
+        let target = Target {
+            server: Some(crate::config::Server {
+                name: "fixed-host".into(),
+                url: "http://127.0.0.1".into(),
+                token: "fixture-token".into(),
+                default: false,
+                ssh: None,
+            }),
+            project: "seeded-project".into(),
+            service: "seeded-database".into(),
+            section: "domains".into(),
+            ..Default::default()
+        };
+        let original = target.clone();
+        let mut state = State::default();
+        for &(id, label) in SECTIONS {
+            let initial = Target {
+                section: id.into(),
+                ..target.clone()
+            };
+            assert_eq!(state.section_label(&initial), label);
+        }
+        for &(id, label) in SECTIONS {
+            state.section = id.into();
+            assert_eq!(state.section_label(&target), label);
+            assert_eq!(state.breadcrumb(&target), format!("fixed-host / {label}"));
+            assert!(target.same_resource(&original));
+        }
+        open_check(&mut state, "https://fixture.invalid/health");
+        assert_eq!(state.section, "uptime");
+        schedule_editor(&mut state, None);
+        assert_eq!(state.section, "backups");
+        domain_editor(&mut state, None);
+        assert_eq!(state.section, "domains");
+        assert!(target.same_resource(&original));
+        assert_eq!(state.section_label(&Target::default()), "Fleet");
+        assert_eq!(state.breadcrumb(&Target::default()), "Fleet");
+        let invalid = Target {
+            section: "unknown".into(),
+            ..target
+        };
+        assert_eq!(State::default().section_label(&invalid), SECTIONS[0].1);
+    }
+
+    #[test]
+    fn live_host_caption_growth_reveals_close_once_without_stopping_manual_tab_browsing() {
+        use super::super::{theme, Desktop, PageKind, PageState};
+        fn frame(
+            ctx: &egui::Context,
+            app: &mut Desktop,
+            width: f32,
+            events: Vec<egui::Event>,
+        ) -> (egui::FullOutput, egui::Rect) {
+            let mut viewport = egui::Rect::NOTHING;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 680.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Panel::left("test-explorer")
+                        .exact_size(298.0)
+                        .show(ui, |_| {});
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ui, |ui| {
+                            viewport = ui.available_rect_before_wrap();
+                            app.tabs(ui, theme::Palette::for_dark(false));
+                        });
+                },
+            );
+            output.textures_delta.clear();
+            (output, viewport)
+        }
+        fn active_tab(output: &egui::FullOutput, caption: &str) -> egui::Rect {
+            let nodes = &output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes;
+            let title = nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(caption))
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            let close = nodes
+                .iter()
+                .filter(|(_, node)| node.label() == Some("Close document"))
+                .filter_map(|(_, node)| node.bounds())
+                .filter(|rect| rect.x0 >= title.x1)
+                .min_by(|left, right| left.x0.total_cmp(&right.x0))
+                .unwrap();
+            egui::Rect::from_min_max(
+                egui::pos2(title.x0 as f32, title.y0 as f32),
+                egui::pos2(close.x1 as f32, close.y1 as f32),
+            )
+        }
+        for width in [1024.0, 1280.0] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = Desktop::new(&cc, directory.path().join("servers.json"));
+            for section in ["overview", "source", "build", "resources", "environment"] {
+                app.open(super::super::page(
+                    PageKind::Service,
+                    &Target {
+                        project: "operations".into(),
+                        service: "long-service-identity-to-overflow-the-tab-strip".into(),
+                        service_type: "app".into(),
+                        ..Default::default()
+                    },
+                    section,
+                    section,
+                ));
+            }
+            app.open(super::super::page(
+                PageKind::Host,
+                &Target {
+                    server: Some(crate::config::Server {
+                        name: "alpha".into(),
+                        url: "https://panel.invalid".into(),
+                        token: "fixture-token".into(),
+                        default: false,
+                        ssh: None,
+                    }),
+                    ..Default::default()
+                },
+                "domains",
+                "Domains",
+            ));
+            let id = app.active;
+            let index = app.documents.len() - 1;
+            let original = app.documents[index].page.target.clone();
+            frame(&ctx, &mut app, width, Vec::new());
+            let (before, viewport) = frame(&ctx, &mut app, width, Vec::new());
+            let old_caption = app.documents[index].caption();
+            assert!(viewport.contains_rect(active_tab(&before, &old_caption)));
+            let PageState::Host(state) = &mut app.documents[index].state else {
+                unreachable!();
+            };
+            state.section = "notifications".into();
+            let caption = app.documents[index].caption();
+            frame(&ctx, &mut app, width, Vec::new());
+            let (after, viewport) = frame(&ctx, &mut app, width, Vec::new());
+            let grown = active_tab(&after, &caption);
+            assert!(grown.width() > active_tab(&before, &old_caption).width());
+            assert!(viewport.contains_rect(grown), "{width}: {grown:?}");
+            frame(
+                &ctx,
+                &mut app,
+                width,
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(500.0, 16.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(2000.0, 0.0),
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Wheel,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            for _ in 0..30 {
+                frame(&ctx, &mut app, width, Vec::new());
+            }
+            let (browsed, viewport) = frame(&ctx, &mut app, width, Vec::new());
+            assert!(!viewport.contains_rect(active_tab(&browsed, &caption)));
+            assert_eq!(app.active, id);
+            assert!(app.documents[index].page.target.same_resource(&original));
+        }
+    }
+
+    #[test]
+    fn late_watch_save_and_partial_failures_keep_their_task_context_in_new_forms() {
+        use super::super::backend::{Backend, Runtime};
+
+        fn settle(state: &mut State, cx: &mut PageContext<'_>, key: &str) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while cx.busy(key) && Instant::now() < deadline {
+                cx.backend.pump();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert!(!cx.busy(key));
+            state.pump(cx);
+        }
+
+        fn render(
+            ctx: &egui::Context,
+            state: &mut State,
+            cx: &mut PageContext<'_>,
+            size: egui::Vec2,
+        ) -> Vec<String> {
+            let mut bounds = egui::Rect::NOTHING;
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ui| {
+                    show(ui, state, cx);
+                    bounds = ui.min_rect();
+                },
+            );
+            output.textures_delta.clear();
+            assert!(bounds.right() <= screen.right() + 1.0);
+            assert!(bounds.bottom() <= screen.bottom() + 1.0);
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        let target = Target {
+            server: Some(crate::config::Server {
+                name: "host-with-a-long-immutable-connection-name".into(),
+                url: "http://127.0.0.1".into(),
+                token: "fixture-token".into(),
+                default: false,
+                ssh: None,
+            }),
+            section: "domains".into(),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let mut backend = Backend::new(ctx.clone(), Runtime::default());
+        let mut opened = Vec::new();
+        let mut reload = false;
+        let path = std::path::Path::new("unused-host-task-fixture");
+        let mut cx = PageContext {
+            target: &target,
+            servers: &[],
+            accounts: &[],
+            server_config: path,
+            cloudflare_config: path,
+            watchlist: path,
+            doc: 1,
+            backend: &mut backend,
+            opened: &mut opened,
+            reload: &mut reload,
+        };
+        let mut state = State {
+            section: "uptime".into(),
+            watch_requested: true,
+            backup_project: "shop".into(),
+            backup_service: "db".into(),
+            backup_database: "orders".into(),
+            backup_jobs: vec![("still-running".into(), "orders".into())],
+            backup_outcomes: vec![vec!["older-result".into()]],
+            message: "earlier-success".into(),
+            message_section: "Uptime",
+            ..Default::default()
+        };
+        cx.background("watch-save", "Fixture watch save", || {
+            Ok(Payload::Json(json!([])))
+        });
+        schedule_editor(&mut state, None);
+        assert!(state.message.is_empty());
+        settle(&mut state, &mut cx, "watch-save");
+        let late_notice = state.message.clone();
+        assert!(!late_notice.is_empty());
+        assert_eq!(state.message_section, "Uptime");
+        assert!(state.editor.is_some());
+        for size in [egui::vec2(727.0, 480.0), egui::vec2(983.0, 600.0)] {
+            let text = render(&ctx, &mut state, &mut cx, size);
+            assert!(!text.iter().any(|line| line.contains(late_notice.as_str())));
+            assert_eq!(
+                state.editor.as_ref().unwrap().form.by_label("Database"),
+                "orders"
+            );
+        }
+        cx.background("host-mutation", "Fixture failed request", || {
+            anyhow::bail!("uncertain-operation")
+        });
+        settle(&mut state, &mut cx, "host-mutation");
+        assert!(
+            state.message.is_empty(),
+            "An earlier success cannot describe the failed operation"
+        );
+        assert!(state.mutation_error.contains("uncertain-operation"));
+
+        state.mutation_section = "Domains";
+        cx.background("host-mutation", "Fixture partial request", || {
+            Ok(Payload::Worker(Resp::DomainsEdited {
+                ok: 1,
+                failed: vec![("failed-domain".into(), "unavailable".into())],
+            }))
+        });
+        settle(&mut state, &mut cx, "host-mutation");
+        let partial = state.message.clone();
+        let failure = state.mutation_error.clone();
+        assert!(state.message_partial);
+        schedule_editor(&mut state, None);
+        let text = render(&ctx, &mut state, &mut cx, egui::vec2(727.0, 480.0));
+        assert!(text.iter().any(|line| line.contains(partial.as_str())));
+        assert_eq!(state.mutation_error, failure);
+        state.review(
+            "Review fixture",
+            "immutable target".into(),
+            "fixed-host".into(),
+            Apply::Shell,
+        );
+        assert_eq!(state.message, partial);
+        assert_eq!(state.mutation_error, failure);
+        assert_eq!(state.backup_jobs.len(), 1);
+        assert_eq!(state.backup_outcomes, vec![vec!["older-result"]]);
+    }
 
     #[test]
     fn fleet_missing_metrics_are_unknown_not_zero() {

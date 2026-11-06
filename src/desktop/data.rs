@@ -98,6 +98,34 @@ enum Mode {
     Export,
     BackupRestore,
 }
+#[derive(Clone, Copy, PartialEq)]
+enum Family {
+    Database,
+    Backups,
+    Configuration,
+}
+impl Family {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Database => "Database",
+            Self::Backups => "Backups & data transfer",
+            Self::Configuration => "Configuration",
+        }
+    }
+    fn tasks(self) -> &'static [Mode] {
+        match self {
+            Self::Database => &[Mode::Database, Mode::Credentials],
+            Self::Backups => &[Mode::Dumps, Mode::Restore, Mode::Copy, Mode::BackupRestore],
+            Self::Configuration => &[
+                Mode::Clone,
+                Mode::Migrate,
+                Mode::Diff,
+                Mode::ProjectDiff,
+                Mode::Export,
+            ],
+        }
+    }
+}
 impl Mode {
     fn from_section(section: &str) -> Self {
         match section {
@@ -112,6 +140,15 @@ impl Mode {
             "export-project" => Self::Export,
             "restore-from" => Self::BackupRestore,
             _ => Self::Database,
+        }
+    }
+    fn family(self) -> Family {
+        match self {
+            Self::Database | Self::Credentials => Family::Database,
+            Self::Dumps | Self::Restore | Self::Copy | Self::BackupRestore => Family::Backups,
+            Self::Clone | Self::Migrate | Self::Diff | Self::ProjectDiff | Self::Export => {
+                Family::Configuration
+            }
         }
     }
     fn title(self) -> &'static str {
@@ -202,6 +239,7 @@ struct Browser {
     rows: Vec<Vec<String>>,
     selected: Option<usize>,
     query: String,
+    query_focused: bool,
     query_database: String,
     result_query: String,
     pending_query: Option<String>,
@@ -256,6 +294,18 @@ struct SavedBackup {
     origin: String,
     when: String,
     kind: String,
+}
+
+enum PendingPicker {
+    Query(String),
+    Export {
+        text: String,
+        source: String,
+    },
+    Dump {
+        dump: SavedDump,
+        source: Box<Endpoint>,
+    },
 }
 
 #[derive(Clone)]
@@ -327,6 +377,7 @@ pub(super) struct State {
     export: Option<String>,
     outcome: Option<String>,
     error: Option<String>,
+    pending_picker: Option<PendingPicker>,
     draft: bool,
 }
 impl State {
@@ -485,58 +536,12 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
     }
     receive(state, cx);
     hydrate_seed(state, cx);
-    ui.horizontal_wrapped(|ui| {
-        ui.heading(state.mode.title());
-        if ui
-            .add_enabled(
-                matches!(
-                    cx.target.service_type.as_str(),
-                    "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
-                ),
-                egui::Button::new(format!(
-                    "DB terminal: {}/{}",
-                    cx.target.project, cx.target.service
-                )),
-            )
-            .clicked()
-        {
-            let mut target = cx.target.clone();
-            target.section = "db".into();
-            cx.open(OpenPage {
-                kind: PageKind::Terminal,
-                title: format!("DB terminal · {}", target.service),
-                target,
-            });
-        }
-    });
-    if !state.seeded_endpoints {
-        ui.horizontal_wrapped(|ui| {
-            for mode in [
-                Mode::Database,
-                Mode::Credentials,
-                Mode::Dumps,
-                Mode::Restore,
-                Mode::Copy,
-                Mode::BackupRestore,
-                Mode::Clone,
-                Mode::Migrate,
-                Mode::Diff,
-                Mode::ProjectDiff,
-                Mode::Export,
-            ] {
-                if ui
-                    .add_enabled(
-                        !task_busy(cx) && state.review.is_none(),
-                        egui::Button::new(mode.title()).selected(state.mode == mode),
-                    )
-                    .clicked()
-                {
-                    state.mode = mode;
-                }
-            }
-        });
-    }
+    navigation(ui, state, cx);
     ui.separator();
+    if state.review.is_some() {
+        review_ui(ui, state, cx);
+        return;
+    }
     if let Some(error) = &state.error {
         egui::ScrollArea::vertical()
             .id_salt("data-error")
@@ -581,8 +586,71 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
         }
     }
 }
+fn navigation(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
+    let enabled = !state.seeded_endpoints && !task_busy(cx) && state.review.is_none();
+    ui.horizontal_wrapped(|ui| {
+        for family in [Family::Database, Family::Backups, Family::Configuration] {
+            if ui
+                .add_enabled(
+                    enabled,
+                    egui::Button::new(family.title()).selected(state.mode.family() == family),
+                )
+                .clicked()
+                && state.mode.family() != family
+            {
+                state.mode = family.tasks()[0];
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        let label = ui.label("Task");
+        let width = 240.0_f32.min((ui.available_width() - 120.0).max(100.0));
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    egui::ComboBox::from_id_salt("data-task")
+                        .width(width)
+                        .truncate()
+                        .selected_text(state.mode.title())
+                        .show_ui(ui, |ui| {
+                            for &mode in state.mode.family().tasks() {
+                                ui.selectable_value(&mut state.mode, mode, mode.title());
+                            }
+                        })
+                        .response
+                        .labelled_by(label.id);
+                });
+            },
+        );
+        if ui
+            .add_enabled(
+                matches!(
+                    cx.target.service_type.as_str(),
+                    "mysql" | "mariadb" | "postgres" | "mongo" | "redis"
+                ),
+                egui::Button::new("DB terminal"),
+            )
+            .on_hover_text(format!(
+                "Open the database terminal for {}/{}",
+                cx.target.project, cx.target.service
+            ))
+            .clicked()
+        {
+            let mut target = cx.target.clone();
+            target.section = "db".into();
+            cx.open(OpenPage {
+                kind: PageKind::Terminal,
+                title: format!("DB terminal · {}", target.service),
+                target,
+            });
+        }
+    });
+}
 fn task_busy(cx: &PageContext<'_>) -> bool {
     [
+        "native-picker",
         "prepare",
         "execute",
         "download",
@@ -643,10 +711,7 @@ fn database(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         );
     }
     ui.horizontal_wrapped(|ui| {
-        ui.label(format!(
-            "{} · {}",
-            cx.target.service_type, cx.target.service
-        ));
+        ui.label(&cx.target.service_type);
         if ui
             .add_enabled(!cx.busy("browser"), egui::Button::new("Databases"))
             .clicked()
@@ -699,21 +764,17 @@ fn database(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         }
     });
     ui.horizontal(|ui| {
-        ui.label("Query database");
+        let label = ui.label("Query database");
         ui.add_enabled(
             !cx.busy("browser"),
-            egui::TextEdit::singleline(&mut state.browser.query_database),
-        );
+            egui::TextEdit::singleline(&mut state.browser.query_database)
+                .desired_width(f32::INFINITY),
+        )
+        .labelled_by(label.id);
     });
     ui.small("SQL / mongosh runs exactly as entered with the database account's privileges. Statements can change or delete data; no LIMIT is added.");
-    ui.add(
-        egui::TextEdit::multiline(&mut state.browser.query)
-            .code_editor()
-            .lock_focus(false)
-            .desired_rows(5)
-            .desired_width(f32::INFINITY),
-    );
-    ui.horizontal(|ui| {
+    let query_label = ui.horizontal_wrapped(|ui| {
+        let label = ui.label(RichText::new("Query").strong());
         if ui
             .add_enabled(
                 !cx.busy("browser") && !state.browser.query.trim().is_empty(),
@@ -721,6 +782,7 @@ fn database(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             )
             .clicked()
         {
+            state.browser.query_focused = false;
             let database = state.browser.query_database.clone();
             let query = state.browser.query.clone();
             db_request(state, cx, Level::Query, database, String::new(), query);
@@ -729,23 +791,83 @@ fn database(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             state.browser.query.clone_from(&state.browser.saved_query);
         }
         if ui
-            .add_enabled(!cx.busy("query-save"), egui::Button::new("Save query…"))
+            .add_enabled(
+                !cx.busy("query-save")
+                    && !cx.busy("native-picker")
+                    && state.pending_picker.is_none(),
+                egui::Button::new("Save query…"),
+            )
             .clicked()
         {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("Save database query")
-                .set_file_name("query.sql")
-                .save_file()
-            {
-                let text = state.browser.query.clone();
-                state.browser.saving_query = Some(text.clone());
-                cx.background("query-save", "Save query", move || {
-                    write_new_file(&path, text.as_bytes())?;
-                    Ok(Payload::Text("Query saved".into()))
-                });
-            }
+            choose_query(state, cx);
         }
-    });
+        if ui.selectable_label(state.browser.query_focused, if state.browser.query_focused { "Show results" } else { "Focus query" })
+            .on_hover_text("Expand the query editor; Run statement returns to query and results. Drag the divider in split view to resize.").clicked() {
+            state.browser.query_focused = !state.browser.query_focused;
+        }
+        label.id
+    }).inner;
+    if state.browser.query_focused {
+        query_editor(ui, &mut state.browser.query, query_label);
+        return;
+    }
+    let available = ui.available_height();
+    let max_editor = (available - 200.0).max(64.0);
+    let pane = egui::Panel::top("data-query-pane")
+        .frame(egui::Frame::NONE)
+        .resizable(true)
+        .default_size((available * 0.4).clamp(64.0, max_editor))
+        .size_range(64.0..=max_editor)
+        .show(ui, |ui| {
+            query_editor(ui, &mut state.browser.query, query_label);
+        });
+    let grip = pane.response.rect.center_bottom();
+    ui.painter().line_segment(
+        [grip - egui::vec2(18.0, 1.0), grip + egui::vec2(18.0, -1.0)],
+        ui.visuals().widgets.noninteractive.bg_stroke,
+    );
+    let height = ui.available_height().max(28.0);
+    egui::ScrollArea::vertical()
+        .id_salt("data-result-pane")
+        .max_height(height)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_max_height(height);
+            query_results(ui, state, cx);
+        });
+}
+
+fn query_editor(
+    ui: &mut egui::Ui,
+    query: &mut String,
+    label: egui::Id,
+) -> egui::containers::scroll_area::ScrollAreaOutput<egui::text_edit::TextEditOutput> {
+    let height = ui.available_height().max(24.0);
+    egui::ScrollArea::vertical()
+        .id_salt("query-text-scroll")
+        .max_height(height)
+        .min_scrolled_height(24.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let font = egui::FontSelection::from(egui::TextStyle::Monospace).resolve(ui.style());
+            let line_height = ui.fonts_mut(|fonts| fonts.row_height(&font))
+                + ui.spacing().extra_text_line_spacing;
+            let rows = ((height - 2.0 * ui.spacing().button_padding.y) / line_height)
+                .floor()
+                .max(1.0) as usize;
+            let mut output = egui::TextEdit::multiline(query)
+                .code_editor()
+                .lock_focus(false)
+                .desired_rows(rows)
+                .desired_width(f32::INFINITY)
+                .min_size(egui::vec2(0.0, height))
+                .show(ui);
+            output.response.response = output.response.response.labelled_by(label);
+            output
+        })
+}
+
+fn query_results(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     if let Some(error) = &state.browser.error {
         egui::ScrollArea::vertical()
             .id_salt("query-error")
@@ -828,6 +950,7 @@ fn database(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         &headers,
         &state.browser.rows,
         &mut state.browser.selected,
+        0.0,
     );
     if !cx.busy("browser") {
         if let Some(index) = widgets::table_activation(ui, "query-results") {
@@ -940,6 +1063,7 @@ fn endpoint_ui(
         ui.add_enabled_ui(enabled && !cx.busy(key), |ui| {
             egui::ComboBox::from_id_salt("host")
                 .width(ui.available_width())
+                .truncate()
                 .selected_text(
                     endpoint
                         .server
@@ -971,26 +1095,38 @@ fn endpoint_ui(
                     }
                 });
             ui.horizontal(|ui| {
-                ui.label("Project");
-                egui::ComboBox::from_id_salt("project")
-                    .selected_text(if endpoint.project.is_empty() {
-                        "Choose project"
-                    } else {
-                        &endpoint.project
-                    })
-                    .show_ui(ui, |ui| {
-                        for project in &endpoint.projects {
-                            if ui
-                                .selectable_label(endpoint.project == *project, project)
-                                .clicked()
-                            {
-                                endpoint.project.clone_from(project);
-                                endpoint.service.clear();
-                                endpoint.kind.clear();
-                                changed = true;
-                            }
-                        }
-                    });
+                let label = ui.label("Project");
+                let width = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        egui::ComboBox::from_id_salt("project")
+                            .width(width)
+                            .truncate()
+                            .selected_text(if endpoint.project.is_empty() {
+                                "Choose project"
+                            } else {
+                                &endpoint.project
+                            })
+                            .show_ui(ui, |ui| {
+                                for project in &endpoint.projects {
+                                    if ui
+                                        .selectable_label(endpoint.project == *project, project)
+                                        .clicked()
+                                    {
+                                        endpoint.project.clone_from(project);
+                                        endpoint.service.clear();
+                                        endpoint.kind.clear();
+                                        changed = true;
+                                    }
+                                }
+                            })
+                            .response
+                            .labelled_by(label.id)
+                            .on_hover_text(&endpoint.project);
+                    },
+                );
             });
             if service {
                 ui.add(
@@ -998,6 +1134,7 @@ fn endpoint_ui(
                 );
                 egui::ComboBox::from_id_salt("service")
                     .width(ui.available_width())
+                    .truncate()
                     .selected_text(if endpoint.service.is_empty() {
                         "Choose service"
                     } else {
@@ -1043,7 +1180,7 @@ fn endpoint_ui(
         if let Some(error) = &endpoint.error {
             widgets::error(ui, error);
         }
-        ui.small(endpoint.label());
+        ui.add(egui::Label::new(RichText::new(endpoint.label()).small()).wrap());
     });
     changed
 }
@@ -1153,11 +1290,12 @@ fn transfer(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                 ui.small("Configuration snapshot only; environment values and named credential fields are redacted. Review opaque scripts and inline commands for embedded secrets before sharing.");
                 if ui.button("Load redacted export").clicked() { export(state, cx); }
                 if let Some(text) = &state.export {
-                    if ui.button("Save redacted project…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().set_title("Export redacted project configuration").set_file_name(format!("{}.easypanel.json", state.source.project)).save_file() {
-                            let text = text.clone();
-                            cx.background("export-save", "Save redacted project", move || { write_new_file(&path, text.as_bytes())?; Ok(Payload::Text(format!("Redacted configuration saved to {}", path.display()))) });
-                        }
+                    if ui.add_enabled(state.pending_picker.is_none() && !cx.busy("native-picker") && !cx.busy("export-save"), egui::Button::new("Save redacted project…")).clicked() {
+                        state.pending_picker = Some(PendingPicker::Export { text: text.clone(), source: state.source.label() });
+                        let name = format!("{}.easypanel.json", state.source.project);
+                        cx.background("native-picker", "Choose redacted project export file", move || {
+                            Ok(Payload::ChosenPath(rfd::FileDialog::new().set_title("Export redacted project configuration").set_file_name(name).save_file()))
+                        });
                     }
                     ui.label(format!("{} bytes ready to save. Existing files are never overwritten; choose a new name.", text.len()));
                 }
@@ -1177,10 +1315,10 @@ fn transfer(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                 &["Service / field", "Source", "Target"],
                 &state.comparison,
                 &mut None,
+                100.0,
             );
         }
     }
-    review_ui(ui, state, cx);
     if state.draft
         && !state.seeded_endpoints
         && !locked
@@ -1373,6 +1511,7 @@ fn dump_browser(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>, 
                 &["Origin", "Provider", "Object key"],
                 &rows,
                 &mut state.selected_dump,
+                100.0,
             );
         });
     if rows.is_empty() {
@@ -1381,7 +1520,10 @@ fn dump_browser(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>, 
     ui.horizontal(|ui| {
         if ui
             .add_enabled(
-                state.selected_dump.is_some() && !cx.busy("download"),
+                state.selected_dump.is_some()
+                    && !cx.busy("download")
+                    && !cx.busy("native-picker")
+                    && state.pending_picker.is_none(),
                 egui::Button::new("Download selected…"),
             )
             .clicked()
@@ -1472,6 +1614,7 @@ fn backup_browser(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>
         &["Completed", "Origin", "Source database", "Provider", "File"],
         &rows,
         &mut state.selected_backup,
+        100.0,
     );
     if state.selected_backup != previous {
         if let Some(index) = state.selected_backup {
@@ -2077,44 +2220,65 @@ fn review_ui(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     let Some(review) = state.review.as_ref() else {
         return;
     };
-    ui.separator();
-    ui.label(RichText::new("Resolved transfer review").strong());
-    ui.label(format!("Source: {}", review.source.label()));
-    ui.label(format!("Destination: {}", review.destination.label()));
-    egui::Grid::new("transfer-facts")
-        .num_columns(2)
-        .spacing([16.0, 8.0])
-        .show(ui, |ui| {
-            for (label, value) in &review.facts {
-                ui.label(RichText::new(label).strong());
-                ui.add(egui::Label::new(value).wrap());
-                ui.end_row();
-            }
-        });
     let destructive = matches!(
         review.job,
         Job::Copy { .. } | Job::Restore { .. } | Job::Backup { .. }
     );
-    if destructive {
-        ui.colored_label(ui.visuals().warn_fg_color,"Destination data can be overwritten or dropped. There is no rollback; errors can leave partial writes.");
-    }
     let target = if matches!(review.job, Job::Dump { .. }) {
         review.source.label()
     } else {
         review.destination.label()
     };
-    let apply = widgets::confirm(
-        ui,
-        if destructive {
-            "Confirm destructive destination write"
-        } else {
-            "Confirm transfer"
-        },
-        &target,
-        Some(&target),
-        &mut state.confirmation,
-    );
-    if ui.button("Cancel review — nothing has run").clicked() {
+    let (apply, cancel) = egui::Panel::bottom("data-review-controls")
+        .frame(egui::Frame::NONE)
+        .show(ui, |ui| {
+            if destructive {
+                ui.add(egui::Label::new(RichText::new("Destination data can be overwritten or dropped. There is no rollback; errors can leave partial writes.").color(ui.visuals().warn_fg_color)).wrap());
+            }
+            let apply = widgets::confirm(
+                ui,
+                if destructive { "Confirm destructive destination write" } else { "Confirm transfer" },
+                &target,
+                Some(&target),
+                &mut state.confirmation,
+            );
+            (apply, ui.button("Cancel review — nothing has run").clicked())
+        }).inner;
+    egui::ScrollArea::vertical()
+        .id_salt("resolved-transfer-details")
+        .max_height(ui.available_height().max(24.0))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.label(RichText::new("Resolved transfer review").strong());
+            ui.add(egui::Label::new(format!("Source: {}", review.source.label())).wrap());
+            ui.add(egui::Label::new(format!("Destination: {}", review.destination.label())).wrap());
+            match &review.job {
+                Job::Restore { dump } => {
+                    ui.add(egui::Label::new(format!("Source provider: {}", dump.provider)).wrap());
+                    ui.add(
+                        egui::Label::new(format!("Destination provider: {}", review.provider))
+                            .wrap(),
+                    );
+                }
+                Job::Backup { file, .. } => {
+                    ui.add(
+                        egui::Label::new(format!("Source provider: {}", file.provider.name)).wrap(),
+                    );
+                }
+                _ => {}
+            }
+            egui::Grid::new("transfer-facts")
+                .num_columns(2)
+                .spacing([16.0, 8.0])
+                .show(ui, |ui| {
+                    for (label, value) in &review.facts {
+                        ui.add(egui::Label::new(RichText::new(label).strong()).wrap());
+                        ui.add(egui::Label::new(value).wrap());
+                        ui.end_row();
+                    }
+                });
+        });
+    if cancel {
         state.review = None;
         state.confirmation.clear();
         return;
@@ -2308,7 +2472,25 @@ fn execute(mut review: Review, mut progress: impl FnMut(&str)) -> Result<String>
     }
 }
 
+fn choose_query(state: &mut State, cx: &mut PageContext<'_>) {
+    if state.pending_picker.is_some() || cx.busy("native-picker") || cx.busy("query-save") {
+        return;
+    }
+    state.pending_picker = Some(PendingPicker::Query(state.browser.query.clone()));
+    cx.background("native-picker", "Choose query file", || {
+        Ok(Payload::ChosenPath(
+            rfd::FileDialog::new()
+                .set_title("Save database query")
+                .set_file_name("query.sql")
+                .save_file(),
+        ))
+    });
+}
+
 fn download(state: &mut State, cx: &mut PageContext<'_>) {
+    if state.pending_picker.is_some() || cx.busy("native-picker") || cx.busy("download") {
+        return;
+    }
     let Some(dump) = state
         .selected_dump
         .and_then(|i| state.dumps.get(i))
@@ -2321,36 +2503,90 @@ fn download(state: &mut State, cx: &mut PageContext<'_>) {
         .rsplit('/')
         .next()
         .filter(|n| !n.is_empty())
-        .unwrap_or("dump.sql.gz");
-    let Some(path) = rfd::FileDialog::new()
-        .set_title("Download database dump — choose a new file")
-        .set_file_name(name)
-        .save_file()
-    else {
+        .unwrap_or("dump.sql.gz")
+        .to_owned();
+    state.pending_picker = Some(PendingPicker::Dump {
+        dump,
+        source: Box::new(state.source.clone()),
+    });
+    cx.background(
+        "native-picker",
+        "Choose database dump destination",
+        move || {
+            Ok(Payload::ChosenPath(
+                rfd::FileDialog::new()
+                    .set_title("Download database dump — choose a new file")
+                    .set_file_name(name)
+                    .save_file(),
+            ))
+        },
+    );
+}
+
+fn receive_picker(
+    state: &mut State,
+    cx: &mut PageContext<'_>,
+    result: std::result::Result<Payload, String>,
+) {
+    let Some(intent) = state.pending_picker.take() else {
         return;
     };
-    let source = state.source.clone();
-    cx.background_progress("download", "Download database dump", move |progress| {
-        let client = source.client()?;
-        let output = path
-            .to_str()
-            .ok_or_else(|| anyhow!("Download path must be valid UTF-8"))?;
-        let (_, saved, bytes) = crate::operations::download_r2_dump(
-            &client,
-            &source.project,
-            &source.service,
-            Some(&dump.key),
-            Some(output),
-            Some(&dump.provider),
-            |n, total| progress(crate::operations::download_progress(n, total)),
-        )?;
-        Ok(Payload::Text(format!(
-            "Downloaded {} to {} ({})",
-            dump.key,
-            saved.display(),
-            crate::output::format_bytes(bytes as f64)
-        )))
-    });
+    let path = match result {
+        Ok(Payload::ChosenPath(Some(path))) => path,
+        Ok(Payload::ChosenPath(None)) => {
+            state.outcome = Some("Selection cancelled".into());
+            return;
+        }
+        Err(error) => {
+            state.error = Some(error);
+            return;
+        }
+        _ => {
+            state.error = Some("Unexpected file selection result".into());
+            return;
+        }
+    };
+    match intent {
+        PendingPicker::Query(text) => {
+            state.browser.saving_query = Some(text.clone());
+            cx.background("query-save", "Save query", move || {
+                write_new_file(&path, text.as_bytes())?;
+                Ok(Payload::Text("Query saved".into()))
+            });
+        }
+        PendingPicker::Export { text, source } => {
+            cx.background("export-save", "Save redacted project", move || {
+                write_new_file(&path, text.as_bytes())?;
+                Ok(Payload::Text(format!(
+                    "Redacted configuration from {source} saved to {}",
+                    path.display()
+                )))
+            });
+        }
+        PendingPicker::Dump { dump, source } => {
+            cx.background_progress("download", "Download database dump", move |progress| {
+                let client = source.client()?;
+                let output = path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Download path must be valid UTF-8"))?;
+                let (_, saved, bytes) = crate::operations::download_r2_dump(
+                    &client,
+                    &source.project,
+                    &source.service,
+                    Some(&dump.key),
+                    Some(output),
+                    Some(&dump.provider),
+                    |n, total| progress(crate::operations::download_progress(n, total)),
+                )?;
+                Ok(Payload::Text(format!(
+                    "Downloaded {} to {} ({})",
+                    dump.key,
+                    saved.display(),
+                    crate::output::format_bytes(bytes as f64)
+                )))
+            });
+        }
+    }
 }
 fn compare(state: &mut State, cx: &mut PageContext<'_>) {
     let source = state.source.clone();
@@ -2474,6 +2710,9 @@ fn write_new_file(path: &PathBuf, bytes: &[u8]) -> Result<()> {
 }
 
 fn receive(state: &mut State, cx: &mut PageContext<'_>) {
+    if let Some(result) = cx.take("native-picker") {
+        receive_picker(state, cx, result);
+    }
     if let Some(result) = cx.take("browser") {
         match result {
             Ok(Payload::Worker(Resp::Dbms {
@@ -2712,12 +2951,20 @@ fn receive(state: &mut State, cx: &mut PageContext<'_>) {
                     }
                 }
                 Err(error) => {
+                    if key == "query-save" {
+                        state.browser.saving_query = None;
+                    }
                     if key == "execute" {
                         state.draft = true;
                     }
                     state.error = Some(error);
                 }
-                _ => state.error = Some("Unexpected operation outcome".into()),
+                _ => {
+                    if key == "query-save" {
+                        state.browser.saving_query = None;
+                    }
+                    state.error = Some("Unexpected operation outcome".into());
+                }
             }
         }
     }
@@ -2740,6 +2987,913 @@ mod tests {
             ..Endpoint::default()
         }
     }
+    fn with_context(run: impl FnOnce(&mut PageContext<'_>)) {
+        with_target_context(&Target::default(), run);
+    }
+    fn with_target_context(target: &Target, run: impl FnOnce(&mut PageContext<'_>)) {
+        let mut backend = super::super::backend::Backend::new(
+            egui::Context::default(),
+            super::super::backend::Runtime::default(),
+        );
+        let mut opened = Vec::new();
+        let mut reload = false;
+        let path = std::path::Path::new("unused-test-config");
+        run(&mut PageContext {
+            target,
+            servers: &[],
+            accounts: &[],
+            server_config: path,
+            cloudflare_config: path,
+            watchlist: path,
+            doc: 1,
+            backend: &mut backend,
+            opened: &mut opened,
+            reload: &mut reload,
+        });
+    }
+
+    fn finish_operation(state: &mut State, cx: &mut PageContext<'_>, key: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while cx.busy(key) {
+            assert!(std::time::Instant::now() < deadline, "{key} did not finish");
+            cx.backend.pump();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        receive(state, cx);
+    }
+
+    fn data_frame(
+        ctx: &egui::Context,
+        state: &mut State,
+        cx: &mut PageContext<'_>,
+        size: egui::Vec2,
+        events: Vec<egui::Event>,
+        navigation_only: bool,
+    ) -> (egui::FullOutput, egui::Rect) {
+        let (output, bounds, _) =
+            data_geometry_frame(ctx, state, cx, size, events, navigation_only);
+        (output, bounds)
+    }
+
+    #[derive(Default)]
+    struct QueryGeometry {
+        pane: Option<egui::Rect>,
+        caret: Option<egui::Rect>,
+        ime_rect: Option<egui::Rect>,
+        focused: Option<egui::Id>,
+        cursor: Option<egui::text::CCursor>,
+    }
+
+    fn data_geometry_frame(
+        ctx: &egui::Context,
+        state: &mut State,
+        cx: &mut PageContext<'_>,
+        size: egui::Vec2,
+        events: Vec<egui::Event>,
+        navigation_only: bool,
+    ) -> (egui::FullOutput, egui::Rect, QueryGeometry) {
+        let mut bounds = egui::Rect::NOTHING;
+        let mut content = egui::Rect::NOTHING;
+        let mut geometry = QueryGeometry::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::Panel::top("test-menu")
+                    .exact_size(32.0)
+                    .show(ui, |_| {});
+                egui::Panel::bottom("test-status")
+                    .exact_size(24.0)
+                    .show(ui, |_| {});
+                egui::Panel::left("test-explorer")
+                    .exact_size(298.0)
+                    .show(ui, |_| {});
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 4)))
+                    .show(ui, |ui| {
+                        ui.allocate_space(egui::vec2(ui.available_width(), 72.0));
+                        bounds = ui.available_rect_before_wrap();
+                        if navigation_only {
+                            navigation(ui, state, cx);
+                        } else {
+                            show(ui, state, cx);
+                        }
+                        content = ui.min_rect();
+                        geometry.pane = egui::containers::panel::PanelState::load(
+                            ui.ctx(),
+                            ui.scope_id().with("data-query-pane"),
+                        )
+                        .map(|pane| pane.outer_rect);
+                        let ime = ui.ctx().output(|output| output.ime);
+                        geometry.caret = ime.map(|ime| ime.cursor_rect);
+                        geometry.ime_rect = ime.map(|ime| ime.rect);
+                        let focused = ui.memory(|memory| memory.focused());
+                        geometry.focused = focused;
+                        geometry.cursor = focused
+                            .and_then(|id| egui::TextEdit::load_state(ui.ctx(), id))
+                            .and_then(|state| state.cursor.char_range())
+                            .map(|range| range.primary);
+                    });
+            },
+        );
+        output.textures_delta.clear();
+        assert!(
+            content.max.x <= bounds.max.x + 0.5,
+            "{content:?} exceeds {bounds:?}"
+        );
+        assert!(
+            content.max.y <= bounds.max.y + 0.5,
+            "{content:?} exceeds {bounds:?}"
+        );
+        (output, bounds, geometry)
+    }
+
+    fn painted_text(output: &egui::FullOutput, text: &str) -> (egui::Rect, egui::Rect) {
+        output
+            .shapes
+            .iter()
+            .rev()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.text() == text => Some((
+                    shape.galley.rect.translate(shape.pos.to_vec2()),
+                    clipped.clip_rect,
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing control or content: {text}"))
+    }
+
+    fn semantic_control(
+        output: &egui::FullOutput,
+        role: egui::Role,
+        label: Option<&str>,
+    ) -> egui::Rect {
+        let rect = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("accessibility frame")
+            .nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| {
+                node.role() == role && label.is_none_or(|label| node.label() == Some(label))
+            })
+            .and_then(|node| node.bounds())
+            .expect("semantic control bounds");
+        egui::Rect::from_min_max(
+            egui::pos2(rect.x0 as f32, rect.y0 as f32),
+            egui::pos2(rect.x1 as f32, rect.y1 as f32),
+        )
+    }
+    fn click_data(
+        ctx: &egui::Context,
+        state: &mut State,
+        cx: &mut PageContext<'_>,
+        size: egui::Vec2,
+        position: egui::Pos2,
+        navigation_only: bool,
+    ) {
+        for pressed in [true, false] {
+            data_frame(
+                ctx,
+                state,
+                cx,
+                size,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                navigation_only,
+            );
+        }
+    }
+
+    #[test]
+    fn family_navigation_reaches_every_task_and_preserves_work_and_frozen_routes() {
+        with_context(|cx| {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            super::super::theme::apply(&ctx, super::super::theme::Mode::Dark);
+            let size = egui::vec2(1024.0, 680.0);
+            let mut state = State {
+                initialized: true,
+                draft: true,
+                new_project: "unsaved-destination".into(),
+                chosen_databases: BTreeSet::from(["chosen_schema".into()]),
+                browser: Browser {
+                    query: "\n\nselect unsaved;\r\n".into(),
+                    ..Browser::default()
+                },
+                ..State::default()
+            };
+            let mut visited = Vec::new();
+            for family in [Family::Database, Family::Backups, Family::Configuration] {
+                let (output, _) = data_frame(&ctx, &mut state, cx, size, vec![], true);
+                let family_button =
+                    semantic_control(&output, egui::Role::Button, Some(family.title()));
+                click_data(&ctx, &mut state, cx, size, family_button.center(), true);
+                assert!(state.mode.family() == family);
+                for &mode in family.tasks() {
+                    let (output, _) = data_frame(&ctx, &mut state, cx, size, vec![], true);
+                    let selected = semantic_control(&output, egui::Role::ComboBox, None).center();
+                    click_data(&ctx, &mut state, cx, size, selected, true);
+                    let (popup, _) = data_frame(&ctx, &mut state, cx, size, vec![], true);
+                    click_data(
+                        &ctx,
+                        &mut state,
+                        cx,
+                        size,
+                        painted_text(&popup, mode.title()).0.center(),
+                        true,
+                    );
+                    assert!(state.mode == mode);
+                    assert!(!visited.contains(&mode));
+                    visited.push(mode);
+                }
+            }
+            assert_eq!(visited.len(), 11);
+            assert_eq!(state.browser.query, "\n\nselect unsaved;\r\n");
+            assert_eq!(state.new_project, "unsaved-destination");
+            assert!(state.chosen_databases.contains("chosen_schema"));
+            assert!(state.is_dirty());
+            for seeded in [true, false] {
+                state.seeded_endpoints = seeded;
+                state.review = (!seeded).then(|| Review {
+                    source: Endpoint::default(),
+                    destination: Endpoint::default(),
+                    provider: String::new(),
+                    facts: vec![],
+                    copy_plan: None,
+                    job: Job::Clone,
+                });
+                let original = state.mode;
+                let (output, _) = data_frame(&ctx, &mut state, cx, size, vec![], true);
+                click_data(
+                    &ctx,
+                    &mut state,
+                    cx,
+                    size,
+                    painted_text(&output, Family::Database.title()).0.center(),
+                    true,
+                );
+                assert!(state.mode == original);
+            }
+            assert!(cx.backend.tasks.is_empty());
+        });
+    }
+
+    #[test]
+    fn long_endpoint_choices_fit_both_columns_without_growing_the_document() {
+        with_context(|cx| {
+            let ctx = egui::Context::default();
+            super::super::theme::apply(&ctx, super::super::theme::Mode::Light);
+            let mut source = endpoint(
+                "https://source.invalid",
+                &"long-project-".repeat(12),
+                &"long-service-".repeat(12),
+            );
+            source.server.as_mut().unwrap().name = "long-host-".repeat(12);
+            source.kind = "mysql".into();
+            source.loaded = true;
+            let mut destination = source.clone();
+            for width in [1024.0, 1280.0] {
+                let mut measured = Vec::new();
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 800.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::Panel::left("test-explorer")
+                            .exact_size(298.0)
+                            .show(ui, |_| {});
+                        egui::CentralPanel::default().show(ui, |ui| {
+                            ui.columns(2, |columns| {
+                                for (index, endpoint) in
+                                    [&mut source, &mut destination].into_iter().enumerate()
+                                {
+                                    let bounds = columns[index].available_rect_before_wrap();
+                                    endpoint_ui(
+                                        &mut columns[index],
+                                        endpoint,
+                                        cx,
+                                        if index == 0 {
+                                            "source-inventory"
+                                        } else {
+                                            "target-inventory"
+                                        },
+                                        if index == 0 {
+                                            "Source"
+                                        } else {
+                                            "Destination / comparison target"
+                                        },
+                                        true,
+                                        true,
+                                    );
+                                    measured.push((bounds, columns[index].min_rect()));
+                                }
+                            });
+                        });
+                    },
+                );
+                output.textures_delta.clear();
+                for (bounds, content) in measured {
+                    assert!(
+                        content.max.x <= bounds.max.x + 0.5,
+                        "{content:?} exceeds {bounds:?}"
+                    );
+                }
+                assert!(cx.backend.tasks.is_empty());
+            }
+        });
+    }
+
+    #[test]
+    fn query_caret_viewport_scales_with_the_real_editor_height_without_changing_bytes() {
+        let ctx = egui::Context::default();
+        super::super::theme::apply(&ctx, super::super::theme::Mode::Dark);
+        let original = format!("\n\n{}", "select exact_bytes;\r\n".repeat(100));
+        let mut query = original.clone();
+        let mut measurements = Vec::new();
+        for height in [120.0, 320.0] {
+            let mut viewport = egui::Rect::NOTHING;
+            let mut allocation = egui::Rect::NOTHING;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(680.0, height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        allocation = ui.available_rect_before_wrap();
+                        let label = ui.scope_id().with("query-label");
+                        viewport = query_editor(ui, &mut query, label).inner_rect;
+                    },
+                );
+            });
+            output.textures_delta.clear();
+            assert!(
+                allocation.contains_rect(viewport),
+                "{viewport:?} exceeds actual allocation {allocation:?}"
+            );
+            assert_eq!(
+                viewport.height(),
+                allocation.height(),
+                "the real scroll viewport must fill its allocation"
+            );
+            measurements.push((allocation.height(), viewport.height()));
+        }
+        let allocated_growth = measurements[1].0 - measurements[0].0;
+        let viewport_growth = measurements[1].1 - measurements[0].1;
+        assert!(allocated_growth > 0.0);
+        assert_eq!(viewport_growth, allocated_growth);
+        assert_eq!(query, original);
+    }
+
+    #[test]
+    fn split_query_actions_and_retained_results_stay_reachable_and_focus_preserves_identity() {
+        let target = Target {
+            project: "project-with-a-long-identity".into(),
+            service: "database-with-a-long-identity".into(),
+            service_type: "mysql".into(),
+            ..Target::default()
+        };
+        for size in [egui::vec2(1024.0, 680.0), egui::vec2(1280.0, 800.0)] {
+            for theme in [
+                super::super::theme::Mode::Light,
+                super::super::theme::Mode::Dark,
+            ] {
+                with_target_context(&target, |cx| {
+                    let ctx = egui::Context::default();
+                    super::super::theme::apply(&ctx, theme);
+                    let mut state = State {
+                        initialized: true,
+                        browser: Browser {
+                            loaded: true,
+                            level: Some(Level::Query),
+                            query: "\n\nselect draft;\r\n".into(),
+                            saved_query: "select saved;".into(),
+                            database: "original_result_schema".into(),
+                            query_database: "different_query_schema".into(),
+                            result_query: "select original;".into(),
+                            result_label: "original result identity".into(),
+                            columns: vec!["retained-column".into()],
+                            rows: vec![
+                                vec!["retained-visible-cell".into()],
+                                vec!["NULL".into()],
+                                vec![String::new()],
+                            ],
+                            ..Browser::default()
+                        },
+                        ..State::default()
+                    };
+                    let (output, bounds) = data_frame(&ctx, &mut state, cx, size, vec![], false);
+                    for label in ["Run statement", "Discard query edits", "Save query…"] {
+                        let (rect, clip) = painted_text(&output, label);
+                        assert!(
+                            bounds.contains_rect(rect) && clip.contains_rect(rect),
+                            "{label} must stay visible"
+                        );
+                    }
+                    let (cell, clip) = painted_text(&output, "retained-visible-cell");
+                    assert!(clip.intersects(cell) && bounds.intersects(cell));
+                    click_data(
+                        &ctx,
+                        &mut state,
+                        cx,
+                        size,
+                        painted_text(&output, "Focus query").0.center(),
+                        false,
+                    );
+                    assert!(state.browser.query_focused);
+                    let (focused, _) = data_frame(&ctx, &mut state, cx, size, vec![], false);
+                    click_data(
+                        &ctx,
+                        &mut state,
+                        cx,
+                        size,
+                        painted_text(&focused, "Show results").0.center(),
+                        false,
+                    );
+                    assert!(!state.browser.query_focused);
+                    state.browser.error = Some("engine refused the draft".into());
+                    data_frame(&ctx, &mut state, cx, size, vec![], false);
+                    assert_eq!(state.browser.refresh_request().1, "original_result_schema");
+                    assert_eq!(state.browser.refresh_request().3, "select original;");
+                    assert_eq!(state.browser.rows[0][0], "retained-visible-cell");
+                    assert_eq!(state.browser.rows[1][0], "NULL");
+                    assert_eq!(state.browser.rows[2][0], "");
+                    assert_eq!(state.browser.query, "\n\nselect draft;\r\n");
+                    assert!(cx.backend.tasks.is_empty());
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn minimum_database_long_line_caret_and_pointer_splitter_preserve_work_and_guards() {
+        let target = Target {
+            service_type: "mysql".into(),
+            ..Target::default()
+        };
+        with_target_context(&target, |cx| {
+            let ctx = egui::Context::default();
+            super::super::theme::apply(&ctx, super::super::theme::Mode::Dark);
+            let mut style = (*ctx.global_style()).clone();
+            style.visuals.text_cursor.blink = false;
+            ctx.set_global_style(style);
+            let size = egui::vec2(1024.0, 680.0);
+            let original = format!("select {}final_value;", "some_column || ".repeat(512));
+            let mut state = State {
+                initialized: true,
+                browser: Browser {
+                    loaded: true,
+                    level: Some(Level::Query),
+                    query: original.clone(),
+                    saved_query: "saved query baseline".into(),
+                    database: "previous_result_schema".into(),
+                    query_database: "draft_query_schema".into(),
+                    result_query: "select previous_result;".into(),
+                    result_label: "previous result identity".into(),
+                    columns: vec!["Value".into()],
+                    rows: vec![
+                        vec!["retained".into()],
+                        vec!["NULL".into()],
+                        vec![String::new()],
+                    ],
+                    capped: true,
+                    truncated: true,
+                    ..Browser::default()
+                },
+                ..State::default()
+            };
+            data_geometry_frame(&ctx, &mut state, cx, size, vec![], false);
+            let (_, bounds, initial) =
+                data_geometry_frame(&ctx, &mut state, cx, size, vec![], false);
+            let original_pane = initial.pane.expect("actual database query pane");
+            assert!(bounds.contains_rect(original_pane));
+            click_data(&ctx, &mut state, cx, size, original_pane.center(), false);
+            let key = |key, modifiers| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            };
+            let suffix = " -- typed at document end";
+            let (mut caret_frame, _, mut typed) = data_geometry_frame(
+                &ctx,
+                &mut state,
+                cx,
+                size,
+                vec![
+                    key(egui::Key::End, egui::Modifiers::NONE),
+                    key(
+                        egui::Key::ArrowDown,
+                        egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..egui::Modifiers::NONE
+                        },
+                    ),
+                    egui::Event::Text(suffix.into()),
+                ],
+                false,
+            );
+            let expected = format!("{original}{suffix}");
+            assert_eq!(state.browser.query, expected);
+            let rendered_caret = |frame: &egui::FullOutput, geometry: &QueryGeometry| {
+                let cursor = geometry.cursor?;
+                frame.shapes.iter().find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == expected => Some((
+                        text.galley
+                            .pos_from_cursor(cursor)
+                            .translate(text.pos.to_vec2()),
+                        shape.clip_rect,
+                    )),
+                    _ => None,
+                })
+            };
+            let caret_visible = |frame: &egui::FullOutput, geometry: &QueryGeometry| {
+                rendered_caret(frame, geometry).is_some_and(|(row, clip)| {
+                    clip.contains_rect(row)
+                        && geometry.pane.is_some_and(|pane| pane.contains_rect(row))
+                })
+            };
+            // ScrollArea animates its real scroll-to-caret request over subsequent frames.
+            for _ in 0..60 {
+                if caret_visible(&caret_frame, &typed) {
+                    break;
+                }
+                (caret_frame, _, typed) =
+                    data_geometry_frame(&ctx, &mut state, cx, size, vec![], false);
+            }
+            let (caret_row, actual_paint_clip) =
+                rendered_caret(&caret_frame, &typed).expect("focused rendered SQL caret");
+            let raw_ime_caret = typed.caret.expect("focused SQL IME caret");
+            // IME includes stock caret bleed; visibility belongs to the rendered glyph row and paint clips.
+            let actual_caret_clip = caret_frame
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::LineSegment { points, .. }
+                        if *points
+                            == [raw_ime_caret.center_top(), raw_ime_caret.center_bottom()] =>
+                    {
+                        Some(shape.clip_rect)
+                    }
+                    _ => None,
+                })
+                .expect("actual focused caret stroke");
+            assert!(actual_caret_clip.contains_rect(caret_row), "glyph-row caret {caret_row:?} exceeds actual caret clip {actual_caret_clip:?}; raw IME={raw_ime_caret:?}, pane={:?}, focus={:?}", typed.pane, typed.focused);
+            assert_eq!(
+                typed.cursor.map(|cursor| cursor.index),
+                Some(egui::epaint::text::CharIndex(expected.chars().count()))
+            );
+            let (wrapped, _, before_drag) =
+                data_geometry_frame(&ctx, &mut state, cx, size, vec![], false);
+            assert!(wrapped.shapes.iter().any(|shape| matches!(
+                &shape.shape, egui::epaint::Shape::Text(text) if text.galley.text() == expected && text.galley.rows.len() > 1
+            )), "the actual long logical line must wrap within the database editor");
+
+            let before = before_drag.pane.unwrap();
+            let start = before.center_bottom();
+            let end = start - egui::vec2(0.0, 40.0);
+            data_geometry_frame(
+                &ctx,
+                &mut state,
+                cx,
+                size,
+                vec![egui::Event::PointerMoved(start)],
+                false,
+            );
+            data_geometry_frame(
+                &ctx,
+                &mut state,
+                cx,
+                size,
+                vec![
+                    egui::Event::PointerMoved(start),
+                    egui::Event::PointerButton {
+                        pos: start,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                false,
+            );
+            data_geometry_frame(
+                &ctx,
+                &mut state,
+                cx,
+                size,
+                vec![egui::Event::PointerMoved(end)],
+                false,
+            );
+            let (after_output, after_bounds, after_drag) = data_geometry_frame(
+                &ctx,
+                &mut state,
+                cx,
+                size,
+                vec![
+                    egui::Event::PointerMoved(end),
+                    egui::Event::PointerButton {
+                        pos: end,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                false,
+            );
+            let after = after_drag.pane.unwrap();
+            assert!(
+                after.height() <= before.height() - 20.0,
+                "pointer drag must resize {before:?} to {after:?}"
+            );
+            assert!(after_bounds.contains_rect(after));
+            let (retained, retained_clip) = painted_text(&after_output, "retained");
+            assert!(retained_clip.intersects(retained) && after_bounds.intersects(retained));
+            for label in ["Run statement", "Discard query edits", "Save query…"] {
+                let (control, clip) = painted_text(&after_output, label);
+                assert!(after_bounds.contains_rect(control) && clip.contains_rect(control));
+            }
+            assert_eq!(
+                state.browser.query, expected,
+                "divider drag must not edit SQL bytes"
+            );
+            assert_eq!(state.browser.saved_query, "saved query baseline");
+            assert_eq!(state.browser.refresh_request().1, "previous_result_schema");
+            assert_eq!(state.browser.refresh_request().3, "select previous_result;");
+            assert_eq!(
+                state.browser.rows,
+                vec![vec!["retained"], vec!["NULL"], vec![""]]
+            );
+            assert!(state.browser.capped && state.browser.truncated);
+            assert!(state.is_dirty());
+            assert!(state.pending_picker.is_none() && state.browser.saving_query.is_none());
+            assert!(state.review.is_none() && state.pending_review.is_none());
+            assert!(
+                cx.backend.tasks.is_empty(),
+                "caret input and divider drag must not submit, save or transfer"
+            );
+            assert!(
+                caret_visible(&caret_frame, &typed),
+                "rendered caret row {caret_row:?} must be inside actual paint clip {actual_paint_clip:?}; raw IME caret={raw_ime_caret:?}, IME inner={:?}, pane={:?}, focus={:?}",
+                typed.ime_rect,
+                typed.pane,
+                typed.focused,
+            );
+        });
+    }
+
+    #[test]
+    fn resolved_review_omits_obsolete_setup_and_keeps_guard_and_cancel_outside_long_details() {
+        for size in [egui::vec2(1024.0, 680.0), egui::vec2(1280.0, 800.0)] {
+            with_context(|cx| {
+                let ctx = egui::Context::default();
+                super::super::theme::apply(&ctx, super::super::theme::Mode::Dark);
+                let destination = endpoint(
+                    "https://resolved.invalid",
+                    "resolved-long-destination-project",
+                    "resolved-database",
+                );
+                let mut state = State {
+                    initialized: true,
+                    mode: Mode::Clone,
+                    draft: true,
+                    destination: endpoint(
+                        "https://obsolete.invalid",
+                        "obsolete-project",
+                        "obsolete-database",
+                    ),
+                    new_project: "retained-transfer-draft".into(),
+                    confirmation: "wrong target".into(),
+                    review: Some(Review {
+                        source: endpoint(
+                            "https://source.invalid",
+                            "source-project",
+                            "source-database",
+                        ),
+                        destination: destination.clone(),
+                        provider: String::new(),
+                        copy_plan: None,
+                        job: Job::Clone,
+                        facts: (0..40)
+                            .map(|i| {
+                                (
+                                    format!("Resolved fact {i}"),
+                                    "long immutable review detail ".repeat(8),
+                                )
+                            })
+                            .collect(),
+                    }),
+                    ..State::default()
+                };
+                let (output, bounds) = data_frame(&ctx, &mut state, cx, size, vec![], false);
+                for label in ["Confirm", "Cancel review — nothing has run"] {
+                    let (rect, clip) = painted_text(&output, label);
+                    assert!(
+                        bounds.contains_rect(rect) && clip.contains_rect(rect),
+                        "{label} must stay fixed"
+                    );
+                }
+                let (resolved, clip) =
+                    painted_text(&output, &format!("Destination: {}", destination.label()));
+                assert!(bounds.intersects(resolved) && clip.intersects(resolved));
+                click_data(
+                    &ctx,
+                    &mut state,
+                    cx,
+                    size,
+                    painted_text(&output, "Confirm").0.center(),
+                    false,
+                );
+                assert!(
+                    state.review.is_some(),
+                    "wrong typed destination must never apply"
+                );
+                assert!(
+                    cx.backend.tasks.is_empty(),
+                    "resolved review must not load obsolete endpoint inventory"
+                );
+                let (output, _) = data_frame(&ctx, &mut state, cx, size, vec![], false);
+                click_data(
+                    &ctx,
+                    &mut state,
+                    cx,
+                    size,
+                    painted_text(&output, "Cancel review — nothing has run")
+                        .0
+                        .center(),
+                    false,
+                );
+                assert!(state.review.is_none());
+                assert!(state.confirmation.is_empty());
+                assert_eq!(state.new_project, "retained-transfer-draft");
+                assert_eq!(state.destination.project, "obsolete-project");
+                assert!(cx.backend.tasks.is_empty());
+            });
+        }
+    }
+
+    #[test]
+    fn cancelling_each_native_picker_does_not_write_download_or_advance_query_baseline() {
+        with_context(|cx| {
+            let mut state = State::default();
+            state.browser.query = "select changed".into();
+            state.browser.saved_query = "select saved".into();
+            for intent in [
+                PendingPicker::Query(state.browser.query.clone()),
+                PendingPicker::Export {
+                    text: "redacted configuration".into(),
+                    source: "original project".into(),
+                },
+                PendingPicker::Dump {
+                    dump: SavedDump {
+                        key: "original.sql.gz".into(),
+                        provider: "original-provider".into(),
+                        origin: "original/database".into(),
+                    },
+                    source: Box::new(endpoint(
+                        "https://must-not-be-requested.invalid",
+                        "original",
+                        "db",
+                    )),
+                },
+            ] {
+                state.pending_picker = Some(intent);
+                receive_picker(&mut state, cx, Ok(Payload::ChosenPath(None)));
+                assert!(state.pending_picker.is_none());
+                assert!(cx.backend.tasks.is_empty(), "cancel must not queue I/O");
+                assert!(state.browser.saving_query.is_none());
+                assert_eq!(state.browser.saved_query, "select saved");
+                assert_eq!(state.outcome.as_deref(), Some("Selection cancelled"));
+                assert!(state.is_dirty());
+            }
+        });
+    }
+
+    #[test]
+    fn query_picker_saves_requested_bytes_and_baseline_not_later_editor_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("query.sql");
+        with_context(|cx| {
+            let mut state = State::default();
+            let requested = "-- raw UTF-8 SQL: café\r\nselect 1;\n";
+            state.browser.query = requested.into();
+            state.pending_picker = Some(PendingPicker::Query(state.browser.query.clone()));
+            state.browser.query = "select edited_while_choosing".into();
+            receive_picker(&mut state, cx, Ok(Payload::ChosenPath(Some(path.clone()))));
+            state.browser.query = "select edited_while_writing".into();
+            finish_operation(&mut state, cx, "query-save");
+            assert_eq!(std::fs::read(&path).unwrap(), requested.as_bytes());
+            assert_eq!(state.browser.saved_query, requested);
+            assert_eq!(state.browser.query, "select edited_while_writing");
+            assert!(state.browser.saving_query.is_none());
+            assert!(state.is_dirty());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn refused_query_save_keeps_file_baseline_and_previous_grid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.sql");
+        std::fs::write(&path, b"do not replace").unwrap();
+        with_context(|cx| {
+            let mut state = State::default();
+            state.browser.saved_query = "saved baseline".into();
+            state.browser.query = "new draft".into();
+            state.browser.rows = vec![vec!["old grid".into()]];
+            state.browser.error = Some("old query error".into());
+            state.pending_picker = Some(PendingPicker::Query(state.browser.query.clone()));
+            receive_picker(&mut state, cx, Ok(Payload::ChosenPath(Some(path.clone()))));
+            finish_operation(&mut state, cx, "query-save");
+            assert_eq!(std::fs::read(&path).unwrap(), b"do not replace");
+            assert_eq!(state.browser.saved_query, "saved baseline");
+            assert_eq!(state.browser.rows, vec![vec!["old grid"]]);
+            assert_eq!(state.browser.error.as_deref(), Some("old query error"));
+            assert!(state
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Existing files are preserved"));
+            assert!(state.browser.saving_query.is_none());
+            assert!(state.is_dirty());
+        });
+    }
+
+    #[test]
+    fn export_picker_saves_frozen_redacted_text_and_original_source_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("original.easypanel.json");
+        with_context(|cx| {
+            let mut state = State::default();
+            state.source = endpoint("https://original.invalid", "original", "");
+            state.export = Some("{\"environment\":\"<redacted>\"}\n".into());
+            state.pending_picker = Some(PendingPicker::Export {
+                text: state.export.clone().unwrap(),
+                source: state.source.label(),
+            });
+            state.source = endpoint("https://new.invalid", "new-project", "");
+            state.export = Some("different preview".into());
+            receive_picker(&mut state, cx, Ok(Payload::ChosenPath(Some(path.clone()))));
+            finish_operation(&mut state, cx, "export-save");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "{\"environment\":\"<redacted>\"}\n"
+            );
+            let outcome = state.outcome.as_deref().unwrap();
+            assert!(outcome.contains("fixture / original / "));
+            assert!(!outcome.contains("new-project"));
+        });
+    }
+
+    #[test]
+    fn duplicate_picker_request_preserves_intent_and_queue_failure_releases_it() {
+        with_context(|cx| {
+            let mut state = State {
+                pending_picker: Some(PendingPicker::Query("first snapshot".into())),
+                browser: Browser {
+                    query: "newer draft".into(),
+                    ..Browser::default()
+                },
+                ..State::default()
+            };
+            choose_query(&mut state, cx);
+            download(&mut state, cx);
+            assert!(
+                matches!(&state.pending_picker, Some(PendingPicker::Query(text)) if text == "first snapshot")
+            );
+            assert!(cx.backend.tasks.is_empty());
+            receive_picker(&mut state, cx, Err("The operation queue is full".into()));
+            assert!(state.pending_picker.is_none());
+            assert!(state.browser.saving_query.is_none());
+            assert_eq!(state.browser.query, "newer draft");
+            assert!(state.browser.saved_query.is_empty());
+            assert_eq!(state.error.as_deref(), Some("The operation queue is full"));
+        });
+    }
+
     #[test]
     fn self_copy_identity_uses_host_not_connection_alias() {
         assert!(same_host(

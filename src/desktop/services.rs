@@ -39,7 +39,8 @@ pub(super) struct State {
     selected_server: Option<String>,
     branches_for: String,
     domain_project_for: String,
-    import_generation: Option<(u64, &'static str, u64, String)>,
+    import_generation: Option<ImportSnapshot>,
+    pending_picker: Option<PickerIntent>,
     generation: u64,
     saving_generation: Option<u64>,
     invalidated: BTreeSet<String>,
@@ -48,6 +49,11 @@ pub(super) struct State {
     runtime_updated: Option<Instant>,
     pending_mount: Option<(usize, Value)>,
     metrics: Vec<Value>,
+}
+type ImportSnapshot = (u64, &'static str, u64, String);
+enum PickerIntent {
+    Import(ImportSnapshot),
+    Export { server: Server, project: String },
 }
 struct Editor {
     form: Form,
@@ -95,12 +101,19 @@ enum ConfirmAction {
         index: usize,
         original: Value,
     },
-    Export(std::path::PathBuf),
+    Export {
+        path: std::path::PathBuf,
+        server: Server,
+        project: String,
+    },
     RemoveConnection(String),
 }
 impl State {
     pub(super) fn is_dirty(&self) -> bool {
         self.editor.as_ref().is_some_and(Editor::dirty)
+    }
+    fn lifecycle_blocked(&self, action: &str) -> bool {
+        self.is_dirty() && matches!(action, "deploy" | "start" | "restart")
     }
     pub(super) fn section_label(&self, target: &Target) -> &'static str {
         let section = match self.editor.as_ref().map(|edit| &edit.intent) {
@@ -162,6 +175,44 @@ impl State {
             typed,
             action,
         });
+    }
+    fn chosen_path(
+        &mut self,
+        path: Option<std::path::PathBuf>,
+    ) -> Option<(ImportSnapshot, std::path::PathBuf)> {
+        let intent = self.pending_picker.take()?;
+        let path = path?;
+        match intent {
+            PickerIntent::Import(snapshot) => {
+                let (generation, label, revision, before) = &snapshot;
+                if !self.editor.as_ref().is_some_and(|edit| {
+                    edit.generation == *generation
+                        && edit.revision == *revision
+                        && edit
+                            .form
+                            .fields
+                            .iter()
+                            .any(|field| field.label == *label && field.value == *before)
+                }) {
+                    self.error = Some("Import was not applied because its editor changed while choosing the file. Your newer input is preserved.".into());
+                    return None;
+                }
+                Some((snapshot, path))
+            }
+            PickerIntent::Export { server, project } => {
+                self.confirm(
+                    "Export configuration — replaces the destination file if it exists",
+                    format!("{} · {project} → {}", server.name, path.display()),
+                    false,
+                    ConfirmAction::Export {
+                        path,
+                        server,
+                        project,
+                    },
+                );
+                None
+            }
+        }
     }
 }
 impl Editor {
@@ -671,6 +722,25 @@ fn result_message(state: &mut State, response: Resp) -> bool {
     }
 }
 fn pump(state: &mut State, cx: &mut PageContext<'_>) {
+    if let Some(result) = cx.take("native-picker") {
+        match result {
+            Ok(Payload::ChosenPath(path)) => {
+                if let Some((snapshot, path)) = state.chosen_path(path) {
+                    state.import_generation = Some(snapshot);
+                    cx.background("import", "Read selected text file", move || {
+                        Ok(Payload::Text(std::fs::read_to_string(path)?))
+                    });
+                }
+            }
+            Err(error) => {
+                state.pending_picker = None;
+                state.error = Some(error);
+            }
+            _ => {
+                state.pending_picker = None;
+            }
+        }
+    }
     if let Some(r) = cx.take("inventory") {
         if !state.invalidated.contains("inventory") {
             match r {
@@ -1297,7 +1367,9 @@ fn inventory(
                     let skipped = state.marked.len() - targets.len();
                     if ui
                         .add_enabled(
-                            !targets.is_empty() && !cx.busy("mutation"),
+                            !targets.is_empty()
+                                && !cx.busy("mutation")
+                                && !state.lifecycle_blocked(action),
                             egui::Button::new(label),
                         )
                         .on_hover_text(format!(
@@ -1360,9 +1432,10 @@ fn inventory(
     let height = ui.available_height().max(28.0);
     egui::ScrollArea::horizontal()
         .id_salt("service-inventory")
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
         .max_height(height)
         .show(ui, |ui| {
-            let widths = [32.0, 156.0, 116.0, 64.0, 90.0, 104.0, 72.0, 160.0, 84.0];
+            let widths = [32.0, 204.0, 164.0, 112.0, 64.0, 56.0, 80.0, 160.0, 84.0];
             let width: f32 = widths.iter().sum();
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -1370,10 +1443,10 @@ fn inventory(
                     "Select",
                     "Service",
                     "Runtime",
-                    "CPU",
-                    "Memory",
                     "Project",
                     "Type",
+                    "CPU",
+                    "Memory",
                     "Source",
                     "Auto deploy",
                 ]
@@ -1464,10 +1537,10 @@ fn inventory(
                                 for (value, width) in [
                                     id.1.as_str(),
                                     row.runtime.as_str(),
-                                    row.cpu_label.as_str(),
-                                    row.memory_label.as_str(),
                                     id.0.as_str(),
                                     id.2.as_str(),
+                                    row.cpu_label.as_str(),
+                                    row.memory_label.as_str(),
                                     row.source.as_str(),
                                     row.auto_deploy,
                                 ]
@@ -1620,6 +1693,12 @@ fn lifecycle(
     action: &str,
     force: bool,
 ) {
+    if state.lifecycle_blocked(action) {
+        state.error = Some(format!(
+            "Save or discard this editor's changes before {label}. Your draft has not been applied."
+        ));
+        return;
+    }
     let target = format!("{project}/{service}");
     let warning = match action {
         "destroy" => " — may permanently remove stored data",
@@ -1640,6 +1719,65 @@ fn lifecycle(
         }),
     );
 }
+fn service_section(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>, width: f32) {
+    let kind = cx.target.service_type.as_str();
+    let mut sections = vec![("overview", "Overview"), ("environment", "Environment")];
+    if kind == "app" {
+        sections.extend([
+            ("source", "Source"),
+            ("build", "Build"),
+            ("deploy", "Deployment"),
+        ]);
+    }
+    if crate::lifecycle::has_resource_limits(kind) {
+        sections.push(("resources", "Resources"));
+    }
+    if crate::lifecycle::has_config_file(kind) {
+        sections.push(("configuration", "Config file"));
+    }
+    if crate::lifecycle::has_mounts_and_ports(kind) {
+        sections.extend([("ports", "Ports"), ("mounts", "Mounts")]);
+    }
+    if crate::lifecycle::is_web(kind) {
+        sections.extend([
+            ("domains", "Domains"),
+            ("redirects", "Redirects"),
+            ("auth", "Basic auth"),
+        ]);
+    }
+    sections.push(("backups", "Backups"));
+    let label = ui.label("Section");
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            egui::ComboBox::from_id_salt("service-section")
+                .selected_text(state.section_label(cx.target))
+                .width(width)
+                .truncate()
+                .show_ui(ui, |ui| {
+                    for (key, label) in &sections {
+                        if ui.selectable_label(state.section == *key, *label).clicked()
+                            && state.section != *key
+                        {
+                            open(cx, PageKind::Service, key, None);
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .labelled_by(label.id)
+                .on_hover_text(state.section_label(cx.target));
+        },
+    );
+    if state.editor.is_none()
+        && ui
+            .add_enabled(!cx.busy("detail"), egui::Button::new("Refresh"))
+            .clicked()
+    {
+        refresh(state, cx);
+    }
+}
 fn service(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     let kind = cx.target.service_type.clone();
     let id = (
@@ -1647,16 +1785,25 @@ fn service(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         cx.target.service.clone(),
         kind.clone(),
     );
+    let dirty = state.is_dirty();
+    let mut section_drawn = false;
     ui.horizontal(|ui| {
-        if crate::lifecycle::ops(&kind, "deploy").is_some()
-            && ui
-                .add_enabled(
-                    !cx.busy("mutation"),
-                    egui::Button::new("Deploy").fill(ui.visuals().selection.bg_fill),
-                )
+        if crate::lifecycle::ops(&kind, "deploy").is_some() {
+            let mut button = egui::Button::new("Deploy");
+            if !dirty {
+                button = button.fill(ui.visuals().selection.bg_fill);
+            }
+            if ui
+                .add_enabled(!cx.busy("mutation") && !dirty, button)
+                .on_hover_text(if dirty {
+                    "Save or discard changes before deploying. Your draft is not deployed."
+                } else {
+                    "Deploy saved configuration. Unsaved edits in other documents are not applied."
+                })
                 .clicked()
-        {
-            lifecycle(state, id.clone(), "Deploy", "deploy", false);
+            {
+                lifecycle(state, id.clone(), "Deploy", "deploy", false);
+            }
         }
         if ui.button("Logs").clicked() {
             open(cx, PageKind::Terminal, "logs", None);
@@ -1674,7 +1821,10 @@ fn service(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                 ] {
                     if crate::lifecycle::ops(&kind, action).is_some()
                         && ui
-                            .add_enabled(!cx.busy("mutation"), egui::Button::new(label))
+                            .add_enabled(
+                                !cx.busy("mutation") && !state.lifecycle_blocked(action),
+                                egui::Button::new(label),
+                            )
                             .clicked()
                     {
                         lifecycle(state, id.clone(), label, action, force);
@@ -1721,62 +1871,51 @@ fn service(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                 });
             }
         });
-        ui.add(egui::Label::new(runtime_label(state, &id.0, &id.1)).truncate())
-            .on_hover_text(state.runtime_updated.map_or_else(
-                || "Runtime status has not been refreshed yet".into(),
-                |updated| format!("Runtime updated {} s ago", updated.elapsed().as_secs()),
-            ));
-    });
-    let mut sections = vec![("overview", "Overview"), ("environment", "Environment")];
-    if kind == "app" {
-        sections.extend([
-            ("source", "Source"),
-            ("build", "Build"),
-            ("deploy", "Deployment"),
-        ]);
-    }
-    if crate::lifecycle::has_resource_limits(&kind) {
-        sections.push(("resources", "Resources"));
-    }
-    if crate::lifecycle::has_config_file(&kind) {
-        sections.push(("configuration", "Config file"));
-    }
-    if crate::lifecycle::has_mounts_and_ports(&kind) {
-        sections.extend([("ports", "Ports"), ("mounts", "Mounts")]);
-    }
-    if crate::lifecycle::is_web(&kind) {
-        sections.extend([
-            ("domains", "Domains"),
-            ("redirects", "Redirects"),
-            ("auth", "Basic auth"),
-        ]);
-    }
-    sections.push(("backups", "Backups"));
-    ui.horizontal(|ui| {
-        ui.label("Section");
-        egui::ComboBox::from_id_salt("service-section")
-            .selected_text(state.section_label(cx.target))
-            .width(180.0)
-            .show_ui(ui, |ui| {
-                for (key, label) in &sections {
-                    if ui.selectable_label(state.section == *key, *label).clicked()
-                        && state.section != *key
-                    {
-                        open(cx, PageKind::Service, key, None);
-                        ui.close();
-                    }
-                }
-            });
-        if ui
-            .add_enabled(
-                state.editor.is_none() && !cx.busy("detail"),
-                egui::Button::new("Refresh"),
-            )
-            .clicked()
-        {
-            refresh(state, cx);
+        let runtime = runtime_label(state, &id.0, &id.1);
+        ui.add_sized(
+            [128.0, ui.spacing().interact_size.y],
+            egui::Label::new(&runtime).truncate(),
+        )
+        .on_hover_text(state.runtime_updated.map_or_else(
+            || format!("{runtime}\nRuntime status has not been refreshed yet"),
+            |updated| {
+                format!(
+                    "{runtime}\nRuntime updated {} s ago",
+                    updated.elapsed().as_secs()
+                )
+            },
+        ));
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let label_width = ui
+            .painter()
+            .layout_no_wrap("Section".into(), font.clone(), ui.visuals().text_color())
+            .size()
+            .x;
+        let refresh_width = if state.editor.is_none() {
+            ui.painter()
+                .layout_no_wrap("Refresh".into(), font, ui.visuals().text_color())
+                .size()
+                .x
+                + 2.0 * ui.spacing().button_padding.x
+                + ui.spacing().item_spacing.x
+        } else {
+            0.0
+        };
+        let fixed = label_width + refresh_width + 2.0 * ui.spacing().item_spacing.x;
+        let available = ui.available_width() - fixed;
+        if available >= 132.0 {
+            service_section(
+                ui,
+                state,
+                cx,
+                if available >= 180.0 { 180.0 } else { 132.0 },
+            );
+            section_drawn = true;
         }
     });
+    if !section_drawn {
+        ui.horizontal(|ui| service_section(ui, state, cx, 132.0));
+    }
     ui.separator();
     if state.editor.is_some() {
         return;
@@ -2189,17 +2328,11 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     let Some(edit) = state.editor.as_mut() else {
         return;
     };
-    ui.horizontal(|ui| {
-        let width = (ui.available_width() - if edit.dirty() { 132.0 } else { 0.0 }).max(80.0);
-        ui.add_sized(
-            [width, 20.0],
-            egui::Label::new(egui::RichText::new(&edit.form.title).strong()).truncate(),
-        )
-        .on_hover_text(&edit.form.title);
-        if edit.dirty() {
-            ui.label(egui::RichText::new("Unsaved changes").color(ui.visuals().warn_fg_color));
-        }
-    });
+    let single_editor = matches!(edit.intent, Intent::Environment | Intent::Configuration);
+    if !single_editor {
+        ui.add(egui::Label::new(egui::RichText::new(&edit.form.title).strong()).truncate())
+            .on_hover_text(&edit.form.title);
+    }
     if let Intent::BulkResources(targets) = &edit.intent {
         let names = targets
             .iter()
@@ -2258,10 +2391,28 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                 if edit.form.next_present_step().is_some(){
                     if ui.button("Next").clicked(){match form::validate_step(&edit.form){Ok(())=>{edit.form.step=edit.form.next_present_step().unwrap_or(edit.form.step);edit.form.error=None;},Err(e)=>edit.form.error=Some(e)}}
                 }else if ui.button("Create service").clicked(){save=true;}
-            }else if ui.add_enabled(edit.dirty()||matches!(edit.intent,Intent::Connection(None)|Intent::ProjectCreate|Intent::ServiceCreate|Intent::Port|Intent::Mount(None)|Intent::Redirect|Intent::Domain(None)),egui::Button::new(action_label)).clicked(){save=true;}
+            }else {
+                let mut button = egui::Button::new(action_label);
+                if edit.dirty() {
+                    button = button.fill(ui.visuals().selection.bg_fill);
+                }
+                if ui.add_enabled(edit.dirty()||matches!(edit.intent,Intent::Connection(None)|Intent::ProjectCreate|Intent::ServiceCreate|Intent::Port|Intent::Mount(None)|Intent::Redirect|Intent::Domain(None)),button).clicked(){save=true;}
+            }
             if ui.button("Discard").clicked(){if edit.dirty(){edit.discard=true;}else{discard=true;}}
-            if edit.form.visible_here().iter().any(|&i|matches!(edit.form.fields[i].kind,FieldKind::Editor))&&ui.add_enabled(!cx.busy("import"),egui::Button::new("Import text file…")).clicked(){import=true;}
+            if edit.form.visible_here().iter().any(|&i|matches!(edit.form.fields[i].kind,FieldKind::Editor))&&ui.add_enabled(!cx.busy("import") && !cx.busy("native-picker") && state.pending_picker.is_none(),egui::Button::new("Import text file…")).clicked(){import=true;}
             if matches!(edit.intent,Intent::Connection(_))&&ui.add_enabled(!cx.busy("connection-test"),egui::Button::new("Test connection")).clicked(){test=true;}
+            if edit.dirty() {
+                let label = if !cx.target.service.is_empty() {
+                    if crate::lifecycle::ops(&cx.target.service_type, "deploy").is_some() {
+                        "Unsaved changes · save before deploying"
+                    } else {
+                        "Unsaved changes · save before restarting"
+                    }
+                } else {
+                    "Unsaved changes"
+                };
+                ui.label(egui::RichText::new(label).color(ui.visuals().warn_fg_color));
+            }
             if let Some(error) = &edit.form.error {
                 ui.menu_button(egui::RichText::new("Validation error").color(ui.visuals().error_fg_color), |ui| {
                     ui.set_max_width(400.0);
@@ -2302,27 +2453,31 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             });
         }
     });
-    if import {
+    if import && state.pending_picker.is_none() && !cx.busy("native-picker") && !cx.busy("import") {
         if let Some(label) = edit.form.visible_here().into_iter().find_map(|i| {
             matches!(edit.form.fields[i].kind, FieldKind::Editor)
                 .then_some(edit.form.fields[i].label)
         }) {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("Import text into editor")
-                .pick_file()
-            {
-                let before = edit
-                    .form
-                    .fields
-                    .iter()
-                    .find(|f| f.label == label)
-                    .map(|f| f.value.clone())
-                    .unwrap_or_default();
-                state.import_generation = Some((edit.generation, label, edit.revision, before));
-                cx.background("import", "Read selected text file", move || {
-                    Ok(Payload::Text(std::fs::read_to_string(path)?))
-                });
-            }
+            let before = edit
+                .form
+                .fields
+                .iter()
+                .find(|f| f.label == label)
+                .map(|f| f.value.clone())
+                .unwrap_or_default();
+            state.pending_picker = Some(PickerIntent::Import((
+                edit.generation,
+                label,
+                edit.revision,
+                before,
+            )));
+            cx.background("native-picker", "Choose text file to import", move || {
+                Ok(Payload::ChosenPath(
+                    rfd::FileDialog::new()
+                        .set_title("Import text into editor")
+                        .pick_file(),
+                ))
+            });
         }
     }
     if test {
@@ -2646,6 +2801,28 @@ fn confirmation(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) 
         .truncate(),
     )
     .on_hover_text(&confirm.title);
+    let lifecycle_action = match &confirm.action {
+        ConfirmAction::Request(Req::Action { action, .. } | Req::Bulk { action, .. }) => {
+            Some(action.as_str())
+        }
+        _ => None,
+    };
+    let blocked = lifecycle_action.is_some_and(|action| state.lifecycle_blocked(action));
+    if lifecycle_action.is_some_and(|action| matches!(action, "deploy" | "start" | "restart")) {
+        ui.label("Only saved configuration is applied. Unsaved edits in this or other documents are not applied.");
+    }
+    if blocked {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "Save or discard this editor's changes before continuing. Cancel keeps your draft.",
+        );
+    }
+    if lifecycle_action == Some("destroy") && state.is_dirty() {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "Your unsaved draft is not saved. Destroying this target may make the draft unusable.",
+        );
+    }
     let typed = confirm.typed.then_some(
         if matches!(confirm.action, ConfirmAction::Request(Req::Bulk { .. })) {
             "DESTROY"
@@ -2673,7 +2850,8 @@ fn confirmation(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) 
             ui.horizontal_wrapped(|ui| {
                 apply = ui
                     .add_enabled(
-                        typed.is_none_or(|expected| state.confirmation_entry == expected),
+                        !blocked
+                            && typed.is_none_or(|expected| state.confirmation_entry == expected),
                         egui::Button::new("Confirm")
                             .fill(ui.visuals().error_fg_color.gamma_multiply(0.20)),
                     )
@@ -2701,7 +2879,11 @@ fn confirmation(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) 
                     index,
                     original,
                 } => guarded_request(cx, req, collection, index, original),
-                ConfirmAction::Export(path) => write_export(cx, path),
+                ConfirmAction::Export {
+                    path,
+                    server,
+                    project,
+                } => write_export(cx, path, server, project),
                 ConfirmAction::RemoveConnection(name) => {
                     let path = cx.server_config_path().to_owned();
                     cx.background("mutation", "Remove local connection", move || {
@@ -2719,29 +2901,35 @@ fn confirmation(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) 
     }
 }
 fn export_project(state: &mut State, cx: &mut PageContext<'_>) {
-    if cx.busy("export") {
+    if cx.busy("export") || cx.busy("native-picker") || state.pending_picker.is_some() {
         return;
     }
-    let project = &cx.target.project;
-    if let Some(path) = rfd::FileDialog::new()
-        .set_title("Export redacted project configuration")
-        .set_file_name(format!("{project}.easypanel.json"))
-        .add_filter("JSON configuration", &["json"])
-        .save_file()
-    {
-        state.confirm(
-            "Export configuration — replaces the destination file if it exists",
-            path.display().to_string(),
-            false,
-            ConfirmAction::Export(path),
-        );
-    }
-}
-fn write_export(cx: &mut PageContext<'_>, path: std::path::PathBuf) {
     let Some(server) = cx.target.server.clone() else {
         return;
     };
     let project = cx.target.project.clone();
+    let filename = format!("{project}.easypanel.json");
+    state.pending_picker = Some(PickerIntent::Export { server, project });
+    cx.background(
+        "native-picker",
+        "Choose project export destination",
+        move || {
+            Ok(Payload::ChosenPath(
+                rfd::FileDialog::new()
+                    .set_title("Export redacted project configuration")
+                    .set_file_name(filename)
+                    .add_filter("JSON configuration", &["json"])
+                    .save_file(),
+            ))
+        },
+    );
+}
+fn write_export(
+    cx: &mut PageContext<'_>,
+    path: std::path::PathBuf,
+    server: Server,
+    project: String,
+) {
     cx.background_transfer("export", "Export redacted project", move || {
         let data = crate::client::EasypanelClient::for_server(&server).call(
             "projects",
@@ -2827,6 +3015,7 @@ pub(super) fn show_connections(ui: &mut egui::Ui, state: &mut State, cx: &mut Pa
             &["Name", "Panel URL", "Transport", "Default"],
             &rows,
             &mut selected,
+            100.0,
         ) {
             state.selected_server = cx.servers.get(index).map(|s| s.name.clone());
         }
@@ -2975,6 +3164,436 @@ mod tests {
             .value = value.into();
     }
     #[test]
+    fn dirty_service_lifecycle_entry_preserves_draft_and_saved_request_bytes() {
+        use super::super::backend::Backend;
+        for (intent, field, kind) in [
+            (Intent::Environment, "Environment", "app"),
+            (Intent::Configuration, "Config file", "mysql"),
+        ] {
+            let ctx = egui::Context::default();
+            let mut backend = Backend::new(ctx.clone(), super::super::Runtime::default());
+            let target = Target {
+                project: "project".into(),
+                service: "service".into(),
+                service_type: kind.into(),
+                ..Default::default()
+            };
+            let mut opened = Vec::new();
+            let mut reload = false;
+            let path = std::path::Path::new("");
+            let mut cx = PageContext {
+                target: &target,
+                servers: &[],
+                accounts: &[],
+                server_config: path,
+                cloudflare_config: path,
+                watchlist: path,
+                doc: 1,
+                backend: &mut backend,
+                opened: &mut opened,
+                reload: &mut reload,
+            };
+            for raw in ["", "\n\nEXACT=  value  \r\n"] {
+                let mut state = State::default();
+                state.edit(
+                    Form::new(
+                        FormKind::ProjectCreate,
+                        "Configuration",
+                        vec![Field::editor(field, "original")],
+                    ),
+                    intent.clone(),
+                );
+                set(&mut state.editor.as_mut().unwrap().form, field, raw);
+                for (label, action, force) in [
+                    ("Deploy", "deploy", false),
+                    ("Rebuild", "deploy", true),
+                    ("Start", "start", false),
+                    ("Restart", "restart", false),
+                ] {
+                    lifecycle(
+                        &mut state,
+                        ("project".into(), "service".into(), kind.into()),
+                        label,
+                        action,
+                        force,
+                    );
+                    assert!(
+                        state.confirmation.is_none(),
+                        "{label} must not review a dirty draft"
+                    );
+                    assert!(state.error.take().is_some());
+                    assert_eq!(state.editor.as_ref().unwrap().form.by_label(field), raw);
+                    assert!(state.saving_generation.is_none());
+                }
+                for action in [
+                    QuickAction::Deploy,
+                    QuickAction::Rebuild,
+                    QuickAction::Start,
+                    QuickAction::Restart,
+                ] {
+                    quick_action(&mut state, &mut cx, action);
+                    assert!(state.confirmation.is_none());
+                    assert_eq!(state.editor.as_ref().unwrap().form.by_label(field), raw);
+                }
+                match submission(state.editor.as_ref().unwrap(), &cx).unwrap() {
+                    Req::EnvSave { env, .. } => assert_eq!(env.as_bytes(), raw.as_bytes()),
+                    Req::ConfigFileSave { config, .. } => {
+                        assert_eq!(config.as_bytes(), raw.as_bytes())
+                    }
+                    _ => panic!("must submit the original configuration operation"),
+                }
+                quick_action(&mut state, &mut cx, QuickAction::Stop);
+                assert!(matches!(state.confirmation.as_ref().map(|c| &c.action),
+                    Some(ConfirmAction::Request(Req::Action { action, .. })) if action == "stop"));
+                state.confirmation = None;
+                quick_action(&mut state, &mut cx, QuickAction::Destroy);
+                assert!(state.confirmation.as_ref().unwrap().typed);
+                state.confirmation = None;
+                let edit = state.editor.as_mut().unwrap();
+                edit.baseline = edit.form.fields.iter().map(|f| f.value.clone()).collect();
+                assert!(!state.is_dirty());
+                let next = if kind == "app" {
+                    QuickAction::Deploy
+                } else {
+                    QuickAction::Restart
+                };
+                quick_action(&mut state, &mut cx, next);
+                assert!(matches!(state.confirmation.as_ref().map(|c| &c.action),
+                    Some(ConfirmAction::Request(Req::Action { action, .. })) if action == if kind == "app" { "deploy" } else { "restart" }));
+                assert_eq!(state.editor.as_ref().unwrap().form.by_label(field), raw);
+            }
+        }
+    }
+
+    #[test]
+    fn palette_lifecycle_routes_to_the_dirty_editor_without_opening_a_clean_bypass() {
+        use super::super::{Desktop, PageKind, PageState, PaletteCommand};
+        for raw in ["", "\n\nEXACT=  value  \r\n"] {
+            let ctx = egui::Context::default();
+            let cc = eframe::CreationContext::_new_kittest(ctx);
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = Desktop::new(&cc, directory.path().join("servers.json"));
+            let elsewhere = app.active;
+            let target = Target {
+                server: Some(Server {
+                    name: "host".into(),
+                    url: "https://panel.invalid".into(),
+                    token: "fixture-token".into(),
+                    default: false,
+                    ssh: None,
+                }),
+                project: "project".into(),
+                service: "service".into(),
+                service_type: "app".into(),
+                ..Target::default()
+            };
+            app.open(super::super::page(
+                PageKind::Service,
+                &target,
+                "overview",
+                "Overview",
+            ));
+            app.open(super::super::page(
+                PageKind::Service,
+                &target,
+                "environment",
+                "Environment",
+            ));
+            let editor_id = app.active.unwrap();
+            let document = app.documents.last_mut().unwrap();
+            let original = document.page.target.clone();
+            let PageState::Services(state) = &mut document.state else {
+                unreachable!();
+            };
+            state.edit(
+                Form::new(
+                    FormKind::ProjectCreate,
+                    "Environment",
+                    vec![Field::editor("Environment", "original")],
+                ),
+                Intent::Environment,
+            );
+            set(&mut state.editor.as_mut().unwrap().form, "Environment", raw);
+            let count = app.documents.len();
+            for active in [Some(editor_id), elsewhere] {
+                for action in [
+                    QuickAction::Deploy,
+                    QuickAction::Rebuild,
+                    QuickAction::Start,
+                    QuickAction::Restart,
+                ] {
+                    app.active = active;
+                    app.execute_palette(PaletteCommand::ServiceAction {
+                        target: target.clone(),
+                        title: "Fixture lifecycle action".into(),
+                        action,
+                    });
+                    assert_eq!(app.active, Some(editor_id));
+                    assert_eq!(app.documents.len(), count);
+                    let document = app
+                        .documents
+                        .iter()
+                        .find(|doc| doc.id == editor_id)
+                        .unwrap();
+                    assert!(document.page.target.same_resource(&original));
+                    let PageState::Services(state) = &document.state else {
+                        unreachable!();
+                    };
+                    assert!(state.confirmation.is_none());
+                    assert!(state.error.is_some());
+                    assert!(state.saving_generation.is_none());
+                    assert!(state.is_dirty());
+                    assert_eq!(
+                        state
+                            .editor
+                            .as_ref()
+                            .unwrap()
+                            .form
+                            .by_label("Environment")
+                            .as_bytes(),
+                        raw.as_bytes()
+                    );
+                    assert!(app
+                        .documents
+                        .iter()
+                        .all(|doc| !app.backend.busy(doc.id, "mutation")));
+                }
+            }
+            app.execute_palette(PaletteCommand::ServiceAction {
+                target,
+                title: "Destroy service".into(),
+                action: QuickAction::Destroy,
+            });
+            let PageState::Services(state) = &app
+                .documents
+                .iter()
+                .find(|doc| doc.id == editor_id)
+                .unwrap()
+                .state
+            else {
+                unreachable!();
+            };
+            assert!(state.confirmation.as_ref().unwrap().typed);
+            assert_eq!(
+                state.editor.as_ref().unwrap().form.by_label("Environment"),
+                raw
+            );
+            assert!(app
+                .documents
+                .iter()
+                .all(|doc| !app.backend.busy(doc.id, "mutation")));
+        }
+    }
+
+    #[test]
+    fn palette_lifecycle_reuses_a_clean_active_section_and_keeps_connection_identity() {
+        use super::super::{Desktop, PageKind, PageState, PaletteCommand};
+        for route in ["active", "overview", "token", "endpoint", "ssh"] {
+            let ctx = egui::Context::default();
+            let cc = eframe::CreationContext::_new_kittest(ctx);
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = Desktop::new(&cc, directory.path().join("servers.json"));
+            let elsewhere = app.active;
+            let target = Target {
+                server: Some(Server {
+                    name: "host".into(),
+                    url: "https://panel.invalid".into(),
+                    token: "fixture-token".into(),
+                    default: false,
+                    ssh: Some(crate::tunnel::SshTunnel {
+                        host: "bastion.invalid".into(),
+                        secret: Some("fixture-secret".into()),
+                        ..Default::default()
+                    }),
+                }),
+                project: "project".into(),
+                service: "service".into(),
+                service_type: "app".into(),
+                ..Target::default()
+            };
+            app.open(super::super::page(
+                PageKind::Service,
+                &target,
+                "environment",
+                "Environment",
+            ));
+            let editor_id = app.active.unwrap();
+            let mut requested = target.clone();
+            match route {
+                "token" => requested.server.as_mut().unwrap().token = "replacement-token".into(),
+                "endpoint" => {
+                    requested.server.as_mut().unwrap().url = "https://other.invalid".into()
+                }
+                "ssh" => {
+                    requested
+                        .server
+                        .as_mut()
+                        .unwrap()
+                        .ssh
+                        .as_mut()
+                        .unwrap()
+                        .secret = Some("replacement-secret".into());
+                }
+                "overview" => app.active = elsewhere,
+                _ => {}
+            }
+            let count = app.documents.len();
+            app.execute_palette(PaletteCommand::ServiceAction {
+                target: requested.clone(),
+                title: "Deploy service".into(),
+                action: QuickAction::Deploy,
+            });
+            let document = app
+                .documents
+                .iter()
+                .find(|doc| Some(doc.id) == app.active)
+                .unwrap();
+            if route == "active" {
+                assert_eq!(document.id, editor_id);
+                assert_eq!(document.page.target.section, "environment");
+                assert_eq!(app.documents.len(), count);
+            } else {
+                assert_ne!(document.id, editor_id);
+                assert_eq!(document.page.target.section, "overview");
+                assert_eq!(app.documents.len(), count + 1);
+            }
+            let expected = super::super::page(
+                PageKind::Service,
+                &requested,
+                &document.page.target.section,
+                "Fixture",
+            );
+            assert!(document.page.target.same_resource(&expected.target));
+            let PageState::Services(state) = &document.state else {
+                unreachable!();
+            };
+            assert!(
+                matches!(state.confirmation.as_ref().map(|review| &review.action),
+                Some(ConfirmAction::Request(Req::Action { action, force: false, .. })) if action == "deploy")
+            );
+            assert!(app
+                .documents
+                .iter()
+                .all(|doc| !app.backend.busy(doc.id, "mutation")));
+        }
+    }
+    #[test]
+    fn inventory_keeps_identity_visible_and_optional_columns_scrollable() {
+        use super::super::backend::Backend;
+        for size in [egui::vec2(1024.0, 680.0), egui::vec2(1280.0, 800.0)] {
+            let ctx = egui::Context::default();
+            super::super::theme::apply(&ctx, super::super::theme::Mode::Light);
+            let mut backend = Backend::new(ctx.clone(), super::super::Runtime::default());
+            let target = Target::default();
+            let mut opened = Vec::new();
+            let mut reload = false;
+            let path = std::path::Path::new("");
+            let mut cx = PageContext {
+                target: &target,
+                servers: &[],
+                accounts: &[],
+                server_config: path,
+                cloudflare_config: path,
+                watchlist: path,
+                doc: 1,
+                backend: &mut backend,
+                opened: &mut opened,
+                reload: &mut reload,
+            };
+            let mut state = State {
+                services: vec![json!({
+                    "projectName": "project", "name": "queue-worker-with-a-long-name", "type": "app",
+                    "source": {"type": "image", "image": "registry.example/worker:latest"}
+                })],
+                ..Default::default()
+            };
+            state
+                .replicas
+                .insert("project_queue-worker-with-a-long-name".into(), (0, 1));
+            let rows = service_rows(&state);
+            let mut measured = None;
+            let mut render = |events| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::Panel::left("explorer")
+                            .exact_size(298.0)
+                            .show(ui, |_| {});
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 4)))
+                            .show(ui, |ui| {
+                                let bounds = ui.available_rect_before_wrap();
+                                inventory(ui, &mut state, &mut cx, &rows);
+                                measured = Some((bounds, ui.min_rect()));
+                            });
+                    },
+                );
+                output.textures_delta.clear();
+                output
+            };
+            let output = render(Vec::new());
+            let text_rect = |output: &egui::FullOutput, label: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|clipped| match &clipped.shape {
+                        egui::epaint::Shape::Text(text) if text.galley.text() == label => Some((
+                            text.galley.rect.translate(text.pos.to_vec2()),
+                            clipped.clip_rect,
+                        )),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing {label}"))
+            };
+            for label in ["Service", "Runtime", "Project", "Type"] {
+                let (rect, clip) = text_rect(&output, label);
+                assert!(
+                    clip.contains_rect(rect),
+                    "{label} must be visible at {size:?}"
+                );
+            }
+            let (runtime, _) = text_rect(&output, "Runtime");
+            let (project, _) = text_rect(&output, "Project");
+            let (kind, _) = text_rect(&output, "Type");
+            let (cpu, _) = text_rect(&output, "CPU");
+            assert!(
+                runtime.max.x < project.min.x
+                    && project.max.x < kind.min.x
+                    && kind.max.x < cpu.min.x
+            );
+            if size.x == 1024.0 {
+                render(vec![
+                    egui::Event::PointerMoved(egui::pos2(800.0, 100.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(-2000.0, 0.0),
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Wheel,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                for _ in 0..30 {
+                    render(Vec::new());
+                }
+                let output = render(Vec::new());
+                for label in ["Source", "Auto deploy"] {
+                    let (rect, clip) = text_rect(&output, label);
+                    assert!(
+                        clip.contains_rect(rect),
+                        "{label} must be horizontally reachable"
+                    );
+                }
+            }
+            let (bounds, content) = measured.unwrap();
+            assert!(content.max.x <= bounds.max.x + 0.5);
+            assert!(content.max.y <= bounds.max.y + 0.5);
+        }
+    }
+    #[test]
     fn service_review_stays_visible_and_guards_two_hundred_captured_targets() {
         use super::super::backend::Backend;
         fn frame(
@@ -3121,6 +3740,70 @@ mod tests {
                         .collect(),
                     ..Default::default()
                 };
+                for bulk in [false, true] {
+                    state.edit(
+                        Form::new(
+                            FormKind::ProjectCreate,
+                            "Environment",
+                            vec![Field::editor("Environment", "SAVED=value\n")],
+                        ),
+                        Intent::Environment,
+                    );
+                    let req = if bulk {
+                        Req::Bulk {
+                            targets: vec![("project".into(), "service".into(), "app".into())],
+                            action: "deploy".into(),
+                            force: true,
+                        }
+                    } else {
+                        Req::Action {
+                            project: "project".into(),
+                            service: "service".into(),
+                            stype: "app".into(),
+                            action: "deploy".into(),
+                            force: false,
+                        }
+                    };
+                    state.confirm(
+                        "Deploy service",
+                        "project/service",
+                        false,
+                        ConfirmAction::Request(req),
+                    );
+                    let raw = "\n\nSECRET= exact draft  \r\n";
+                    set(&mut state.editor.as_mut().unwrap().form, "Environment", raw);
+                    let output = frame(&ctx, &mut state, &mut cx, size, Vec::new());
+                    click(
+                        &ctx,
+                        &mut state,
+                        &mut cx,
+                        size,
+                        text_bounds(&output, "Confirm").0.center(),
+                    );
+                    assert!(
+                        state.confirmation.is_some(),
+                        "a draft arriving during review must block submission"
+                    );
+                    assert!(!cx.busy("mutation"));
+                    assert_eq!(
+                        state.editor.as_ref().unwrap().form.by_label("Environment"),
+                        raw
+                    );
+                    let output = frame(&ctx, &mut state, &mut cx, size, Vec::new());
+                    click(
+                        &ctx,
+                        &mut state,
+                        &mut cx,
+                        size,
+                        text_bounds(&output, "Cancel").0.center(),
+                    );
+                    assert!(state.confirmation.is_none());
+                    assert_eq!(
+                        state.editor.as_ref().unwrap().form.by_label("Environment"),
+                        raw
+                    );
+                    state.editor = None;
+                }
                 state.confirm(
                     "Destroy 200 services",
                     names.clone(),
@@ -3205,14 +3888,26 @@ mod tests {
     #[test]
     fn multiline_service_editor_keeps_actions_and_help_above_the_dock() {
         use super::super::backend::Backend;
-        for size in [egui::vec2(1024.0, 680.0), egui::vec2(1280.0, 800.0)] {
-            for raw in [
-                "".to_owned(),
-                "KEY=  preserved \r\nNEXT=value\n".to_owned(),
-                format!("LONG={}\n{}", "x".repeat(2000), "KEY=value\n".repeat(100)),
+        for (size, mode) in [
+            (egui::vec2(1024.0, 680.0), super::super::theme::Mode::Dark),
+            (egui::vec2(1024.0, 680.0), super::super::theme::Mode::Light),
+            (egui::vec2(1280.0, 800.0), super::super::theme::Mode::Dark),
+            (egui::vec2(1280.0, 800.0), super::super::theme::Mode::Light),
+        ] {
+            for (raw, must_scroll) in [
+                ("".to_owned(), false),
+                ("KEY=  preserved \r\nNEXT=value\n".to_owned(), false),
+                (
+                    "\n\nKEY=  leading blank lines \r\nNEXT=value\n".to_owned(),
+                    false,
+                ),
+                (
+                    format!("LONG={}\n{}", "x".repeat(2000), "KEY=value\n".repeat(400)),
+                    true,
+                ),
             ] {
                 let ctx = egui::Context::default();
-                super::super::theme::apply(&ctx, super::super::theme::Mode::Dark);
+                super::super::theme::apply(&ctx, mode);
                 let mut backend = Backend::new(ctx.clone(), super::super::Runtime::default());
                 let target = Target {
                     project: "project".into(),
@@ -3296,6 +3991,36 @@ mod tests {
                     assert!(shape.0.contains_rect(shape.1.galley.rect.translate(shape.1.pos.to_vec2())),
                         "{text} is clipped at {size:?}");
                 }
+                let action_center = |label: &str| {
+                    output
+                        .shapes
+                        .iter()
+                        .find_map(|clipped| match &clipped.shape {
+                            egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                                Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| panic!("missing {label}"))
+                };
+                let primary = ctx.global_style().visuals.selection.bg_fill;
+                let is_primary = |label: &str| {
+                    let center = action_center(label);
+                    output.shapes.iter().any(|clipped| matches!(&clipped.shape,
+                        egui::epaint::Shape::Rect(rect) if rect.rect.contains(center) && rect.fill == primary))
+                };
+                assert!(
+                    is_primary("Save changes"),
+                    "dirty Save must own primary emphasis"
+                );
+                assert!(
+                    !is_primary("Deploy"),
+                    "Deploy must not compete with dirty Save"
+                );
+                assert!(
+                    (action_center("Section").y - action_center("Deploy").y).abs() < 5.0,
+                    "the measured compact toolbar must keep Section in one row"
+                );
                 if !raw.is_empty() {
                     let (clip, text) = output
                         .shapes
@@ -3307,9 +4032,9 @@ mod tests {
                             _ => None,
                         })
                         .expect("multiline editor must paint its content");
-                    assert!(clip.height() > 80.0,
+                    assert!(clip.height() >= 124.0,
                         "editor has no useful line box: size={size:?}, raw_bytes={}, clip={clip:?}, text_rect={:?}", raw.len(), text.galley.rect);
-                    if raw.lines().count() > 3 {
+                    if must_scroll {
                         assert!(
                             text.galley.rect.height() > clip.height(),
                             "long content must scroll internally"
@@ -3514,6 +4239,132 @@ mod tests {
             " pass \n"
         );
     }
+    #[test]
+    fn cancelled_native_selection_preserves_editor_and_existing_review() {
+        let mut state = State::default();
+        state.edit(
+            Form::new(
+                FormKind::ProjectCreate,
+                "Env",
+                vec![Field::editor("Environment", "draft\n")],
+            ),
+            Intent::Environment,
+        );
+        state.confirm(
+            "Existing review",
+            "original",
+            false,
+            ConfirmAction::RemoveConnection("host".into()),
+        );
+        state.confirmation_entry = "keep entry".into();
+        state.pending_picker = Some(PickerIntent::Import((
+            1,
+            "Environment",
+            0,
+            "draft\n".into(),
+        )));
+        assert!(state.chosen_path(None).is_none());
+        assert!(state.pending_picker.is_none());
+        assert!(state.import_generation.is_none());
+        assert_eq!(
+            state.editor.as_ref().unwrap().form.by_label("Environment"),
+            "draft\n"
+        );
+        assert!(!state.is_dirty());
+        assert_eq!(state.confirmation.as_ref().unwrap().target, "original");
+        assert_eq!(state.confirmation_entry, "keep entry");
+        state.pending_picker = Some(PickerIntent::Export {
+            server: Server {
+                name: "host".into(),
+                url: "https://panel.invalid".into(),
+                token: String::new(),
+                default: false,
+                ssh: None,
+            },
+            project: "project".into(),
+        });
+        assert!(state.chosen_path(None).is_none());
+        assert!(state.pending_picker.is_none());
+        assert_eq!(state.confirmation.as_ref().unwrap().target, "original");
+        assert_eq!(state.confirmation_entry, "keep entry");
+        assert_eq!(
+            state.editor.as_ref().unwrap().form.by_label("Environment"),
+            "draft\n"
+        );
+    }
+
+    #[test]
+    fn stale_native_import_selection_never_starts_a_read_for_changed_editor() {
+        for change in 0..3 {
+            let mut state = State::default();
+            state.edit(
+                Form::new(
+                    FormKind::ProjectCreate,
+                    "Env",
+                    vec![Field::editor("Environment", "before\n")],
+                ),
+                Intent::Environment,
+            );
+            state.pending_picker = Some(PickerIntent::Import((
+                1,
+                "Environment",
+                0,
+                "before\n".into(),
+            )));
+            let edit = state.editor.as_mut().unwrap();
+            match change {
+                0 => edit.generation += 1,
+                1 => edit.revision += 1,
+                _ => set(&mut edit.form, "Environment", "new input\n"),
+            }
+            let before = edit.form.by_label("Environment").to_owned();
+            assert!(state.chosen_path(Some("selected.txt".into())).is_none());
+            assert!(state.pending_picker.is_none());
+            assert!(state.import_generation.is_none());
+            assert_eq!(
+                state.editor.as_ref().unwrap().form.by_label("Environment"),
+                before
+            );
+            assert!(state.error.is_some());
+        }
+    }
+
+    #[test]
+    fn selected_export_destination_reviews_captured_project_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chosen.json");
+        let mut state = State {
+            pending_picker: Some(PickerIntent::Export {
+                server: Server {
+                    name: "original host".into(),
+                    url: "https://original.invalid".into(),
+                    token: "private".into(),
+                    default: false,
+                    ssh: None,
+                },
+                project: "original project".into(),
+            }),
+            ..Default::default()
+        };
+        assert!(state.chosen_path(Some(path.clone())).is_none());
+        assert!(state.pending_picker.is_none());
+        assert!(!path.exists());
+        let review = state.confirmation.take().unwrap();
+        assert!(review.target.contains("original host"));
+        assert!(review.target.contains("original project"));
+        let ConfirmAction::Export {
+            path: chosen,
+            server,
+            project,
+        } = review.action
+        else {
+            panic!("selection must open an export review");
+        };
+        assert_eq!(chosen, path);
+        assert_eq!(server.url, "https://original.invalid");
+        assert_eq!(project, "original project");
+    }
+
     #[test]
     fn imports_cannot_replace_newer_input_or_a_different_editor() {
         let form = Form::new(
