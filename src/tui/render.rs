@@ -3875,7 +3875,7 @@ pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
     };
     // Keep the shell's size aligned with the pane. vt100 uses (rows, cols).
     if parser.screen().size() != (rows, cols) {
-        parser.set_size(rows, cols);
+        parser.screen_mut().set_size(rows, cols);
         if let Some(tx) = app.term.input.as_ref() {
             let _ = tx.send(crate::session::TermMsg::Resize(cols, rows));
         }
@@ -3893,7 +3893,7 @@ pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
             let x = inner.x + c;
             let y = inner.y + r;
             let contents = cell.contents();
-            let ch = if contents.is_empty() { " " } else { &contents };
+            let ch = if contents.is_empty() { " " } else { contents };
             let mut style = Style::default()
                 .fg(vt_color(cell.fgcolor()))
                 .bg(vt_color(cell.bgcolor()));

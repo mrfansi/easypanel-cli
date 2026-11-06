@@ -25,6 +25,23 @@ pub(super) struct Target {
     pub resource: Value,
 }
 impl Target {
+    pub fn same_server(&self, other: &Self) -> bool {
+        self.server.is_some()
+            && self
+                .server
+                .as_ref()
+                .map(|s| (&s.name, &s.url, &s.token, &s.ssh))
+                == other
+                    .server
+                    .as_ref()
+                    .map(|s| (&s.name, &s.url, &s.token, &s.ssh))
+    }
+    pub fn deleted_by(&self, deleted: &Self) -> bool {
+        self.same_server(deleted)
+            && self.project == deleted.project
+            && (deleted.service.is_empty()
+                || (self.service == deleted.service && self.service_type == deleted.service_type))
+    }
     pub fn label(&self) -> String {
         let root = self
             .account
@@ -113,6 +130,10 @@ pub(super) struct OpenPage {
 pub(super) enum Payload {
     Json(Value),
     Worker(crate::worker::Resp),
+    Deleted {
+        targets: Vec<Target>,
+        response: crate::worker::Resp,
+    },
     Text(String),
     ChosenPath(Option<std::path::PathBuf>),
 }
@@ -202,6 +223,39 @@ impl PageContext<'_> {
             self.missing_server(key);
             return;
         };
+        let deletion_targets: Vec<Target> = match &req {
+            crate::worker::Req::ProjectDestroy(project) => vec![Target {
+                project: project.clone(),
+                server: Some(server.clone()),
+                ..Default::default()
+            }],
+            crate::worker::Req::Action {
+                project,
+                service,
+                stype,
+                action,
+                ..
+            } if action == "destroy" => vec![Target {
+                server: Some(server.clone()),
+                project: project.clone(),
+                service: service.clone(),
+                service_type: stype.clone(),
+                ..Default::default()
+            }],
+            crate::worker::Req::Bulk {
+                targets, action, ..
+            } if action == "destroy" => targets
+                .iter()
+                .map(|(project, service, stype)| Target {
+                    server: Some(server.clone()),
+                    project: project.clone(),
+                    service: service.clone(),
+                    service_type: stype.clone(),
+                    ..Default::default()
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         self.backend.submit(
             self.doc,
             key,
@@ -213,9 +267,25 @@ impl PageContext<'_> {
             lane,
             Box::new(move |emit| {
                 let client = crate::client::EasypanelClient::for_server(&server);
-                Ok(Payload::Worker(crate::worker::handle_req(
-                    &client, req, &emit,
-                )))
+                let response = crate::worker::handle_req(&client, req, &emit);
+                let targets = match &response {
+                    crate::worker::Resp::Done(..) => deletion_targets,
+                    crate::worker::Resp::BulkDone { action, ok, failed } if action == "destroy" => {
+                        deletion_targets
+                            .into_iter()
+                            .filter(|target| {
+                                let name = format!("{}/{}", target.project, target.service);
+                                ok.contains(&name) && !failed.iter().any(|(n, _)| *n == name)
+                            })
+                            .collect()
+                    }
+                    _ => Vec::new(),
+                };
+                Ok(if targets.is_empty() {
+                    Payload::Worker(response)
+                } else {
+                    Payload::Deleted { targets, response }
+                })
             }),
         );
     }

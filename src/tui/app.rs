@@ -4135,7 +4135,7 @@ impl App {
         // near end needs guarding — holding the key stops at the newest line
         // instead of wrapping past it.
         let at = p.screen().scrollback() as isize;
-        p.set_scrollback((at + delta).max(0) as usize);
+        p.screen_mut().set_scrollback((at + delta).max(0) as usize);
     }
 
     /// Clicks, drags and the wheel inside the terminal pane.

@@ -49,6 +49,12 @@ pub(super) struct State {
     runtime_updated: Option<Instant>,
     pending_mount: Option<(usize, Value)>,
     metrics: Vec<Value>,
+    inventory_loaded: bool,
+    seen_deletions: usize,
+    confirmation_invalidated: bool,
+    editor_invalidated: bool,
+    deleted: bool,
+    recovering: bool,
 }
 type ImportSnapshot = (u64, &'static str, u64, String);
 enum PickerIntent {
@@ -109,6 +115,76 @@ enum ConfirmAction {
     RemoveConnection(String),
 }
 impl State {
+    pub(super) fn deleted(&self) -> bool {
+        self.deleted
+    }
+    pub(super) fn sync_deletions(&mut self, target: &Target, notices: &[Target]) {
+        for deleted in &notices[self.seen_deletions..] {
+            if !target.same_server(deleted) {
+                continue;
+            }
+            let removed = |id: &(String, String, String)| {
+                id.0 == deleted.project
+                    && (deleted.service.is_empty()
+                        || (id.1 == deleted.service && id.2 == deleted.service_type))
+            };
+            self.marked.retain(|id| !removed(id));
+            self.services.retain(|v| {
+                v.get("projectName").and_then(Value::as_str) != Some(deleted.project.as_str())
+                    || (!deleted.service.is_empty()
+                        && (v.get("name").and_then(Value::as_str)
+                            != Some(deleted.service.as_str())
+                            || v.get("type").and_then(Value::as_str)
+                                != Some(deleted.service_type.as_str())))
+            });
+            if deleted.service.is_empty() {
+                self.projects.retain(|p| *p != deleted.project);
+            }
+            if let Some(confirm) = &self.confirmation {
+                self.confirmation_invalidated |= match &confirm.action {
+                    ConfirmAction::Request(Req::Action {
+                        project,
+                        service,
+                        stype,
+                        ..
+                    }) => removed(&(project.clone(), service.clone(), stype.clone())),
+                    ConfirmAction::Request(Req::Bulk { targets, .. }) => {
+                        targets.iter().any(removed)
+                    }
+                    ConfirmAction::Request(Req::ProjectDestroy(project)) => {
+                        deleted.service.is_empty() && *project == deleted.project
+                    }
+                    _ => false,
+                };
+            }
+            if let Some(Editor {
+                intent: Intent::BulkResources(targets),
+                ..
+            }) = &self.editor
+            {
+                self.editor_invalidated |= targets.iter().any(removed);
+            }
+            if target.deleted_by(deleted) {
+                self.deleted = true;
+                self.recovering = false;
+                self.detail = None;
+                self.pending_editor = None;
+                self.error = None;
+                self.outcome = vec![format!("Deletion completed for {}.", deleted.label())];
+                for key in ["detail", "ports", "mounts", "domains"] {
+                    self.invalidated.remove(key);
+                }
+            }
+            self.invalidated.insert("inventory".into());
+        }
+        self.seen_deletions = notices.len();
+    }
+    pub(super) fn verified_resource(&self) -> bool {
+        !self.deleted && self.detail.is_some()
+    }
+    fn target_missing(&self, target: &(String, String, String)) -> bool {
+        self.inventory_loaded && !self.services.iter().any(|v| service_matches(v, target))
+    }
     pub(super) fn is_dirty(&self) -> bool {
         self.editor.as_ref().is_some_and(Editor::dirty)
     }
@@ -148,6 +224,7 @@ impl State {
         }
     }
     fn edit(&mut self, form: Form, intent: Intent) {
+        self.editor_invalidated = false;
         self.generation += 1;
         let baseline = form.fields.iter().map(|f| f.value.clone()).collect();
         self.editor = Some(Editor {
@@ -168,6 +245,7 @@ impl State {
         typed: bool,
         action: ConfirmAction,
     ) {
+        self.confirmation_invalidated = false;
         self.confirmation_entry.clear();
         self.confirmation = Some(Confirmation {
             title: title.into(),
@@ -291,6 +369,15 @@ fn text(v: &Value, key: &str) -> String {
 }
 fn identity(v: &Value) -> (String, String, String) {
     (text(v, "/projectName"), text(v, "/name"), text(v, "/type"))
+}
+fn service_matches(v: &Value, target: &(String, String, String)) -> bool {
+    [
+        ("projectName", &target.0),
+        ("name", &target.1),
+        ("type", &target.2),
+    ]
+    .into_iter()
+    .all(|(key, expected)| v.get(key).and_then(Value::as_str) == Some(expected.as_str()))
 }
 struct ServiceRow {
     target: (String, String, String),
@@ -497,7 +584,7 @@ fn refresh(state: &mut State, cx: &mut PageContext<'_>) {
     state
         .invalidated
         .extend(["inventory", "replicas"].map(str::to_owned));
-    if !cx.target.project.is_empty() {
+    if !cx.target.project.is_empty() && !state.deleted {
         load_detail(state, cx);
     }
 }
@@ -510,6 +597,10 @@ fn load_detail(state: &mut State, _cx: &mut PageContext<'_>) {
 }
 fn flush_reads(state: &mut State, cx: &mut PageContext<'_>) {
     for key in ["inventory", "replicas", "detail"] {
+        if key == "detail" && state.deleted && !state.recovering {
+            state.invalidated.remove(key);
+            continue;
+        }
         if !state.invalidated.contains(key) || cx.busy(key) {
             continue;
         }
@@ -722,6 +813,7 @@ fn result_message(state: &mut State, response: Resp) -> bool {
     }
 }
 fn pump(state: &mut State, cx: &mut PageContext<'_>) {
+    state.sync_deletions(cx.target, &cx.backend.deletions);
     if let Some(result) = cx.take("native-picker") {
         match result {
             Ok(Payload::ChosenPath(path)) => {
@@ -747,6 +839,10 @@ fn pump(state: &mut State, cx: &mut PageContext<'_>) {
                 Ok(Payload::Worker(Resp::AllServices { projects, services })) => {
                     state.projects = projects;
                     state.services = services;
+                    state.inventory_loaded = true;
+                    state
+                        .marked
+                        .retain(|target| state.services.iter().any(|v| service_matches(v, target)));
                 }
                 Ok(Payload::Worker(r)) => {
                     result_message(state, r);
@@ -783,15 +879,21 @@ fn pump(state: &mut State, cx: &mut PageContext<'_>) {
         }
     }
     if let Some(r) = cx.take("detail") {
-        if !state.invalidated.contains("detail") {
+        if !state.invalidated.contains("detail") && (!state.deleted || state.recovering) {
             match r {
                 Ok(Payload::Json(v)) => {
                     state.detail = Some(v);
+                    if state.recovering {
+                        state.error = None;
+                    }
+                    state.deleted = false;
+                    state.recovering = false;
                     if let Some(intent) = state.pending_editor.take() {
                         begin_edit(state, cx, intent);
                     }
                 }
                 Err(e) => {
+                    state.recovering = false;
                     state.error = Some(e);
                     state.pending_editor = None;
                 }
@@ -801,7 +903,7 @@ fn pump(state: &mut State, cx: &mut PageContext<'_>) {
     }
     for key in ["ports", "mounts"] {
         if let Some(r) = cx.take(key) {
-            if !state.invalidated.contains(key) {
+            if !state.deleted && !state.invalidated.contains(key) {
                 match r {
                     Ok(Payload::Json(v)) => {
                         let rows = v.as_array().cloned().unwrap_or_default();
@@ -822,7 +924,7 @@ fn pump(state: &mut State, cx: &mut PageContext<'_>) {
         }
     }
     if let Some(r) = cx.take("domains") {
-        if !state.invalidated.contains("domains") {
+        if !state.deleted && !state.invalidated.contains("domains") {
             match r {
                 Ok(Payload::Worker(Resp::Domains(v))) => {
                     state.domains = v;
@@ -1001,6 +1103,7 @@ fn pump(state: &mut State, cx: &mut PageContext<'_>) {
         };
         if success {
             if !retain_editor
+                && !state.deleted
                 && state
                     .editor
                     .as_ref()
@@ -1035,6 +1138,52 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
     }
     flush_reads(state, cx);
     poll_runtime(ui, state, cx);
+    if state.deleted {
+        feedback(ui, state, cx);
+        ui.heading("Resource deleted");
+        ui.add(egui::Label::new(cx.target.label()).wrap());
+        if let Some(server) = &cx.target.server {
+            ui.add(egui::Label::new(&server.url).wrap());
+        }
+        ui.label(format!(
+            "Type: {}",
+            if cx.target.service.is_empty() {
+                "project"
+            } else {
+                &cx.target.service_type
+            }
+        ));
+        ui.label("The confirmed deletion succeeded. This document keeps its original target.");
+        if state.editor.is_some() {
+            ui.label("Your unsaved draft is retained. It is not applied to the deleted resource.");
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Open inventory").clicked() {
+                let mut target = cx.target.clone();
+                target.project.clear();
+                target.service.clear();
+                target.service_type.clear();
+                target.section = "services".into();
+                target.resource = Value::Null;
+                cx.open(OpenPage {
+                    kind: PageKind::Project,
+                    target,
+                    title: "Projects".into(),
+                });
+            }
+            if ui
+                .add_enabled(!state.recovering, egui::Button::new("Refresh"))
+                .clicked()
+            {
+                state.recovering = true;
+                refresh(state, cx);
+                load_detail(state, cx);
+            }
+        });
+        ui.label("Refresh checks whether this exact target has been recreated.");
+        flush_reads(state, cx);
+        return;
+    }
     if state.confirmation.is_some() {
         feedback(ui, state, cx);
         confirmation(ui, state, cx);
@@ -1650,6 +1799,11 @@ pub(super) enum QuickAction {
     Destroy,
 }
 pub(super) fn quick_action(state: &mut State, cx: &mut PageContext<'_>, action: QuickAction) {
+    if state.deleted {
+        state.error =
+            Some("This target was deleted. Open inventory or explicitly refresh it first.".into());
+        return;
+    }
     if cx.busy("mutation") {
         state.error = Some("Wait for the current service operation to finish.".into());
         return;
@@ -1693,6 +1847,9 @@ fn lifecycle(
     action: &str,
     force: bool,
 ) {
+    if state.deleted {
+        return;
+    }
     if state.lifecycle_blocked(action) {
         state.error = Some(format!(
             "Save or discard this editor's changes before {label}. Your draft has not been applied."
@@ -2006,9 +2163,7 @@ fn service(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                             state.pending_editor = Some(intent);
                             load_detail(state, cx);
                         }
-                        if section == "environment"
-                            && crate::operations::HAS_UPDATE_ENV.contains(&kind.as_str())
-                        {
+                        if section == "environment" && kind == "app" {
                             let enabled = state
                                 .detail
                                 .as_ref()
@@ -2307,24 +2462,130 @@ fn begin_edit(state: &mut State, cx: &PageContext<'_>, intent: Intent) {
     let p = cx.target.project.clone();
     let s = cx.target.service.clone();
     let k = cx.target.service_type.clone();
-    let f=match &intent{
-        Intent::Environment=>Form::new(FormKind::ProjectCreate,"Environment",vec![Field::editor("Environment",if s.is_empty(){d.pointer("/project/env").and_then(Value::as_str).unwrap_or("")}else{d.get("env").and_then(Value::as_str).unwrap_or("")})]).with_note("Values may contain secrets. Save replaces the complete environment; deploy or restart to apply."),
-        Intent::Configuration=>Form::new(FormKind::ProjectCreate,"Database / advanced configuration",vec![Field::editor("Config file",d.get("configFile").and_then(Value::as_str).unwrap_or(""))]).with_note("Restart after saving to apply. Image, command and environment are preserved."),
-        Intent::Source=>Form::new(FormKind::SourceEdit{project:p,service:s},"Source",form::source_fields(d.get("source"),Vec::new())),
-        Intent::Build=>Form::new(FormKind::BuildEdit{project:p,service:s},"Build",form::build_fields(d.get("build"))).with_original(d.get("build").cloned().unwrap_or(Value::Null)),
-        Intent::Resources=>Form::new(FormKind::ResourceEdit{project:p,service:s,stype:k},"Resources",form::resource_fields(d.get("resources"))).with_note("CPU in cores, memory in MB. 0 = unlimited."),
-        Intent::Deploy=>Form::new(FormKind::DeployEdit{project:p,service:s},"Deployment",form::deploy_fields(d.get("deploy"))).with_original(d.get("deploy").cloned().unwrap_or_else(||json!({}))),
-        Intent::Port=>Form::new(FormKind::PortCreate{project:p,service:s},"Add port",form::port_fields()),
-        Intent::Mount(None)=>Form::new(FormKind::MountCreate{project:p,service:s},"Add mount",form::mount_fields(None)),
-        Intent::Redirect=>Form::new(FormKind::RedirectCreate{project:p,service:s,stype:k},"Add redirect",form::redirect_fields()),
-        Intent::Auth=>Form::new(FormKind::BasicAuthEdit{project:p,service:s,stype:k},"Basic authentication",form::basic_auth_fields(Some(&d))).with_original(d.get("basicAuth").cloned().unwrap_or_else(||json!([]))).with_note("Clear both fields to remove the first credential. Other credentials are preserved."),
-        Intent::Domain(None)=>{let mut f=Form::new(FormKind::DomainCreate,"Add service domain",form::domain_fields(None,&state.projects));for(label,value)in[("Project",p),("Service",s)]{if let Some(field)=f.fields.iter_mut().find(|f|f.label==label){field.value=value;}}f},
-        _=>return,
+    let f = match &intent {
+        Intent::Environment => {
+            let resource = if s.is_empty() { &d["project"] } else { &d };
+            let content = match crate::operations::env_content(resource) {
+                Ok(content) => content,
+                Err(error) => {
+                    state.error = Some(error.to_string());
+                    return;
+                }
+            };
+            Form::new(FormKind::ProjectCreate,"Environment",vec![Field::editor("Environment",content)]).with_note("Values may contain secrets. Save replaces the complete environment; deploy or restart to apply.")
+        }
+        Intent::Configuration => Form::new(
+            FormKind::ProjectCreate,
+            "Database / advanced configuration",
+            vec![Field::editor(
+                "Config file",
+                d.get("configFile").and_then(Value::as_str).unwrap_or(""),
+            )],
+        )
+        .with_note("Restart after saving to apply. Image, command and environment are preserved."),
+        Intent::Source => Form::new(
+            FormKind::SourceEdit {
+                project: p,
+                service: s,
+            },
+            "Source",
+            form::source_fields(d.get("source"), Vec::new()),
+        ),
+        Intent::Build => Form::new(
+            FormKind::BuildEdit {
+                project: p,
+                service: s,
+            },
+            "Build",
+            form::build_fields(d.get("build")),
+        )
+        .with_original(d.get("build").cloned().unwrap_or(Value::Null)),
+        Intent::Resources => Form::new(
+            FormKind::ResourceEdit {
+                project: p,
+                service: s,
+                stype: k,
+            },
+            "Resources",
+            form::resource_fields(d.get("resources")),
+        )
+        .with_note("CPU in cores, memory in MB. 0 = unlimited."),
+        Intent::Deploy => Form::new(
+            FormKind::DeployEdit {
+                project: p,
+                service: s,
+            },
+            "Deployment",
+            form::deploy_fields(d.get("deploy")),
+        )
+        .with_original(d.get("deploy").cloned().unwrap_or_else(|| json!({}))),
+        Intent::Port => Form::new(
+            FormKind::PortCreate {
+                project: p,
+                service: s,
+            },
+            "Add port",
+            form::port_fields(),
+        ),
+        Intent::Mount(None) => Form::new(
+            FormKind::MountCreate {
+                project: p,
+                service: s,
+            },
+            "Add mount",
+            form::mount_fields(None),
+        ),
+        Intent::Redirect => Form::new(
+            FormKind::RedirectCreate {
+                project: p,
+                service: s,
+                stype: k,
+            },
+            "Add redirect",
+            form::redirect_fields(),
+        ),
+        Intent::Auth => Form::new(
+            FormKind::BasicAuthEdit {
+                project: p,
+                service: s,
+                stype: k,
+            },
+            "Basic authentication",
+            form::basic_auth_fields(Some(&d)),
+        )
+        .with_original(d.get("basicAuth").cloned().unwrap_or_else(|| json!([])))
+        .with_note(
+            "Clear both fields to remove the first credential. Other credentials are preserved.",
+        ),
+        Intent::Domain(None) => {
+            let mut f = Form::new(
+                FormKind::DomainCreate,
+                "Add service domain",
+                form::domain_fields(None, &state.projects),
+            );
+            for (label, value) in [("Project", p), ("Service", s)] {
+                if let Some(field) = f.fields.iter_mut().find(|f| f.label == label) {
+                    field.value = value;
+                }
+            }
+            f
+        }
+        _ => return,
     };
     state.edit(f, intent);
 }
 
 fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
+    let missing = state.editor_invalidated
+        || state
+            .editor
+            .as_ref()
+            .is_some_and(|edit| match &edit.intent {
+                Intent::BulkResources(targets) => {
+                    targets.iter().any(|target| state.target_missing(target))
+                }
+                _ => false,
+            });
     let Some(edit) = state.editor.as_mut() else {
         return;
     };
@@ -2483,6 +2744,7 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     if test {
         match connection_draft(edit) {
             Ok(server) => {
+                edit.form.error = None;
                 let original = match &edit.intent {
                     Intent::Connection(old) => old.as_ref().map(|s| s.name.clone()),
                     _ => None,
@@ -2504,10 +2766,13 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             Err(e) => edit.form.error = Some(e),
         }
     }
-    if save {
+    if save && missing {
+        edit.form.error = Some("Inventory changed: a selected target is missing. Reopen the resource editor from the current selection; this draft has not been applied.".into());
+    } else if save {
         if let Intent::Connection(original) = &edit.intent {
             match connection_draft(edit) {
                 Ok(server) => {
+                    edit.form.error = None;
                     let original = original.as_ref().map(|s| s.name.clone());
                     let path = cx.server_config_path().to_owned();
                     cx.background("mutation","Save connection",move||{
@@ -2801,6 +3066,23 @@ fn confirmation(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) 
         .truncate(),
     )
     .on_hover_text(&confirm.title);
+    let missing = state.confirmation_invalidated
+        || match &confirm.action {
+            ConfirmAction::Request(Req::Bulk { targets, .. }) => {
+                targets.iter().any(|target| state.target_missing(target))
+            }
+            ConfirmAction::Request(Req::Action {
+                project,
+                service,
+                stype,
+                ..
+            }) => state.target_missing(&(project.clone(), service.clone(), stype.clone())),
+            _ => false,
+        };
+    if missing {
+        ui.colored_label(ui.visuals().warn_fg_color,
+            "Inventory changed: a reviewed target is missing. Cancel and review the current selection again.");
+    }
     let lifecycle_action = match &confirm.action {
         ConfirmAction::Request(Req::Action { action, .. } | Req::Bulk { action, .. }) => {
             Some(action.as_str())
@@ -2851,6 +3133,7 @@ fn confirmation(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) 
                 apply = ui
                     .add_enabled(
                         !blocked
+                            && !missing
                             && typed.is_none_or(|expected| state.confirmation_entry == expected),
                         egui::Button::new("Confirm")
                             .fill(ui.visuals().error_fg_color.gamma_multiply(0.20)),
@@ -2872,7 +3155,10 @@ fn confirmation(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) 
     if apply {
         if let Some(confirm) = state.confirmation.take() {
             match confirm.action {
-                ConfirmAction::Request(req) => cx.request("mutation", req),
+                ConfirmAction::Request(req) => {
+                    state.confirmation_invalidated = false;
+                    cx.request("mutation", req);
+                }
                 ConfirmAction::Indexed {
                     req,
                     collection,
@@ -3162,6 +3448,847 @@ mod tests {
             .find(|f| f.label == label)
             .unwrap()
             .value = value.into();
+    }
+    struct LifecycleHarness {
+        ctx: egui::Context,
+        backend: super::super::backend::Backend,
+        target: Target,
+        state: State,
+        opened: Vec<OpenPage>,
+        reload: bool,
+    }
+    impl LifecycleHarness {
+        fn new(server: &httpmock::MockServer, service: &str) -> Self {
+            server.mock(|when, then| {
+                when.path("/api/rpc/projects/listProjectsAndServices");
+                then.status(200)
+                    .json_body(json!({"json":{"projects":[{"name":"project"}],
+                        "services":[{"projectName":"project","name":"web","type":"app"}]}}));
+            });
+            server.mock(|when, then| {
+                when.path("/api/rpc/monitorOld/getDockerTaskStats");
+                then.status(200).json_body(json!({"json":[]}));
+            });
+            let ctx = egui::Context::default();
+            Self {
+                backend: super::super::backend::Backend::new(
+                    ctx.clone(),
+                    super::super::Runtime::default(),
+                ),
+                ctx,
+                target: Target {
+                    server: Some(Server {
+                        name: "fixture".into(),
+                        url: server.base_url(),
+                        token: "fixture-token".into(),
+                        default: false,
+                        ssh: None,
+                    }),
+                    project: "project".into(),
+                    service: service.into(),
+                    service_type: if service.is_empty() { "" } else { "app" }.into(),
+                    ..Default::default()
+                },
+                state: State {
+                    initialized: true,
+                    last_poll: Some(Instant::now()),
+                    detail: Some(json!({"name":"original"})),
+                    ..Default::default()
+                },
+                opened: Vec::new(),
+                reload: false,
+            }
+        }
+        fn context(&mut self, f: impl FnOnce(&mut State, &mut PageContext<'_>)) {
+            let path = std::path::Path::new("unused-lifecycle-fixture");
+            let mut cx = PageContext {
+                target: &self.target,
+                servers: &[],
+                accounts: &[],
+                server_config: path,
+                cloudflare_config: path,
+                watchlist: path,
+                doc: 1,
+                backend: &mut self.backend,
+                opened: &mut self.opened,
+                reload: &mut self.reload,
+            };
+            f(&mut self.state, &mut cx);
+        }
+        fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+            let ctx = self.ctx.clone();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        self.context(|state, cx| show(ui, state, cx));
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            output
+        }
+        fn click(&mut self, label: &str) {
+            let output = self.frame(Vec::new());
+            let pos = Self::text(&output, label)
+                .expect("action must render")
+                .center();
+            for pressed in [true, false] {
+                self.frame(vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+            }
+        }
+        fn text(output: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()))
+                }
+                _ => None,
+            })
+        }
+        fn settle(&mut self, key: &str) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.backend.busy(1, key) && Instant::now() < deadline {
+                self.backend.pump();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert!(!self.backend.busy(1, key), "{key} did not finish");
+            self.context(pump);
+        }
+        fn destroy(&mut self) {
+            self.context(|state, cx| {
+                if cx.target.service.is_empty() {
+                    state.confirm(
+                        "Delete project",
+                        "project",
+                        true,
+                        ConfirmAction::Request(Req::ProjectDestroy("project".into())),
+                    );
+                    state.confirmation_entry = "project".into();
+                } else {
+                    quick_action(state, cx, QuickAction::Destroy);
+                    state.confirmation_entry = "project/web".into();
+                }
+            });
+            self.click("Confirm");
+            self.settle("mutation");
+        }
+    }
+    #[test]
+    fn deletion_state_success_stops_inspection_and_actions_for_service_and_project() {
+        use httpmock::{Method::POST, MockServer};
+        for service in ["web", ""] {
+            let server = MockServer::start();
+            let delete = server.mock(|when, then| {
+                when.method(POST).path(if service.is_empty() {
+                    "/api/rpc/projects/destroyProject"
+                } else {
+                    "/api/rpc/services/app/destroyService"
+                });
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let inspect = server.mock(|when, then| {
+                when.method(POST).path(if service.is_empty() {
+                    "/api/rpc/projects/inspectProject"
+                } else {
+                    "/api/rpc/services/app/inspectService"
+                });
+                then.status(404);
+            });
+            let mut h = LifecycleHarness::new(&server, service);
+            h.state.marked.extend([
+                ("project".into(), "web".into(), "app".into()),
+                ("other".into(), "web".into(), "app".into()),
+            ]);
+            h.destroy();
+            let output = h.frame(Vec::new());
+            assert!(
+                !h.backend
+                    .tasks
+                    .iter()
+                    .any(|task| task.label.contains("inspectService")
+                        || task.label.contains("inspectProject")),
+                "successful deletion must not enqueue an inspection of the removed document"
+            );
+            for label in ["Deploy", "More", "Delete project", "Shared environment"] {
+                assert!(
+                    LifecycleHarness::text(&output, label).is_none(),
+                    "deleted target must not retain {label}"
+                );
+            }
+            assert!(LifecycleHarness::text(&output, "Open inventory").is_some());
+            assert!(LifecycleHarness::text(&output, "Refresh").is_some());
+            h.context(|state, cx| quick_action(state, cx, QuickAction::Start));
+            assert!(
+                h.state.confirmation.is_none(),
+                "palette must not revive deleted actions"
+            );
+            assert_eq!(
+                h.state.marked,
+                BTreeSet::from([("other".into(), "web".into(), "app".into())])
+            );
+            h.click("Open inventory");
+            let opened = h.opened.last().unwrap();
+            assert_eq!(opened.kind, PageKind::Project);
+            assert!(opened.target.project.is_empty() && opened.target.service.is_empty());
+            assert_eq!(
+                opened.target.server.as_ref().unwrap().url,
+                server.base_url()
+            );
+            assert_eq!(
+                h.target.project, "project",
+                "the deleted document must not retarget"
+            );
+            delete.assert_hits(1);
+            inspect.assert_hits(0);
+        }
+    }
+    #[test]
+    fn deletion_state_failed_destroy_preserves_document_draft_and_marks() {
+        use httpmock::{Method::POST, MockServer};
+        let server = MockServer::start();
+        let delete = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/destroyService");
+            then.status(403);
+        });
+        let mut h = LifecycleHarness::new(&server, "web");
+        h.state.edit(
+            Form::new(
+                FormKind::ProjectCreate,
+                "Environment",
+                vec![Field::editor("Environment", "saved")],
+            ),
+            Intent::Environment,
+        );
+        set(
+            &mut h.state.editor.as_mut().unwrap().form,
+            "Environment",
+            "unsaved",
+        );
+        let mark = ("project".into(), "web".into(), "app".into());
+        h.state.marked.insert(mark.clone());
+        h.destroy();
+        assert!(h.state.error.is_some());
+        assert_eq!(h.state.detail, Some(json!({"name":"original"})));
+        assert_eq!(
+            h.state
+                .editor
+                .as_ref()
+                .unwrap()
+                .form
+                .by_label("Environment"),
+            "unsaved"
+        );
+        assert!(h.state.marked.contains(&mark));
+        assert!(h.opened.is_empty());
+        let output = h.frame(Vec::new());
+        assert!(LifecycleHarness::text(&output, "More").is_some());
+        delete.assert_hits(1);
+    }
+    #[test]
+    fn deletion_state_fresh_inventory_excludes_missing_marks_from_next_bulk_review() {
+        use httpmock::{Method::POST, MockServer};
+        let server = MockServer::start();
+        let valid_start = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/startService")
+                .json_body(json!({"json":{"projectName":"project","serviceName":"web"}}));
+            then.status(200).json_body(json!({"json":null}));
+        });
+        let failed_start = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/startService")
+                .json_body(json!({"json":{"projectName":"other","serviceName":"web"}}));
+            then.status(403);
+        });
+        let missing_start = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/startService")
+                .json_body(json!({"json":{"projectName":"gone","serviceName":"web"}}));
+            then.status(200).json_body(json!({"json":null}));
+        });
+        let mut h = LifecycleHarness::new(&server, "");
+        h.target.project.clear();
+        let valid = ("project".into(), "web".into(), "app".into());
+        let failed = ("other".into(), "web".into(), "app".into());
+        let missing = ("gone".into(), "web".into(), "app".into());
+        let old_kind = ("project".into(), "web".into(), "mysql".into());
+        h.state
+            .marked
+            .extend([valid.clone(), failed.clone(), missing, old_kind]);
+        h.context(|_, cx| {
+            cx.background("inventory", "fresh inventory", || {
+                Ok(Payload::Worker(Resp::AllServices {
+                    projects: vec!["project".into(), "other".into()],
+                    services: vec![
+                        json!({"projectName":"project","name":"web","type":"app"}),
+                        json!({"projectName":"other","name":"web","type":"app"}),
+                    ],
+                }))
+            })
+        });
+        h.settle("inventory");
+        h.click("Selection actions");
+        h.click("Start");
+        let Some(Confirmation {
+            action: ConfirmAction::Request(Req::Bulk { targets, .. }),
+            ..
+        }) = &h.state.confirmation
+        else {
+            panic!("bulk review must open")
+        };
+        assert_eq!(
+            targets,
+            &vec![failed.clone(), valid.clone()],
+            "next bulk request must retain surviving identities, not missing marks or old kinds"
+        );
+        assert_eq!(h.state.marked.len(), 2);
+        h.click("Confirm");
+        h.settle("mutation");
+        assert!(h.state.marked.contains(&failed));
+        assert!(h.state.marked.contains(&valid));
+        valid_start.assert_hits(1);
+        failed_start.assert_hits(1);
+        missing_start.assert_hits(0);
+    }
+    #[test]
+    fn deletion_state_partial_bulk_removes_only_exact_successful_targets() {
+        use httpmock::{Method::POST, MockServer};
+        let server = MockServer::start();
+        let deleted = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/destroyService")
+                .json_body(json!({"json":{"projectName":"project","serviceName":"web"}}));
+            then.status(200).json_body(json!({"json":null}));
+        });
+        let failed = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/destroyService")
+                .json_body(json!({"json":{"projectName":"other","serviceName":"web"}}));
+            then.status(403);
+        });
+        let mut h = LifecycleHarness::new(&server, "web");
+        let gone = ("project".into(), "web".into(), "app".into());
+        let retained = ("other".into(), "web".into(), "app".into());
+        let other_kind = ("project".into(), "web".into(), "mysql".into());
+        h.state
+            .marked
+            .extend([gone.clone(), retained.clone(), other_kind.clone()]);
+        h.state.confirm(
+            "Destroy 2 services",
+            "project/web, other/web",
+            true,
+            ConfirmAction::Request(Req::Bulk {
+                targets: vec![gone.clone(), retained.clone()],
+                action: "destroy".into(),
+                force: false,
+            }),
+        );
+        h.state.confirmation_entry = "DESTROY".into();
+        h.click("Confirm");
+        h.settle("mutation");
+        assert!(!h.state.marked.contains(&gone));
+        assert!(h.state.marked.contains(&retained));
+        assert!(h.state.marked.contains(&other_kind));
+        assert!(h
+            .state
+            .outcome
+            .iter()
+            .any(|line| line.contains("Failed: other/web")));
+        let output = h.frame(Vec::new());
+        assert!(LifecycleHarness::text(&output, "Deploy").is_none());
+        deleted.assert_hits(1);
+        failed.assert_hits(1);
+    }
+    #[test]
+    fn deletion_state_refresh_does_not_retarget_an_already_open_bulk_review() {
+        use httpmock::MockServer;
+        let server = MockServer::start();
+        let mut h = LifecycleHarness::new(&server, "");
+        h.target.project.clear();
+        let captured = vec![
+            ("gone".into(), "web".into(), "app".into()),
+            ("project".into(), "web".into(), "app".into()),
+        ];
+        h.state.marked.extend(captured.clone());
+        h.state.confirm(
+            "Start 2 services",
+            "gone/web, project/web",
+            false,
+            ConfirmAction::Request(Req::Bulk {
+                targets: captured.clone(),
+                action: "start".into(),
+                force: false,
+            }),
+        );
+        h.context(|_, cx| {
+            cx.background("inventory", "fresh inventory", || {
+                Ok(Payload::Worker(Resp::AllServices {
+                    projects: vec!["project".into()],
+                    services: vec![json!({"projectName":"project","name":"web","type":"app"})],
+                }))
+            })
+        });
+        h.settle("inventory");
+        h.click("Confirm");
+        let Some(Confirmation {
+            action: ConfirmAction::Request(Req::Bulk { targets, .. }),
+            ..
+        }) = &h.state.confirmation
+        else {
+            panic!("changed inventory must require a new review")
+        };
+        assert_eq!(
+            targets, &captured,
+            "an open review must never silently shrink or retarget"
+        );
+        assert!(!h.backend.tasks.iter().any(|task| task.label == "mutation"));
+        h.state.confirmation = None;
+        h.state.edit(
+            Form::new(
+                FormKind::BulkResourceEdit,
+                "Resources",
+                form::resource_fields(None),
+            ),
+            Intent::BulkResources(captured.clone()),
+        );
+        set(
+            &mut h.state.editor.as_mut().unwrap().form,
+            "CPU limit (core)",
+            "2",
+        );
+        assert!(
+            h.state.is_dirty(),
+            "the Save control must be enabled for this draft"
+        );
+        h.click("Save changes");
+        let edit = h.state.editor.as_ref().unwrap();
+        assert!(edit.form.error.is_some());
+        assert_eq!(edit.form.by_label("CPU limit (core)"), "2");
+        assert!(
+            edit.dirty(),
+            "blocked submission must preserve the unsaved draft"
+        );
+        assert!(matches!(&edit.intent, Intent::BulkResources(targets) if *targets == captured));
+        assert!(!h.backend.tasks.iter().any(|task| task.label == "mutation"));
+    }
+    #[test]
+    fn deletion_state_late_detail_cannot_revive_actions_but_explicit_refresh_can_recover() {
+        use httpmock::{Method::POST, MockServer};
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/destroyService");
+            then.status(200).json_body(json!({"json":null}));
+        });
+        let inspect = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/inspectService");
+            then.status(200)
+                .json_body(json!({"json":{"name":"recreated","type":"app"}}));
+        });
+        for late_error in [false, true] {
+            let mut h = LifecycleHarness::new(&server, "web");
+            let (release, receive) = std::sync::mpsc::channel();
+            h.context(|_, cx| {
+                cx.background("detail", "old detail", move || {
+                    receive.recv().unwrap();
+                    if late_error {
+                        Err(anyhow::anyhow!("old inspection failed"))
+                    } else {
+                        Ok(Payload::Json(json!({"name":"old"})))
+                    }
+                })
+            });
+            h.destroy();
+            release.send(()).unwrap();
+            h.settle("detail");
+            let output = h.frame(Vec::new());
+            assert!(LifecycleHarness::text(&output, "Deploy").is_none());
+            assert!(
+                h.state.error.is_none(),
+                "old inspection errors must not replace deletion feedback"
+            );
+            h.click("Refresh");
+            h.settle("detail");
+            let output = h.frame(Vec::new());
+            assert!(LifecycleHarness::text(&output, "Deploy").is_some());
+            assert_eq!(h.state.detail.as_ref().unwrap()["name"], "recreated");
+        }
+        inspect.assert_hits(2);
+    }
+    #[test]
+    fn deletion_state_explicit_recovery_refreshes_inventory_and_dispatches_reviewed_action() {
+        use httpmock::{Method::POST, MockServer};
+        let server = MockServer::start();
+        let mut missing = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/projects/listProjectsAndServices");
+            then.status(200)
+                .json_body(json!({"json":{"projects":[{"name":"project"}],"services":[]}}));
+        });
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/destroyService");
+            then.status(200).json_body(json!({"json":null}));
+        });
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/inspectService");
+            then.status(200)
+                .json_body(json!({"json":{"name":"web","type":"app"}}));
+        });
+        let start = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/startService")
+                .json_body(json!({"json":{"projectName":"project","serviceName":"web"}}));
+            then.status(200).json_body(json!({"json":null}));
+        });
+        let mut h = LifecycleHarness::new(&server, "web");
+        h.state.inventory_loaded = true;
+        h.state.services = vec![json!({"projectName":"project","name":"web","type":"app"})];
+        h.destroy();
+        h.frame(Vec::new());
+        h.settle("inventory");
+        assert!(h.state.services.is_empty());
+        missing.delete();
+        h.click("Refresh");
+        h.settle("detail");
+        h.settle("inventory");
+        h.context(|state, cx| quick_action(state, cx, QuickAction::Start));
+        h.click("Confirm");
+        h.settle("mutation");
+        assert!(
+            h.state.confirmation.is_none(),
+            "explicitly recovered target must allow a new review"
+        );
+        start.assert_hits(1);
+        use super::super::{Desktop, PageState};
+        let ctx = egui::Context::default();
+        let cc = eframe::CreationContext::_new_kittest(ctx);
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = Desktop::new(&cc, directory.path().join("servers.json"));
+        app.backend.deletions = h.backend.deletions.clone();
+        let session = || super::super::page(PageKind::Terminal, &h.target, "container", "Terminal");
+        app.open(session());
+        let old_session = app.utility_doc.unwrap();
+        assert!(
+            matches!(&app.documents.iter().find(|doc| doc.id == old_session).unwrap().state,
+            PageState::Terminal(state) if state.removed())
+        );
+        app.open(super::super::page(
+            PageKind::Service,
+            &h.target,
+            "overview",
+            "Overview",
+        ));
+        let recovered = app.documents.last_mut().unwrap();
+        recovered.state = PageState::Services(Box::new(std::mem::take(&mut h.state)));
+        app.open(session());
+        let new_session = app.utility_doc.unwrap();
+        assert_ne!(
+            old_session, new_session,
+            "verified recreation opens a new session document, not the old context"
+        );
+        assert!(
+            matches!(&app.documents.iter().find(|doc| doc.id == new_session).unwrap().state,
+            PageState::Terminal(state) if !state.removed())
+        );
+        assert!(
+            matches!(&app.documents.iter().find(|doc| doc.id == old_session).unwrap().state,
+            PageState::Terminal(state) if state.removed())
+        );
+    }
+    #[test]
+    fn deletion_state_cross_document_success_blocks_hidden_drafts_even_after_origin_closes() {
+        use super::super::{Desktop, PageState};
+        use httpmock::{Method::POST, MockServer};
+        for (project_delete, close_origin, status, bulk) in [
+            (false, false, 200, false),
+            (true, false, 200, false),
+            (false, true, 200, false),
+            (true, true, 200, false),
+            (false, false, 403, false),
+            (true, false, 403, false),
+            (false, false, 200, true),
+            (false, true, 200, true),
+        ] {
+            let server = MockServer::start();
+            let failed_delete = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/services/app/destroyService")
+                    .json_body(json!({"json":{"projectName":"unrelated","serviceName":"web"}}));
+                then.status(403);
+            });
+            let delete = server.mock(|when, then| {
+                when.method(POST).path(if project_delete {
+                    "/api/rpc/projects/destroyProject"
+                } else {
+                    "/api/rpc/services/app/destroyService"
+                });
+                then.status(status).json_body(json!({"json":null}));
+            });
+            let fixture = LifecycleHarness::new(&server, "web");
+            let target = fixture.target.clone();
+            let ctx = egui::Context::default();
+            let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = Desktop::new(&cc, dir.path().join("servers.json"));
+            let mut watched = Vec::new();
+            for (mut t, section, affected) in [
+                (target.clone(), "environment", true),
+                (
+                    Target {
+                        service: "sibling".into(),
+                        ..target.clone()
+                    },
+                    "environment",
+                    project_delete,
+                ),
+                (
+                    Target {
+                        project: "unrelated".into(),
+                        ..target.clone()
+                    },
+                    "environment",
+                    false,
+                ),
+                (
+                    {
+                        let mut other = target.clone();
+                        other.server.as_mut().unwrap().token = "different-auth-scope".into();
+                        other
+                    },
+                    "environment",
+                    false,
+                ),
+            ] {
+                t.section = section.into();
+                app.open(super::super::page(
+                    PageKind::Service,
+                    &t,
+                    section,
+                    "Environment",
+                ));
+                let document = app.documents.last_mut().unwrap();
+                let PageState::Services(state) = &mut document.state else {
+                    unreachable!()
+                };
+                state.initialized = true;
+                state.last_poll = Some(Instant::now());
+                state.edit(
+                    Form::new(
+                        FormKind::ProjectCreate,
+                        "Environment",
+                        vec![Field::editor("Environment", "saved")],
+                    ),
+                    Intent::Environment,
+                );
+                set(
+                    &mut state.editor.as_mut().unwrap().form,
+                    "Environment",
+                    "UNSAVED=exact\n",
+                );
+                watched.push((document.id, affected));
+            }
+            let inventory_target = Target {
+                server: target.server.clone(),
+                ..Default::default()
+            };
+            app.open(super::super::page(
+                PageKind::Project,
+                &inventory_target,
+                "services",
+                "Projects",
+            ));
+            let inventory = app.documents.last_mut().unwrap();
+            let inventory_id = inventory.id;
+            let captured = vec![
+                ("project".into(), "web".into(), "app".into()),
+                ("unrelated".into(), "web".into(), "app".into()),
+            ];
+            let PageState::Services(state) = &mut inventory.state else {
+                unreachable!()
+            };
+            state.initialized = true;
+            state.last_poll = Some(Instant::now());
+            state.marked.extend(captured.clone());
+            state.confirm(
+                "Start selected",
+                "project/web, unrelated/web",
+                false,
+                ConfirmAction::Request(Req::Bulk {
+                    targets: captured.clone(),
+                    action: "start".into(),
+                    force: false,
+                }),
+            );
+            let origin_target = if project_delete {
+                Target {
+                    service: String::new(),
+                    service_type: String::new(),
+                    ..target.clone()
+                }
+            } else {
+                target.clone()
+            };
+            app.open(super::super::page(
+                if project_delete {
+                    PageKind::Project
+                } else {
+                    PageKind::Service
+                },
+                &origin_target,
+                "overview",
+                "Overview",
+            ));
+            let origin = app.active.unwrap();
+            let mut opened = Vec::new();
+            let mut reload = false;
+            let path = dir.path();
+            let mut cx = PageContext {
+                target: &origin_target,
+                servers: &[],
+                accounts: &[],
+                server_config: path,
+                cloudflare_config: path,
+                watchlist: path,
+                doc: origin,
+                backend: &mut app.backend,
+                opened: &mut opened,
+                reload: &mut reload,
+            };
+            cx.request(
+                "mutation",
+                if project_delete {
+                    Req::ProjectDestroy("project".into())
+                } else if bulk {
+                    Req::Bulk {
+                        targets: captured.clone(),
+                        action: "destroy".into(),
+                        force: false,
+                    }
+                } else {
+                    Req::Action {
+                        project: "project".into(),
+                        service: "web".into(),
+                        stype: "app".into(),
+                        action: "destroy".into(),
+                        force: false,
+                    }
+                },
+            );
+            if close_origin {
+                app.documents.retain(|doc| doc.id != origin);
+                app.backend.close(origin);
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while app.backend.active() != 0 && Instant::now() < deadline {
+                app.pump();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert_eq!(app.backend.active(), 0);
+            let inventory = app
+                .documents
+                .iter()
+                .find(|doc| doc.id == inventory_id)
+                .unwrap();
+            let PageState::Services(state) = &inventory.state else {
+                unreachable!()
+            };
+            assert_eq!(state.confirmation_invalidated, status == 200);
+            assert!(matches!(&state.confirmation.as_ref().unwrap().action,
+                ConfirmAction::Request(Req::Bulk { targets, .. }) if *targets == captured));
+            assert!(state.marked.contains(&captured[1]));
+            assert_eq!(state.marked.contains(&captured[0]), status != 200);
+            for (id, affected) in watched {
+                let document = app.documents.iter().find(|doc| doc.id == id).unwrap();
+                let PageState::Services(state) = &document.state else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    state.deleted,
+                    affected && status == 200,
+                    "hidden document must receive only matched successful deletion"
+                );
+                assert_eq!(
+                    state.editor.as_ref().unwrap().form.by_label("Environment"),
+                    "UNSAVED=exact\n"
+                );
+                assert!(state.is_dirty());
+                app.active = Some(id);
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1200.0, 800.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::CentralPanel::default()
+                            .show(ui, |ui| app.document(ui, &mut Vec::new()));
+                    },
+                );
+                output.textures_delta.clear();
+                assert_eq!(
+                    LifecycleHarness::text(&output, "Save changes").is_some(),
+                    !(affected && status == 200),
+                    "deleted drafts must not remain actionable"
+                );
+            }
+            delete.assert_hits(1);
+            failed_delete.assert_hits(usize::from(bulk));
+        }
+    }
+    #[test]
+    fn environment_editor_preserves_nested_content_and_rejects_malformed_inspection() {
+        let server = httpmock::MockServer::start();
+        let raw = "\nEXACT= value  \r\n";
+        for project in [false, true] {
+            for env in [json!(raw), json!({"content":raw}), json!({"content":42})] {
+                let mut h = LifecycleHarness::new(&server, if project { "" } else { "web" });
+                let malformed = env["content"].is_number();
+                let resource = json!({"env":env});
+                h.state.detail = Some(if project {
+                    json!({"project":resource})
+                } else {
+                    resource
+                });
+                h.context(|state, cx| begin_edit(state, cx, Intent::Environment));
+                if malformed {
+                    assert!(h.state.editor.is_none());
+                    assert!(h.state.error.is_some());
+                } else {
+                    assert_eq!(
+                        h.state
+                            .editor
+                            .as_ref()
+                            .unwrap()
+                            .form
+                            .by_label("Environment")
+                            .as_bytes(),
+                        raw.as_bytes()
+                    );
+                    assert!(!h.state.is_dirty());
+                }
+            }
+        }
     }
     #[test]
     fn dirty_service_lifecycle_entry_preserves_draft_and_saved_request_bytes() {
@@ -4115,6 +5242,207 @@ mod tests {
         assert!(draft.default);
         assert_eq!(draft.name, "renamed");
         assert!(edit.dirty());
+    }
+    #[test]
+    fn connection_editor_clears_obsolete_validation_only_after_valid_test_or_save() {
+        use super::super::backend::Backend;
+        use httpmock::{Method::POST, MockServer};
+
+        fn frame(
+            ctx: &egui::Context,
+            state: &mut State,
+            cx: &mut PageContext<'_>,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 680.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        feedback(ui, state, cx);
+                        editor(ui, state, cx);
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            output
+        }
+        fn text_rect(output: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.galley.rect.translate(text.pos.to_vec2()))
+                    }
+                    _ => None,
+                })
+        }
+        fn click(ctx: &egui::Context, state: &mut State, cx: &mut PageContext<'_>, label: &str) {
+            let output = frame(ctx, state, cx, Vec::new());
+            let pos = text_rect(&output, label)
+                .expect("action must render")
+                .center();
+            for pressed in [true, false] {
+                frame(
+                    ctx,
+                    state,
+                    cx,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+        }
+
+        for (action, status) in [
+            ("Test connection", 200),
+            ("Test connection", 401),
+            ("Add connection", 200),
+        ] {
+            let server = MockServer::start();
+            let api = server.mock(|when, then| {
+                when.method(POST).path("/api/rpc/projects/listProjects");
+                then.status(status).json_body(json!({"json":[]}));
+            });
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("servers.json");
+            let ctx = egui::Context::default();
+            let mut backend = Backend::new(ctx.clone(), super::super::Runtime::default());
+            let target = Target::default();
+            let mut opened = Vec::new();
+            let mut reload = false;
+            let mut cx = PageContext {
+                target: &target,
+                servers: &[],
+                accounts: &[],
+                server_config: &path,
+                cloudflare_config: &path,
+                watchlist: &path,
+                doc: 1,
+                backend: &mut backend,
+                opened: &mut opened,
+                reload: &mut reload,
+            };
+            let mut state = State::default();
+            state.edit(connection_form(None), Intent::Connection(None));
+            click(&ctx, &mut state, &mut cx, action);
+            assert_eq!(
+                state.editor.as_ref().unwrap().form.error.as_deref(),
+                Some("Name and URL are required")
+            );
+            let output = frame(&ctx, &mut state, &mut cx, Vec::new());
+            assert!(text_rect(&output, "Validation error").is_some());
+            assert!(cx.backend.tasks.is_empty());
+
+            let form = &mut state.editor.as_mut().unwrap().form;
+            set(form, "Name", "corrected");
+            set(form, "URL", &server.base_url());
+            click(&ctx, &mut state, &mut cx, action);
+            assert_eq!(
+                state.editor.as_ref().unwrap().form.error.as_deref(),
+                Some("Token is required")
+            );
+            assert!(
+                cx.backend.tasks.is_empty(),
+                "invalid retry must not dispatch"
+            );
+
+            set(
+                &mut state.editor.as_mut().unwrap().form,
+                "Token",
+                "fixture-token",
+            );
+            click(&ctx, &mut state, &mut cx, action);
+            let key = if action == "Test connection" {
+                "connection-test"
+            } else {
+                "mutation"
+            };
+            assert!(cx.busy(key), "valid draft must dispatch the real operation");
+            assert!(state.editor.as_ref().unwrap().form.error.is_none());
+            assert!(state.outcome.is_empty(), "dispatch must not claim success");
+            let output = frame(&ctx, &mut state, &mut cx, Vec::new());
+            assert!(text_rect(&output, "Validation error").is_none());
+            assert!(text_rect(&output, "Operation result").is_none());
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while cx.busy(key) && Instant::now() < deadline {
+                cx.backend.pump();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert!(!cx.busy(key), "connection operation did not finish");
+            pump(&mut state, &mut cx);
+            if action == "Add connection" {
+                let saved = ServerConfig::new(path.clone()).try_all().unwrap();
+                assert_eq!(saved.len(), 1);
+                assert_eq!(saved[0].name, "corrected");
+                assert!(state.editor.is_none());
+                assert!(state.outcome[0].starts_with("Connection saved."));
+                api.assert_hits(0);
+            } else {
+                api.assert_hits(1);
+                if status == 200 {
+                    assert!(state.error.is_none());
+                    assert_eq!(
+                        state.outcome,
+                        vec![format!("API token OK — {} answered", server.base_url())]
+                    );
+                } else {
+                    assert!(state.error.as_deref().unwrap().contains("API check failed"));
+                    assert!(state.outcome.is_empty());
+                }
+                let error = state.error.clone();
+                let outcome = state.outcome.clone();
+                set(&mut state.editor.as_mut().unwrap().form, "Name", "");
+                click(&ctx, &mut state, &mut cx, action);
+                assert_eq!(
+                    state.editor.as_ref().unwrap().form.error.as_deref(),
+                    Some("Name and URL are required")
+                );
+                assert!(!cx.busy(key));
+                assert_eq!(state.error, error);
+                assert_eq!(state.outcome, outcome);
+                set(
+                    &mut state.editor.as_mut().unwrap().form,
+                    "Name",
+                    "corrected",
+                );
+                click(&ctx, &mut state, &mut cx, action);
+                assert!(cx.busy(key));
+                assert!(state.editor.as_ref().unwrap().form.error.is_none());
+                assert_eq!(
+                    state.error, error,
+                    "valid retry must retain API failure evidence"
+                );
+                assert_eq!(
+                    state.outcome, outcome,
+                    "valid retry must retain API result evidence"
+                );
+                let output = frame(&ctx, &mut state, &mut cx, Vec::new());
+                assert!(text_rect(&output, "Validation error").is_none());
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while cx.busy(key) && Instant::now() < deadline {
+                    cx.backend.pump();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                assert!(!cx.busy(key));
+                pump(&mut state, &mut cx);
+                api.assert_hits(2);
+            }
+        }
     }
     #[test]
     fn ports_do_not_open_zero_or_out_of_range_listeners() {

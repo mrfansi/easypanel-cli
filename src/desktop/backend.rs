@@ -1,4 +1,4 @@
-use super::model::{DocId, Payload};
+use super::model::{DocId, Payload, Target};
 use eframe::egui;
 use std::{
     collections::{HashMap, VecDeque},
@@ -84,6 +84,7 @@ pub(super) struct Backend {
     pub tasks: VecDeque<Task>,
     next_request: RequestId,
     pub runtime: Runtime,
+    pub deletions: Vec<Target>,
 }
 
 impl Backend {
@@ -101,6 +102,7 @@ impl Backend {
             tasks: VecDeque::new(),
             next_request: 1,
             runtime,
+            deletions: Vec::new(),
         }
     }
 
@@ -216,6 +218,13 @@ impl Backend {
                     }
                 }
                 Event::Finished(_, _, result) => {
+                    let result = match result {
+                        Ok(Payload::Deleted { targets, response }) => {
+                            self.deletions.extend(targets);
+                            Ok(Payload::Worker(response))
+                        }
+                        result => result,
+                    };
                     let result = sanitize(result, &secrets);
                     if let Some(task) = task {
                         // Terminal errors win over all subsequent progress/completion for this request.
@@ -522,6 +531,7 @@ mod tests {
             tasks: VecDeque::new(),
             next_request: 10,
             runtime: Runtime::default(),
+            deletions: Vec::new(),
         };
         let secrets: Arc<[String]> = vec!["private".into()].into();
         backend.slots.insert(
@@ -817,6 +827,7 @@ mod late_event_tests {
             tasks: VecDeque::new(),
             next_request: 2,
             runtime: Runtime::default(),
+            deletions: Vec::new(),
         };
         backend.slots.insert(
             (1, "deploy".into()),

@@ -38,6 +38,22 @@ impl PageState {
             _ => Self::Services(Box::default()),
         }
     }
+    fn deleted(&self) -> bool {
+        match self {
+            Self::Services(state) => state.deleted(),
+            Self::Data(state) => state.deleted(),
+            Self::Terminal(state) => state.removed(),
+            _ => false,
+        }
+    }
+    fn sync_deletions(&mut self, target: &Target, notices: &[Target]) {
+        match self {
+            Self::Services(state) => state.sync_deletions(target, notices),
+            Self::Data(state) => state.sync_deletions(target, notices),
+            Self::Terminal(state) => state.sync_deletions(target, notices),
+            _ => {}
+        }
+    }
     fn is_dirty(&self) -> bool {
         match self {
             Self::Services(s) => s.is_dirty(),
@@ -224,6 +240,7 @@ impl Desktop {
             applied_theme: None,
             shortcuts_open: false,
         };
+        theme::install_fonts(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx, app.mode);
         cc.egui_ctx
             .send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
@@ -258,6 +275,9 @@ impl Desktop {
         self.backend.pump();
         let mut opened = Vec::new();
         for document in &mut self.documents {
+            document
+                .state
+                .sync_deletions(&document.page.target, &self.backend.deletions);
             if let PageState::Terminal(state) = &mut document.state {
                 let mut cx = PageContext {
                     target: &document.page.target,
@@ -336,11 +356,26 @@ impl Desktop {
         }
     }
     fn open(&mut self, page: OpenPage) {
-        if let Some(document) = self
-            .documents
-            .iter()
-            .find(|doc| doc.page.kind == page.kind && doc.page.target.same_resource(&page.target))
-        {
+        for document in &mut self.documents {
+            document
+                .state
+                .sync_deletions(&document.page.target, &self.backend.deletions);
+        }
+        let verified_terminal = page.kind == PageKind::Terminal
+            && self.documents.iter().any(|doc| {
+                doc.page.kind == PageKind::Service
+                    && doc.page.target.same_server(&page.target)
+                    && doc.page.target.project == page.target.project
+                    && doc.page.target.service == page.target.service
+                    && doc.page.target.service_type == page.target.service_type
+                    && matches!(&doc.state, PageState::Services(state) if state.verified_resource())
+            });
+        if let Some(document) = self.documents.iter().find(|doc| {
+            doc.page.kind == page.kind
+                && doc.page.target.same_resource(&page.target)
+                && !(verified_terminal
+                    && matches!(&doc.state, PageState::Terminal(state) if state.removed()))
+        }) {
             let id = document.id;
             if document.docked {
                 self.reveal_utility(
@@ -360,7 +395,14 @@ impl Desktop {
         let id = self.next_doc;
         self.next_doc += 1;
         let docked = page.kind == PageKind::Terminal;
-        let state = PageState::new(&page.kind);
+        let mut state = if verified_terminal {
+            PageState::Terminal(Box::new(terminal::State::verified(
+                self.backend.deletions.len(),
+            )))
+        } else {
+            PageState::new(&page.kind)
+        };
+        state.sync_deletions(&page.target, &self.backend.deletions);
         if docked {
             self.reveal_utility(
                 if matches!(page.target.section.as_str(), "logs" | "log-search") {
@@ -1073,7 +1115,7 @@ impl Desktop {
                     response.request_focus();
                     self.focus = None;
                 }
-                if document.page.target.server.is_some() {
+                if document.page.target.server.is_some() && !document.state.deleted() {
                     resource_actions(ui, &document.page.target, opened);
                 }
                 if document.page.kind == PageKind::Terminal && ui.button("Dock session").clicked() {

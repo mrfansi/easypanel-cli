@@ -949,16 +949,12 @@ fn edit_env_in_editor(
                 && s == service
                 && fetched_type.as_deref() == Some(stype) =>
             {
-                let pointer = if view == View::ProjectEnv {
-                    "/project/env"
+                let service = if view == View::ProjectEnv {
+                    &data["project"]
                 } else {
-                    "/env"
+                    &data
                 };
-                break data
-                    .pointer(pointer)
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
+                break crate::operations::env_content(service)?.to_string();
             }
             Ok(Resp::Err(e)) => return Err(anyhow::anyhow!(e)),
             Ok(_) => {}
@@ -1145,7 +1141,7 @@ fn edit_text_in_editor(
     let edited = std::fs::read_to_string(&path)?;
     let _ = std::fs::remove_file(&path);
 
-    Ok((edited.trim_end() != current.trim_end()).then_some(edited))
+    Ok((edited != current).then_some(edited))
 }
 
 /// GUI editors and the flag that makes them BLOCK until the file is closed.

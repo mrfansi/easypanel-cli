@@ -30,6 +30,8 @@ pub(super) struct State {
     font_size: f32,
     scroll_remainder: f32,
     logs: LogState,
+    removed: bool,
+    seen_deletions: usize,
 }
 impl Default for State {
     fn default() -> Self {
@@ -49,10 +51,34 @@ impl Default for State {
             font_size: 13.0,
             scroll_remainder: 0.0,
             logs: LogState::default(),
+            removed: false,
+            seen_deletions: 0,
         }
     }
 }
 impl State {
+    pub(super) fn verified(notices: usize) -> Self {
+        Self {
+            seen_deletions: notices,
+            ..Default::default()
+        }
+    }
+    pub(super) fn removed(&self) -> bool {
+        self.removed
+    }
+    pub(super) fn sync_deletions(&mut self, target: &Target, notices: &[Target]) {
+        for deleted in &notices[self.seen_deletions..] {
+            if !target.project.is_empty()
+                && !target.service.is_empty()
+                && target.deleted_by(deleted)
+            {
+                self.removed = true;
+                self.logs.removed = true;
+                self.logs.follow = false;
+            }
+        }
+        self.seen_deletions = notices.len();
+    }
     pub(super) fn is_dirty(&self) -> bool {
         self.logs.criteria_changed()
     }
@@ -60,6 +86,7 @@ impl State {
         self.input.is_some()
     }
     pub(super) fn tick(&mut self, cx: &mut PageContext<'_>) {
+        self.sync_deletions(cx.target, &cx.backend.deletions);
         if self
             .target
             .as_ref()
@@ -90,7 +117,7 @@ impl State {
                 self.error = "The terminal connection ended. Reconnect to open a new shell.".into();
                 self.disconnect();
             } else {
-                self.parser.set_scrollback(0);
+                self.parser.screen_mut().set_scrollback(0);
                 self.selection = None;
                 self.scroll_remainder = 0.0;
             }
@@ -125,6 +152,10 @@ pub(super) fn show_utility(ui: &mut egui::Ui, state: &mut State, cx: &mut PageCo
 }
 
 fn show_mode(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>, compact: bool) {
+    state.sync_deletions(cx.target, &cx.backend.deletions);
+    if state.removed {
+        ui.add(egui::Label::new("Resource deleted. Existing output and sessions are retained. Open a new session from an explicitly refreshed resource to reconnect.").wrap());
+    }
     if let Some(target) = &state.target {
         if !target.same_resource(cx.target) {
             super::widgets::error(ui, "This session belongs to another target. Open a new document instead of retargeting a running session.");
@@ -222,7 +253,7 @@ fn terminal_toolbar(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'
         }
     } else if ui
         .add_enabled(
-            !cx.busy("terminal-open"),
+            !state.removed && !cx.busy("terminal-open"),
             egui::Button::new(if state.opened { "Reconnect" } else { "Connect" }),
         )
         .clicked()
@@ -238,7 +269,7 @@ fn terminal_toolbar(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'
         copy_selection(ui, state);
     }
     if ui.button("Live output").clicked() {
-        state.parser.set_scrollback(0);
+        state.parser.screen_mut().set_scrollback(0);
         state.selection = None;
         state.scroll_remainder = 0.0;
     }
@@ -300,6 +331,13 @@ fn disconnect_review(ui: &mut egui::Ui, state: &mut State) {
 }
 
 fn open_session(ctx: &egui::Context, state: &mut State, cx: &mut PageContext<'_>) {
+    state.sync_deletions(cx.target, &cx.backend.deletions);
+    if state.removed {
+        state.error =
+            "This resource was deleted. Open a new session from an explicitly refreshed resource."
+                .into();
+        return;
+    }
     let Some(server) = cx.target.server.clone() else {
         state.error = "Choose an EasyPanel server first.".into();
         return;
@@ -454,7 +492,7 @@ fn terminal_canvas(ui: &mut egui::Ui, state: &mut State) {
     let size = grid_size(inner.size(), cell);
     if size != state.size {
         state.size = size;
-        state.parser.set_size(size.1, size.0);
+        state.parser.screen_mut().set_size(size.1, size.0);
         state.selection = None;
         if let Some(input) = &state.input {
             let _ = input.send(TermMsg::Resize(size.0, size.1));
@@ -518,7 +556,7 @@ fn terminal_canvas(ui: &mut egui::Ui, state: &mut State) {
         let points = ui.input_mut(|input| std::mem::take(&mut input.smooth_scroll_delta.y));
         let rows = scroll_rows(&mut state.scroll_remainder, points, cell.y);
         if rows != 0 {
-            state.parser.set_scrollback(if rows > 0 {
+            state.parser.screen_mut().set_scrollback(if rows > 0 {
                 sb.saturating_add(rows as usize)
             } else {
                 sb.saturating_sub(rows.unsigned_abs() as usize)
@@ -581,7 +619,7 @@ fn terminal_canvas(ui: &mut egui::Ui, state: &mut State) {
             {
                 if modifiers.shift {
                     let sb = state.parser.screen().scrollback();
-                    state.parser.set_scrollback(
+                    state.parser.screen_mut().set_scrollback(
                         if matches!(
                             event,
                             egui::Event::Key {
@@ -660,7 +698,7 @@ fn terminal_canvas(ui: &mut egui::Ui, state: &mut State) {
             if !text.is_empty() {
                 let mut job = egui::text::LayoutJob::default();
                 job.append(
-                    &text,
+                    text,
                     0.0,
                     egui::TextFormat {
                         font_id: font.clone(),
@@ -942,6 +980,7 @@ struct LogState {
     cursors: HashMap<(String, String), StreamCursor>,
     errors: Vec<String>,
     follow: bool,
+    removed: bool,
     started: bool,
     next_poll: Instant,
     refreshed: Option<Instant>,
@@ -967,6 +1006,7 @@ impl Default for LogState {
             cursors: HashMap::new(),
             errors: Vec::new(),
             follow: true,
+            removed: false,
             started: false,
             next_poll: Instant::now(),
             refreshed: None,
@@ -1034,14 +1074,20 @@ fn compact_log_toolbar(
 ) {
     let search_width = (ui.available_width() - 360.0).clamp(96.0, 220.0);
     ui.horizontal(|ui| {
-        ui.checkbox(&mut state.follow, "Follow");
+        ui.add_enabled(
+            !state.removed,
+            egui::Checkbox::new(&mut state.follow, "Follow"),
+        );
         ui.add(
             egui::TextEdit::singleline(&mut state.query)
                 .desired_width(search_width)
                 .hint_text("Search service logs"),
         );
         if ui
-            .add_enabled(!cx.busy("log-poll"), egui::Button::new("Search"))
+            .add_enabled(
+                !state.removed && !cx.busy("log-poll"),
+                egui::Button::new("Search"),
+            )
             .clicked()
         {
             if search_all && state.query.trim().is_empty() {
@@ -1102,7 +1148,7 @@ fn compact_log_toolbar(
                     }
                     if ui
                         .add_enabled(
-                            state.started && !cx.busy("log-poll"),
+                            !state.removed && state.started && !cx.busy("log-poll"),
                             egui::Button::new("Fetch next"),
                         )
                         .clicked()
@@ -1242,7 +1288,7 @@ fn show_logs(ui: &mut egui::Ui, state: &mut LogState, cx: &mut PageContext<'_>, 
             ui.label(cx.target.label());
             if ui
                 .add_enabled(
-                    !cx.busy("log-poll"),
+                    !state.removed && !cx.busy("log-poll"),
                     egui::Button::new(if search_all { "Search" } else { "Apply search" }),
                 )
                 .clicked()
@@ -1254,10 +1300,13 @@ fn show_logs(ui: &mut egui::Ui, state: &mut LogState, cx: &mut PageContext<'_>, 
                     poll_logs(state, cx, search_all);
                 }
             }
-            ui.checkbox(&mut state.follow, "Follow");
+            ui.add_enabled(
+                !state.removed,
+                egui::Checkbox::new(&mut state.follow, "Follow"),
+            );
             if ui
                 .add_enabled(
-                    state.started && !cx.busy("log-poll"),
+                    !state.removed && state.started && !cx.busy("log-poll"),
                     egui::Button::new("Fetch next"),
                 )
                 .clicked()
@@ -1480,6 +1529,9 @@ impl LogState {
 }
 
 fn poll_logs(state: &mut LogState, cx: &mut PageContext<'_>, search_all: bool) {
+    if state.removed {
+        return;
+    }
     if cx.busy("log-poll") {
         return;
     }
@@ -1628,6 +1680,95 @@ mod tests {
     }
 
     #[test]
+    fn deletion_state_terminal_keeps_live_io_but_blocks_reconnect_and_log_fetch() {
+        let target = Target {
+            server: Some(crate::config::Server {
+                name: "fixture".into(),
+                url: "https://fixture.invalid".into(),
+                token: "test".into(),
+                default: false,
+                ssh: None,
+            }),
+            project: "project".into(),
+            service: "web".into(),
+            service_type: "app".into(),
+            section: "container".into(),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let mut backend =
+            super::super::backend::Backend::new(ctx.clone(), super::super::Runtime::default());
+        backend.deletions.push(target.clone());
+        let path = std::path::Path::new("unused-fixture");
+        let mut opened = Vec::new();
+        let mut reload = false;
+        let mut cx = PageContext {
+            target: &target,
+            servers: &[],
+            accounts: &[],
+            server_config: path,
+            cloudflare_config: path,
+            watchlist: path,
+            doc: 1,
+            backend: &mut backend,
+            opened: &mut opened,
+            reload: &mut reload,
+        };
+        let (input, received) = mpsc::channel();
+        let (events, stream) = mpsc::channel();
+        let mut state = State {
+            input: Some(input),
+            events: Some(stream),
+            connected: true,
+            ..Default::default()
+        };
+        state.parser.process(b"retained output");
+        state.logs.rendered = "retained logs".into();
+        state.sync_deletions(&target, &cx.backend.deletions);
+        assert!(state.removed && !state.logs.follow);
+        state.send("printf keep-live".into());
+        assert!(
+            matches!(received.try_recv(), Ok(TermMsg::Input(text)) if text == "printf keep-live")
+        );
+        events
+            .send(SessionEvent::Output(b"\r\nlater output".to_vec()))
+            .unwrap();
+        state.pump();
+        assert!(state.parser.screen().contents().contains("retained output"));
+        assert!(state.parser.screen().contents().contains("later output"));
+        assert_eq!(state.logs.rendered, "retained logs");
+        open_session(&ctx, &mut state, &mut cx);
+        assert!(
+            state.input.is_some(),
+            "known deletion must not disconnect an existing stream"
+        );
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            terminal_toolbar(ui, &mut state, &mut cx, false)
+        });
+        output.textures_delta.clear();
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::epaint::Shape::Text(text) if text.galley.text() == "Disconnect")));
+        state.disconnect();
+        open_session(&ctx, &mut state, &mut cx);
+        poll_logs(&mut state.logs, &mut cx, false);
+        assert!(
+            cx.backend.tasks.is_empty(),
+            "dead contexts must not open another session or fetch logs"
+        );
+        assert!(state.input.is_none());
+        let root = Target {
+            server: target.server.clone(),
+            section: "host".into(),
+            ..Default::default()
+        };
+        let mut host = State::default();
+        host.sync_deletions(&root, &cx.backend.deletions);
+        assert!(
+            !host.removed,
+            "host root sessions are not service resources"
+        );
+    }
+    #[test]
     fn unconnected_terminal_paints_at_dock_sizes_before_and_after_focus() {
         for size in [Vec2::new(900.0, 220.0), Vec2::new(640.0, 130.0)] {
             let ctx = egui::Context::default();
@@ -1665,6 +1806,120 @@ mod tests {
                 assert!(state.size.0 > 0 && state.size.1 > 0);
                 assert!(!state.connected && state.input.is_none() && state.events.is_none());
             }
+        }
+    }
+
+    #[test]
+    fn remote_scrollback_remains_readable_after_paging_and_dock_resize() {
+        fn frame(ctx: &egui::Context, state: &mut State, size: Vec2, events: Vec<egui::Event>) {
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::unique("desktop-terminal-focus-request"), true);
+            });
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events,
+                    ..Default::default()
+                },
+                |ui| terminal_canvas(ui, state),
+            );
+            output.textures_delta.clear();
+            assert_eq!(
+                state.parser.screen().rows(0, state.size.0).count(),
+                usize::from(state.size.1),
+                "scrollback exposes exactly the visible viewport",
+            );
+        }
+        fn assert_row(screen: &vt100::Screen, row: u16, expected: &str) {
+            for (col, ch) in expected.chars().enumerate() {
+                assert_eq!(
+                    screen.cell(row, col as u16).unwrap().contents(),
+                    ch.to_string(),
+                    "visible row {row}, column {col}",
+                );
+            }
+        }
+        let full = Vec2::new(900.0, 480.0);
+        let dock = Vec2::new(640.0, 130.0);
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        // Both two pages at one size and one page followed by shrinking used
+        // to leave a history offset greater than the number of visible rows.
+        for shrink_after_first_page in [false, true] {
+            let ctx = egui::Context::default();
+            let mut state = State::default();
+            frame(&ctx, &mut state, full, Vec::new());
+            let full_rows = state.size.1;
+            let (output, events) = mpsc::channel();
+            state.events = Some(events);
+            for line in 0..300 {
+                output
+                    .send(SessionEvent::Output(
+                        format!("scrollback line {line}\r\n").into_bytes(),
+                    ))
+                    .unwrap();
+            }
+            output.send(SessionEvent::Output(b"$ ".to_vec())).unwrap();
+            state.pump();
+            frame(&ctx, &mut state, full, Vec::new());
+            let live_top = 301 - usize::from(full_rows);
+            assert_row(
+                state.parser.screen(),
+                0,
+                &format!("scrollback line {live_top}"),
+            );
+            assert_eq!(state.parser.screen().cursor_position(), (full_rows - 1, 2));
+            frame(&ctx, &mut state, full, vec![key(Key::PageUp, shift)]);
+            assert_eq!(state.parser.screen().scrollback(), usize::from(full_rows));
+            frame(
+                &ctx,
+                &mut state,
+                if shrink_after_first_page { dock } else { full },
+                if shrink_after_first_page {
+                    Vec::new()
+                } else {
+                    vec![key(Key::PageUp, shift)]
+                },
+            );
+            let offset = if shrink_after_first_page {
+                usize::from(full_rows)
+            } else {
+                usize::from(full_rows) * 2
+            };
+            assert_eq!(state.parser.screen().scrollback(), offset);
+            let top = live_top - offset;
+            assert_row(state.parser.screen(), 0, &format!("scrollback line {top}"));
+            assert_row(
+                state.parser.screen(),
+                1,
+                &format!("scrollback line {}", top + 1),
+            );
+            let mut selection = Selection::new(0, 0, offset);
+            selection.extend(1, 18, offset);
+            assert_eq!(
+                selection.text(state.parser.screen()),
+                format!("scrollback line {top}\nscrollback line {}", top + 1),
+            );
+            // Hiding does not replace the session; reopening at either size
+            // must retain the same historical cells and their coordinates.
+            for size in [dock, full, dock] {
+                frame(&ctx, &mut state, size, Vec::new());
+                assert_eq!(state.parser.screen().scrollback(), offset);
+                assert_row(state.parser.screen(), 0, &format!("scrollback line {top}"));
+            }
+            state.parser.screen_mut().set_scrollback(HISTORY);
+            frame(&ctx, &mut state, dock, Vec::new());
+            assert_eq!(state.parser.screen().scrollback(), live_top);
+            assert_row(state.parser.screen(), 0, "scrollback line 0");
+            state.parser.screen_mut().set_scrollback(0);
+            frame(&ctx, &mut state, dock, Vec::new());
+            assert_row(
+                state.parser.screen(),
+                0,
+                &format!("scrollback line {live_top}"),
+            );
         }
     }
 
@@ -1976,6 +2231,34 @@ mod tests {
         assert_eq!(selection.text(parser.screen()), "abcdefghi");
         assert!(selection.contains(0, 2, 0));
         assert!(selection.contains(1, 2, 1));
+    }
+
+    #[test]
+    fn deep_history_keeps_vt_attributes_unicode_and_selection_after_resize() {
+        let mut parser = vt100::Parser::new(4, 20, HISTORY);
+        parser.process("\u{1b}[1;31m中e\u{301}\u{1b}[0m\r\n".as_bytes());
+        for line in 0..16 {
+            parser.process(format!("line {line}\r\n").as_bytes());
+        }
+        parser.process(b"$ ");
+        assert_eq!(parser.screen().cursor_position(), (3, 2));
+        parser.screen_mut().set_scrollback(HISTORY);
+        let offset = parser.screen().scrollback();
+        assert!(offset > 6);
+        for rows in [4, 2, 6] {
+            parser.screen_mut().set_size(rows, 20);
+            let screen = parser.screen();
+            assert_eq!(screen.scrollback(), offset);
+            let cell = screen.cell(0, 0).unwrap();
+            assert_eq!(cell.contents(), "中");
+            assert!(cell.is_wide() && cell.bold());
+            assert_eq!(cell.fgcolor(), vt100::Color::Idx(1));
+            assert!(screen.cell(0, 1).unwrap().is_wide_continuation());
+            assert_eq!(screen.cell(0, 2).unwrap().contents(), "e\u{301}");
+            let mut selection = Selection::new(0, 0, offset);
+            selection.extend(0, 2, offset);
+            assert_eq!(selection.text(screen), "中e\u{301}");
+        }
     }
     #[test]
     fn closing_one_session_does_not_disconnect_another() {

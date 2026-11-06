@@ -180,6 +180,9 @@ struct Endpoint {
     loaded: bool,
     filter: String,
     error: Option<String>,
+    deleted: bool,
+    project_deleted: bool,
+    inventory_invalidated: bool,
 }
 #[derive(Clone)]
 struct Service {
@@ -196,6 +199,37 @@ struct Provider {
     bucket: String,
 }
 impl Endpoint {
+    fn same_server(&self, target: &Target) -> bool {
+        self.server.as_ref().is_some_and(|s| {
+            target.server.as_ref().is_some_and(|d| {
+                (&s.name, &s.url, &s.token, &s.ssh) == (&d.name, &d.url, &d.token, &d.ssh)
+            })
+        })
+    }
+    fn deleted_by(&self, deleted: &Target) -> bool {
+        self.same_server(deleted)
+            && self.project == deleted.project
+            && (deleted.service.is_empty()
+                || (self.service == deleted.service && self.kind == deleted.service_type))
+    }
+    fn project_deleted_by(&self, deleted: &Target) -> bool {
+        deleted.service.is_empty() && self.same_server(deleted) && self.project == deleted.project
+    }
+    fn require_project(&self) -> Result<()> {
+        if self.project_deleted {
+            bail!("This project was deleted. Explicitly refresh its inventory before continuing.");
+        }
+        if self.project.is_empty() {
+            bail!("Choose an existing project");
+        }
+        Ok(())
+    }
+    fn require_identity(&self) -> Result<()> {
+        if self.project.is_empty() || self.service.is_empty() {
+            bail!("Choose a project and service");
+        }
+        Ok(())
+    }
     fn label(&self) -> String {
         format!(
             "{} / {} / {}",
@@ -212,10 +246,14 @@ impl Endpoint {
         ))
     }
     fn require_service(&self) -> Result<()> {
-        if self.project.is_empty() || self.service.is_empty() || self.kind.is_empty() {
-            bail!("Choose an existing project and service");
+        self.require_project()?;
+        if self.deleted {
+            bail!("This endpoint was deleted. Explicitly refresh its inventory before preparing another operation.");
         }
-        Ok(())
+        if self.kind.is_empty() {
+            bail!("Choose an existing service type");
+        }
+        self.require_identity()
     }
     fn provider(&self, name: &str) -> Result<&Provider> {
         self.providers
@@ -339,6 +377,30 @@ struct Review {
     copy_plan: Option<crate::operations::CopyPlan>,
     job: Job,
 }
+impl Review {
+    fn affected_by(&self, deleted: &Target) -> bool {
+        match &self.job {
+            Job::Dump { .. } => self.source.deleted_by(deleted),
+            Job::Restore { .. } | Job::Backup { .. } => self.destination.deleted_by(deleted),
+            Job::Copy { .. } => {
+                self.source.deleted_by(deleted) || self.destination.deleted_by(deleted)
+            }
+            Job::Clone => {
+                self.source.deleted_by(deleted) || self.destination.project_deleted_by(deleted)
+            }
+            Job::Migrate { services } => {
+                self.destination.project_deleted_by(deleted)
+                    || (self.source.same_server(deleted)
+                        && services.iter().any(|service| {
+                            service.project == deleted.project
+                                && (deleted.service.is_empty()
+                                    || (service.name == deleted.service
+                                        && service.kind == deleted.service_type))
+                        }))
+            }
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct State {
@@ -379,8 +441,45 @@ pub(super) struct State {
     error: Option<String>,
     pending_picker: Option<PendingPicker>,
     draft: bool,
+    seen_deletions: usize,
+    deleted: bool,
+    recovering: bool,
+    review_invalidated: bool,
 }
 impl State {
+    pub(super) fn deleted(&self) -> bool {
+        self.deleted && matches!(self.mode, Mode::Database | Mode::Credentials)
+    }
+    pub(super) fn sync_deletions(&mut self, target: &Target, notices: &[Target]) {
+        for deleted in &notices[self.seen_deletions..] {
+            if target.deleted_by(deleted) {
+                self.deleted = true;
+                self.recovering = false;
+            }
+            for review in self.review.iter().chain(self.pending_review.iter()) {
+                self.review_invalidated |= review.affected_by(deleted);
+            }
+            for endpoint in [&mut self.source, &mut self.destination] {
+                if !endpoint.same_server(deleted) {
+                    continue;
+                }
+                endpoint.deleted |= endpoint.deleted_by(deleted);
+                endpoint.project_deleted |= endpoint.project_deleted_by(deleted);
+                endpoint.inventory_invalidated = true;
+                endpoint.loaded = true;
+                endpoint.services.retain(|service| {
+                    service.project != deleted.project
+                        || (!deleted.service.is_empty()
+                            && (service.name != deleted.service
+                                || service.kind != deleted.service_type))
+                });
+                if deleted.service.is_empty() {
+                    endpoint.projects.retain(|p| *p != deleted.project);
+                }
+            }
+        }
+        self.seen_deletions = notices.len();
+    }
     pub(super) fn is_dirty(&self) -> bool {
         self.browser.query != self.browser.saved_query || self.draft || self.review.is_some()
     }
@@ -521,6 +620,7 @@ fn hydrate_seed(state: &mut State, cx: &mut PageContext<'_>) {
 }
 
 pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
+    state.sync_deletions(cx.target, &cx.backend.deletions);
     if !state.initialized {
         state.initialized = true;
         state.mode = Mode::from_section(&cx.target.section);
@@ -535,6 +635,81 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
         }
     }
     receive(state, cx);
+    if let Some(result) = cx.take("deleted-recovery") {
+        if state.recovering {
+            state.recovering = false;
+            match result {
+                Ok(Payload::Json(_)) => {
+                    state.deleted = false;
+                    state.error = None;
+                    for endpoint in [&mut state.source, &mut state.destination] {
+                        if endpoint.same_server(cx.target) && endpoint.project == cx.target.project
+                        {
+                            endpoint.project_deleted = false;
+                            if endpoint.service == cx.target.service
+                                && endpoint.kind == cx.target.service_type
+                            {
+                                endpoint.deleted = false;
+                            }
+                        }
+                    }
+                }
+                Err(error) => state.error = Some(error),
+                _ => {}
+            }
+        }
+    }
+    if state.deleted() {
+        ui.heading("Resource deleted");
+        ui.add(egui::Label::new(cx.target.label()).wrap());
+        if let Some(server) = &cx.target.server {
+            ui.add(egui::Label::new(&server.url).wrap());
+        }
+        ui.label("The confirmed deletion succeeded. Drafts and prior results are retained, but this resource is no longer actionable.");
+        if let Some(error) = &state.error {
+            widgets::error(ui, error);
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Open inventory").clicked() {
+                let target = Target {
+                    server: cx.target.server.clone(),
+                    section: "services".into(),
+                    ..Default::default()
+                };
+                cx.open(OpenPage {
+                    kind: PageKind::Project,
+                    target,
+                    title: "Projects".into(),
+                });
+            }
+            if ui
+                .add_enabled(
+                    !state.recovering && !cx.busy("deleted-recovery"),
+                    egui::Button::new("Refresh"),
+                )
+                .clicked()
+            {
+                state.recovering = true;
+                if cx.target.service.is_empty() {
+                    cx.rpc(
+                        "deleted-recovery",
+                        "projects",
+                        "inspectProject",
+                        json!({"projectName":cx.target.project}),
+                    );
+                } else {
+                    cx.rpc(
+                        "deleted-recovery",
+                        &format!("services/{}", cx.target.service_type),
+                        "inspectService",
+                        json!({"projectName":cx.target.project,"serviceName":cx.target.service}),
+                    );
+                }
+            }
+        });
+        ui.label("Refresh explicitly checks the original target for recreation. Transfer reviews must be prepared again.");
+        return;
+    }
     hydrate_seed(state, cx);
     navigation(ui, state, cx);
     ui.separator();
@@ -994,6 +1169,7 @@ fn credentials(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     if let Some(creds) = &state.browser.credentials {
         egui::Grid::new("database-credentials")
             .num_columns(4)
+            .min_col_width(120.0)
             .spacing([16.0, 12.0])
             .show(ui, |ui| {
                 for (index, cred) in creds.iter().enumerate() {
@@ -1030,6 +1206,10 @@ fn credentials(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
 }
 
 fn load_endpoint(endpoint: &mut Endpoint, cx: &mut PageContext<'_>, key: &'static str) {
+    if cx.busy(key) {
+        return;
+    }
+    endpoint.inventory_invalidated = false;
     let Some(server) = endpoint.server.clone() else {
         return;
     };
@@ -1090,6 +1270,8 @@ fn endpoint_ui(
                             endpoint.project.clear();
                             endpoint.service.clear();
                             endpoint.kind.clear();
+                            endpoint.deleted = false;
+                            endpoint.project_deleted = false;
                             changed = true;
                         }
                     }
@@ -1118,6 +1300,8 @@ fn endpoint_ui(
                                         endpoint.project.clone_from(project);
                                         endpoint.service.clear();
                                         endpoint.kind.clear();
+                                        endpoint.deleted = false;
+                                        endpoint.project_deleted = false;
                                         changed = true;
                                     }
                                 }
@@ -1156,6 +1340,7 @@ fn endpoint_ui(
                             {
                                 endpoint.service.clone_from(&item.name);
                                 endpoint.kind.clone_from(&item.kind);
+                                endpoint.deleted = false;
                                 changed = true;
                             }
                         }
@@ -1464,7 +1649,7 @@ fn dump_browser(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>, 
                     .map(|d| d.key)
                     .collect()
             } else {
-                source.require_service()?;
+                source.require_identity()?;
                 crate::operations::list_r2_dumps(
                     &client,
                     &source.project,
@@ -1768,16 +1953,46 @@ fn validate_backup_selection(file: &SavedBackup, database: &str) -> Result<()> {
 }
 
 fn prepare(state: &mut State, cx: &mut PageContext<'_>) {
+    state.sync_deletions(cx.target, &cx.backend.deletions);
+    let missing = match state.mode {
+        Mode::Dumps => state.source.deleted,
+        Mode::Restore | Mode::BackupRestore => state.destination.deleted,
+        Mode::Copy | Mode::Diff => state.source.deleted || state.destination.deleted,
+        Mode::Clone => {
+            state.source.deleted
+                || (state.destination.project == state.new_project
+                    && state.destination.project_deleted)
+        }
+        Mode::Migrate => {
+            if state.whole_project {
+                state.source.project_deleted
+            } else {
+                state.source.deleted
+            }
+        }
+        Mode::Export => state.source.project_deleted,
+        Mode::ProjectDiff => state.source.project_deleted || state.destination.project_deleted,
+        Mode::Database | Mode::Credentials => state.deleted,
+    };
+    if missing {
+        state.error = Some("A selected endpoint was deleted. Explicitly refresh its inventory before preparing another operation.".into());
+        return;
+    }
+    state.review_invalidated = false;
     state.error = None;
     state.confirmation.clear();
     let source = state.source.clone();
     let mut destination = state.destination.clone();
     if matches!(state.mode, Mode::Clone | Mode::Migrate) {
+        if destination.project != state.new_project {
+            destination.project_deleted = false;
+        }
         destination.project.clone_from(&state.new_project);
     }
     if state.mode == Mode::Clone {
         destination.service.clone_from(&state.new_service);
         destination.kind.clone_from(&source.kind);
+        destination.deleted = false;
     }
     let job = match state.mode {
         Mode::Dumps => Job::Dump {
@@ -2055,6 +2270,7 @@ fn preflight(review: &mut Review, all: bool) -> Result<()> {
         }
         Job::Clone => {
             review.source.require_service()?;
+            review.destination.require_project()?;
             if !same_host(&review.source, &review.destination) {
                 bail!("Clone is same-host; use Migrate configuration for another host");
             }
@@ -2071,6 +2287,7 @@ fn preflight(review: &mut Review, all: bool) -> Result<()> {
             ];
         }
         Job::Migrate { services } => {
+            review.source.require_project()?;
             if !crate::operations::valid_name(&review.destination.project) {
                 bail!("Choose a valid destination project name (a-z, 0-9, _ or -)");
             }
@@ -2235,13 +2452,19 @@ fn review_ui(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             if destructive {
                 ui.add(egui::Label::new(RichText::new("Destination data can be overwritten or dropped. There is no rollback; errors can leave partial writes.").color(ui.visuals().warn_fg_color)).wrap());
             }
-            let apply = widgets::confirm(
-                ui,
-                if destructive { "Confirm destructive destination write" } else { "Confirm transfer" },
-                &target,
-                Some(&target),
-                &mut state.confirmation,
-            );
+            let mut apply = false;
+            ui.add_enabled_ui(!state.review_invalidated, |ui| {
+                apply = widgets::confirm(
+                    ui,
+                    if destructive { "Confirm destructive destination write" } else { "Confirm transfer" },
+                    &target,
+                    Some(&target),
+                    &mut state.confirmation,
+                );
+            });
+            if state.review_invalidated {
+                ui.label("A reviewed endpoint was deleted. Cancel this review and prepare it again from current inventory.");
+            }
             (apply, ui.button("Cancel review — nothing has run").clicked())
         }).inner;
     egui::ScrollArea::vertical()
@@ -2269,6 +2492,7 @@ fn review_ui(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             }
             egui::Grid::new("transfer-facts")
                 .num_columns(2)
+                .min_col_width(160.0)
                 .spacing([16.0, 8.0])
                 .show(ui, |ui| {
                     for (label, value) in &review.facts {
@@ -2283,7 +2507,7 @@ fn review_ui(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
         state.confirmation.clear();
         return;
     }
-    if apply && !task_busy(cx) {
+    if apply && !state.review_invalidated && !task_busy(cx) {
         let review = state.review.take().unwrap();
         state.draft = false;
         state.error = None;
@@ -2589,14 +2813,30 @@ fn receive_picker(
     }
 }
 fn compare(state: &mut State, cx: &mut PageContext<'_>) {
+    state.sync_deletions(cx.target, &cx.backend.deletions);
+    let project = state.mode == Mode::ProjectDiff;
+    let missing = if project {
+        state.source.project_deleted || state.destination.project_deleted
+    } else {
+        state.source.deleted || state.destination.deleted
+    };
+    if missing {
+        state.error = Some(
+            "A comparison resource was deleted. Refresh its inventory before comparing.".into(),
+        );
+        return;
+    }
     let source = state.source.clone();
     let target = state.destination.clone();
-    let project = state.mode == Mode::ProjectDiff;
     let label = format!("{} compared with {}", source.label(), target.label());
     cx.background("comparison", "Compare configuration", move || {
         let a = source.client()?;
         let b = target.client()?;
         let mut rows: Vec<Vec<String>> = Vec::new();
+        if project {
+            source.require_project()?;
+            target.require_project()?;
+        }
         if project {
             let left = a.call(
                 "projects",
@@ -2667,6 +2907,11 @@ fn append_differences(
     }));
 }
 fn export(state: &mut State, cx: &mut PageContext<'_>) {
+    state.sync_deletions(cx.target, &cx.backend.deletions);
+    if let Err(error) = state.source.require_project() {
+        state.error = Some(error.to_string());
+        return;
+    }
     let source = state.source.clone();
     cx.background("export", "Build redacted configuration export", move || {
         let data = source.client()?.call(
@@ -2776,6 +3021,9 @@ fn receive(state: &mut State, cx: &mut PageContext<'_>) {
             } else {
                 &mut state.destination
             };
+            if endpoint.inventory_invalidated {
+                continue;
+            }
             match result {
                 Ok(Payload::Json(data)) => {
                     endpoint.projects = data
@@ -2797,6 +3045,12 @@ fn receive(state: &mut State, cx: &mut PageContext<'_>) {
                             kind: field(s, "/kind"),
                         })
                         .collect();
+                    endpoint.deleted &= !endpoint.services.iter().any(|s| {
+                        s.project == endpoint.project
+                            && s.name == endpoint.service
+                            && s.kind == endpoint.kind
+                    });
+                    endpoint.project_deleted &= !endpoint.projects.contains(&endpoint.project);
                     endpoint.providers = data
                         .pointer("/providers/rows")
                         .and_then(Value::as_array)
@@ -3175,6 +3429,520 @@ mod tests {
                 navigation_only,
             );
         }
+    }
+    #[test]
+    fn deletion_state_dump_ignores_unused_destination_but_blocks_its_actual_source() {
+        use httpmock::{Method::POST, MockServer};
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/rpc/storageProviders/common/list");
+            then.status(200).json_body(json!({"json":[{
+                "id":"store-id","name":"store","type":"s3","endpoint":"https://objects.invalid","bucket":"backups"
+            }]}));
+        });
+        let project = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/projects/inspectProject")
+                .json_body(json!({"json":{"projectName":"source"}}));
+            then.status(200)
+                .json_body(json!({"json":{"services":[{"name":"db","type":"mysql"}]}}));
+        });
+        let inspect = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/mysql/inspectService")
+                .json_body(json!({"json":{"projectName":"source","serviceName":"db"}}));
+            then.status(200)
+                .json_body(json!({"json":{"image":"mysql:8"}}));
+        });
+        let mut source = endpoint(&server.base_url(), "source", "db");
+        source.kind = "mysql".into();
+        let mut destination = endpoint(&server.base_url(), "unused", "db");
+        destination.kind = "mysql".into();
+        let target = Target {
+            server: source.server.clone(),
+            project: source.project.clone(),
+            service: source.service.clone(),
+            service_type: source.kind.clone(),
+            section: "dumps".into(),
+            ..Default::default()
+        };
+        let unused = Target {
+            project: destination.project.clone(),
+            ..target.clone()
+        };
+        with_target_context(&target, |cx| {
+            let mut state = State {
+                initialized: true,
+                mode: Mode::Dumps,
+                source,
+                destination,
+                provider: "store".into(),
+                chosen_databases: BTreeSet::from(["database".into()]),
+                ..Default::default()
+            };
+            cx.backend.deletions.push(unused.clone());
+            prepare(&mut state, cx);
+            assert!(
+                cx.busy("prepare"),
+                "unused deleted destination must not block source-only dump preflight"
+            );
+            finish_operation(&mut state, cx, "prepare");
+            let review = state
+                .review
+                .as_ref()
+                .expect("real dump preflight must reach review");
+            assert!(matches!(&review.job, Job::Dump { databases } if databases == &["database"]));
+            assert!(state.destination.deleted);
+            assert!(!state.review_invalidated);
+            // A repeated notice for the unused endpoint must not invalidate an already prepared dump.
+            cx.backend.deletions.push(unused);
+            state.sync_deletions(&target, &cx.backend.deletions);
+            assert!(!state.review_invalidated);
+            cx.backend.deletions.push(target.clone());
+            let ctx = egui::Context::default();
+            let size = egui::vec2(1280.0, 900.0);
+            let (output, _) = data_frame(&ctx, &mut state, cx, size, Vec::new(), false);
+            click_data(
+                &ctx,
+                &mut state,
+                cx,
+                size,
+                painted_text(&output, "Confirm").0.center(),
+                false,
+            );
+            assert!(state.review_invalidated);
+            assert!(state.review.is_some());
+            assert!(!cx.busy("execute"));
+            state.review = None;
+            let before = cx.backend.tasks.len();
+            prepare(&mut state, cx);
+            assert_eq!(
+                cx.backend.tasks.len(),
+                before,
+                "known-missing live source must not dispatch preflight"
+            );
+            assert!(state.error.is_some());
+        });
+        project.assert_hits(1);
+        inspect.assert_hits(1);
+    }
+    #[test]
+    fn deletion_state_stored_restores_allow_missing_origin_but_require_live_destination() {
+        use httpmock::{Method::POST, MockServer};
+        for mode in [Mode::Restore, Mode::BackupRestore] {
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.method(POST).path("/api/rpc/storageProviders/common/list");
+                then.status(200).json_body(json!({"json":[{
+                    "id":"store-id","name":"store","type":"s3","endpoint":"https://objects.invalid","bucket":"backups"
+                }]}));
+            });
+            let project = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/projects/inspectProject")
+                    .json_body(json!({"json":{"projectName":"destination"}}));
+                then.status(200)
+                    .json_body(json!({"json":{"services":[{"name":"db","type":"mysql"}]}}));
+            });
+            server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/services/mysql/inspectService")
+                    .json_body(json!({"json":{"projectName":"destination","serviceName":"db"}}));
+                then.status(200)
+                    .json_body(json!({"json":{"image":"mysql:8"}}));
+            });
+            server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/databaseBackups/getServiceDatabases");
+                then.status(200).json_body(json!({"json":["database"]}));
+            });
+            let mut source = endpoint(&server.base_url(), "source", "db");
+            source.kind = "mysql".into();
+            let mut destination = endpoint(&server.base_url(), "destination", "db");
+            destination.kind = "mysql".into();
+            let target = Target {
+                server: source.server.clone(),
+                project: "source".into(),
+                service: "db".into(),
+                service_type: "mysql".into(),
+                section: "restore".into(),
+                ..Default::default()
+            };
+            with_target_context(&target, |cx| {
+                let mut state = State {
+                    initialized: true,
+                    mode,
+                    source,
+                    destination,
+                    destination_provider: "store".into(),
+                    destination_database: "database".into(),
+                    backup_engine: "mysql".into(),
+                    backup_engine_confirmed: true,
+                    selected_backup: Some(0),
+                    selected_dump: Some(0),
+                    dumps: vec![SavedDump {
+                        key: "saved.sql.zst".into(),
+                        provider: "store".into(),
+                        origin: "source/db".into(),
+                    }],
+                    backups: vec![SavedBackup {
+                        database: "database".into(),
+                        provider: Provider {
+                            id: "store-id".into(),
+                            name: "store".into(),
+                            kind: "s3".into(),
+                            endpoint: "https://objects.invalid".into(),
+                            bucket: "backups".into(),
+                        },
+                        path: "saved-backup.sql".into(),
+                        origin: "source/db".into(),
+                        when: String::new(),
+                        kind: "mysql".into(),
+                    }],
+                    ..Default::default()
+                };
+                cx.backend.deletions.push(target.clone());
+                prepare(&mut state, cx);
+                assert!(
+                    cx.busy("prepare"),
+                    "stored artifacts do not require their original live service"
+                );
+                finish_operation(&mut state, cx, "prepare");
+                assert!(
+                    state.review.is_some(),
+                    "stored restore preflight must reach a real review"
+                );
+                assert!(!state.deleted());
+                assert!(!state.review_invalidated);
+                assert!(state.source.deleted);
+                cx.backend.deletions.push(target.clone());
+                state.sync_deletions(&target, &cx.backend.deletions);
+                assert!(
+                    !state.review_invalidated,
+                    "origin removal must not invalidate stored-restore review"
+                );
+                cx.backend.deletions.push(Target {
+                    project: "destination".into(),
+                    ..target.clone()
+                });
+                state.sync_deletions(&target, &cx.backend.deletions);
+                assert!(state.review_invalidated);
+                let before = cx.backend.tasks.len();
+                prepare(&mut state, cx);
+                assert_eq!(cx.backend.tasks.len(), before);
+                assert!(state.error.is_some());
+            });
+            project.assert_hits(1);
+        }
+    }
+    #[test]
+    fn deletion_state_collection_reads_distinguish_project_from_service_removal() {
+        use httpmock::{Method::POST, MockServer};
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/rpc/projects/inspectProject");
+            then.status(200).json_body(json!({"json":{"services":[]}}));
+        });
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/mysql/inspectService");
+            then.status(200)
+                .json_body(json!({"json":{"name":"db","type":"mysql","env":""}}));
+        });
+        for mode in [Mode::Export, Mode::ProjectDiff, Mode::Diff] {
+            for (project, service) in [
+                ("source", "db"),
+                ("destination", "db"),
+                ("source", ""),
+                ("destination", ""),
+                ("source", "unselected"),
+            ] {
+                let mut source = endpoint(&server.base_url(), "source", "db");
+                source.kind = "mysql".into();
+                let mut destination = endpoint(&server.base_url(), "destination", "db");
+                destination.kind = "mysql".into();
+                let target = Target {
+                    server: source.server.clone(),
+                    project: "source".into(),
+                    service: "db".into(),
+                    service_type: "mysql".into(),
+                    ..Default::default()
+                };
+                let allowed = match mode {
+                    Mode::Export => !(project == "source" && service.is_empty()),
+                    Mode::ProjectDiff => !service.is_empty(),
+                    Mode::Diff => service == "unselected",
+                    _ => unreachable!(),
+                };
+                with_target_context(&target, |cx| {
+                    let mut state = State {
+                        initialized: true,
+                        mode,
+                        source,
+                        destination,
+                        ..Default::default()
+                    };
+                    cx.backend.deletions.push(Target {
+                        project: project.into(),
+                        service: service.into(),
+                        service_type: if service.is_empty() { "" } else { "mysql" }.into(),
+                        ..target.clone()
+                    });
+                    if mode == Mode::Export {
+                        export(&mut state, cx);
+                    } else {
+                        compare(&mut state, cx);
+                    }
+                    if allowed {
+                        finish_operation(
+                            &mut state,
+                            cx,
+                            if mode == Mode::Export {
+                                "export"
+                            } else {
+                                "comparison"
+                            },
+                        );
+                        assert!(state.error.is_none());
+                        assert!(if mode == Mode::Export {
+                            state.export.is_some()
+                        } else {
+                            state.compared
+                        });
+                    } else {
+                        assert!(
+                            cx.backend.tasks.is_empty(),
+                            "known-missing resources used by this operation must not dispatch"
+                        );
+                        assert!(state.error.is_some());
+                    }
+                });
+            }
+        }
+    }
+    #[test]
+    fn deletion_state_configuration_transfers_use_requested_collection_and_captured_services() {
+        use httpmock::{Method::POST, MockServer};
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/projects/inspectProject")
+                .json_body(json!({"json":{"projectName":"new-project"}}));
+            then.status(200).json_body(json!({"json":{"services":[]}}));
+        });
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/projects/listProjectsAndServices");
+            then.status(200)
+                .json_body(json!({"json":{"projects":[],"services":[]}}));
+        });
+        for (mode, whole_project) in [
+            (Mode::Clone, false),
+            (Mode::Migrate, true),
+            (Mode::Migrate, false),
+        ] {
+            let mut source = endpoint(&server.base_url(), "source", "old");
+            source.kind = "mysql".into();
+            source.services = vec![
+                Service {
+                    project: "source".into(),
+                    name: "old".into(),
+                    kind: "mysql".into(),
+                },
+                Service {
+                    project: "source".into(),
+                    name: "live".into(),
+                    kind: "mysql".into(),
+                },
+            ];
+            let mut destination = endpoint(
+                &server.base_url(),
+                "unused-old-project",
+                "unused-old-service",
+            );
+            destination.kind = "mysql".into();
+            let target = Target {
+                server: source.server.clone(),
+                project: "source".into(),
+                service: "old".into(),
+                service_type: "mysql".into(),
+                ..Default::default()
+            };
+            with_target_context(&target, |cx| {
+                let mut state = State {
+                    initialized: true,
+                    mode,
+                    source,
+                    destination,
+                    whole_project,
+                    new_project: "new-project".into(),
+                    new_service: "new-service".into(),
+                    ..Default::default()
+                };
+                cx.backend.deletions.push(Target {
+                    project: "unused-old-project".into(),
+                    service: String::new(),
+                    service_type: String::new(),
+                    ..target.clone()
+                });
+                if mode == Mode::Migrate {
+                    cx.backend.deletions.push(target.clone());
+                }
+                prepare(&mut state, cx);
+                if mode == Mode::Migrate && !whole_project {
+                    assert!(
+                        cx.backend.tasks.is_empty(),
+                        "single-service migration must reject its missing live source"
+                    );
+                    assert!(state.error.is_some());
+                    return;
+                }
+                finish_operation(&mut state, cx, "prepare");
+                let review = state
+                    .review
+                    .as_ref()
+                    .expect("actual requested targets must reach preflight review");
+                assert_eq!(review.destination.project, "new-project");
+                assert!(!review.destination.project_deleted);
+                if mode == Mode::Migrate {
+                    assert!(matches!(&review.job, Job::Migrate { services }
+                        if services.len() == 1 && services[0].name == "live"));
+                    cx.backend.deletions.push(target.clone());
+                    state.sync_deletions(&target, &cx.backend.deletions);
+                    assert!(
+                        !state.review_invalidated,
+                        "removed service is not among the captured migration inputs"
+                    );
+                    cx.backend.deletions.push(Target {
+                        service: "live".into(),
+                        ..target.clone()
+                    });
+                } else {
+                    // The destination service is newly created; only its existing project collection is live.
+                    cx.backend.deletions.push(Target {
+                        project: "new-project".into(),
+                        service: "irrelevant".into(),
+                        ..target.clone()
+                    });
+                    state.sync_deletions(&target, &cx.backend.deletions);
+                    assert!(!state.review_invalidated);
+                    cx.backend.deletions.push(Target {
+                        project: "new-project".into(),
+                        service: String::new(),
+                        service_type: String::new(),
+                        ..target.clone()
+                    });
+                }
+                state.sync_deletions(&target, &cx.backend.deletions);
+                assert!(
+                    state.review_invalidated,
+                    "removal of an actual captured resource must invalidate review"
+                );
+            });
+        }
+    }
+    #[test]
+    fn deletion_state_captured_transfer_destination_blocks_confirm_without_retargeting() {
+        let server = httpmock::MockServer::start();
+        let mut source = endpoint(&server.base_url(), "source", "db");
+        source.kind = "mysql".into();
+        let mut destination = endpoint(&server.base_url(), "destination", "db");
+        destination.kind = "mysql".into();
+        let target = Target {
+            server: source.server.clone(),
+            project: source.project.clone(),
+            service: source.service.clone(),
+            service_type: source.kind.clone(),
+            section: "copy".into(),
+            ..Default::default()
+        };
+        let deleted = Target {
+            server: destination.server.clone(),
+            project: destination.project.clone(),
+            service: destination.service.clone(),
+            service_type: destination.kind.clone(),
+            ..Default::default()
+        };
+        with_target_context(&target, |cx| {
+            let mut state = State {
+                initialized: true,
+                mode: Mode::Copy,
+                source: source.clone(),
+                destination: destination.clone(),
+                draft: true,
+                confirmation: destination.label(),
+                review: Some(Review {
+                    source,
+                    destination,
+                    provider: "storage".into(),
+                    facts: Vec::new(),
+                    copy_plan: None,
+                    job: Job::Copy {
+                        databases: vec!["database".into()],
+                    },
+                }),
+                ..Default::default()
+            };
+            cx.backend.deletions.push(deleted);
+            let ctx = egui::Context::default();
+            let size = egui::vec2(1280.0, 900.0);
+            let (output, _) = data_frame(&ctx, &mut state, cx, size, Vec::new(), false);
+            let pos = painted_text(&output, "Confirm").0.center();
+            click_data(&ctx, &mut state, cx, size, pos, false);
+            assert!(state.review_invalidated);
+            let review = state.review.as_ref().expect("blocked review is retained");
+            assert_eq!(review.source.project, "source");
+            assert_eq!(review.destination.project, "destination");
+            assert!(state.draft);
+            assert!(
+                !state.deleted,
+                "a secondary endpoint deletion must not retarget the source document"
+            );
+            assert!(state.destination.deleted);
+            assert!(!cx.backend.tasks.iter().any(|task| task.label.contains('→')));
+            assert!(!cx.busy("execute"));
+        });
+    }
+    #[test]
+    fn deletion_state_late_data_recovery_cannot_revive_a_newly_deleted_document() {
+        let source = endpoint("https://fixture.invalid", "project", "db");
+        let target = Target {
+            server: source.server.clone(),
+            project: "project".into(),
+            service: "db".into(),
+            service_type: "mysql".into(),
+            section: "database".into(),
+            ..Default::default()
+        };
+        with_target_context(&target, |cx| {
+            let mut state = State {
+                initialized: true,
+                deleted: true,
+                recovering: true,
+                ..Default::default()
+            };
+            state.browser.query = "SELECT exact_unsaved_draft".into();
+            cx.background("deleted-recovery", "old recovery", || {
+                Ok(Payload::Json(json!({"name":"db"})))
+            });
+            finish_operation(&mut state, cx, "deleted-recovery");
+            cx.backend.deletions.push(target.clone());
+            let ctx = egui::Context::default();
+            data_frame(
+                &ctx,
+                &mut state,
+                cx,
+                egui::vec2(1280.0, 900.0),
+                Vec::new(),
+                false,
+            );
+            assert!(
+                state.deleted,
+                "a recovery predating the latest deletion cannot release the document"
+            );
+            assert!(!state.recovering);
+            assert_eq!(state.browser.query, "SELECT exact_unsaved_draft");
+        });
     }
 
     #[test]
