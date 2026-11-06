@@ -22,11 +22,16 @@ fn transfer_stamp(now: &chrono::DateTime<chrono::Utc>) -> String {
             random.hash_one((std::time::SystemTime::now(), 1u8)),
         )
     });
-    let sequence = NEXT
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-            next.checked_add(1)
-        })
-        .expect("transfer sequence exhausted");
+    let mut sequence = NEXT.load(Ordering::Relaxed);
+    loop {
+        let next = sequence
+            .checked_add(1)
+            .expect("transfer sequence exhausted");
+        match NEXT.compare_exchange_weak(sequence, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(current) => sequence = current,
+        }
+    }
     format!(
         "{}_{:08x}{:016x}{:016x}{sequence:016x}",
         now.format("%Y%m%d-%H%M%S"),
