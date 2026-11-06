@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional native desktop app for Linux x86_64, macOS Apple Silicon/Intel and
+  Windows x86_64. Its mouse-first workspace reuses saved connections and supports
+  server editing, project/service search, reported state, service details/logs and
+  start/stop/restart with confirmation for disruptive actions. CLI/TUI workflows
+  remain available separately; this does not claim full TUI feature parity.
+- Desktop build CI and separate release archives, including an ad-hoc-signed,
+  non-notarized macOS `.app`. Manual release runs remain artifacts-only; publishing
+  requires the complete CLI and desktop artifact sets.
+
 ## [0.98.23] — 2026-09-27
 
 ### Fixed

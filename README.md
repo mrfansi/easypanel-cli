@@ -6,13 +6,17 @@
 [![Release](https://img.shields.io/github/v/release/mrfansi/easypanel-cli?sort=semver)](https://github.com/mrfansi/easypanel-cli/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/mrfansi/easypanel-cli)](LICENSE)
 
-**Manage many [EasyPanel](https://easypanel.io) hosts from one terminal** — a Rust CLI and a full-screen TUI.
+**Manage many [EasyPanel](https://easypanel.io) hosts from one place** — a Rust CLI, full-screen TUI, and optional native desktop app.
 
 </div>
 
 EasyPanel's web panel shows you one server at a time. This shows you all of them: every
 host's CPU, memory and disk side by side, every service across every project in one
 searchable table, and every domain on the box — without clicking through a hierarchy.
+
+Prefer a graphical interface? The [native desktop app](#native-desktop) has a
+mouse-first connection sidebar, project navigation, searchable services and a
+details/logs workspace. It is not a terminal wrapper or a copy of the TUI layout.
 
 ## 📸 Screenshots
 
@@ -30,7 +34,7 @@ searchable table, and every domain on the box — without clicking through a hie
 
 <sub>The screenshots are the real TUI, rendered to SVG with [`docs/ansi2svg.py`](docs/ansi2svg.py) from a throwaway demo project; the server label is renamed. Regenerate with `tmux capture-pane -e -p | python3 docs/ansi2svg.py "Title" > out.svg`.</sub>
 
-**Things it does that the web panel can't, or can't from one screen:**
+**CLI/TUI features — the desktop app has the focused scope described below:**
 
 - **Clone a service** (`c`) — copy a service's whole config (image/source, build, env,
   resources, mounts, ports, and a database's advanced config file) into a new service, in
@@ -111,7 +115,7 @@ searchable table, and every domain on the box — without clicking through a hie
 
 ## Install
 
-Download a binary from [Releases](https://github.com/mrfansi/easypanel-cli/releases)
+Download a CLI binary from [Releases](https://github.com/mrfansi/easypanel-cli/releases)
 (linux-x86_64, darwin-arm64, darwin-x86_64), or build it:
 
 ```bash
@@ -138,12 +142,134 @@ easypanel man > ~/.local/share/man/man1/easypanel.1
 man easypanel
 ```
 
-Release tarballs ship `easypanel.1` alongside the binary, and `install.sh` installs it
-when it finds a writable `man1` directory.
+CLI release tarballs ship `easypanel.1` alongside the binary, and `install.sh`
+installs it when it finds a writable `man1` directory.
+
+### Native desktop
+
+The optional `easypanel-desktop` binary is a native Rust eframe/egui application
+for Linux, macOS and Windows; it does not need a browser, terminal UI or local web
+server. The CLI/TUI remain separate and do not require the desktop feature.
+
+Desktop core workflows:
+
+- Add or edit a connection with a masked API token; reuse existing saved servers.
+- Choose a server/project, search services, refresh and inspect service details.
+- Read reported service state (unavailable state is shown as unknown).
+- Start, stop or restart supported services; stop/restart ask for confirmation.
+- Read, refresh and copy service logs.
+
+This is **not full TUI parity**: embedded terminals, database browsing, migration,
+Cloudflare management and the other advanced terminal workflows above remain in
+the CLI/TUI. There is no desktop updater or telemetry.
+
+#### Build and run locally
+
+Use **Rust 1.95 or newer** with the host platform's C/C++ linker and SDK:
+
+- **macOS:** Xcode Command Line Tools (`xcode-select --install`). Desktop packages
+  target macOS 11 or later and need an OpenGL-capable graphical session.
+- **Windows x86_64:** Rust's `x86_64-pc-windows-msvc` toolchain plus Visual Studio
+  Build Tools' **Desktop development with C++** workload and Windows SDK.
+- **Linux x86_64:** a graphical X11 or Wayland session, OpenGL/EGL-capable graphics
+  driver, and development libraries. On Ubuntu/Debian:
+
+  ```bash
+  sudo apt-get update
+  sudo apt-get install -y build-essential pkg-config libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libegl1-mesa-dev libgl1-mesa-dev
+  ```
+
+  These include [eframe's Linux prerequisites](https://github.com/emilk/egui/blob/0.37.0/crates/eframe/README.md)
+  plus X11/Wayland/OpenGL development libraries. At runtime, the corresponding
+  X11/XCB or Wayland libraries, xkbcommon and OpenGL/EGL driver must be installed;
+  a headless terminal alone cannot display the app. Linux release builds use
+  Ubuntu 22.04 and are not static/musl or universally portable binaries; older
+  distributions may need a local build.
+
+From the repository root (all platforms):
+
+```bash
+cargo run --locked --features desktop --bin easypanel-desktop
+cargo run --locked --features desktop --bin easypanel-desktop -- --config /path/to/servers.json
+```
+
+For example, an isolated configuration on Windows PowerShell:
+
+```powershell
+cargo run --locked --features desktop --bin easypanel-desktop -- --config "$env:USERPROFILE\.config\easypanel\desktop-servers.json"
+```
+
+Without `--config`, desktop uses exactly the CLI/TUI's existing
+`ServerConfig::default_path`: `$HOME/.config/easypanel/servers.json`, falling back
+to `%USERPROFILE%\.config\easypanel\servers.json` when `HOME` is absent (normally
+Windows). Existing server entries and SSH settings are reused, not imported into
+a second store; desktop selection does not change the CLI's default server.
+The connection editor does not configure SSH hops; existing tunnel settings are
+preserved. Tunnel-backed connections additionally need the system `ssh` executable
+and the connection's host-trust/authentication setup.
+
+The file contains API tokens and potentially SSH secrets in plaintext. Unix
+writes use mode `0600`; on Windows, protect its folder with your account's ACLs.
+Do not share it or include it in a release archive. Use `--config` for a separate
+file rather than experimenting against your normal credentials.
+
+#### Desktop packages
+
+Release desktop artifacts are separate from the three existing CLI tarballs:
+
+| Platform | Artifact |
+|---|---|
+| Linux x86_64 | `easypanel-desktop-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS Apple Silicon | `easypanel-desktop-aarch64-apple-darwin.zip` |
+| macOS Intel | `easypanel-desktop-x86_64-apple-darwin.zip` |
+| Windows x86_64 | `easypanel-desktop-x86_64-pc-windows-msvc.zip` |
+
+Linux archives contain the executable; extract and run `./easypanel-desktop`.
+Windows archives contain `easypanel-desktop.exe`; extract before launching. A
+working graphics driver and the Microsoft Visual C++ runtime required by your
+MSVC build must be present. Windows packages are not Authenticode-signed.
+
+macOS archives contain a real **EasyPanel.app** bundle; extract and open it or
+copy it to Applications. It is **ad-hoc signed only, not Developer ID signed or
+notarized**. Downloaded builds may be blocked by Gatekeeper; only approve a build
+you trust using macOS's normal security review. Packaging does not disable
+Gatekeeper, remove quarantine or supply a notarization ticket.
+
+To produce the same packages locally, build with an explicit target, then run
+the platform's packaging script. These commands do not install or publish:
+
+```bash
+# Linux x86_64
+rustup target add x86_64-unknown-linux-gnu
+cargo build --locked --release --features desktop --bin easypanel-desktop --target x86_64-unknown-linux-gnu
+bash scripts/package-desktop.sh x86_64-unknown-linux-gnu
+
+# macOS: choose aarch64-apple-darwin or x86_64-apple-darwin
+rustup target add aarch64-apple-darwin
+MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --locked --release --features desktop --bin easypanel-desktop --target aarch64-apple-darwin
+bash scripts/package-desktop.sh aarch64-apple-darwin
+```
+
+```powershell
+# Windows x86_64, in PowerShell
+rustup target add x86_64-pc-windows-msvc
+cargo build --locked --release --features desktop --bin easypanel-desktop --target x86_64-pc-windows-msvc
+./scripts/package-desktop.ps1
+```
+
+Packages are written to `dist/`. The Unix script uses system `tar` on Linux and
+`plutil`, `codesign`, `ditto` and `unzip` on macOS; Windows uses PowerShell's
+`Compress-Archive`. No bundler or installer is required. Cross-building an Intel
+macOS bundle on Apple Silicon does not verify it runs on Intel hardware.
+The CI matrix builds all four desktop targets independently of the Unix CLI.
+The release workflow packages both sets and requires exactly seven nonempty
+archives before tag-triggered publication. **Manual workflow runs only build,
+package and check artifacts, even when dispatched against a tag.**
 
 ## Configure
 
-Credentials live in `~/.config/easypanel/servers.json`, mode `0600`.
+Credentials live in `~/.config/easypanel/servers.json`, mode `0600` on Unix.
+See [desktop configuration](#build-and-run-locally) for Windows and `--config`.
 
 ```bash
 easypanel server add prod --url https://panel.example.com --token <TOKEN>
