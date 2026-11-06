@@ -30,6 +30,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Share forms, validation, operations and session transport across CLI/TUI/desktop
   without routing graphical workflows through the terminal renderer.
+- Clear obsolete desktop connection validation errors after a corrected draft is
+  accepted for testing or saving, without replacing API/SSH operation feedback.
+- Correct service-kind environment editing and readback across native, TUI and
+  CLI, preserving file settings and exact content without hiding malformed
+  inspection responses.
+- Reconcile desktop selections against refreshed inventory and typed, exact
+  successful service/project deletions, including inactive documents and
+  completions after the originating tab closes. Keep deleted documents
+  target-bound with explicit inventory/recreation recovery; preserve failed
+  targets, unsaved drafts, prior results and running work.
+- Invalidate affected bulk/resource and transfer reviews without silently
+  changing captured targets. Explicit service recovery also refreshes inventory,
+  so a recreated target can receive a newly reviewed action.
+- Render CJK user text using validated system-font fallbacks while preserving
+  bundled UI and terminal fonts.
+- Block reconnecting a known-deleted service context and pause its log follow
+  without discarding output, live session input or Disconnect. Explicitly
+  recovered resources open new session documents instead of retargeting old ones.
 - Preserve Cloudflare Tunnel origin overrides in shared TUI/desktop route forms:
   integer-second durations, explicit false versus inheritance, empty-string proxy
   overrides and nested Access/unknown options survive unrelated edits. Reject
@@ -42,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reserve useful terminal output space in the default utility dock and keep
   Cloudflare breadcrumbs aligned with the active section. Avoid recursively
   locking focus state when opening a terminal.
+- Preserve full terminal scrollback when paging beyond one viewport or resizing
+  the dock, using the upstream VT parser's corrected visible-row iterator.
 - Launch native file choosers outside UI callbacks without blocking the desktop;
   cancellation does not report a completed save or transfer. Preserve requested
   content/target snapshots and reject stale editor or target results.
@@ -73,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clone/migrate database configuration with string-valued Advanced defaults when
   inspected command/image fields are absent, preserving explicit commands and
   environment/config files. Reject malformed Advanced fields before creation.
+- Preserve WordPress/box object environments and Compose inline/Git sources when
+  cloning or migrating configuration. Use Compose's source endpoints, never a
+  nonexistent Advanced endpoint; refuse unsupported configuration before creation
+  rather than silently losing it or reporting a complete migration.
 
 ### Security
 
