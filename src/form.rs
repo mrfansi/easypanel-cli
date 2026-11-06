@@ -2835,6 +2835,18 @@ mod tests {
     }
 
     #[test]
+    fn environment_editor_retains_exact_bytes_including_explicit_empty() {
+        for content in ["A=1\r\nSECRET=\" space \"\n\n", "\n", ""] {
+            let form = Form::new(
+                FormKind::ProjectCreate,
+                "Environment",
+                vec![Field::editor("Environment", content)],
+            );
+            assert_eq!(form.by_label("Environment"), content);
+        }
+    }
+
+    #[test]
     fn copy_target_and_blank_server_credentials_remain_safe() {
         assert!(validate_copy_target(("one", "project", "db"), ("one", "project", "db")).is_err());
         assert!(validate_copy_target(("one", "project", "db"), ("two", "project", "db")).is_ok());

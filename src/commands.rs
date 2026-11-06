@@ -1810,7 +1810,7 @@ pub fn service_env(
         "inspectService",
         json!({ "projectName": project, "serviceName": service }),
     )?;
-    let env = svc.get("env").and_then(Value::as_str).unwrap_or("");
+    let env = crate::operations::env_content(&svc)?;
     print!("{env}");
     if !env.ends_with('\n') {
         println!();

@@ -101,7 +101,23 @@ fn present(s: &str) -> Option<String> {
 
 /// Compare the two env blocks by key. Values never appear in the output.
 fn diff_env(a: &Value, b: &Value, out: &mut Vec<Difference>) {
-    let (ea, eb) = (env_map(a), env_map(b));
+    let (ea, eb) = match (env_map(a), env_map(b)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (a, b) => {
+            out.push(Difference {
+                what: "env (uncomparable)".into(),
+                left: Some(
+                    a.err()
+                        .map_or_else(|| "readable".into(), |error| error.to_string()),
+                ),
+                right: Some(
+                    b.err()
+                        .map_or_else(|| "readable".into(), |error| error.to_string()),
+                ),
+            });
+            return;
+        }
+    };
     let mut keys: Vec<&String> = ea.keys().chain(eb.keys()).collect();
     keys.sort();
     keys.dedup();
@@ -132,17 +148,15 @@ fn diff_env(a: &Value, b: &Value, out: &mut Vec<Difference>) {
 
 /// Env text ("KEY=value" lines) as a map, so comparison is by key and
 /// order-independent. A line with no `=` is a key with an empty value.
-fn env_map(v: &Value) -> BTreeMap<String, String> {
-    v.get("env")
-        .and_then(Value::as_str)
-        .unwrap_or("")
+fn env_map(v: &Value) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(crate::operations::env_content(v)?
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
         .map(|l| match l.split_once('=') {
             Some((k, val)) => (k.trim().to_string(), val.to_string()),
             None => (l.trim().to_string(), String::new()),
         })
-        .collect()
+        .collect())
 }
 
 /// Collections (domains, mounts, ports) are compared by COUNT, not contents.
@@ -338,14 +352,16 @@ pub fn export_project(project: &str, services: &[Value]) -> Value {
 }
 
 fn export_service(s: &Value) -> Value {
-    let mut env_keys: Vec<String> = env_map(s).into_keys().collect();
-    env_keys.sort();
+    let (env_keys, env_error) = match env_map(s) {
+        Ok(env) => (env.into_keys().collect::<Vec<_>>(), None),
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    };
     let domains: Vec<String> = s
         .get("domains")
         .and_then(Value::as_array)
         .map(|a| a.iter().map(crate::domains::domain_source).collect())
         .unwrap_or_default();
-    serde_json::json!({
+    let mut exported = serde_json::json!({
         "name": field(s, "/name"),
         "type": field(s, "/type"),
         "enabled": s.get("enabled").and_then(Value::as_bool).unwrap_or(true),
@@ -357,7 +373,11 @@ fn export_service(s: &Value) -> Value {
         "domains": domains,
         "mounts": s.get("mounts").map(redact_export_value).unwrap_or_else(|| serde_json::json!([])),
         "ports": s.get("ports").map(redact_export_value).unwrap_or_else(|| serde_json::json!([])),
-    })
+    });
+    if let Some(error) = env_error {
+        exported["envError"] = Value::String(error);
+    }
+    exported
 }
 
 /// Export-only redaction; cloning/migration must retain their operational inputs.
@@ -416,6 +436,32 @@ mod tests {
             "domains": [{}, {}], "mounts": [], "ports": [],
             "token": "secret-deploy-token"
         })
+    }
+
+    #[test]
+    fn env_kind_contract_compares_and_exports_object_content_without_secrets() {
+        let left = json!({"env":{"content":"# comment\r\nA=private-left\r\nB=keep\n"}});
+        let right = json!({"env":"B=keep\nA=private-right\n"});
+        let differences = diff(&left, &right);
+        assert_eq!(differences.len(), 1);
+        assert_eq!(differences[0].what, "env A");
+        let exported = export_project("p", &[left]);
+        assert_eq!(exported["services"][0]["env"], json!(["A", "B"]));
+        for output in [format!("{differences:?}"), exported.to_string()] {
+            assert!(!output.contains("private-"));
+        }
+        assert!(diff(&json!({"env":{"content":""}}), &json!({"env":""})).is_empty());
+    }
+
+    #[test]
+    fn env_kind_contract_reports_unknown_shapes_as_uncomparable_not_empty() {
+        let malformed = json!({"env":{"content":{"secret":"private-value"}}});
+        let differences = diff(&malformed, &malformed);
+        assert_eq!(differences.len(), 1);
+        assert_eq!(differences[0].what, "env (uncomparable)");
+        let exported = export_project("p", &[malformed]);
+        assert!(exported["services"][0]["envError"].is_string());
+        assert!(!format!("{differences:?}{exported}").contains("private-value"));
     }
 
     #[test]

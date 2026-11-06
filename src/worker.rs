@@ -2255,12 +2255,24 @@ pub(crate) fn handle_req(client: &EasypanelClient, req: Req, emit: &Emit) -> Res
             service,
             stype,
         } => {
+            if stype != "app" {
+                return Resp::Err(
+                    "Environment file paths are supported only for app services".into(),
+                );
+            }
             let grp = format!("services/{stype}");
             let ps = json!({ "projectName": project, "serviceName": service });
             match client.call(&grp, "inspectService", ps) {
                 Ok(cur) => {
-                    let env = cur.get("env").and_then(Value::as_str).unwrap_or("");
-                    let active = cur.get("dotEnvPath").and_then(Value::as_str).is_some();
+                    let env = match crate::operations::env_content(&cur) {
+                        Ok(env) => env,
+                        Err(error) => return Resp::Err(error.to_string()),
+                    };
+                    let active = match cur.get("dotEnvPath") {
+                        None | Some(Value::Null) => false,
+                        Some(Value::String(path)) if !path.is_empty() => true,
+                        _ => return Resp::Err("service dotEnvPath has an invalid value".into()),
+                    };
                     // Flip: on → turn off (dot None), off → turn on at ".env".
                     let dot = if active { None } else { Some(".env") };
                     match client.call(&grp, "updateEnv", env_body(&project, &service, env, dot)) {
@@ -3768,6 +3780,59 @@ fn created_backup_id(before: &Value, after: &Value, database: &str) -> Result<St
 mod tests {
     use super::*;
     use httpmock::prelude::*;
+
+    #[test]
+    fn env_kind_contract_file_toggle_rejects_non_apps_before_network() {
+        let client = EasypanelClient::new("http://127.0.0.1:1", "test-only");
+        let emit: Emit = Arc::new(|_| {});
+        for kind in ["wordpress", "box", "compose", "mysql"] {
+            let response = handle_req(
+                &client,
+                Req::EnvFileToggle {
+                    project: "p".into(),
+                    service: "site".into(),
+                    stype: kind.into(),
+                },
+                &emit,
+            );
+            assert!(matches!(response, Resp::Err(error) if error.contains("only for app")));
+        }
+    }
+
+    #[test]
+    fn env_kind_contract_file_toggle_preserves_observed_content_and_refuses_invalid_env() {
+        for env in [json!({"content":"A=1\r\n\n"}), json!({"content":false})] {
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.path("/api/rpc/services/app/inspectService");
+                then.status(200)
+                    .json_body(json!({"json":{"env":env,"dotEnvPath":".env"}}));
+            });
+            let save = server.mock(|when, then| {
+                when.path("/api/rpc/services/app/updateEnv").json_body(
+                    json!({"json":{"projectName":"p","serviceName":"site","env":"A=1\r\n\n"}}),
+                );
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let emit: Emit = Arc::new(|_| {});
+            let response = handle_req(
+                &EasypanelClient::new(&server.base_url(), "test-only"),
+                Req::EnvFileToggle {
+                    project: "p".into(),
+                    service: "site".into(),
+                    stype: "app".into(),
+                },
+                &emit,
+            );
+            if env["content"].is_string() {
+                assert!(matches!(response, Resp::Done(_, Refresh::None)));
+                save.assert_hits(1);
+            } else {
+                assert!(matches!(response, Resp::Err(error) if error.contains("env.content")));
+                save.assert_hits(0);
+            }
+        }
+    }
 
     #[test]
     fn fetch_and_delete_refresh_preserve_raw_collection_and_target() {

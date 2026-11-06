@@ -47,6 +47,24 @@ pub fn valid_name(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
+/// Inspection responses are untyped: retain either observed env representation,
+/// but never turn malformed remote content into an empty editor.
+pub fn env_content(service: &Value) -> Result<&str> {
+    anyhow::ensure!(service.is_object(), "service inspection must be an object");
+    match service.get("env") {
+        None | Some(Value::Null) => Ok(""),
+        Some(Value::String(content)) => Ok(content),
+        Some(Value::Object(env)) => match env.get("content") {
+            Some(Value::String(content)) => Ok(content),
+            None if env.is_empty() => Ok(""),
+            _ => Err(anyhow!("service env.content must be a string")),
+        },
+        _ => Err(anyhow!(
+            "service env must be a string or an object with string content"
+        )),
+    }
+}
+
 /// Write a service's env, whichever endpoint its type uses. app-ish types have
 /// `updateEnv`; databases keep env inside the Advanced block (`updateAdvanced`).
 /// Both replace the whole block they own, so inspect first and keep the fields we
@@ -61,34 +79,50 @@ pub fn save_env(
     let grp = format!("services/{stype}");
     let ps = json!({ "projectName": project, "serviceName": service });
     let cur = client.call(&grp, "inspectService", ps)?;
-    let (op, body) = if HAS_UPDATE_ENV.contains(&stype) {
-        let mut b = json!({ "projectName": project, "serviceName": service, "env": env });
-        // The server rejects a null/empty dotEnvPath, so "no file" = omit the field.
-        if let Some(dot) = cur.get("dotEnvPath").and_then(Value::as_str) {
-            b["dotEnvPath"] = json!(dot);
+    anyhow::ensure!(cur.is_object(), "service inspection must be an object");
+    let mut body = json!({ "projectName": project, "serviceName": service, "env": env });
+    let op = match stype {
+        "wordpress" | "box" => {
+            body["env"] = json!({ "content": env });
+            "updateEnv"
         }
-        ("updateEnv", b)
-    } else {
-        let mut b = json!({
-            "projectName": project,
-            "serviceName": service,
-            // image & command MUST be strings — null/omitted is rejected.
-            "image": cur.get("image").and_then(Value::as_str).unwrap_or(""),
-            "command": cur.get("command").and_then(Value::as_str).unwrap_or(""),
-            "env": env,
-        });
-        if let Some(cfg) = cur.get("configFile").and_then(Value::as_str) {
-            b["configFile"] = json!(cfg);
+        "app" | "compose" => {
+            // These are different file capabilities; neither belongs on WordPress/Box.
+            let key = if stype == "app" {
+                "dotEnvPath"
+            } else {
+                "createDotEnv"
+            };
+            if let Some(value) = cur.get(key).filter(|value| !value.is_null()) {
+                anyhow::ensure!(
+                    if stype == "app" {
+                        value.as_str().is_some_and(|path| !path.is_empty())
+                    } else {
+                        value.is_boolean()
+                    },
+                    "service {key} has an invalid value"
+                );
+                body[key] = value.clone();
+            }
+            "updateEnv"
         }
-        ("updateAdvanced", b)
+        kind if crate::lifecycle::is_database(kind) => {
+            // updateAdvanced replaces the block, not just env.
+            for key in ["image", "command", "configFile"] {
+                match cur.get(key) {
+                    Some(Value::String(value)) => body[key] = json!(value),
+                    None | Some(Value::Null) if key != "configFile" => body[key] = json!(""),
+                    None | Some(Value::Null) => {}
+                    _ => return Err(anyhow!("service {key} must be a string")),
+                }
+            }
+            "updateAdvanced"
+        }
+        _ => return Err(anyhow!("unsupported environment service type: {stype}")),
     };
     client.call(&grp, op, body)?;
     Ok(())
 }
-
-/// Service types with an `updateEnv` endpoint. The rest (mysql, postgres, redis, …)
-/// do have env, but as part of the Advanced block → `updateAdvanced`.
-pub const HAS_UPDATE_ENV: &[&str] = &["app", "box", "compose", "wordpress"];
 
 // ---------- Non-locking database dump / restore to object storage ----------
 //
@@ -1404,6 +1438,206 @@ mod tests {
             dump_dest(Some(dir.to_str().unwrap()), key),
             dir.join("db-20260101-101010.sql.gz")
         );
+    }
+
+    #[test]
+    fn env_kind_contract_reads_inspection_shapes_without_coercing_unknowns() {
+        for content in ["A=1\r\nB=\" space \"\n\n", "", "\n"] {
+            for service in [json!({"env":content}), json!({"env":{"content":content}})] {
+                assert_eq!(env_content(&service).unwrap(), content);
+            }
+        }
+        for service in [json!({}), json!({"env":null}), json!({"env":{}})] {
+            assert_eq!(env_content(&service).unwrap(), "");
+        }
+        for service in [
+            json!(null),
+            json!([]),
+            json!({"env":false}),
+            json!({"env":[]}),
+            json!({"env":{"content":null}}),
+            json!({"env":{"unknown":"private"}}),
+            json!({"env":{"content":{"secret":"private"}}}),
+        ] {
+            let error = env_content(&service).unwrap_err().to_string();
+            assert!(!error.contains("private"));
+        }
+    }
+
+    #[test]
+    fn env_kind_contract_save_and_readback_preserves_bytes_and_other_settings() {
+        use std::io::{BufRead, Read, Write};
+        use std::time::{Duration, Instant};
+        for kind in [
+            "app",
+            "wordpress",
+            "box",
+            "compose",
+            "mysql",
+            "mariadb",
+            "postgres",
+            "mongo",
+            "redis",
+        ] {
+            for content in ["A=1\r\nSECRET=\" space \"\n\n", ""] {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                listener.set_nonblocking(true).unwrap();
+                let url = format!("http://{}", listener.local_addr().unwrap());
+                let server = std::thread::spawn(move || {
+                    let mut stored = json!({"env":"OLD=keep\n"});
+                    let mut expected =
+                        json!({"projectName":"p","serviceName":"site","env":content});
+                    let operation = if crate::lifecycle::is_database(kind) {
+                        stored["image"] = json!("engine:stable");
+                        stored["command"] = json!("--keep-command");
+                        expected["image"] = stored["image"].clone();
+                        expected["command"] = stored["command"].clone();
+                        if matches!(kind, "mysql" | "mariadb") {
+                            stored["configFile"] = json!("[mysqld]\nmax_connections=200\n");
+                            expected["configFile"] = stored["configFile"].clone();
+                        }
+                        "updateAdvanced"
+                    } else {
+                        if matches!(kind, "wordpress" | "box") {
+                            stored["env"] = json!({"content":"OLD=keep\n"});
+                            expected["env"] = json!({"content":content});
+                        } else if kind == "app" {
+                            stored["dotEnvPath"] = json!("config/.env");
+                            expected["dotEnvPath"] = stored["dotEnvPath"].clone();
+                        } else {
+                            stored["createDotEnv"] = json!(false);
+                            expected["createDotEnv"] = json!(false);
+                        }
+                        "updateEnv"
+                    };
+                    for action in ["inspectService", operation, "inspectService"] {
+                        let deadline = Instant::now() + Duration::from_secs(5);
+                        let mut stream = loop {
+                            match listener.accept() {
+                                Ok((stream, _)) => break stream,
+                                Err(error)
+                                    if error.kind() == std::io::ErrorKind::WouldBlock
+                                        && Instant::now() < deadline =>
+                                {
+                                    std::thread::sleep(Duration::from_millis(5))
+                                }
+                                Err(error) => panic!("waiting for {kind}/{action}: {error}"),
+                            }
+                        };
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(3)))
+                            .unwrap();
+                        let mut reader = std::io::BufReader::new(&mut stream);
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        assert!(
+                            line.starts_with(&format!("POST /api/rpc/services/{kind}/{action} "))
+                        );
+                        let mut length = 0;
+                        loop {
+                            line.clear();
+                            assert!(reader.read_line(&mut line).unwrap() > 0);
+                            if line == "\r\n" {
+                                break;
+                            }
+                            if let Some((name, value)) = line.split_once(':') {
+                                if name.eq_ignore_ascii_case("content-length") {
+                                    length = value.trim().parse().unwrap();
+                                }
+                            }
+                        }
+                        let mut body = vec![0; length];
+                        reader.read_exact(&mut body).unwrap();
+                        drop(reader);
+                        let request: Value = serde_json::from_slice(&body).unwrap();
+                        let response = if action == operation {
+                            assert_eq!(request["json"], expected);
+                            stored["env"] = request["json"]["env"].clone();
+                            Value::Null
+                        } else {
+                            stored.clone()
+                        };
+                        let body = json!({"json":response}).to_string();
+                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                    }
+                    stored
+                });
+                let client = EasypanelClient::new(&url, "fixture");
+                save_env(&client, "p", "site", kind, content).unwrap();
+                let readback = client
+                    .call(
+                        &format!("services/{kind}"),
+                        "inspectService",
+                        json!({"projectName":"p","serviceName":"site"}),
+                    )
+                    .unwrap();
+                assert_eq!(env_content(&readback).unwrap(), content);
+                assert_eq!(readback, server.join().unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn env_kind_contract_keeps_server_refusals_as_errors() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.path("/api/rpc/services/wordpress/inspectService");
+            then.status(200)
+                .json_body(json!({"json":{"env":{"content":"OLD=1"}}}));
+        });
+        let refusal = server.mock(|when, then| {
+            when.path("/api/rpc/services/wordpress/updateEnv")
+                .json_body(
+                    json!({"json":{"projectName":"p","serviceName":"site","env":{"content":""}}}),
+                );
+            then.status(400)
+                .json_body(json!({"json":{"message":"Environment update refused"}}));
+        });
+        let client = EasypanelClient::new(&server.base_url(), "fixture");
+        let error = save_env(&client, "p", "site", "wordpress", "").unwrap_err();
+        assert!(error.to_string().contains("Environment update refused"));
+        assert_eq!(
+            error
+                .downcast_ref::<crate::client::ApiError>()
+                .unwrap()
+                .status,
+            400
+        );
+        refusal.assert();
+    }
+
+    #[test]
+    fn env_kind_contract_sends_canonical_payloads_without_changing_content() {
+        for kind in ["wordpress", "box", "compose"] {
+            for content in ["A=1\r\nSECRET=\" space \"\n\n", ""] {
+                let server = MockServer::start();
+                let stored = if kind == "compose" {
+                    json!(content)
+                } else {
+                    json!({"content": content})
+                };
+                server.mock(|when, then| {
+                    when.path(format!("/api/rpc/services/{kind}/inspectService"));
+                    then.status(200).json_body(json!({"json": {
+                        "env": stored, "dotEnvPath": ".env", "createDotEnv": true
+                    }}));
+                });
+                let mut expected = json!({
+                    "projectName": "p", "serviceName": "site", "env": stored
+                });
+                if kind == "compose" {
+                    expected["createDotEnv"] = json!(true);
+                }
+                let save = server.mock(|when, then| {
+                    when.path(format!("/api/rpc/services/{kind}/updateEnv"))
+                        .json_body(json!({"json": expected}));
+                    then.status(200).json_body(json!({"json": null}));
+                });
+                let client = EasypanelClient::new(&server.base_url(), "fixture");
+                save_env(&client, "p", "site", kind, content).unwrap();
+                save.assert();
+            }
+        }
     }
 
     /// A mysql service has no updateEnv endpoint — its env lives in the Advanced
