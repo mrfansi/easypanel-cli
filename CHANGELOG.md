@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Share forms, validation, operations and session transport across CLI/TUI/desktop
   without routing graphical workflows through the terminal renderer.
+- Preserve Cloudflare Tunnel origin overrides in shared TUI/desktop route forms:
+  integer-second durations, explicit false versus inheritance, empty-string proxy
+  overrides and nested Access/unknown options survive unrelated edits. Reject
+  malformed numeric settings before submission; clearing all overrides is explicit.
 - Recover partial service creation through desktop/TUI Source settings, retrying
   only the unfinished source or auto-deploy stage without creating the service again.
 - Keep service, host and Cloudflare editors/reviews within the document viewport
@@ -38,6 +42,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reserve useful terminal output space in the default utility dock and keep
   Cloudflare breadcrumbs aligned with the active section. Avoid recursively
   locking focus state when opening a terminal.
+- Launch native file choosers outside UI callbacks without blocking the desktop;
+  cancellation does not report a completed save or transfer. Preserve requested
+  content/target snapshots and reject stale editor or target results.
+- Reveal the active tab and its close button on activation, reopening or resize,
+  without continually overriding manual tab-strip scrolling.
+- Keep comparison partners and recorded backup sources/files in document identity,
+  so opening a different comparison or restore does not reuse an unrelated context.
+- Emphasize **Save changes** for unsaved service configuration and block Deploy,
+  Start and Restart until edits are resolved; compact headers and responsive
+  inventory tables leave more room for configuration.
+- Group data tasks into Database, Backups & data transfer and Configuration;
+  add query focus/split resizing and keep prepared transfer reviews separate
+  from editable inputs.
+- Show DNS TTL, proxy and priority facts in tables/reviews with validated edits
+  and operation-scoped feedback.
+- Return a successfully deleted Worker to the script list without retaining its
+  cached settings/deployments; reject late Worker metadata and errors from an
+  older selection or credential scope without resetting another active Worker.
+- Keep host breadcrumbs current, show snapshot age and task feedback, and use
+  concrete action labels. Make utility resizing visible and keyboard focus
+  consistent across documents and docked terminals.
 - Use per-run identifiers for new dump object keys and dump/restore temporary
   files, retaining historical dump-key parsing. Local dump downloads refuse existing
   paths and remove partial files on transfer failure.
@@ -45,6 +70,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restores/copies; show destructive scope and require typed confirmation.
   Recheck the confirmed facts before execution. Failed or timed-out transfers
   can leave partial writes; no rollback is promised.
+- Clone/migrate database configuration with string-valued Advanced defaults when
+  inspected command/image fields are absent, preserving explicit commands and
+  environment/config files. Reject malformed Advanced fields before creation.
 
 ### Security
 
