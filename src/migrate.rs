@@ -260,13 +260,49 @@ pub fn migrate_service(
         .call(&grp, "inspectService", ident.clone())
         .with_context(|| format!("couldn't read '{src_project}/{src_service}'"))?;
 
+    let mut create = service_body(&inspect, dst.project, dst.service);
+    for key in ["command", "image", "env"] {
+        match create.get(key) {
+            Some(Value::Null) => {
+                create.as_object_mut().unwrap().remove(key);
+            }
+            Some(value) => anyhow::ensure!(
+                value.is_string(),
+                "couldn't copy service configuration: source {key} must be a string"
+            ),
+            None => {}
+        }
+    }
+
+    let config = match inspect.get("configFile") {
+        Some(Value::Null) | None => "",
+        Some(value) => value
+            .as_str()
+            .context("couldn't copy config file: source configFile must be a string")?,
+    };
+    let (config, deferred) = defer_first_boot_blockers(config);
+    let advanced = if config.is_empty() {
+        None
+    } else {
+        let mut body = json!({
+            "projectName": dst.project,
+            "serviceName": dst.service,
+            "configFile": config,
+        });
+        // Match the other Advanced writers: absent/null means the image's default.
+        for key in ["command", "image", "env"] {
+            match inspect.get(key).filter(|value| !value.is_null()) {
+                Some(value) => body[key] = value.clone(),
+                None if key != "env" => body[key] = json!(""),
+                None => {}
+            }
+        }
+        Some(body)
+    };
+
     // 1) The service itself, config inline EXCEPT the source.
     dst.client
-        .call(
-            &grp,
-            "createService",
-            service_body(&inspect, dst.project, dst.service),
-        )
+        .call(&grp, "createService", create)
         .with_context(|| format!("couldn't create '{}/{}'", dst.project, dst.service))?;
 
     // 2) The source, separately — inline it would trigger a deploy.
@@ -292,20 +328,7 @@ pub fn migrate_service(
         }
     }
 
-    // 3) configFile (databases): carries the advanced config, e.g. MySQL
-    //    replication. updateAdvanced rejects null image/command, hence the
-    //    defaults rather than passing them straight through.
-    //    The config is copied IN FULL, except that the directives which would
-    //    stop a brand-new database initialising are commented out rather than
-    //    active — see defer_first_boot_blockers. Dropping them would lose
-    //    configuration the user asked to copy; leaving them on would guarantee a
-    //    service that can never boot and cannot be repaired afterwards.
-    let config = inspect
-        .get("configFile")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let (config_to_send, deferred) = defer_first_boot_blockers(config);
-    let config = config_to_send.as_str();
+    // 3) Copy configFile, commenting out only first-boot blockers.
     if !deferred.is_empty() {
         notes.push(format!(
             "⚠ config file copied, but {} left COMMENTED OUT — active, they stop a \
@@ -315,15 +338,7 @@ pub fn migrate_service(
             deferred.join(" + ")
         ));
     }
-    if !config.is_empty() {
-        let adv = json!({
-            "projectName": dst.project,
-            "serviceName": dst.service,
-            "command": inspect.get("command").cloned().unwrap_or(Value::Null),
-            "configFile": config,
-            "env": inspect.get("env").cloned().unwrap_or(Value::Null),
-            "image": inspect.get("image").cloned().unwrap_or(Value::Null),
-        });
+    if let Some(adv) = advanced {
         dst.client
             .call(&grp, "updateAdvanced", adv)
             .context("the service was created, but its config file failed to apply")?;
@@ -356,6 +371,233 @@ pub fn migrate_service(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_clone_rejects_malformed_advanced_fields_before_creation() {
+        use httpmock::prelude::*;
+
+        for config in [None, Some(""), Some("# fixture config\n")] {
+            for key in ["configFile", "command", "image", "env"] {
+                let server = MockServer::start();
+                let mut source = json!({
+                    "image": "mariadb:11", "command": "",
+                });
+                if let Some(config) = config {
+                    source["configFile"] = json!(config);
+                }
+                source[key] = json!({"unexpected": "object"});
+                let inspect = server.mock(|when, then| {
+                    when.path("/api/rpc/services/mariadb/inspectService");
+                    then.status(200).json_body(json!({"json": source}));
+                });
+                let mutation = server.mock(|when, then| {
+                    when.matches(|request| {
+                        request.path != "/api/rpc/services/mariadb/inspectService"
+                    });
+                    then.status(200).json_body(json!({"json": null}));
+                });
+                let client = EasypanelClient::new(&server.base_url(), "test-only");
+                let error = migrate_service(
+                    &client,
+                    "origin",
+                    "db",
+                    "mariadb",
+                    &Target {
+                        client: &client,
+                        project: "target",
+                        service: "clone",
+                    },
+                    false,
+                )
+                .unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains(&format!("source {key} must be a string")));
+                inspect.assert_hits(1);
+                mutation.assert_hits(0);
+            }
+        }
+    }
+
+    #[test]
+    fn config_clone_preserves_destination_defaults_and_explicit_commands() {
+        use std::io::{BufRead, Read, Write};
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use std::time::{Duration, Instant};
+
+        for config in [
+            None,
+            Some(Value::Null),
+            Some(json!("")),
+            Some(json!("# fixture config\n")),
+        ] {
+            for command in [
+                None,
+                Some(Value::Null),
+                Some(json!("")),
+                Some(json!("mariadbd --max-connections=321")),
+            ] {
+                let mut source = json!({
+                    "projectName": "origin", "name": "db", "type": "mariadb",
+                    "image": "mariadb:11",
+                });
+                if let Some(config) = &config {
+                    source["configFile"] = config.clone();
+                }
+                if let Some(command) = &command {
+                    source["command"] = command.clone();
+                    source["env"] = if command.is_null() {
+                        Value::Null
+                    } else {
+                        json!("SOURCE=1")
+                    };
+                }
+                let original = source.clone();
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                listener.set_nonblocking(true).unwrap();
+                let url = format!("http://{}", listener.local_addr().unwrap());
+                let done = Arc::new(AtomicBool::new(false));
+                let stopped = done.clone();
+                let server = std::thread::spawn(move || {
+                    let mut destination = Value::Null;
+                    let mut calls = Vec::new();
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while !stopped.load(Ordering::SeqCst) {
+                        let (mut stream, _) = match listener.accept() {
+                            Ok(connection) => connection,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < deadline, "clone fixture timed out");
+                                std::thread::sleep(Duration::from_millis(5));
+                                continue;
+                            }
+                            Err(error) => panic!("{error}"),
+                        };
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(3)))
+                            .unwrap();
+                        let mut reader = std::io::BufReader::new(&mut stream);
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        let path = line.split_whitespace().nth(1).unwrap().to_string();
+                        let mut length = 0;
+                        loop {
+                            line.clear();
+                            assert!(reader.read_line(&mut line).unwrap() > 0);
+                            if line == "\r\n" {
+                                break;
+                            }
+                            if let Some((name, value)) = line.split_once(':') {
+                                if name.eq_ignore_ascii_case("content-length") {
+                                    length = value.trim().parse().unwrap();
+                                }
+                            }
+                        }
+                        let mut bytes = vec![0; length];
+                        reader.read_exact(&mut bytes).unwrap();
+                        drop(reader);
+                        let body = serde_json::from_slice::<Value>(&bytes).unwrap()["json"].clone();
+                        calls.push(path.clone());
+                        let operation = path.strip_prefix("/api/rpc/services/mariadb/");
+                        let target =
+                            body["projectName"] == "target" && body["serviceName"] == "clone";
+                        // Canonical create fields are optional strings; Advanced requires command/image.
+                        let strings = ["command", "image", "env", "configFile"]
+                            .iter()
+                            .all(|key| body.get(*key).is_none_or(Value::is_string));
+                        let (status, response) = match operation {
+                            Some("inspectService")
+                                if body
+                                    == json!({
+                                        "projectName": "origin", "serviceName": "db"
+                                    }) =>
+                            {
+                                (200, source.clone())
+                            }
+                            Some("createService") if target && strings && destination.is_null() => {
+                                destination = json!({
+                                    "projectName": "target", "serviceName": "clone",
+                                    "command": "", "image": "mariadb:11",
+                                    "env": "DESTINATION_DEFAULT=1", "configFile": "",
+                                });
+                                destination
+                                    .as_object_mut()
+                                    .unwrap()
+                                    .extend(body.as_object().unwrap().clone());
+                                (200, Value::Null)
+                            }
+                            Some("updateAdvanced")
+                                if target
+                                    && strings
+                                    && body.get("command").is_some_and(Value::is_string)
+                                    && body.get("image").is_some_and(Value::is_string)
+                                    && !destination.is_null() =>
+                            {
+                                destination
+                                    .as_object_mut()
+                                    .unwrap()
+                                    .extend(body.as_object().unwrap().clone());
+                                (200, Value::Null)
+                            }
+                            _ => (
+                                400,
+                                json!({"message": "invalid canonical request or unexpected operation"}),
+                            ),
+                        };
+                        let response = json!({"json": response}).to_string();
+                        write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                    }
+                    (source, destination, calls)
+                });
+                let client = EasypanelClient::new(&url, "test-only");
+                let result = migrate_service(
+                    &client,
+                    "origin",
+                    "db",
+                    "mariadb",
+                    &Target {
+                        client: &client,
+                        project: "target",
+                        service: "clone",
+                    },
+                    false,
+                );
+                done.store(true, Ordering::SeqCst);
+                let (source, destination, calls) = server.join().unwrap();
+                assert!(result.unwrap().is_empty());
+                assert_eq!(source, original, "the source must remain untouched");
+                let copied_config = config.as_ref().and_then(Value::as_str).unwrap_or("");
+                assert_eq!(destination["configFile"], copied_config);
+                assert_eq!(
+                    destination["command"],
+                    command.as_ref().and_then(Value::as_str).unwrap_or("")
+                );
+                assert_eq!(destination["image"], "mariadb:11");
+                assert_eq!(
+                    destination["env"],
+                    if command.as_ref().is_some_and(Value::is_string) {
+                        "SOURCE=1"
+                    } else {
+                        "DESTINATION_DEFAULT=1"
+                    }
+                );
+                let mut expected = vec!["inspectService", "createService"];
+                if !copied_config.is_empty() {
+                    expected.push("updateAdvanced");
+                }
+                assert_eq!(
+                    calls,
+                    expected
+                        .iter()
+                        .map(|op| format!("/api/rpc/services/mariadb/{op}"))
+                        .collect::<Vec<_>>(),
+                    "no source, domain, deploy or data operations are allowed"
+                );
+            }
+        }
+    }
 
     #[test]
     fn service_body_drops_origin_identity_and_repoints() {
