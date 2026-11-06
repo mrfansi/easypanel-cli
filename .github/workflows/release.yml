@@ -31,7 +31,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --bin easypanel --target ${{ matrix.target }}
       - name: Package
         # Man page ikut di tarball supaya paket biner setara dengan `cargo install`.
         # Dibuat oleh biner yang baru dibangun; untuk target silang biner itu tak
@@ -56,6 +56,82 @@ jobs:
         with:
           name: easypanel-${{ matrix.target }}
           path: easypanel-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  build-desktop:
+    name: Desktop (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.target }}
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libegl1-mesa-dev libgl1-mesa-dev
+      - name: Build desktop only
+        run: cargo build --locked --release --features desktop --bin easypanel-desktop --target ${{ matrix.target }}
+      - name: Package Linux executable or macOS app
+        if: runner.os != 'Windows'
+        run: bash scripts/package-desktop.sh ${{ matrix.target }}
+      - name: Package Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-desktop.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easypanel-desktop-${{ matrix.target }}
+          path: dist/easypanel-desktop-${{ matrix.target }}.*
+          if-no-files-found: error
+
+  verify-artifacts:
+    needs: [build, build-desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: easypanel-*
+          path: dist
+          merge-multiple: true
+      # Also runs on workflow_dispatch: a manual rehearsal checks all seven files.
+      - name: Require the exact nonempty release artifact set
+        run: |
+          printf '%s\n' \
+            easypanel-x86_64-unknown-linux-gnu.tar.gz \
+            easypanel-aarch64-apple-darwin.tar.gz \
+            easypanel-x86_64-apple-darwin.tar.gz \
+            easypanel-desktop-x86_64-unknown-linux-gnu.tar.gz \
+            easypanel-desktop-aarch64-apple-darwin.zip \
+            easypanel-desktop-x86_64-apple-darwin.zip \
+            easypanel-desktop-x86_64-pc-windows-msvc.zip | sort > expected.txt
+          find dist -type f -printf '%P\n' | sort > actual.txt
+          diff -u expected.txt actual.txt
+          while IFS= read -r file; do
+            [ -s "dist/$file" ] || { echo "::error::$file is empty"; exit 1; }
+            case "$file" in
+              *.tar.gz) tar -tzf "dist/$file" > /dev/null ;;
+              *.zip) unzip -tq "dist/$file" ;;
+            esac
+          done < expected.txt
 
   # SATU job yang menerbitkan, setelah semua build selesai.
   #
@@ -66,9 +142,9 @@ jobs:
   # beruntung. Menerbitkan dari satu job menghapus balapannya, bukan menambal
   # gejalanya dengan retry.
   publish:
-    needs: build
-    # Hanya menerbitkan saat memang dipicu tag; run manual berhenti setelah build.
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, build-desktop, verify-artifacts]
+    # A manual run remains artifacts-only, even when dispatched against a tag.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       # Needed for the CHANGELOG; the artifacts alone carry no release notes.
@@ -76,6 +152,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: easypanel-*
           merge-multiple: true
       - name: Release notes from CHANGELOG
         # Every release up to v0.98.9 published with an empty body: the workflow
@@ -92,16 +169,10 @@ jobs:
           ' CHANGELOG.md > notes.md
           [ -s notes.md ] || { echo "::error::CHANGELOG has no section for $v"; exit 1; }
           cat notes.md
-      - name: Cek semua target ikut sebelum menerbitkan
-        # Rilis yang kehilangan satu platform lebih buruk daripada rilis yang
-        # gagal: ia terlihat berhasil sampai ada yang mengunduh dan tak menemukan
-        # binernya.
-        run: |
-          ls -l dist
-          for t in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-apple-darwin; do
-            [ -s "dist/easypanel-$t.tar.gz" ] || { echo "::error::$t hilang"; exit 1; }
-          done
       - uses: softprops/action-gh-release@v2
         with:
           body_path: notes.md
-          files: dist/*.tar.gz
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+          fail_on_unmatched_files: true
