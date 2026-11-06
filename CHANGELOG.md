@@ -32,8 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without routing graphical workflows through the terminal renderer.
 - Recover partial service creation through desktop/TUI Source settings, retrying
   only the unfinished source or auto-deploy stage without creating the service again.
-- Bound IDE chrome and editor working areas; keep edit actions separate from
-  scrolling content and avoid recursively locking focus state when opening a terminal.
+- Keep service, host and Cloudflare editors/reviews within the document viewport
+  with persistent actions and scrollable fields; retain drafts during inventory
+  recovery and let Escape dismiss open dropdowns before closing editors.
+- Reserve useful terminal output space in the default utility dock and keep
+  Cloudflare breadcrumbs aligned with the active section. Avoid recursively
+  locking focus state when opening a terminal.
 - Use per-run identifiers for new dump object keys and dump/restore temporary
   files, retaining historical dump-key parsing. Local dump downloads refuse existing
   paths and remove partial files on transfer failure.
