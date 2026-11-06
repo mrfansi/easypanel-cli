@@ -16,7 +16,7 @@ use crate::output::field;
 
 use super::app::Screen;
 use super::table::row_marker;
-use super::worker::View;
+use crate::worker::View;
 
 /// Everything the full-screen viewer is currently showing.
 ///
@@ -244,5 +244,25 @@ pub(super) fn backups_lines(v: &Value) -> Vec<String> {
         out
     } else {
         rows
+    }
+}
+
+/// Render a shared structured fetch only at the terminal boundary.
+pub(super) fn fetched_lines(view: View, data: &Value) -> Vec<String> {
+    let lines = match view {
+        View::Logs => crate::logs::format(data),
+        View::ProjectEnv => text_lines(data, "/project/env"),
+        View::Env => text_lines(data, "/env"),
+        View::ConfigFile => text_lines(data, "/configFile"),
+        View::Ports => ports_lines(data),
+        View::Mounts => mounts_lines(data),
+        View::Redirects => redirects_lines(data),
+        View::Source => source_lines(data),
+        View::Backups => backups_lines(data),
+    };
+    if lines.is_empty() {
+        vec!["(empty)".into()]
+    } else {
+        lines
     }
 }

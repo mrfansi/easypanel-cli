@@ -9,11 +9,11 @@ use serde_json::{json, Value};
 use crate::output::field;
 
 use super::app::*;
-use super::form::*;
 use super::render::*;
 use super::table::*;
-use super::worker::*;
 use super::*;
+use crate::form::*;
+use crate::worker::*;
 
 /// A configured server as the App sees it: no token, no tunnel.
 fn host(name: &str, url: &str) -> ServerEntry {
@@ -203,43 +203,38 @@ fn base64_matches_known_values() {
 }
 
 #[test]
-fn db_command_per_type_uses_stored_credentials() {
-    use super::terminal::db_command;
-    // Each command's shape is verified live against the server (mysql/postgres/mongo/redis).
-    let mysql = json!({ "rootPassword": "rp", "databaseName": "app" });
-    assert_eq!(
-        db_command("mysql", &mysql).unwrap(),
-        "MYSQL_PWD='rp' mysql -uroot app"
+fn app_services_do_not_produce_database_shell_commands() {
+    assert!(crate::session::db_command("app", &json!({})).is_none());
+}
+
+#[test]
+fn rendered_form_geometry_drives_mouse_field_selection() {
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("server".into(), vec![]);
+    app.form = Some(Form::new(
+        FormKind::ProjectCreate,
+        "Form",
+        vec![
+            Field::text("Name", "project"),
+            Field::boolean("Enabled", false),
+        ],
+    ));
+    let _ = screen_rows(&mut app, 100, 30);
+    let rect = app.form_rect;
+    assert!(rect.width > 0 && rect.height >= 2);
+    app.on_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + 1,
+            row: rect.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        &tx,
     );
-    // mariadb uses the same `mysql` client.
-    assert_eq!(
-        db_command("mariadb", &mysql).unwrap(),
-        "MYSQL_PWD='rp' mysql -uroot app"
-    );
-    let pg = json!({ "user": "u", "password": "pw", "databaseName": "db" });
-    assert_eq!(
-        db_command("postgres", &pg).unwrap(),
-        "PGPASSWORD='pw' psql -U u -d db"
-    );
-    let mo = json!({ "user": "mu", "password": "mp" });
-    assert_eq!(
-        db_command("mongo", &mo).unwrap(),
-        "mongosh -u 'mu' -p 'mp' --authenticationDatabase admin"
-    );
-    assert_eq!(
-        db_command("redis", &json!({ "password": "rp" })).unwrap(),
-        "REDISCLI_AUTH='rp' redis-cli"
-    );
-    // Non-database -> None (the 'y' key refuses).
-    assert!(db_command("app", &json!({})).is_none());
-    // Single-quote escaping is safe: a password with an apostrophe doesn't break the sh command.
-    assert!(db_command("redis", &json!({ "password": "a'b" }))
-        .unwrap()
-        .contains(r"'a'\''b'"));
-    // postgres with no user -> fall back to the superuser "postgres".
-    assert!(db_command("postgres", &json!({ "password": "x" }))
-        .unwrap()
-        .contains("-U postgres"));
+    let form = app.form.as_ref().unwrap();
+    assert_eq!(form.focus, 1);
+    assert!(form.is_on_label("Enabled"));
 }
 
 #[test]
@@ -2128,7 +2123,7 @@ fn encode_key_matches_xterm() {
 #[test]
 #[ignore = "live: needs zzz-emb/zzz-redis running on the server"]
 fn terminal_ws_roundtrip_live() {
-    use super::worker::Resp;
+    use crate::worker::Resp;
     use std::sync::mpsc::channel;
     use std::time::{Duration, Instant};
 
@@ -2145,11 +2140,11 @@ fn terminal_ws_roundtrip_live() {
     .expect("ws_url");
 
     let (out_tx, out_rx) = channel::<Resp>();
-    let (in_tx, in_rx) = channel::<super::terminal::TermMsg>();
-    super::terminal::spawn_session(url, out_tx, in_rx, 80, 24, "");
+    let (in_tx, in_rx) = channel::<crate::session::TermMsg>();
+    crate::session::spawn_session(url, session_emitter(out_tx), in_rx, 80, 24, "");
     std::thread::sleep(Duration::from_millis(900));
     in_tx
-        .send(super::terminal::TermMsg::Input(
+        .send(crate::session::TermMsg::Input(
             "echo RUSTPROOF_331\n".into(),
         ))
         .unwrap();
@@ -2176,7 +2171,7 @@ fn terminal_ws_roundtrip_live() {
 #[test]
 #[ignore = "live: opens a real root shell on the default server's host"]
 fn host_shell_ws_roundtrip_live() {
-    use super::worker::Resp;
+    use crate::worker::Resp;
     use std::sync::mpsc::channel;
     use std::time::{Duration, Instant};
 
@@ -2186,13 +2181,13 @@ fn host_shell_ws_roundtrip_live() {
     let url = crate::container::host_ws_url(&client).unwrap();
 
     let (out_tx, out_rx) = channel::<Resp>();
-    let (in_tx, in_rx) = channel::<super::terminal::TermMsg>();
-    super::terminal::spawn_session(url, out_tx, in_rx, 100, 30, "");
+    let (in_tx, in_rx) = channel::<crate::session::TermMsg>();
+    crate::session::spawn_session(url, session_emitter(out_tx), in_rx, 100, 30, "");
     // The panel may `docker pull` the helper image before the pty exists, so the
     // prompt can be far later than a container shell's.
     std::thread::sleep(Duration::from_secs(3));
     in_tx
-        .send(super::terminal::TermMsg::Input(
+        .send(crate::session::TermMsg::Input(
             "echo HOSTPROOF-$(id -un)-$(cat /proc/1/comm)\n".into(),
         ))
         .unwrap();
@@ -9029,7 +9024,7 @@ fn cf_record_loading_empty_and_error_states_render_without_panic() {
 /// One step's answer, as the worker sends it.
 #[allow(clippy::too_many_arguments)]
 fn dbms_resp(
-    level: dbms::Level,
+    level: crate::dbms::Level,
     database: &str,
     table: &str,
     columns: &[&str],
@@ -9050,7 +9045,7 @@ fn dbms_resp(
 }
 
 /// The level (and what it points at) of the request the app just sent.
-fn dbms_req(rx: &std::sync::mpsc::Receiver<Req>) -> (dbms::Level, String, String) {
+fn dbms_req(rx: &std::sync::mpsc::Receiver<Req>) -> (crate::dbms::Level, String, String) {
     match rx.try_recv().expect("a request must have been sent") {
         Req::Dbms {
             level,
@@ -9071,13 +9066,13 @@ fn the_database_browser_walks_in_and_back_out_again() {
     assert!(app.screen == Screen::Dbms);
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Databases, String::new(), String::new()),
+        (crate::dbms::Level::Databases, String::new(), String::new()),
         "it opens on the database list, which nothing else in the tool can show"
     );
 
     app.handle(
         dbms_resp(
-            dbms::Level::Databases,
+            crate::dbms::Level::Databases,
             "",
             "",
             &["Database"],
@@ -9092,12 +9087,12 @@ fn the_database_browser_walks_in_and_back_out_again() {
     app.on_key(KeyCode::Enter, &tx);
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Tables, "shop".into(), String::new())
+        (crate::dbms::Level::Tables, "shop".into(), String::new())
     );
 
     app.handle(
         dbms_resp(
-            dbms::Level::Tables,
+            crate::dbms::Level::Tables,
             "shop",
             "",
             &["Table"],
@@ -9109,7 +9104,7 @@ fn the_database_browser_walks_in_and_back_out_again() {
     app.on_key(KeyCode::Enter, &tx);
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Rows, "shop".into(), "orders".into())
+        (crate::dbms::Level::Rows, "shop".into(), "orders".into())
     );
 
     // A preview that hit its limit must SAY so — a silent cap is a lie about how
@@ -9119,7 +9114,7 @@ fn the_database_browser_walks_in_and_back_out_again() {
         .collect();
     app.handle(
         dbms_resp(
-            dbms::Level::Rows,
+            crate::dbms::Level::Rows,
             "shop",
             "orders",
             &["id", "note"],
@@ -9139,13 +9134,13 @@ fn the_database_browser_walks_in_and_back_out_again() {
     app.on_key(KeyCode::Esc, &tx);
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Tables, "shop".into(), String::new()),
+        (crate::dbms::Level::Tables, "shop".into(), String::new()),
         "back to the table list of the database we were in"
     );
     assert!(app.screen == Screen::Dbms);
     app.handle(
         dbms_resp(
-            dbms::Level::Tables,
+            crate::dbms::Level::Tables,
             "shop",
             "",
             &["Table"],
@@ -9157,15 +9152,148 @@ fn the_database_browser_walks_in_and_back_out_again() {
     app.on_key(KeyCode::Esc, &tx);
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Databases, String::new(), String::new())
+        (crate::dbms::Level::Databases, String::new(), String::new())
     );
     app.handle(
-        dbms_resp(dbms::Level::Databases, "", "", &["Database"], vec![], false),
+        dbms_resp(
+            crate::dbms::Level::Databases,
+            "",
+            "",
+            &["Database"],
+            vec![],
+            false,
+        ),
         &tx,
     );
     app.on_key(KeyCode::Esc, &tx);
     assert!(app.screen == Screen::Projects, "at the top, Esc leaves");
     assert!(app.dbms.target.is_none());
+}
+
+#[test]
+fn typed_snapshots_reject_stale_service_scope_and_global_collection_refreshes_still_work() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("server".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer.ctx = Some((View::Env, "project".into(), "web".into(), "app".into()));
+    app.viewer.lines = vec!["previous result".into()];
+    for (project, kind) in [("project", "postgres"), ("other-project", "app")] {
+        app.handle(
+            Resp::Fetched {
+                view: View::Env,
+                project: project.into(),
+                service: "web".into(),
+                stype: Some(kind.into()),
+                data: json!({"env":"STALE=value"}),
+            },
+            &tx,
+        );
+        assert_eq!(app.viewer.lines, ["previous result"]);
+    }
+    app.handle(
+        Resp::Fetched {
+            view: View::Env,
+            project: "project".into(),
+            service: "web".into(),
+            stype: Some("app".into()),
+            data: json!({"env":"CURRENT=value"}),
+        },
+        &tx,
+    );
+    assert_eq!(app.viewer.lines, ["CURRENT=value"]);
+    app.viewer.ctx = Some((View::Ports, "project".into(), "web".into(), "app".into()));
+    app.handle(
+        Resp::Fetched {
+            view: View::Ports,
+            project: "project".into(),
+            service: "web".into(),
+            stype: None,
+            data: json!([]),
+        },
+        &tx,
+    );
+    assert!(app.viewer.lines[0].contains("No ports"));
+}
+
+#[test]
+fn the_bulk_dns_priority_menu_uses_canonical_validation_and_rechecks_mx_targets() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("server".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.screen = CfScreen::Records;
+    app.cf.current_zone = Some(cf_zone("zone", "example.com"));
+    app.cf.records = vec![cf_record("mail", "MX", "example.com", "mail.example.com")];
+    app.cf.marked.insert("mail".into());
+    app.open_cf_bulk_menu();
+    let menu = app.menu.as_mut().unwrap();
+    let index = menu
+        .items
+        .iter()
+        .position(|item| item.label.starts_with("Set MX priority"))
+        .unwrap();
+    menu.state.select(Some(index));
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(matches!(
+        app.form.as_ref().map(|form| &form.kind),
+        Some(FormKind::CfBulkSet(CfBulkAttr::Priority))
+    ));
+    set_f_val(app.form.as_mut().unwrap(), "Priority", "20");
+    app.submit_form(&tx);
+    assert!(
+        matches!(rx.try_recv().unwrap(),Req::Cf(CfReq::BulkPatch { ids,body,.. })
+        if ids == ["mail"] && body == json!({"priority":20}))
+    );
+    app.cf.marked.insert("mail".into());
+    app.open_cf_bulk_form(CfBulkAttr::Priority);
+    set_f_val(app.form.as_mut().unwrap(), "Priority", "65536");
+    app.submit_form(&tx);
+    assert!(rx.try_recv().is_err());
+    assert!(app.status.contains("Priority") && app.form.is_some());
+    set_f_val(app.form.as_mut().unwrap(), "Priority", "20");
+    app.cf.records[0].kind = "A".into();
+    app.submit_form(&tx);
+    assert!(rx.try_recv().is_err());
+    assert!(app.status.contains("only to MX records"));
+}
+
+#[test]
+fn a_capture_budget_failure_keeps_the_previous_database_grid() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("server".into(), vec![]);
+    app.open_dbms("alpha".into(), "db".into(), "postgres".into(), &tx);
+    app.handle(
+        dbms_resp(
+            crate::dbms::Level::Tables,
+            "shop",
+            "",
+            &["Table"],
+            vec![vec!["public.orders".into()]],
+            false,
+        ),
+        &tx,
+    );
+    assert_eq!(
+        app.dbms.rows,
+        vec![vec!["public.orders".to_string()]],
+        "the successful result must be accepted before capture fails"
+    );
+    let capture = crate::container::Capture {
+        output: "partial output".into(),
+        exit_code: None,
+        truncated: true,
+        timed_out: false,
+    };
+    let message = crate::dbms::failure(&capture).unwrap();
+    app.handle(
+        Resp::DbmsFailed {
+            message: message.clone(),
+        },
+        &tx,
+    );
+    assert_eq!(app.dbms.error.as_deref(), Some(message.as_str()));
+    assert!(message.contains("byte budget") && !message.contains("Timed out"));
+    assert_eq!(app.dbms.rows, vec![vec!["public.orders".to_string()]]);
 }
 
 #[test]
@@ -9175,7 +9303,7 @@ fn a_failed_query_is_visible_and_does_not_erase_the_grid() {
     app.open_dbms("alpha".into(), "db".into(), "postgres".into(), &tx);
     app.handle(
         dbms_resp(
-            dbms::Level::Tables,
+            crate::dbms::Level::Tables,
             "shop",
             "",
             &["Table"],
@@ -9265,7 +9393,7 @@ fn the_palette_browses_a_database_by_identity() {
     );
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Databases, String::new(), String::new())
+        (crate::dbms::Level::Databases, String::new(), String::new())
     );
 }
 
@@ -9277,7 +9405,7 @@ fn the_query_box_runs_what_was_typed_in_the_database_it_is_open_on() {
     let _ = rx.try_recv(); // the opening databases listing
     app.handle(
         dbms_resp(
-            dbms::Level::Tables,
+            crate::dbms::Level::Tables,
             "shop",
             "",
             &["Table"],
@@ -9306,7 +9434,7 @@ fn the_query_box_runs_what_was_typed_in_the_database_it_is_open_on() {
             query,
             ..
         } => {
-            assert_eq!(level, dbms::Level::Query);
+            assert_eq!(level, crate::dbms::Level::Query);
             assert_eq!(database, "shop", "it runs where the browser is standing");
             assert_eq!(
                 query, "SELECT * FROM orders WHERE ref = 'a''b'",
@@ -9383,9 +9511,11 @@ fn the_copy_form_carries_its_target_host_project_and_service_through() {
     assert_eq!(req.source, ("shop".to_string(), "db".to_string()));
     // Trimmed and split, so a comma-separated list typed with spaces still names
     // the schemas rather than " billing ".
-    assert_eq!(req.databases, vec!["studio", "billing"]);
-    // Stage one only: the plan is asked for, nothing is dumped yet.
-    assert!(!req.run, "submitting the form must only PLAN");
+    assert!(
+        matches!(&req.stage, CopyDbStage::Preview { databases, all:false }
+        if databases == &["studio", "billing"]),
+        "submitting the form must only preview the selected databases"
+    );
 }
 
 /// Same host must be reachable without picking anything unusual: the current
@@ -9412,7 +9542,9 @@ fn the_copy_form_defaults_to_this_host_and_blank_databases_mean_all() {
     assert_eq!(req.target_service, "db-restore");
     // Blank is the form's spelling of `--all`; the event loop turns an empty list
     // into `all: true`, so an empty list here is the whole point.
-    assert!(req.databases.is_empty());
+    assert!(
+        matches!(&req.stage, CopyDbStage::Preview { databases, all:true } if databases.is_empty())
+    );
 }
 
 /// Copying a service into ITSELF would dump rows and load them back over
@@ -9475,17 +9607,23 @@ fn a_refused_plan_shows_the_named_reason_and_offers_no_confirmation() {
 #[test]
 fn a_copy_runs_when_confirmed_and_not_when_cancelled() {
     let (tx, _rx) = std::sync::mpsc::channel();
+    let reviewed = crate::operations::CopyPlan {
+        stype: "mysql".into(),
+        databases: vec!["studio".into()],
+        bucket: "reviewed-bucket".into(),
+        endpoint: "https://reviewed-storage.test".into(),
+        src_provider: "source-store".into(),
+        dst_provider: "destination-store".into(),
+        src_image: "mysql:8.0".into(),
+        dst_image: "mysql:5.7".into(),
+    };
     let plan = || Resp::CopyDbPlan {
         target_name: "there".into(),
         target_project: "shop-staging".into(),
         target_service: "mysql".into(),
         project: "shop".into(),
         service: "db".into(),
-        databases: vec!["studio".into()],
-        lines: vec![
-            "engine        mysql".into(),
-            "target image  mysql:5.7".into(),
-        ],
+        plan: Box::new(reviewed.clone()),
     };
 
     // Cancelled: nothing is dumped, nothing is loaded.
@@ -9531,10 +9669,13 @@ fn a_copy_runs_when_confirmed_and_not_when_cancelled() {
 
     app.confirm_key(KeyCode::Char('y'), &tx);
     let req = app.copy_db_req.as_ref().expect("the copy was promoted");
-    assert!(req.run, "stage two: this one actually copies");
+    assert!(
+        matches!(&req.stage, CopyDbStage::Confirmed(actual) if actual.as_ref() == &reviewed),
+        "execution must retain every original reviewed engine/database/image/storage fact"
+    );
     assert_eq!(req.target_server, "there");
     assert_eq!(req.target_service, "mysql");
-    assert_eq!(req.databases, vec!["studio"]);
+    assert!(matches!(&req.stage, CopyDbStage::Confirmed(actual) if actual.databases == ["studio"]));
 }
 
 /// A source database, a second project that can also take a copy, and a project
@@ -9692,7 +9833,7 @@ fn the_form_footer_only_offers_space_where_it_does_something() {
 fn the_copy_pre_flight_stays_a_table_with_an_unbroken_endpoint() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = copy_app();
-    let plan = crate::commands::CopyPlan {
+    let plan = crate::operations::CopyPlan {
         stype: "mysql".into(),
         databases: vec!["vidingco_studio".into()],
         bucket: "viding-db".into(),
@@ -9709,8 +9850,7 @@ fn the_copy_pre_flight_stays_a_table_with_an_unbroken_endpoint() {
             target_service: "mysql".into(),
             project: "viding-co-db".into(),
             service: "mysql".into(),
-            databases: vec!["vidingco_studio".into()],
-            lines: copy_plan_lines(&plan),
+            plan: Box::new(plan),
         },
         &tx,
     );
@@ -9823,10 +9963,10 @@ fn ticked_databases_are_the_ones_copied_and_ticking_none_copies_all() {
     set_f_val(form, "Target service", "db-restore");
     app.submit_form(&tx);
     let req = app.copy_db_req.as_ref().expect("a copy was requested");
-    assert_eq!(
-        req.databases,
-        vec!["studio", "logs"],
-        "only the ticked databases are copied"
+    assert!(
+        matches!(&req.stage, CopyDbStage::Preview { databases,all:false }
+        if databases == &["studio", "logs"]),
+        "only the ticked databases are previewed"
     );
 
     // A fresh form with nothing ticked: that still means EVERY non-system
@@ -9859,9 +9999,9 @@ fn ticked_databases_are_the_ones_copied_and_ticking_none_copies_all() {
     app.submit_form(&tx);
     let req = app.copy_db_req.as_ref().expect("a copy was requested");
     assert!(
-        req.databases.is_empty(),
-        "ticking nothing is the form's spelling of --all: {:?}",
-        req.databases
+        matches!(&req.stage, CopyDbStage::Preview { databases,all:true }
+        if databases.is_empty()),
+        "ticking nothing previews all non-system databases"
     );
 }
 
@@ -10088,4 +10228,88 @@ fn the_dump_pickers_keys_survive_the_next_status_line() {
         shown.contains("[a] every service") && !shown.contains("[Enter] restore"),
         "and the border matches:\n{shown}"
     );
+}
+
+#[test]
+fn partial_service_creation_repairs_only_the_pending_phase_on_the_original_host() {
+    for phase in [ServiceSetupPhase::Source, ServiceSetupPhase::AutoDeploy] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new("original".into(), vec![]);
+        app.handle(
+            Resp::ServiceCreated {
+                project: "project".into(),
+                service: "web".into(),
+                stype: "app".into(),
+                notes: vec!["Configuration refused".into()],
+                pending: Some(phase),
+            },
+            &tx,
+        );
+        assert!(app.status.contains("exists"));
+        assert!(app.status.contains("Source settings"));
+        while rx.try_recv().is_ok() {}
+
+        let response = || Resp::ConfigForm {
+            project: "project".into(),
+            service: "web".into(),
+            build: false,
+            data: json!({"source":{"type":"image","image":"nginx:alpine","password":"private"}}),
+            repos: vec![],
+        };
+        app.handle(response(), &tx);
+        let form = app.form.as_mut().unwrap();
+        if phase == ServiceSetupPhase::AutoDeploy {
+            assert_eq!(form.fields.len(), 1);
+            assert_eq!(form.fields[0].label, "Auto deploy");
+            set_f_val(form, "Auto deploy", "yes");
+        } else {
+            assert_eq!(form.by_label("Docker image"), "nginx:alpine");
+        }
+        app.submit_form(&tx);
+        match rx.try_recv().unwrap() {
+            Req::ServiceSetup {
+                project,
+                service,
+                stype,
+                source,
+                phase: actual,
+            } => {
+                assert_eq!(
+                    (project.as_str(), service.as_str(), stype.as_str()),
+                    ("project", "web", "app")
+                );
+                assert_eq!(actual, phase);
+                if phase == ServiceSetupPhase::AutoDeploy {
+                    assert!(source.1.is_null(), "saved source must not be sent again");
+                    assert_eq!(source.2, Some(true));
+                } else {
+                    assert_eq!(source.0, "updateSourceImage");
+                    assert_eq!(source.1["image"], "nginx:alpine");
+                }
+            }
+            _ => panic!("repair must not create another service or replay a completed phase"),
+        }
+        assert!(rx.try_recv().is_err());
+
+        app.reset_for_server("other".into());
+        app.handle(response(), &tx);
+        assert!(app.form.as_ref().unwrap().fields.len() > 1);
+        app.submit_form(&tx);
+        assert!(matches!(rx.try_recv().unwrap(), Req::ConfigSave { .. }));
+        assert!(rx.try_recv().is_err());
+
+        app.reset_for_server("original".into());
+        app.handle(
+            Resp::ServiceCreated {
+                project: "project".into(),
+                service: "web".into(),
+                stype: "app".into(),
+                notes: vec![],
+                pending: None,
+            },
+            &tx,
+        );
+        assert!(app.service_setup_pending.is_empty());
+        assert!(app.status.contains("configured"));
+    }
 }

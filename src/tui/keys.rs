@@ -14,12 +14,12 @@ use crate::output::field;
 
 use super::actions::Menu;
 use super::app::{
-    parent_prefix, App, CfAction, CfProduct, CfScreen, Confirm, MonitorView, Screen, ServerAction,
-    WatchAction, Workspace, CF_PRODUCTS, TAB_SCREENS,
+    parent_prefix, App, CfAction, CfProduct, CfScreen, Confirm, MonitorView, Screen, WatchAction,
+    Workspace, CF_PRODUCTS, TAB_SCREENS,
 };
-use super::form::*;
 use super::table::*;
-use super::worker::{CfReq, Req, View};
+use crate::form::*;
+use crate::worker::{CfReq, Req, View};
 
 impl App {
     pub(super) fn on_key(&mut self, code: KeyCode, req: &Sender<Req>) {
@@ -365,7 +365,7 @@ impl App {
             let Some(form) = self.form.as_ref() else {
                 return;
             };
-            let r = form.rect;
+            let r = self.form_rect;
             if m.column < r.x || m.column >= r.x.saturating_add(r.width) || m.row < r.y {
                 return;
             }
@@ -1364,12 +1364,12 @@ impl App {
             KeyCode::Esc | KeyCode::Char('s') => self.picker = None,
             KeyCode::Char('n') => {
                 self.picker = None;
-                self.form = Some(super::app::server_form(None));
+                self.form = Some(crate::form::server_form(None));
             }
             KeyCode::Char('e') => {
                 if let Some(entry) = self.picker_selected() {
                     self.picker = None;
-                    self.form = Some(super::app::server_form(Some(&entry)));
+                    self.form = Some(crate::form::server_form(Some(&entry)));
                 }
             }
             KeyCode::Char('x') => {
@@ -1454,7 +1454,7 @@ impl App {
     /// The database browser: Enter walks in, Esc walks back out (and out of the
     /// screen at the top), `e` opens the query box, `r` re-runs this step.
     pub(super) fn dbms_key(&mut self, code: KeyCode, req: &Sender<Req>) {
-        use super::dbms::Level;
+        use crate::dbms::Level;
         match code {
             KeyCode::Esc => match self.dbms.back() {
                 Some(level) => self.dbms_fetch(level, req),

@@ -86,9 +86,7 @@ pub fn unsupported_reason(stype: &str) -> Option<String> {
         return None;
     }
     if stype == "redis" {
-        return Some(
-            "Redis has no tables to browse — press `y` for the redis-cli shell instead".into(),
-        );
+        return Some("Redis has no tables to browse — use the redis-cli shell instead".into());
     }
     Some(format!(
         "Browsing is only for mysql/mariadb/postgres/mongo services (this is {stype})"
@@ -513,27 +511,29 @@ pub fn engine_error(out: &str) -> Option<String> {
         .map(String::from)
 }
 
-/// What went wrong with a captured run, or `None` when it succeeded.
-///
-/// Three outcomes that must never look alike:
-/// - `exit_code: None` — the command never reported back inside the time it was
-///   given. That is "may still be running, output may be incomplete", NOT
-///   "0 rows".
-/// - a non-zero exit — the engine's own message when it printed one, otherwise
-///   whatever it did print, otherwise the bare status.
-/// - exit 0 with an error line — a client that complained and shrugged.
-pub fn failure(out: &str, exit_code: Option<i32>) -> Option<String> {
-    match exit_code {
+/// Why a captured run did not produce a complete successful result.
+/// Incomplete capture is distinct from an engine exit and must not replace the old grid.
+pub fn failure(capture: &crate::container::Capture) -> Option<String> {
+    let out = &capture.output;
+    if capture.truncated {
+        return Some(
+            "Output exceeded the capture byte budget; capture stopped before completion \
+            (the engine may still be running; the result is incomplete)"
+                .into(),
+        );
+    }
+    match capture.exit_code {
         None => {
-            let tail = engine_error(out).unwrap_or_default();
-            let detail = if tail.is_empty() {
-                String::new()
+            let reason = if capture.timed_out {
+                "Timed out waiting for the engine"
             } else {
-                format!(" — {tail}")
+                "Capture ended before the engine reported completion"
             };
+            let detail = engine_error(out)
+                .map(|error| format!(" — {error}"))
+                .unwrap_or_default();
             Some(format!(
-                "Timed out waiting for the engine{detail} (it may still be running; \
-                 anything shown may be incomplete)"
+                "{reason}{detail} (it may still be running; anything shown may be incomplete)"
             ))
         }
         Some(0) => engine_error(out),
@@ -558,7 +558,7 @@ mod tests {
         assert_eq!(Engine::from_service_type("redis"), None);
         let why = unsupported_reason("redis").expect("redis cannot be browsed");
         assert!(
-            why.contains("redis-cli") && why.contains('y'),
+            why.contains("redis-cli") && why.contains("shell"),
             "the exclusion must name the thing that DOES work: {why}"
         );
         // A non-database is refused too, but for its own reason.
@@ -734,21 +734,65 @@ mod tests {
     }
 
     #[test]
+    fn capture_budget_deadline_disconnect_and_engine_exit_remain_distinct() {
+        let mut capture = crate::container::Capture {
+            output: "id\tvalue\n1\tpartial".into(),
+            exit_code: None,
+            truncated: true,
+            timed_out: false,
+        };
+        let budget = failure(&capture).unwrap();
+        assert!(budget.contains("byte budget") && budget.contains("incomplete"));
+        assert!(!budget.contains("Timed out"));
+        capture.truncated = false;
+        capture.timed_out = true;
+        assert!(failure(&capture).unwrap().contains("Timed out"));
+        capture.timed_out = false;
+        let disconnected = failure(&capture).unwrap();
+        assert!(disconnected.contains("before the engine reported completion"));
+        assert!(!disconnected.contains("Timed out"));
+        capture.output = "ERROR 1064 (42000): invalid syntax".into();
+        capture.exit_code = Some(1);
+        assert_eq!(
+            failure(&capture).as_deref(),
+            Some("ERROR 1064 (42000): invalid syntax")
+        );
+    }
+
+    #[test]
     fn a_failure_names_the_engines_own_message_and_never_looks_like_no_rows() {
+        let capture = |out: &str, exit_code| crate::container::Capture {
+            output: out.into(),
+            exit_code,
+            truncated: false,
+            timed_out: exit_code.is_none(),
+        };
         // Non-zero exit: the engine's line wins over the raw dump.
         let mysql = "ERROR 1064 (42000) at line 1: You have an error in your SQL syntax";
-        assert_eq!(failure(mysql, Some(1)).as_deref(), Some(mysql));
+        assert_eq!(failure(&capture(mysql, Some(1))).as_deref(), Some(mysql));
         // Exit 0 with a complaint printed anyway.
-        assert!(failure("ERROR:  relation \"x\" does not exist", Some(0)).is_some());
+        assert!(failure(&capture("ERROR:  relation \"x\" does not exist", Some(0))).is_some());
         // A clean result is not a failure.
-        assert_eq!(failure("id\tname\n1\tAda\n", Some(0)), None);
+        assert_eq!(failure(&capture("id\tname\n1\tAda\n", Some(0))), None);
         // Nothing printed and a bad status still says something.
-        assert!(failure("", Some(127)).unwrap().contains("127"));
+        assert!(failure(&capture("", Some(127))).unwrap().contains("127"));
         // A timeout is its own outcome, and says the result may be partial.
-        let timeout = failure("", None).unwrap();
+        let timeout = failure(&capture("", None)).unwrap();
         assert!(
             timeout.contains("Timed out") && timeout.contains("incomplete"),
             "{timeout}"
         );
     }
+}
+
+/// Which step of the walk is on screen.
+///
+/// `Query` is not a deeper level: it is a result that replaces the grid, and Esc
+/// from it goes back to the level it was run from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Level {
+    Databases,
+    Tables,
+    Rows,
+    Query,
 }

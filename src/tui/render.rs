@@ -11,8 +11,9 @@ use crate::output::{
 };
 
 use super::app::*;
-use super::form::*;
+use super::chooser::Chooser;
 use super::table::*;
+use crate::form::*;
 
 // ---------- Keybindings (one source for the status bar and the help overlay) ----------
 
@@ -268,7 +269,7 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
         render_cf_picker(f, app);
     }
     if let Some(form) = app.form.as_mut() {
-        render_form(f, form);
+        app.form_rect = render_form(f, form);
     }
     if let Some(ch) = app.chooser.as_mut() {
         render_chooser(f, ch);
@@ -3876,7 +3877,7 @@ pub(super) fn render_terminal(f: &mut Frame, area: Rect, app: &mut App) {
     if parser.screen().size() != (rows, cols) {
         parser.set_size(rows, cols);
         if let Some(tx) = app.term.input.as_ref() {
-            let _ = tx.send(super::terminal::TermMsg::Resize(cols, rows));
+            let _ = tx.send(crate::session::TermMsg::Resize(cols, rows));
         }
     }
 
@@ -4052,7 +4053,7 @@ pub(super) fn viewer_overflows(app: &App, area_width: u16) -> bool {
 /// screen says which keys do that. These were separate menu entries: findable,
 /// but disconnected from the thing they act on.
 pub(super) fn viewer_actions(app: &App) -> String {
-    use super::worker::View;
+    use crate::worker::View;
     // A picker's keys belong on its OWN border, the convention `render_dbms` and
     // the viewer's collections already use. They used to be written to the status
     // line only, which the next reply to arrive (a metrics tick, any result)
@@ -4179,7 +4180,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
+pub(super) fn render_form(f: &mut Frame, form: &mut Form) -> Rect {
     // Only the current step's fields show (single-page = all of them).
     let visible = form.visible_here();
     let height = (visible.len() as u16 + 5).min(f.area().height);
@@ -4244,7 +4245,6 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
     f.render_widget(block, area);
 
     let inner = area.inner(Margin::new(2, 1));
-    form.rect = inner;
     let mut rows = vec![Constraint::Length(1); visible.len()];
     rows.push(Constraint::Min(1));
     let slots = Layout::vertical(rows).split(inner);
@@ -4339,7 +4339,7 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
     ];
     hints.extend(space.map(str::to_string));
     // Only while the tunnel is switched on: the key does nothing otherwise.
-    if super::app::server_form_uses_ssh(form) {
+    if crate::form::server_form_uses_ssh(form) {
         hints.push("[Ctrl-T] test SSH".into());
     }
     let footer = fit_hints(&hints, slot.width);
@@ -4347,6 +4347,7 @@ pub(super) fn render_form(f: &mut Frame, form: &mut Form) {
         Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
         slot,
     );
+    inner
 }
 
 pub(super) fn render_chooser(f: &mut Frame, ch: &mut Chooser) {

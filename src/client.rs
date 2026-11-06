@@ -112,6 +112,26 @@ impl EasypanelClient {
         }
     }
 
+    /// Compare configured destinations without connecting or using credentials.
+    /// DNS/SSH aliases are not proof of physical-host identity.
+    pub(crate) fn same_configured_target(&self, other: &Self) -> bool {
+        let same_url = match (
+            reqwest::Url::parse(&self.url),
+            reqwest::Url::parse(&other.url),
+        ) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => self.url == other.url,
+        };
+        same_url
+            && match (&self.ssh, &other.ssh) {
+                (None, None) => true,
+                (Some(a), Some(b)) => {
+                    a.host.eq_ignore_ascii_case(&b.host) && a.port == b.port && a.user == b.user
+                }
+                _ => false,
+            }
+    }
+
     /// The origin requests actually go to (without a trailing slash): the
     /// configured URL, or the local end of the SSH tunnel — opened on demand.
     /// Also the base of the terminal WebSocket URL.
@@ -200,6 +220,33 @@ impl EasypanelClient {
 mod tests {
     use super::*;
     use httpmock::prelude::*;
+
+    #[test]
+    fn configured_identity_ignores_credentials_but_distinguishes_ssh_destinations() {
+        let a = EasypanelClient::new("https://PANEL.test:443/", "first-token");
+        let b = EasypanelClient::new("https://panel.test", "second-token");
+        assert!(a.same_configured_target(&b));
+        assert!(
+            !a.same_configured_target(&EasypanelClient::new("https://other.test", "first-token"))
+        );
+        let server = |host: &str, secret: &str| crate::config::Server {
+            name: host.into(),
+            url: "http://localhost:3000".into(),
+            token: secret.into(),
+            default: false,
+            ssh: Some(crate::tunnel::SshTunnel {
+                host: host.into(),
+                secret: Some(secret.into()),
+                ..Default::default()
+            }),
+        };
+        let a = EasypanelClient::for_server(&server("first.test", "one"));
+        let b = EasypanelClient::for_server(&server("first.test", "two"));
+        let c = EasypanelClient::for_server(&server("second.test", "one"));
+        assert!(a.same_configured_target(&b));
+        assert!(!a.same_configured_target(&c));
+        assert!(!a.same_configured_target(&EasypanelClient::new("http://localhost:3000", "one")));
+    }
 
     #[test]
     fn a_slow_reply_is_giving_up_waiting_not_a_refusal() {

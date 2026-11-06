@@ -18,7 +18,7 @@ use crate::output::field;
 
 use super::app::{App, CfProduct, CfScreen, Screen, Workspace, CF_PRODUCTS, TABS, TAB_SCREENS};
 use super::table::Line2;
-use super::worker::{Req, View};
+use crate::worker::{Req, View};
 use ratatui::crossterm::event::KeyCode;
 
 /// A menu item's action: the function run when the item is chosen.

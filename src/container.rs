@@ -3,7 +3,7 @@
 //! EasyPanel exposes no "exec" REST endpoint; the only way into a container is
 //! its `wss://{panel}/ws/containerShell` socket. These primitives build that URL,
 //! encode the command, and (for a one-shot) run it and collect what it printed —
-//! the infrastructure both the embedded TUI terminal (`tui::terminal`) and any
+//! the infrastructure both the embedded frontends (`session`) and any
 //! CLI command that needs to reach inside a container are built on. They used to
 //! live inside `tui::terminal`; they are not TUI-specific, so they moved here
 //! where the CLI can reach them too.
@@ -216,7 +216,7 @@ pub(crate) fn base64(input: &[u8]) -> String {
 
 /// Run ONE command in a container and return what it printed.
 ///
-/// The interactive session in `tui::terminal::spawn_session` is a long-lived
+/// The interactive session in `session::spawn_session` is a long-lived
 /// conversation; this is the opposite — connect, let the command run, collect,
 /// close. It exists so the tool can ask a database engine what schemas it holds,
 /// which no EasyPanel endpoint will tell you.
@@ -284,12 +284,14 @@ const MAX_CAPTURE_BYTES: usize = 256 * 1024;
 pub(crate) struct Capture {
     /// Everything the command printed between the two markers, `\r` stripped.
     pub output: String,
-    /// The command's exit status. `None` = the closing marker never arrived
-    /// within `cap`, so the command may still be running and `output` may be a
-    /// fragment — NOT the same thing as "it finished and printed nothing".
+    /// The command's exit status. `None` = the closing marker never arrived:
+    /// the deadline, output budget, or socket ending interrupted capture.
+    /// The command may still be running and `output` may be a fragment.
     pub exit_code: Option<i32>,
     /// The read stopped at [`MAX_CAPTURE_BYTES`]; there was more.
     pub truncated: bool,
+    /// Only the elapsed deadline ended capture; not truncation or socket closure.
+    pub timed_out: bool,
 }
 
 /// The input line that runs `command` between two resolved markers and reports
@@ -344,6 +346,7 @@ fn parse_capture(raw: &str, truncated: bool) -> Capture {
         output: payload.trim_matches('\n').to_string(),
         exit_code,
         truncated,
+        timed_out: false,
     }
 }
 
@@ -374,10 +377,22 @@ pub(crate) fn run_capture(
     ))
     .map_err(|e| anyhow!("failed to send command: {}", connect_failure(&e)))?;
 
+    let capture = collect_capture(&mut ws, cap);
+    let _ = ws.close(None);
+    Ok(capture)
+}
+
+fn collect_capture(
+    ws: &mut tungstenite::WebSocket<MaybeTlsStream<std::net::TcpStream>>,
+    cap: Duration,
+) -> Capture {
     let start = std::time::Instant::now();
     let mut out = String::new();
     let mut truncated = false;
-    while start.elapsed() < cap {
+    let timed_out = loop {
+        if start.elapsed() >= cap {
+            break true;
+        }
         match ws.read() {
             Ok(Message::Text(t)) => {
                 if let Some(o) = serde_json::from_str::<Value>(&t)
@@ -386,25 +401,26 @@ pub(crate) fn run_capture(
                 {
                     out.push_str(&o);
                     if find_rc(&out).is_some() {
-                        break;
+                        break false;
                     }
                     if out.len() > MAX_CAPTURE_BYTES {
                         truncated = true;
-                        break;
+                        break false;
                     }
                 }
             }
-            Ok(Message::Close(_)) => break,
+            Ok(Message::Close(_)) => break false,
             Ok(_) => {}
             // A read timeout is the normal quiet case, not a failure: the command
             // is still working.
             Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(_) => break,
+            Err(_) => break false,
         }
-    }
-    let _ = ws.close(None);
-    Ok(parse_capture(&out, truncated))
+    };
+    let mut capture = parse_capture(&out, truncated);
+    capture.timed_out = timed_out && capture.exit_code.is_none() && !capture.truncated;
+    capture
 }
 
 /// A resolved marker (`printf '…%s…' ok`) that only the shell RUNNING our line can
@@ -831,6 +847,64 @@ pub(crate) fn set_read_timeout(
 mod tests {
     use super::*;
 
+    fn capture_socket(output: Option<String>, close: u8) -> Capture {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let cap = if output.is_some() {
+            Duration::from_secs(3)
+        } else {
+            Duration::from_millis(50)
+        };
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            if let Some(output) = output {
+                ws.send(Message::Text(json!({"output":output}).to_string()))
+                    .unwrap();
+            }
+            if close == 1 {
+                let _ = ws.close(None);
+            } else if close == 0 {
+                let _ = ws.read();
+            }
+            // close == 2 drops TCP without a WebSocket close frame.
+        });
+        let (mut ws, _) = tungstenite::connect(format!("ws://{address}")).unwrap();
+        set_read_timeout(&mut ws, Duration::from_millis(5));
+        let capture = collect_capture(&mut ws, cap);
+        let _ = ws.close(None);
+        server.join().unwrap();
+        capture
+    }
+
+    #[test]
+    fn capture_only_labels_an_actual_elapsed_deadline_as_timeout() {
+        let deadline = capture_socket(None, 0);
+        assert!(deadline.timed_out);
+        assert!(!deadline.truncated);
+        assert_eq!(deadline.exit_code, None);
+
+        let budget = capture_socket(Some("x".repeat(MAX_CAPTURE_BYTES + 1)), 0);
+        assert!(budget.truncated);
+        assert!(!budget.timed_out);
+        assert_eq!(budget.exit_code, None);
+
+        for close in [1, 2] {
+            let ended = capture_socket(Some("__EZP_OUT_ok__\npartial".into()), close);
+            assert!(!ended.timed_out);
+            assert!(!ended.truncated);
+            assert_eq!(ended.exit_code, None);
+            assert_eq!(ended.output, "partial");
+        }
+        let complete = capture_socket(Some("__EZP_OUT_ok__\ndone\n__EZP_RC_0__".into()), 0);
+        assert!(!complete.timed_out);
+        assert!(!complete.truncated);
+        assert_eq!(complete.exit_code, Some(0));
+    }
+
     /// The interactive shell command, and the two things about its shape that a
     /// well-meaning simplification would break. Both were measured live (see
     /// [`INTERACTIVE_SHELL`]).
@@ -1032,7 +1106,7 @@ mod tests {
     const FAKE_URL: &str = "https://acct.r2.cloudflarestorage.com/backups/proj/mysql-20260906-051500.sql.gz?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAEXAMPLE%2F20260906%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260906T051500Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=1f2e3d4c5b6a7988990a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60";
     const FAKE_PW: &str = "s3cret";
 
-    /// The caller's own masking, as `commands::dump_to_r2` builds it.
+    /// The caller's own masking, as `operations::dump_to_r2` builds it.
     fn caller_redact(s: &str) -> String {
         s.replace(FAKE_URL, "<presigned-url>")
             .replace(FAKE_PW, "<redacted>")
