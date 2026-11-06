@@ -1515,11 +1515,12 @@ fn origin_object(origin: Option<&Value>) -> serde_json::Map<String, Value> {
         .unwrap_or_default()
 }
 
-fn origin_bool(origin: Option<&Value>, key: &str) -> bool {
-    origin
-        .and_then(|v| v.get(key))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+fn origin_bool(origin: Option<&Value>, key: &str) -> &'static str {
+    match origin.and_then(|v| v.get(key)).and_then(Value::as_bool) {
+        Some(true) => "Enabled",
+        Some(false) => "Disabled",
+        None => "Inherit",
+    }
 }
 
 fn origin_text(origin: Option<&Value>, key: &str) -> String {
@@ -1530,11 +1531,10 @@ fn origin_text(origin: Option<&Value>, key: &str) -> String {
         .to_string()
 }
 
-fn origin_u64_text(origin: Option<&Value>, key: &str) -> String {
+fn origin_integer_text(origin: Option<&Value>, key: &str) -> String {
     origin
         .and_then(|v| v.get(key))
-        .and_then(Value::as_u64)
-        .map(|v| v.to_string())
+        .map(Value::to_string)
         .unwrap_or_default()
 }
 
@@ -1544,11 +1544,12 @@ fn origin_access(origin: Option<&Value>) -> Option<&serde_json::Map<String, Valu
         .and_then(Value::as_object)
 }
 
-fn origin_access_required(origin: Option<&Value>) -> bool {
-    origin_access(origin)
-        .and_then(|v| v.get("required"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+fn origin_access_requirement(origin: Option<&Value>) -> &'static str {
+    match origin_access(origin) {
+        None => "Inherit",
+        Some(access) if access.get("required").and_then(Value::as_bool) == Some(true) => "Require",
+        Some(_) => "Disable requirement",
+    }
 }
 
 fn origin_access_team(origin: Option<&Value>) -> String {
@@ -1574,42 +1575,83 @@ fn origin_access_aud(origin: Option<&Value>) -> String {
 }
 
 pub(crate) fn tunnel_origin_fields(origin: Option<&Value>) -> Vec<Field> {
-    let proxy_type = match origin_text(origin, "proxyType").as_str() {
-        "socks" => "socks",
-        _ => "regular",
+    let proxy_type = match origin
+        .and_then(|v| v.get("proxyType"))
+        .and_then(Value::as_str)
+    {
+        Some("") => "regular",
+        Some(value) => value,
+        None => "Inherit",
     };
+    let mut proxy_choices = vec!["Inherit".into(), "regular".into(), "socks".into()];
+    if !proxy_choices.iter().any(|value| value == proxy_type) {
+        proxy_choices.push(proxy_type.into());
+    }
+    let bool_choices = &["Inherit", "Enabled", "Disabled"];
     vec![
         Field::text(
             "Origin Server Name",
             &origin_text(origin, "originServerName"),
         ),
-        Field::boolean("Match SNI to Host", origin_bool(origin, "matchSNItoHost")),
+        Field::choice(
+            "Match SNI to Host",
+            bool_choices,
+            origin_bool(origin, "matchSNItoHost"),
+        ),
         Field::text("Certificate Authority Pool", &origin_text(origin, "caPool")),
-        Field::boolean("No TLS Verify", origin_bool(origin, "noTLSVerify")),
-        Field::text("TLS Timeout", &origin_text(origin, "tlsTimeout")),
-        Field::boolean("HTTP2 Connection", origin_bool(origin, "http2Origin")),
+        Field::choice(
+            "No TLS Verify",
+            bool_choices,
+            origin_bool(origin, "noTLSVerify"),
+        ),
+        Field::text(
+            "TLS Timeout (seconds)",
+            &origin_integer_text(origin, "tlsTimeout"),
+        ),
+        Field::choice(
+            "HTTP2 Connection",
+            bool_choices,
+            origin_bool(origin, "http2Origin"),
+        ),
         Field::text("HTTP Host Header", &origin_text(origin, "httpHostHeader")),
-        Field::boolean(
+        Field::choice(
             "Disable Chunked Encoding",
+            bool_choices,
             origin_bool(origin, "disableChunkedEncoding"),
         ),
-        Field::text("Connect Timeout", &origin_text(origin, "connectTimeout")),
-        Field::boolean("No Happy Eyeballs", origin_bool(origin, "noHappyEyeballs")),
-        Field::choice("Proxy Type", &["regular", "socks"], proxy_type),
-        Field::text("Proxy Address", &origin_text(origin, "proxyAddress")),
-        Field::text("Proxy Port", &origin_u64_text(origin, "proxyPort")),
         Field::text(
-            "Keep Alive Timeout",
-            &origin_text(origin, "keepAliveTimeout"),
+            "Connect Timeout (seconds)",
+            &origin_integer_text(origin, "connectTimeout"),
+        ),
+        Field::choice(
+            "No Happy Eyeballs",
+            bool_choices,
+            origin_bool(origin, "noHappyEyeballs"),
+        ),
+        Field::choice_owned("Proxy Type", proxy_choices, proxy_type),
+        Field::text("Proxy Address", &origin_text(origin, "proxyAddress")),
+        Field::text("Proxy Port", &origin_integer_text(origin, "proxyPort")),
+        Field::text(
+            "Keep Alive Timeout (seconds)",
+            &origin_integer_text(origin, "keepAliveTimeout"),
         ),
         Field::text(
             "Keep Alive Connections",
-            &origin_u64_text(origin, "keepAliveConnections"),
+            &origin_integer_text(origin, "keepAliveConnections"),
         ),
-        Field::text("TCP Keep Alive", &origin_text(origin, "tcpKeepAlive")),
-        Field::boolean("Access Required", origin_access_required(origin)),
-        Field::text("Access Team Name", &origin_access_team(origin)).when("Access Required", "yes"),
-        Field::text("Access AUD Tags", &origin_access_aud(origin)).when("Access Required", "yes"),
+        Field::text(
+            "TCP Keep Alive (seconds)",
+            &origin_integer_text(origin, "tcpKeepAlive"),
+        ),
+        Field::choice(
+            "Access Required",
+            &["Inherit", "Require", "Disable requirement"],
+            origin_access_requirement(origin),
+        ),
+        Field::text("Access Team Name", &origin_access_team(origin))
+            .when("Access Required", "Require,Disable requirement"),
+        Field::text("Access AUD Tags", &origin_access_aud(origin))
+            .when("Access Required", "Require,Disable requirement"),
     ]
 }
 
@@ -1622,140 +1664,147 @@ fn set_origin_string(object: &mut serde_json::Map<String, Value>, key: &str, val
     }
 }
 
-fn set_origin_bool(object: &mut serde_json::Map<String, Value>, key: &str, on: bool) {
-    if on {
-        object.insert(key.into(), Value::Bool(true));
-    } else {
-        object.remove(key);
-    }
-}
-
-fn set_origin_u64(
-    object: &mut serde_json::Map<String, Value>,
-    key: &str,
-    label: &str,
-    value: String,
-) -> anyhow::Result<()> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        object.remove(key);
-        return Ok(());
-    }
-    let parsed: u64 = trimmed
-        .parse()
-        .map_err(|_| anyhow::anyhow!("{label} must be a positive number"))?;
-    object.insert(key.into(), Value::Number(parsed.into()));
-    Ok(())
-}
-
 pub(crate) fn tunnel_origin_request_from_form(form: &Form) -> anyhow::Result<Option<Value>> {
     let mut object = origin_object(form.original.as_ref());
-    set_origin_string(
-        &mut object,
-        "originServerName",
-        form.by_label("Origin Server Name"),
-    );
-    set_origin_bool(
-        &mut object,
-        "matchSNItoHost",
-        form.by_label("Match SNI to Host") == "yes",
-    );
-    set_origin_string(
-        &mut object,
-        "caPool",
-        form.by_label("Certificate Authority Pool"),
-    );
-    set_origin_bool(
-        &mut object,
-        "noTLSVerify",
-        form.by_label("No TLS Verify") == "yes",
-    );
-    set_origin_string(&mut object, "tlsTimeout", form.by_label("TLS Timeout"));
-    set_origin_bool(
-        &mut object,
-        "http2Origin",
-        form.by_label("HTTP2 Connection") == "yes",
-    );
-    set_origin_string(
-        &mut object,
-        "httpHostHeader",
-        form.by_label("HTTP Host Header"),
-    );
-    set_origin_bool(
-        &mut object,
-        "disableChunkedEncoding",
-        form.by_label("Disable Chunked Encoding") == "yes",
-    );
-    set_origin_string(
-        &mut object,
-        "connectTimeout",
-        form.by_label("Connect Timeout"),
-    );
-    set_origin_bool(
-        &mut object,
-        "noHappyEyeballs",
-        form.by_label("No Happy Eyeballs") == "yes",
-    );
-    let proxy_type = match form.by_label("Proxy Type").as_str() {
-        "regular" => String::new(),
-        value => value.to_string(),
+    let original_fields = tunnel_origin_fields(form.original.as_ref());
+    // Only changed controls replace raw values; absence, empty overrides and opaque JSON survive.
+    let changed = |label: &str| {
+        original_fields
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| &f.value)
+            != Some(&form.by_label(label))
     };
-    set_origin_string(&mut object, "proxyType", proxy_type);
-    set_origin_string(&mut object, "proxyAddress", form.by_label("Proxy Address"));
-    set_origin_u64(
-        &mut object,
-        "proxyPort",
-        "Proxy Port",
-        form.by_label("Proxy Port"),
-    )?;
-    set_origin_string(
-        &mut object,
-        "keepAliveTimeout",
-        form.by_label("Keep Alive Timeout"),
-    );
-    set_origin_u64(
-        &mut object,
-        "keepAliveConnections",
-        "Keep Alive Connections",
-        form.by_label("Keep Alive Connections"),
-    )?;
-    set_origin_string(&mut object, "tcpKeepAlive", form.by_label("TCP Keep Alive"));
-
-    if form.by_label("Access Required") == "yes" {
-        let team_name = form.by_label("Access Team Name").trim().to_string();
-        let aud_tags = form
-            .by_label("Access AUD Tags")
-            .split(',')
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        if team_name.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Access Team Name is required when Access is enabled"
-            ));
+    for (label, key) in [
+        ("Origin Server Name", "originServerName"),
+        ("Certificate Authority Pool", "caPool"),
+        ("HTTP Host Header", "httpHostHeader"),
+        ("Proxy Address", "proxyAddress"),
+    ] {
+        if changed(label) {
+            set_origin_string(&mut object, key, form.by_label(label));
         }
-        if aud_tags.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Access AUD Tags is required when Access is enabled"
-            ));
-        }
-        let mut access = object
-            .get("access")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        access.insert("required".into(), Value::Bool(true));
-        access.insert("teamName".into(), Value::String(team_name));
-        access.insert(
-            "audTag".into(),
-            Value::Array(aud_tags.into_iter().map(Value::String).collect()),
-        );
-        object.insert("access".into(), Value::Object(access));
-    } else {
-        object.remove("access");
     }
-
+    for (label, key) in [
+        ("Match SNI to Host", "matchSNItoHost"),
+        ("No TLS Verify", "noTLSVerify"),
+        ("HTTP2 Connection", "http2Origin"),
+        ("Disable Chunked Encoding", "disableChunkedEncoding"),
+        ("No Happy Eyeballs", "noHappyEyeballs"),
+    ] {
+        if changed(label) {
+            match form.by_label(label).as_str() {
+                "Inherit" => {
+                    object.remove(key);
+                }
+                "Enabled" => {
+                    object.insert(key.into(), Value::Bool(true));
+                }
+                "Disabled" => {
+                    object.insert(key.into(), Value::Bool(false));
+                }
+                _ => anyhow::bail!("{label} must be Inherit, Enabled or Disabled"),
+            }
+        }
+    }
+    for (label, key) in [
+        ("TLS Timeout (seconds)", "tlsTimeout"),
+        ("Connect Timeout (seconds)", "connectTimeout"),
+        ("Keep Alive Timeout (seconds)", "keepAliveTimeout"),
+        ("TCP Keep Alive (seconds)", "tcpKeepAlive"),
+        ("Keep Alive Connections", "keepAliveConnections"),
+        ("Proxy Port", "proxyPort"),
+    ] {
+        let value = form.by_label(label);
+        let value = value.trim();
+        if !changed(label) {
+            if let Some(raw) = object.get(key) {
+                let valid = if key == "proxyPort" {
+                    raw.is_u64()
+                } else {
+                    raw.is_i64()
+                };
+                if !valid {
+                    anyhow::bail!(
+                        "{label} must be a JSON integer; correct the value or clear it to inherit"
+                    );
+                }
+            }
+            continue;
+        }
+        if value.is_empty() {
+            object.remove(key);
+        } else {
+            let number =
+                if key == "proxyPort" {
+                    serde_json::Number::from(value.parse::<u64>().map_err(|_| {
+                        anyhow::anyhow!("Proxy Port must be a non-negative integer")
+                    })?)
+                } else {
+                    serde_json::Number::from(
+                        value
+                            .parse::<i64>()
+                            .map_err(|_| anyhow::anyhow!("{label} must be an integer"))?,
+                    )
+                };
+            object.insert(key.into(), Value::Number(number));
+        }
+    }
+    if changed("Proxy Type") {
+        match form.by_label("Proxy Type").as_str() {
+            "Inherit" => {
+                object.remove("proxyType");
+            }
+            "regular" => {
+                object.insert("proxyType".into(), Value::String(String::new()));
+            }
+            "socks" => {
+                object.insert("proxyType".into(), Value::String("socks".into()));
+            }
+            _ => anyhow::bail!("Proxy Type must be Inherit, regular or socks"),
+        }
+    }
+    let access_changed = changed("Access Required");
+    if access_changed || changed("Access Team Name") || changed("Access AUD Tags") {
+        let requirement = form.by_label("Access Required");
+        match requirement.as_str() {
+            "Inherit" => {
+                object.remove("access");
+            }
+            "Require" | "Disable requirement" => {
+                let required = requirement == "Require";
+                let team_name = form.by_label("Access Team Name").trim().to_string();
+                let aud_tags: Vec<Value> = form
+                    .by_label("Access AUD Tags")
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(|v| Value::String(v.to_string()))
+                    .collect();
+                if required && team_name.is_empty() {
+                    anyhow::bail!("Access Team Name is required when Access is enabled");
+                }
+                if required && aud_tags.is_empty() {
+                    anyhow::bail!("Access AUD Tags is required when Access is enabled");
+                }
+                let mut access = origin_access(form.original.as_ref())
+                    .cloned()
+                    .unwrap_or_default();
+                if access_changed {
+                    access.insert("required".into(), Value::Bool(required));
+                }
+                // REST requires both members, but disabled Access needs no invented identity.
+                if changed("Access Team Name") || !access.contains_key("teamName") {
+                    access.insert("teamName".into(), Value::String(team_name));
+                }
+                if changed("Access AUD Tags") || !access.contains_key("audTag") {
+                    access.insert("audTag".into(), Value::Array(aud_tags));
+                }
+                object.insert("access".into(), Value::Object(access));
+            }
+            _ => anyhow::bail!("Access Required must be Inherit, Require or Disable requirement"),
+        }
+    }
     if object.is_empty() {
         Ok(None)
     } else {
@@ -2122,7 +2171,7 @@ pub(crate) fn cloudflare_form_request(
                 match priority_text.trim().parse() {
                     Ok(p) => Some(p),
                     Err(_) => {
-                        return Err("Priority must be a number".into());
+                        return Err("Priority must be a number between 0 and 65535".into());
                     }
                 }
             };
@@ -2148,7 +2197,7 @@ pub(crate) fn cloudflare_form_request(
             }
             let priority_text = form.by_label("Priority");
             if !priority_text.trim().is_empty() && priority_text.trim().parse::<u16>().is_err() {
-                return Err("Priority must be a number".into());
+                return Err("Priority must be a number between 0 and 65535".into());
             }
             let patch = cf_record_patch(
                 &kind,

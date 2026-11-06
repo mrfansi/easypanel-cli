@@ -8072,18 +8072,18 @@ fn cf_tunnel_route_edit_models_service_and_origin_request_as_fields() {
                     "matchSNItoHost": true,
                     "caPool": "/etc/cloudflared/ca.pem",
                     "noTLSVerify": true,
-                    "tlsTimeout": "15s",
+                    "tlsTimeout": 15,
                     "http2Origin": true,
                     "httpHostHeader": "app.internal",
                     "disableChunkedEncoding": true,
-                    "connectTimeout": "45s",
+                    "connectTimeout": 45,
                     "noHappyEyeballs": true,
                     "proxyType": "socks",
                     "proxyAddress": "127.0.0.1",
                     "proxyPort": 1080,
-                    "keepAliveTimeout": "2m",
+                    "keepAliveTimeout": 120,
                     "keepAliveConnections": 150,
-                    "tcpKeepAlive": "45s",
+                    "tcpKeepAlive": 45,
                     "access": {
                         "required": true,
                         "teamName": "mrfansi",
@@ -8107,31 +8107,27 @@ fn cf_tunnel_route_edit_models_service_and_origin_request_as_fields() {
     assert_eq!(f_val(form, "Sync DNS CNAME"), "yes");
     assert_eq!(f_val(form, "DNS Proxied"), "yes");
     assert_eq!(f_val(form, "Origin Server Name"), "origin.mrfansi.dev");
-    assert_eq!(f_val(form, "Match SNI to Host"), "yes");
+    assert_eq!(f_val(form, "Match SNI to Host"), "Enabled");
     assert_eq!(
         f_val(form, "Certificate Authority Pool"),
         "/etc/cloudflared/ca.pem"
     );
-    assert_eq!(f_val(form, "No TLS Verify"), "yes");
-    assert_eq!(f_val(form, "TLS Timeout"), "15s");
-    assert_eq!(f_val(form, "HTTP2 Connection"), "yes");
+    assert_eq!(f_val(form, "No TLS Verify"), "Enabled");
+    assert_eq!(f_val(form, "TLS Timeout (seconds)"), "15");
+    assert_eq!(f_val(form, "HTTP2 Connection"), "Enabled");
     assert_eq!(f_val(form, "HTTP Host Header"), "app.internal");
-    assert_eq!(f_val(form, "Disable Chunked Encoding"), "yes");
-    assert_eq!(f_val(form, "Connect Timeout"), "45s");
-    assert_eq!(f_val(form, "No Happy Eyeballs"), "yes");
+    assert_eq!(f_val(form, "Disable Chunked Encoding"), "Enabled");
+    assert_eq!(f_val(form, "Connect Timeout (seconds)"), "45");
+    assert_eq!(f_val(form, "No Happy Eyeballs"), "Enabled");
     assert_eq!(f_val(form, "Proxy Type"), "socks");
     assert_eq!(f_val(form, "Proxy Address"), "127.0.0.1");
     assert_eq!(f_val(form, "Proxy Port"), "1080");
-    assert_eq!(f_val(form, "Keep Alive Timeout"), "2m");
+    assert_eq!(f_val(form, "Keep Alive Timeout (seconds)"), "120");
     assert_eq!(f_val(form, "Keep Alive Connections"), "150");
-    assert_eq!(f_val(form, "TCP Keep Alive"), "45s");
-    assert_eq!(f_val(form, "Access Required"), "yes");
+    assert_eq!(f_val(form, "TCP Keep Alive (seconds)"), "45");
+    assert_eq!(f_val(form, "Access Required"), "Require");
     assert_eq!(f_val(form, "Access Team Name"), "mrfansi");
     assert_eq!(f_val(form, "Access AUD Tags"), "aud-1, aud-2");
-    assert!(form
-        .fields
-        .iter()
-        .all(|field| field.label != "Advanced origin JSON"));
 }
 
 #[test]
@@ -8209,6 +8205,364 @@ fn cf_tunnel_route_create_sends_dns_options() {
             proxied: true,
             ..
         })) if tunnel_id == "tunnel-1" && hostname == "app.example.com" && zone == "example.com"
+    ));
+}
+
+#[test]
+fn cf_tunnel_route_unrelated_edit_preserves_integer_false_and_empty_overrides() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_tunnel = Some(cf_tunnel("tunnel-1", "edge-router"));
+    let origin = json!({
+        "connectTimeout": 30, "tlsTimeout": 10, "tcpKeepAlive": 30,
+        "keepAliveTimeout": 90, "keepAliveConnections": 100,
+        "matchSNItoHost": false, "noTLSVerify": false, "http2Origin": false,
+        "disableChunkedEncoding": false, "noHappyEyeballs": false, "bastionMode": false,
+        "originServerName": "", "caPool": "", "httpHostHeader": "",
+        "proxyAddress": "", "proxyPort": 0, "proxyType": "",
+        "access": { "required": false, "teamName": "team", "audTag": ["aud"],
+            "opaque": { "keep": [null, false, 7] } },
+        "futureOption": { "nested": [1, 2] }
+    });
+    let global = json!({
+        "noTLSVerify": true, "http2Origin": true, "proxyType": "socks",
+        "access": { "required": true, "teamName": "global", "audTag": ["global-aud"] }
+    });
+    app.cf.tunnel_config = Some(crate::cloudflare::TunnelConfiguration {
+        config: crate::cloudflare::TunnelConfig {
+            origin_request: Some(global.clone()),
+            ingress: vec![crate::cloudflare::TunnelIngressRule {
+                hostname: "shop.example.test".into(),
+                service: "http://localhost:3000".into(),
+                origin_request: Some(origin.clone()),
+                ..Default::default()
+            }],
+        },
+        ..Default::default()
+    });
+    app.cf.tunnel_config_row.select(Some(0));
+    app.open_cf_tunnel_route_edit_form();
+    let form = app.form.as_mut().unwrap();
+    assert_eq!(f_val(form, "Connect Timeout (seconds)"), "30");
+    set_f_val(form, "Service URL", "localhost:8080");
+    app.submit_form(&tx);
+    let Ok(Req::Cf(CfReq::TunnelRouteEdit {
+        service,
+        origin_request: Some(Some(saved)),
+        ..
+    })) = rx.try_recv()
+    else {
+        panic!("expected route edit request")
+    };
+    assert_eq!(service, "http://localhost:8080");
+    assert_eq!(saved, origin);
+    assert_eq!(saved["noTLSVerify"], false);
+    assert_eq!(saved["access"]["required"], false);
+    assert_eq!(saved["proxyType"], "");
+    assert_eq!(
+        app.cf.tunnel_config.as_ref().unwrap().config.origin_request,
+        Some(global)
+    );
+}
+
+#[test]
+fn cf_tunnel_origin_choices_distinguish_inherit_enabled_and_disabled() {
+    let bools = [
+        ("Match SNI to Host", "matchSNItoHost"),
+        ("No TLS Verify", "noTLSVerify"),
+        ("HTTP2 Connection", "http2Origin"),
+        ("Disable Chunked Encoding", "disableChunkedEncoding"),
+        ("No Happy Eyeballs", "noHappyEyeballs"),
+    ];
+    let mut form = Form::new(
+        FormKind::CfTunnelRouteCreate {
+            tunnel_id: "id".into(),
+        },
+        "Origin",
+        tunnel_origin_fields(None),
+    );
+    set_f_val(&mut form, "HTTP Host Header", "internal.example.test");
+    assert_eq!(
+        tunnel_origin_request_from_form(&form).unwrap(),
+        Some(json!({"httpHostHeader": "internal.example.test"}))
+    );
+    for (label, key) in bools {
+        set_f_val(&mut form, label, "Disabled");
+        assert_eq!(
+            tunnel_origin_request_from_form(&form).unwrap().unwrap()[key],
+            false
+        );
+        set_f_val(&mut form, label, "Inherit");
+        assert!(tunnel_origin_request_from_form(&form)
+            .unwrap()
+            .unwrap()
+            .get(key)
+            .is_none());
+        let original = json!({key: true});
+        let mut edit = Form::new(
+            FormKind::CfTunnelRouteEdit {
+                tunnel_id: "id".into(),
+                hostname: "app.example.test".into(),
+                path: "".into(),
+            },
+            "Origin",
+            tunnel_origin_fields(Some(&original)),
+        )
+        .with_original(original);
+        set_f_val(&mut edit, label, "Disabled");
+        assert_eq!(
+            tunnel_origin_request_from_form(&edit).unwrap(),
+            Some(json!({key: false}))
+        );
+        set_f_val(&mut edit, label, "Inherit");
+        assert_eq!(tunnel_origin_request_from_form(&edit).unwrap(), None);
+    }
+}
+
+#[test]
+fn cf_tunnel_access_object_and_regular_proxy_override_inherit_independently() {
+    for access in [
+        json!({"required": false, "teamName": "", "audTag": [], "opaque": {"keep": true}}),
+        json!({"teamName": "team", "audTag": ["aud"], "opaque": [false, null]}),
+    ] {
+        let original = json!({"access": access, "proxyType": "future-proxy", "future": 7});
+        let mut form = Form::new(
+            FormKind::CfTunnelRouteCreate {
+                tunnel_id: "id".into(),
+            },
+            "Origin",
+            tunnel_origin_fields(Some(&original)),
+        )
+        .with_original(original.clone());
+        set_f_val(&mut form, "HTTP Host Header", "changed");
+        let saved = tunnel_origin_request_from_form(&form).unwrap().unwrap();
+        assert_eq!(saved["access"], original["access"]);
+        assert_eq!(saved["proxyType"], "future-proxy");
+        set_f_val(&mut form, "Proxy Type", "regular");
+        assert_eq!(
+            tunnel_origin_request_from_form(&form).unwrap().unwrap()["proxyType"],
+            ""
+        );
+        set_f_val(&mut form, "Access Required", "Inherit");
+        let saved = tunnel_origin_request_from_form(&form).unwrap().unwrap();
+        assert!(saved.get("access").is_none());
+        assert_eq!(saved["future"], 7);
+    }
+    let mut form = Form::new(
+        FormKind::CfTunnelRouteCreate {
+            tunnel_id: "id".into(),
+        },
+        "Origin",
+        tunnel_origin_fields(None),
+    );
+    set_f_val(&mut form, "Access Required", "Disable requirement");
+    assert_eq!(
+        tunnel_origin_request_from_form(&form).unwrap(),
+        Some(json!({"access": {"required": false, "teamName": "", "audTag": []}}))
+    );
+    set_f_val(&mut form, "Access Required", "Require");
+    assert!(tunnel_origin_request_from_form(&form).is_err());
+    set_f_val(&mut form, "Access Team Name", "team");
+    assert!(tunnel_origin_request_from_form(&form).is_err());
+    set_f_val(&mut form, "Access AUD Tags", "aud-1, aud-2");
+    assert_eq!(
+        tunnel_origin_request_from_form(&form).unwrap(),
+        Some(
+            json!({"access": {"required": true, "teamName": "team", "audTag": ["aud-1", "aud-2"]}})
+        )
+    );
+}
+
+#[test]
+fn cf_tunnel_access_disable_retains_original_auth_and_string_clear_is_targeted() {
+    let original = json!({
+        "access": {"required": true, "teamName": "team", "audTag": ["aud"], "opaque": 7},
+        "httpHostHeader": "old-host", "originServerName": "", "caPool": ""
+    });
+    let mut form = Form::new(
+        FormKind::CfTunnelRouteCreate {
+            tunnel_id: "id".into(),
+        },
+        "Origin",
+        tunnel_origin_fields(Some(&original)),
+    )
+    .with_original(original.clone());
+    set_f_val(&mut form, "Access Required", "Disable requirement");
+    set_f_val(&mut form, "HTTP Host Header", "");
+    let saved = tunnel_origin_request_from_form(&form).unwrap().unwrap();
+    let mut expected_access = original["access"].clone();
+    expected_access["required"] = json!(false);
+    assert_eq!(saved["access"], expected_access);
+    assert!(saved.get("httpHostHeader").is_none());
+    assert_eq!(saved["originServerName"], "");
+    assert_eq!(saved["caPool"], "");
+}
+
+#[test]
+fn cf_tunnel_route_malformed_stored_duration_blocks_dispatch_until_repaired() {
+    for (stored, repaired, expected_number) in [
+        ("45s", "45", Some(45)),
+        ("30", "30", Some(30)),
+        ("", "", None),
+    ] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new("s".into(), vec![]);
+        app.cf.active = Some(cf_account());
+        app.cf.current_tunnel = Some(cf_tunnel("tunnel-1", "edge-router"));
+        let original = json!({"connectTimeout": stored, "noTLSVerify": false, "opaque": [7]});
+        app.cf.tunnel_config = Some(crate::cloudflare::TunnelConfiguration {
+            config: crate::cloudflare::TunnelConfig {
+                ingress: vec![crate::cloudflare::TunnelIngressRule {
+                    hostname: "app.example.test".into(),
+                    path: "/api".into(),
+                    service: "http://localhost:3000".into(),
+                    origin_request: Some(original.clone()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        app.cf.tunnel_config_row.select(Some(0));
+        app.open_cf_tunnel_route_edit_form();
+        assert_ne!(
+            app.form
+                .as_ref()
+                .unwrap()
+                .by_label("Connect Timeout (seconds)"),
+            repaired,
+            "stored strings must be distinguishable from integer/blank inputs"
+        );
+        set_f_val(app.form.as_mut().unwrap(), "Service URL", "localhost:8080");
+        assert!(tunnel_origin_request_from_form(app.form.as_ref().unwrap()).is_err());
+        let previous_status = app.status.clone();
+        app.submit_form(&tx);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.form.as_ref().unwrap().original, Some(original.clone()));
+        assert_eq!(
+            app.cf.tunnel_config.as_ref().unwrap().config.ingress[0].origin_request,
+            Some(original)
+        );
+        assert_ne!(app.status, previous_status);
+        set_f_val(
+            app.form.as_mut().unwrap(),
+            "Connect Timeout (seconds)",
+            repaired,
+        );
+        app.submit_form(&tx);
+        let Ok(Req::Cf(CfReq::TunnelRouteEdit {
+            tunnel_id,
+            hostname,
+            path,
+            service,
+            origin_request: Some(Some(saved)),
+            ..
+        })) = rx.try_recv()
+        else {
+            panic!("expected repaired route request")
+        };
+        assert_eq!(tunnel_id, "tunnel-1");
+        assert_eq!(hostname, "app.example.test");
+        assert_eq!(path, "/api");
+        assert_eq!(service, "http://localhost:8080");
+        let expected = match expected_number {
+            Some(number) => json!({"connectTimeout": number, "noTLSVerify": false, "opaque": [7]}),
+            None => json!({"noTLSVerify": false, "opaque": [7]}),
+        };
+        assert_eq!(saved, expected);
+    }
+}
+
+#[test]
+fn cf_tunnel_route_numeric_seconds_validate_before_dispatch_and_clear_is_explicit() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_tunnel = Some(cf_tunnel("tunnel-1", "edge-router"));
+    app.open_cf_tunnel_route_form();
+    set_f_val(app.form.as_mut().unwrap(), "Hostname", "app.example.test");
+    for label in [
+        "Connect Timeout (seconds)",
+        "TLS Timeout (seconds)",
+        "Keep Alive Timeout (seconds)",
+        "TCP Keep Alive (seconds)",
+        "Keep Alive Connections",
+    ] {
+        for value in ["30s", "1.5", "9223372036854775808", "invalid"] {
+            set_f_val(app.form.as_mut().unwrap(), label, value);
+            app.submit_form(&tx);
+            assert!(
+                app.form.is_some(),
+                "{label}={value} must keep the form open"
+            );
+            assert!(
+                rx.try_recv().is_err(),
+                "invalid numeric input must not dispatch"
+            );
+        }
+        set_f_val(app.form.as_mut().unwrap(), label, "-1");
+    }
+    app.submit_form(&tx);
+    let Ok(Req::Cf(CfReq::TunnelRouteAdd {
+        origin_request: Some(origin),
+        ..
+    })) = rx.try_recv()
+    else {
+        panic!("expected route create request")
+    };
+    assert_eq!(
+        origin,
+        json!({"connectTimeout": -1, "tlsTimeout": -1,
+        "keepAliveTimeout": -1, "tcpKeepAlive": -1, "keepAliveConnections": -1})
+    );
+
+    let original = json!({"connectTimeout": 30, "noTLSVerify": false, "opaque": {"keep": true}});
+    app.cf.tunnel_config = Some(crate::cloudflare::TunnelConfiguration {
+        config: crate::cloudflare::TunnelConfig {
+            ingress: vec![crate::cloudflare::TunnelIngressRule {
+                hostname: "app.example.test".into(),
+                service: "http://localhost:3000".into(),
+                origin_request: Some(original.clone()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    app.cf.tunnel_config_row.select(Some(0));
+    app.open_cf_tunnel_route_edit_form();
+    set_f_val(
+        app.form.as_mut().unwrap(),
+        "Connect Timeout (seconds)",
+        "45",
+    );
+    app.submit_form(&tx);
+    let Ok(Req::Cf(CfReq::TunnelRouteEdit {
+        origin_request: Some(Some(origin)),
+        ..
+    })) = rx.try_recv()
+    else {
+        panic!("expected route edit request")
+    };
+    assert_eq!(
+        origin,
+        json!({"connectTimeout": 45, "noTLSVerify": false, "opaque": {"keep": true}})
+    );
+    app.open_cf_tunnel_route_edit_form();
+    set_f_val(app.form.as_mut().unwrap(), "Clear origin request", "yes");
+    set_f_val(
+        app.form.as_mut().unwrap(),
+        "Connect Timeout (seconds)",
+        "invalid",
+    );
+    app.submit_form(&tx);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::TunnelRouteEdit {
+            origin_request: Some(None),
+            ..
+        }))
     ));
 }
 
@@ -8936,7 +9290,6 @@ fn cf_record_forms_reject_invalid_numbers_instead_of_guessing_auto() {
     app.form.as_mut().unwrap().fields[3].value = "1".into();
     app.form.as_mut().unwrap().fields[5].value = "high".into();
     app.submit_form(&tx);
-    assert_eq!(app.status, "Priority must be a number");
     assert!(rx.try_recv().is_err(), "invalid priority sends no request");
 }
 
