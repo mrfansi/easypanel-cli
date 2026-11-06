@@ -260,11 +260,28 @@ pub fn migrate_service(
         .call(&grp, "inspectService", ident.clone())
         .with_context(|| format!("couldn't read '{src_project}/{src_service}'"))?;
 
+    anyhow::ensure!(
+        inspect.is_object(),
+        "couldn't copy service configuration: source inspection must be an object"
+    );
     let mut create = service_body(&inspect, dst.project, dst.service);
     for key in ["command", "image", "env"] {
+        if key != "env" && !crate::lifecycle::is_database(stype) {
+            continue;
+        }
         match create.get(key) {
             Some(Value::Null) => {
                 create.as_object_mut().unwrap().remove(key);
+            }
+            Some(value) if key == "env" && matches!(stype, "box" | "wordpress") => {
+                anyhow::ensure!(
+                    value.is_object(),
+                    "couldn't copy service configuration: source env must be an object"
+                );
+                anyhow::ensure!(
+                    value.get("content").is_none_or(Value::is_string),
+                    "couldn't copy service configuration: source env.content must be a string"
+                );
             }
             Some(value) => anyhow::ensure!(
                 value.is_string(),
@@ -280,6 +297,12 @@ pub fn migrate_service(
             .as_str()
             .context("couldn't copy config file: source configFile must be a string")?,
     };
+    // Only MySQL/MariaDB expose configFile; box's Advanced block holds scripts.
+    anyhow::ensure!(
+        config.is_empty() || matches!(stype, "mysql" | "mariadb"),
+        "couldn't copy service configuration: {stype} has no configFile API; \
+         migrate this configuration through its supported source/settings first"
+    );
     let (config, deferred) = defer_first_boot_blockers(config);
     let advanced = if config.is_empty() {
         None
@@ -300,30 +323,72 @@ pub fn migrate_service(
         Some(body)
     };
 
+    let source = inspect.get("source").filter(|value| !value.is_null());
+    let source_call = if let Some(source) = source {
+        let (op, mut body) = if stype == "compose" {
+            let (op, keys): (&str, &[&str]) = match source["type"].as_str() {
+                Some("inline") => ("updateSourceInline", &["content"]),
+                Some("git") => (
+                    "updateSourceGit",
+                    &["repo", "ref", "rootPath", "composeFile"],
+                ),
+                _ => {
+                    anyhow::bail!("couldn't copy compose source: expected an inline or git source")
+                }
+            };
+            let mut body = json!({});
+            for key in keys {
+                let value = source.get(*key).and_then(Value::as_str).with_context(|| {
+                    format!("couldn't copy compose source: source {key} must be a string")
+                })?;
+                anyhow::ensure!(
+                    match *key {
+                        "rootPath" => value.starts_with('/'),
+                        "composeFile" => true,
+                        _ => !value.is_empty(),
+                    },
+                    "couldn't copy compose source: source {key} is invalid"
+                );
+                body[*key] = json!(value);
+            }
+            (op, body)
+        } else {
+            anyhow::ensure!(
+                stype == "app",
+                "couldn't copy service configuration: {stype} has no source API"
+            );
+            crate::source::source_call(source).context(
+                "couldn't copy app source: no configuration-only API for this source; \
+                 upload sources require the original files to be uploaded separately",
+            )?
+        };
+        body["projectName"] = json!(dst.project);
+        body["serviceName"] = json!(dst.service);
+        Some((op, body))
+    } else {
+        None
+    };
+
     // 1) The service itself, config inline EXCEPT the source.
     dst.client
         .call(&grp, "createService", create)
         .with_context(|| format!("couldn't create '{}/{}'", dst.project, dst.service))?;
 
     // 2) The source, separately — inline it would trigger a deploy.
-    if let Some(src_def) = inspect.get("source").filter(|s| s.get("type").is_some()) {
-        if let Some((op, mut body)) = crate::source::source_call(src_def) {
-            body["projectName"] = json!(dst.project);
-            body["serviceName"] = json!(dst.service);
-            dst.client
-                .call(&grp, op, body)
-                .context("the service was created, but its source failed to apply")?;
-            // updateSourceGithub resets auto-deploy, so it goes back on after.
-            if src_def.get("type").and_then(Value::as_str) == Some("github")
-                && src_def
-                    .get("autoDeploy")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            {
-                let ps = json!({ "projectName": dst.project, "serviceName": dst.service });
-                if dst.client.call(&grp, "enableGithubDeploy", ps).is_err() {
-                    notes.push("auto-deploy could not be re-enabled".into());
-                }
+    if let Some((op, body)) = source_call {
+        dst.client
+            .call(&grp, op, body)
+            .context("the service was created, but its source failed to apply")?;
+        // updateSourceGithub resets auto-deploy, so it goes back on after.
+        if source.and_then(|s| s.get("type")).and_then(Value::as_str) == Some("github")
+            && source
+                .and_then(|s| s.get("autoDeploy"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        {
+            let ps = json!({ "projectName": dst.project, "serviceName": dst.service });
+            if dst.client.call(&grp, "enableGithubDeploy", ps).is_err() {
+                notes.push("auto-deploy could not be re-enabled".into());
             }
         }
     }
@@ -371,6 +436,314 @@ pub fn migrate_service(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_clone_preserves_wordpress_and_box_object_environments() {
+        use httpmock::prelude::*;
+
+        for kind in ["wordpress", "box"] {
+            let server = MockServer::start();
+            let inspect = server.mock(|when, then| {
+                when.method(POST)
+                    .path(format!("/api/rpc/services/{kind}/inspectService"));
+                then.status(200).json_body(json!({"json":{
+                    "name":"web", "projectName":"origin", "type":kind,
+                    "env":{"content":"SITE_NAME=Original\nSECRET=keep\n"},
+                    "nginx":{"rootDocument":"/code/public","config":"server { listen 80; }"},
+                    "git":{"url":"https://example.test/site.git","branch":"production"}
+                }}));
+            });
+            let create = server.mock(|when, then| {
+                when.method(POST)
+                    .path(format!("/api/rpc/services/{kind}/createService"))
+                    .json_body(json!({"json":{
+                        "projectName":"target", "serviceName":"clone",
+                        "env":{"content":"SITE_NAME=Original\nSECRET=keep\n"},
+                        "nginx":{"rootDocument":"/code/public","config":"server { listen 80; }"},
+                        "git":{"url":"https://example.test/site.git","branch":"production"}
+                    }}));
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let other = server.mock(|when, then| {
+                when.matches(|request| {
+                    !request.path.ends_with("/inspectService")
+                        && !request.path.ends_with("/createService")
+                });
+                then.status(400);
+            });
+            let client = EasypanelClient::new(&server.base_url(), "test-only");
+            let notes = migrate_service(
+                &client,
+                "origin",
+                "web",
+                kind,
+                &Target {
+                    client: &client,
+                    project: "target",
+                    service: "clone",
+                },
+                false,
+            )
+            .unwrap();
+            assert!(notes.is_empty());
+            inspect.assert_hits(1);
+            create.assert_hits(1);
+            other.assert_hits(0);
+        }
+    }
+
+    #[test]
+    fn config_clone_applies_compose_inline_and_git_sources_without_advanced_or_deploy() {
+        use httpmock::prelude::*;
+
+        // These are create/source request contracts, not a typed inspect response.
+        for (source, operation, source_body) in [
+            (
+                json!({"type":"inline","content":"services:\n  web:\n    image: nginx:alpine\n"}),
+                "updateSourceInline",
+                json!({"content":"services:\n  web:\n    image: nginx:alpine\n"}),
+            ),
+            (
+                json!({"type":"git","repo":"https://example.test/stack.git","ref":"release",
+                    "rootPath":"/infra","composeFile":"production.yaml"}),
+                "updateSourceGit",
+                json!({"repo":"https://example.test/stack.git","ref":"release",
+                    "rootPath":"/infra","composeFile":"production.yaml"}),
+            ),
+        ] {
+            let server = MockServer::start();
+            let inspect = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/services/compose/inspectService");
+                then.status(200).json_body(json!({"json":{
+                    "name":"stack","projectName":"origin","type":"compose",
+                    "env":"IMAGE_TAG=stable\n", "createDotEnv":true, "source":source
+                }}));
+            });
+            let create = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/services/compose/createService")
+                    .json_body(json!({"json":{
+                        "projectName":"target","serviceName":"clone",
+                        "env":"IMAGE_TAG=stable\n","createDotEnv":true
+                    }}));
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let mut expected_source = source_body;
+            expected_source["projectName"] = json!("target");
+            expected_source["serviceName"] = json!("clone");
+            let update = server.mock(|when, then| {
+                when.method(POST)
+                    .path(format!("/api/rpc/services/compose/{operation}"))
+                    .json_body(json!({"json":expected_source}));
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let other = server.mock(|when, then| {
+                when.matches(|request| {
+                    !matches!(
+                        request.path.as_str(),
+                        "/api/rpc/services/compose/inspectService"
+                            | "/api/rpc/services/compose/createService"
+                            | "/api/rpc/services/compose/updateSourceInline"
+                            | "/api/rpc/services/compose/updateSourceGit"
+                    )
+                });
+                then.status(400);
+            });
+            let client = EasypanelClient::new(&server.base_url(), "test-only");
+            assert!(migrate_service(
+                &client,
+                "origin",
+                "stack",
+                "compose",
+                &Target {
+                    client: &client,
+                    project: "target",
+                    service: "clone"
+                },
+                false,
+            )
+            .unwrap()
+            .is_empty());
+            inspect.assert_hits(1);
+            create.assert_hits(1);
+            update.assert_hits(1);
+            other.assert_hits(0);
+        }
+    }
+
+    #[test]
+    fn config_clone_rejects_malformed_kind_fields_and_unavailable_configuration_before_create() {
+        use httpmock::prelude::*;
+
+        for (kind, source, message) in [
+            (
+                "wordpress",
+                json!({"env":"GENERIC_FIXTURE=invalid"}),
+                "source env must be an object",
+            ),
+            (
+                "box",
+                json!({"env":{"content":false}}),
+                "source env.content must be a string",
+            ),
+            ("compose", json!({"env":{}}), "source env must be a string"),
+            (
+                "compose",
+                json!({"source":{"type":"inline","content":{}}}),
+                "source content must be a string",
+            ),
+            (
+                "compose",
+                json!({"source":{"type":"git","repo":"https://example.test/stack.git",
+                "ref":"main","composeFile":"compose.yaml"}}),
+                "source rootPath must be a string",
+            ),
+            (
+                "compose",
+                json!({"configFile":"# generic fixture, not a compose field\n"}),
+                "compose has no configFile API",
+            ),
+            (
+                "app",
+                json!({"source":{"type":"upload"}}),
+                "upload sources require the original files",
+            ),
+        ] {
+            let server = MockServer::start();
+            let inspect = server.mock(|when, then| {
+                when.path(format!("/api/rpc/services/{kind}/inspectService"));
+                then.status(200).json_body(json!({"json":source}));
+            });
+            let mutation = server.mock(|when, then| {
+                when.matches(|request| !request.path.ends_with("/inspectService"));
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let client = EasypanelClient::new(&server.base_url(), "test-only");
+            let error = migrate_service(
+                &client,
+                "origin",
+                "service",
+                kind,
+                &Target {
+                    client: &client,
+                    project: "target",
+                    service: "clone",
+                },
+                false,
+            )
+            .unwrap_err();
+            assert!(format!("{error:#}").contains(message), "{error:#}");
+            inspect.assert_hits(1);
+            mutation.assert_hits(0);
+        }
+    }
+
+    #[test]
+    fn project_migration_reports_failed_compose_source_and_continues_to_database_without_command() {
+        use crate::worker::{handle_req, Emit, Req, Resp};
+        use httpmock::prelude::*;
+
+        let server = MockServer::start();
+        let projects = server.mock(|when, then| {
+            when.path("/api/rpc/projects/listProjects");
+            then.status(200)
+                .json_body(json!({"json":[{"name":"target"}]}));
+        });
+        for (kind, source) in [
+            ("wordpress", json!({"env":{"content":"WP_DEBUG=false"}})),
+            (
+                "compose",
+                json!({"env":"TAG=stable",
+                "source":{"type":"inline","content":"services:\n  web:\n    image: nginx\n"}}),
+            ),
+            (
+                "mariadb",
+                json!({"image":"mariadb:11","configFile":"[mysqld]\nmax_connections=321"}),
+            ),
+        ] {
+            server.mock(|when, then| {
+                when.path(format!("/api/rpc/services/{kind}/inspectService"));
+                then.status(200).json_body(json!({"json":source}));
+            });
+        }
+        let wordpress = server.mock(|when, then| {
+            when.path("/api/rpc/services/wordpress/createService")
+                .json_body(json!({"json":{"projectName":"target","serviceName":"site",
+                    "env":{"content":"WP_DEBUG=false"}}}));
+            then.status(200).json_body(json!({"json":null}));
+        });
+        let compose = server.mock(|when, then| {
+            when.path("/api/rpc/services/compose/createService")
+                .json_body(json!({"json":{"projectName":"target","serviceName":"stack","env":"TAG=stable"}}));
+            then.status(200).json_body(json!({"json":null}));
+        });
+        let refused_source = server.mock(|when, then| {
+            when.path("/api/rpc/services/compose/updateSourceInline")
+                .json_body(json!({"json":{"projectName":"target","serviceName":"stack",
+                    "content":"services:\n  web:\n    image: nginx\n"}}));
+            then.status(503)
+                .json_body(json!({"message":"source storage unavailable"}));
+        });
+        let database = server.mock(|when, then| {
+            when.path("/api/rpc/services/mariadb/createService")
+                .json_body(json!({"json":{"projectName":"target","serviceName":"db","image":"mariadb:11"}}));
+            then.status(200).json_body(json!({"json":null}));
+        });
+        let advanced = server.mock(|when, then| {
+            when.path("/api/rpc/services/mariadb/updateAdvanced")
+                .json_body(json!({"json":{"projectName":"target","serviceName":"db",
+                    "command":"","image":"mariadb:11","configFile":"[mysqld]\nmax_connections=321"}}));
+            then.status(200).json_body(json!({"json":null}));
+        });
+        let domains = server.mock(|when, then| {
+            when.path("/api/rpc/domains/listDomains");
+            then.status(200).json_body(json!({"json":[]}));
+        });
+        let prohibited = server.mock(|when, then| {
+            when.matches(|request| {
+                request.path.contains("deploy")
+                    || request.path.contains("destroy")
+                    || request.path == "/api/rpc/services/compose/updateAdvanced"
+            });
+            then.status(400);
+        });
+        let client = EasypanelClient::new(&server.base_url(), "test-only");
+        let emit: Emit = std::sync::Arc::new(|_| {});
+        let result = handle_req(
+            &client,
+            Req::Migrate {
+                target: client.clone(),
+                target_name: "destination".into(),
+                target_project: "target".into(),
+                services: vec![
+                    ("origin".into(), "site".into(), "wordpress".into()),
+                    ("origin".into(), "stack".into(), "compose".into()),
+                    ("origin".into(), "db".into(), "mariadb".into()),
+                ],
+            },
+            &emit,
+        );
+        let message = match result {
+            Resp::Done(message, _) => message,
+            _ => panic!("a partial project migration must retain its per-service outcome"),
+        };
+        assert!(message.contains("Migrated 2/3"), "{message}");
+        assert!(message.contains("config only, NO data"), "{message}");
+        assert!(
+            message
+                .contains("failed: stack: the service was created, but its source failed to apply"),
+            "{message}"
+        );
+        projects.assert_hits(1);
+        wordpress.assert_hits(1);
+        compose.assert_hits(1);
+        refused_source.assert_hits(1);
+        database.assert_hits(1);
+        advanced.assert_hits(1);
+        domains.assert_hits(2);
+        prohibited.assert_hits(0);
+    }
 
     #[test]
     fn config_clone_rejects_malformed_advanced_fields_before_creation() {
