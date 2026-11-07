@@ -173,9 +173,9 @@ operations; the editable `.env` path applies only to app services.
 - **Project and service configuration:** create/delete projects and services;
   deploy, rebuild, start, stop, restart and bulk actions; source/GitHub repository,
   branch and auto-deploy settings; build/deployment options, resource limits,
-  environment and file-env, database config files, mounts and file contents,
-  ports, domains, basic auth and redirects. Typed forms provide Save/Discard rather
-  than a raw API/JSON console.
+  environment and file-env, MySQL/MariaDB config files, Box build/start scripts,
+  mounts and file contents, ports, domains, basic auth and redirects. Typed forms
+  provide Save/Discard rather than a raw API/JSON console.
 - **Logs and terminals:** live logs with follow/pause/filter/copy, cross-service
   log search, embedded container shells and auto-login database shells. Dock
   sessions in the resizable bottom **Logs**/**Terminal** pane or open them as
@@ -258,11 +258,13 @@ Use **Rust 1.95 or newer** with the host platform's C/C++ linker and SDK:
   keep the desktop session's D-Bus service available. The wlroots-only backend
   does not provide this interface; rfd also recommends `zenity` for its fallback.
 
-CJK user text uses validated installed system-font fallbacks while keeping the
-bundled primary UI and terminal fonts. Supported paths include macOS system CJK
-fonts, Windows `%WINDIR%\Fonts\msyh.ttc`, and Linux
-`/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`. Without a supported CJK
-font the app still runs, but those glyphs may be unavailable.
+CJK user text uses a cached, validated chain of installed system-font faces for
+Han, Kana and Hangul, while keeping the bundled primary UI and terminal fonts.
+Supported paths include macOS `/System/Library/Fonts/` (`Hiragino Sans GB.ttc`,
+`AppleSDGothicNeo.ttc`, then `STHeiti Light.ttc`), Windows `%WINDIR%\Fonts\`
+(`msyh.ttc`, `malgun.ttf`, then `YuGothR.ttc`), and Linux
+`/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`. If those installed fonts
+do not cover a script, the app still runs, but its glyphs may be unavailable.
 
 From the repository root (all platforms):
 
