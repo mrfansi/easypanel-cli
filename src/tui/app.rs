@@ -555,8 +555,7 @@ pub(super) struct App {
     pub(super) edit_env: Option<(String, String, String)>,
     /// The project whose shared env is about to be opened in $EDITOR.
     pub(super) edit_project_env: Option<String>,
-    /// (project, service, stype) — awaiting a Config File (Advanced db) edit in
-    /// $EDITOR; its contents come from inspectService and are saved via updateAdvanced.
+    /// (project, service, stype) — awaiting a configuration inspection.
     pub(super) edit_config: Option<(String, String, String)>,
     /// (project, service, index) awaiting a file mount's $EDITOR open; the event
     /// loop owns the terminal and fetches fresh values before editing.
@@ -928,15 +927,14 @@ impl App {
         }
     }
 
-    /// Edit the selected database service's Config File (Advanced) in $EDITOR.
-    /// event_loop fetches its contents, opens the editor, then saves.
+    /// File configuration uses $EDITOR; Box scripts use the shared two-field form.
     pub(super) fn start_config_edit(&mut self) {
         match self.selected_row() {
-            Some((p, s, t)) if crate::lifecycle::is_database(&t) => {
+            Some((p, s, t)) if crate::lifecycle::configuration_label(&t).is_some() => {
                 self.edit_config = Some((p, s, t));
             }
             Some((_, _, t)) => {
-                self.status = format!("Config file is only for database services (this is {t})");
+                self.status = format!("No file or script configuration API for {t}");
             }
             None => self.status = "Select a service first".into(),
         }
@@ -5861,6 +5859,15 @@ impl App {
                 self.form = None;
                 return;
             }
+            FormKind::ConfigurationEdit { .. } => match crate::form::configuration_request(form) {
+                Ok(request) => {
+                    let _ = req.send(request);
+                }
+                Err(error) => {
+                    self.status = error;
+                    return;
+                }
+            },
             FormKind::SourceEdit { project, service } => {
                 let pending = self
                     .service_setup_pending

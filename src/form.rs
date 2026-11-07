@@ -1158,6 +1158,11 @@ pub(crate) enum FormKind {
         project: String,
         service: String,
     },
+    ConfigurationEdit {
+        project: String,
+        service: String,
+        stype: String,
+    },
     SourceEdit {
         project: String,
         service: String,
@@ -2103,6 +2108,78 @@ pub(crate) fn service_create_request(form: &Form) -> Result<crate::worker::Req, 
         extra,
         source,
     })
+}
+
+pub(crate) fn configuration_form(
+    project: String,
+    service: String,
+    stype: String,
+    current: &Value,
+) -> Result<Form, String> {
+    let label = crate::lifecycle::configuration_label(&stype)
+        .ok_or_else(|| format!("unsupported service configuration type: {stype}"))?;
+    let fields = if crate::lifecycle::has_scripts(&stype) {
+        let advanced = crate::operations::box_advanced(current).map_err(|e| e.to_string())?;
+        vec![
+            Field::editor(
+                "Build script",
+                advanced["buildScript"].as_str().unwrap_or(""),
+            ),
+            Field::editor(
+                "Start script",
+                advanced["startScript"].as_str().unwrap_or(""),
+            ),
+        ]
+    } else {
+        vec![Field::editor(
+            "Config file",
+            crate::operations::configuration_string(current, "configFile")
+                .map_err(|e| e.to_string())?,
+        )]
+    };
+    let note = if crate::lifecycle::has_scripts(&stype) {
+        "Save replaces both scripts. Other advanced settings and environment are preserved. Saving does not run scripts."
+    } else {
+        "Restart after saving to apply. Image, command and environment are preserved."
+    };
+    Ok(Form::new(
+        FormKind::ConfigurationEdit {
+            project,
+            service,
+            stype,
+        },
+        label,
+        fields,
+    )
+    .with_note(note))
+}
+
+pub(crate) fn configuration_request(form: &Form) -> Result<crate::worker::Req, String> {
+    let FormKind::ConfigurationEdit {
+        project,
+        service,
+        stype,
+    } = &form.kind
+    else {
+        return Err("not a service configuration form".into());
+    };
+    if crate::lifecycle::has_scripts(stype) {
+        Ok(crate::worker::Req::BoxScriptsSave {
+            project: project.clone(),
+            service: service.clone(),
+            build_script: form.by_label("Build script"),
+            start_script: form.by_label("Start script"),
+        })
+    } else if crate::lifecycle::has_config_file(stype) {
+        Ok(crate::worker::Req::ConfigFileSave {
+            project: project.clone(),
+            service: service.clone(),
+            stype: stype.clone(),
+            config: form.by_label("Config file"),
+        })
+    } else {
+        Err(format!("unsupported service configuration type: {stype}"))
+    }
 }
 
 /// Build the patch an edit form describes. `content` is always sent (the field is

@@ -494,6 +494,12 @@ pub(crate) enum Req {
         stype: String,
         config: String,
     },
+    BoxScriptsSave {
+        project: String,
+        service: String,
+        build_script: String,
+        start_script: String,
+    },
     /// A Cloudflare request. Cloudflare is a bounded context outside EasyPanel, so
     /// its work rides the SAME worker lanes but is dispatched apart: the worker
     /// builds a `CloudflareClient` from the token carried IN the request (resolved
@@ -2296,32 +2302,32 @@ pub(crate) fn handle_req(client: &EasypanelClient, req: Req, emit: &Emit) -> Res
             stype,
             config,
         } => {
-            let grp = format!("services/{stype}");
-            let ps = json!({ "projectName": project, "serviceName": service });
-            // updateAdvanced replaces the whole Advanced block; image & command MUST
-            // be strings (verified: null/omit is rejected). Read what's there, keep
-            // it, replace only configFile. env is included if present so it isn't lost.
-            match client.call(&grp, "inspectService", ps) {
-                Ok(cur) => {
-                    let mut body = json!({
-                        "projectName": project,
-                        "serviceName": service,
-                        "image": cur.get("image").and_then(Value::as_str).unwrap_or(""),
-                        "command": cur.get("command").and_then(Value::as_str).unwrap_or(""),
-                        "configFile": config,
-                    });
-                    if let Some(env) = cur.get("env").and_then(Value::as_str) {
-                        body["env"] = json!(env);
-                    }
-                    match client.call(&grp, "updateAdvanced", body) {
-                        Ok(_) => Resp::Done(
-                            format!("Config file {project}/{service} saved"),
-                            Refresh::None,
-                        ),
-                        Err(e) => Resp::Err(e.to_string()),
-                    }
-                }
-                Err(e) => Resp::Err(e.to_string()),
+            match crate::operations::save_config_file(client, &project, &service, &stype, &config) {
+                Ok(()) => Resp::Done(
+                    format!("Config file {project}/{service} saved"),
+                    Refresh::None,
+                ),
+                Err(error) => Resp::Err(error.to_string()),
+            }
+        }
+        Req::BoxScriptsSave {
+            project,
+            service,
+            build_script,
+            start_script,
+        } => {
+            match crate::operations::save_box_scripts(
+                client,
+                &project,
+                &service,
+                &build_script,
+                &start_script,
+            ) {
+                Ok(()) => Resp::Done(
+                    format!("Advanced scripts {project}/{service} saved — scripts not run"),
+                    Refresh::None,
+                ),
+                Err(error) => Resp::Err(error.to_string()),
             }
         }
         Req::Action {
@@ -3780,6 +3786,125 @@ fn created_backup_id(before: &Value, after: &Value, database: &str) -> Result<St
 mod tests {
     use super::*;
     use httpmock::prelude::*;
+
+    #[test]
+    fn configuration_contract_unsupported_file_request_never_contacts_server() {
+        let server = MockServer::start();
+        let network = server.mock(|_, then| {
+            then.status(500);
+        });
+        let emit: Emit = Arc::new(|_| {});
+        for stype in [
+            "box",
+            "mongo",
+            "postgres",
+            "redis",
+            "app",
+            "wordpress",
+            "compose",
+            "unknown",
+        ] {
+            let response = handle_req(
+                &EasypanelClient::new(&server.base_url(), "fixture"),
+                Req::ConfigFileSave {
+                    project: "p".into(),
+                    service: "s".into(),
+                    stype: stype.into(),
+                    config: "exact\n".into(),
+                },
+                &emit,
+            );
+            assert!(
+                matches!(response, Resp::Err(error) if error.contains("unsupported config file"))
+            );
+        }
+        network.assert_hits(0);
+    }
+
+    #[test]
+    fn configuration_contract_mysql_mariadb_preserve_defaults_env_and_raw_file() {
+        for kind in ["mysql", "mariadb"] {
+            for image in [json!("db:exact"), Value::Null] {
+                let server = MockServer::start();
+                server.mock(|when, then| {
+                    when.path(format!("/api/rpc/services/{kind}/inspectService"));
+                    then.status(200).json_body(json!({"json":{
+                        "image":image,"command":null,"env":"TZ=UTC\n","configFile":"old"}}));
+                });
+                let raw = "\n[mysqld]\nserver-id=23\nreplicate-do-db=exact\n";
+                let save = server.mock(|when, then| {
+                    when.path(format!("/api/rpc/services/{kind}/updateAdvanced"))
+                        .json_body(json!({"json":{"projectName":"p","serviceName":"s",
+                            "image":image.as_str().unwrap_or(""),"command":"",
+                            "env":"TZ=UTC\n","configFile":raw}}));
+                    then.status(200).json_body(json!({"json":null}));
+                });
+                let emit: Emit = Arc::new(|_| {});
+                assert!(matches!(
+                    handle_req(
+                        &EasypanelClient::new(&server.base_url(), "fixture"),
+                        Req::ConfigFileSave {
+                            project: "p".into(),
+                            service: "s".into(),
+                            stype: kind.into(),
+                            config: raw.into()
+                        },
+                        &emit
+                    ),
+                    Resp::Done(_, _)
+                ));
+                save.assert_hits(1);
+            }
+        }
+    }
+
+    #[test]
+    fn configuration_contract_malformed_inspection_refuses_write() {
+        for (kind, current) in [
+            ("box", json!({"advanced":[] })),
+            ("box", json!({"advanced":{"buildScript":false}})),
+            ("box", json!({"advanced":{"startScript":null}})),
+            ("box", json!(null)),
+            ("mysql", json!({"image":false})),
+            ("mysql", json!({"configFile":42})),
+            ("mariadb", json!({"env":{"content":"not db env"}})),
+        ] {
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.path(format!("/api/rpc/services/{kind}/inspectService"));
+                then.status(200).json_body(json!({"json":current}));
+            });
+            let write = server.mock(|when, then| {
+                when.path(format!("/api/rpc/services/{kind}/updateAdvanced"));
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let emit: Emit = Arc::new(|_| {});
+            let request = if kind == "box" {
+                Req::BoxScriptsSave {
+                    project: "p".into(),
+                    service: "s".into(),
+                    build_script: "".into(),
+                    start_script: "run\n".into(),
+                }
+            } else {
+                Req::ConfigFileSave {
+                    project: "p".into(),
+                    service: "s".into(),
+                    stype: kind.into(),
+                    config: "".into(),
+                }
+            };
+            assert!(matches!(
+                handle_req(
+                    &EasypanelClient::new(&server.base_url(), "fixture"),
+                    request,
+                    &emit
+                ),
+                Resp::Err(_)
+            ));
+            write.assert_hits(0);
+        }
+    }
 
     #[test]
     fn env_kind_contract_file_toggle_rejects_non_apps_before_network() {

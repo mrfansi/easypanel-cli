@@ -102,12 +102,23 @@ pub fn has_resource_limits(stype: &str) -> bool {
     stype != "compose"
 }
 
-/// Does this type have `updateAdvanced` — the "Config File (Advanced)" editor?
-///
-/// The databases (where EasyPanel keeps e.g. a MySQL replication config) and
-/// `box`. NOT app or compose, which answer the bare 404 of a missing route.
+/// Only MySQL and MariaDB expose a configFile field on updateAdvanced.
 pub fn has_config_file(stype: &str) -> bool {
-    is_database(stype) || stype == "box"
+    matches!(stype, "mysql" | "mariadb")
+}
+
+pub fn has_scripts(stype: &str) -> bool {
+    stype == "box"
+}
+
+pub fn configuration_label(stype: &str) -> Option<&'static str> {
+    if has_config_file(stype) {
+        Some("Config file")
+    } else if has_scripts(stype) {
+        Some("Advanced scripts")
+    } else {
+        None
+    }
 }
 
 /// Why an action isn't offered, in the user's words. Shown instead of sending a
@@ -151,12 +162,26 @@ mod tests {
 
     #[test]
     fn resource_limits_and_config_file_follow_the_routes_that_exist() {
-        // Probed live: compose has no updateResources, and updateAdvanced exists
-        // for the databases and `box` but NOT for app or compose.
         assert!(!has_resource_limits("compose"));
         assert!(has_resource_limits("app") && has_resource_limits("box"));
-        assert!(has_config_file("mysql") && has_config_file("box"));
-        assert!(!has_config_file("app") && !has_config_file("compose"));
+        for kind in [
+            "mysql",
+            "mariadb",
+            "mongo",
+            "postgres",
+            "redis",
+            "box",
+            "app",
+            "compose",
+            "wordpress",
+        ] {
+            assert_eq!(has_config_file(kind), matches!(kind, "mysql" | "mariadb"));
+            assert_eq!(has_scripts(kind), kind == "box");
+            assert_eq!(
+                configuration_label(kind).is_some(),
+                matches!(kind, "mysql" | "mariadb" | "box")
+            );
+        }
     }
 
     #[test]

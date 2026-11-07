@@ -109,6 +109,11 @@ pub fn save_env(
         kind if crate::lifecycle::is_database(kind) => {
             // updateAdvanced replaces the block, not just env.
             for key in ["image", "command", "configFile"] {
+                if key == "configFile" && !crate::lifecycle::has_config_file(kind) {
+                    anyhow::ensure!(configuration_string(&cur, key)?.is_empty(),
+                        "{kind} has no configFile API; refusing to discard unsupported configuration");
+                    continue;
+                }
                 match cur.get(key) {
                     Some(Value::String(value)) => body[key] = json!(value),
                     None | Some(Value::Null) if key != "configFile" => body[key] = json!(""),
@@ -121,6 +126,84 @@ pub fn save_env(
         _ => return Err(anyhow!("unsupported environment service type: {stype}")),
     };
     client.call(&grp, op, body)?;
+    Ok(())
+}
+
+/// Missing optional strings use the vendor default; malformed values must not
+/// become empty edits that silently erase configuration.
+pub fn configuration_string<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
+    anyhow::ensure!(value.is_object(), "service configuration must be an object");
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(""),
+        Some(Value::String(value)) => Ok(value),
+        _ => Err(anyhow!("service {key} must be a string")),
+    }
+}
+
+pub fn box_advanced(service: &Value) -> Result<Value> {
+    anyhow::ensure!(service.is_object(), "service inspection must be an object");
+    let advanced = match service.get("advanced") {
+        None => json!({}),
+        Some(Value::Object(_)) => service["advanced"].clone(),
+        _ => return Err(anyhow!("service advanced must be an object")),
+    };
+    for key in ["buildScript", "startScript"] {
+        if let Some(value) = advanced.get(key) {
+            anyhow::ensure!(value.is_string(), "service advanced.{key} must be a string");
+        }
+    }
+    Ok(advanced)
+}
+
+pub fn save_config_file(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    stype: &str,
+    config: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        crate::lifecycle::has_config_file(stype),
+        "unsupported config file service type: {stype}; only mysql and mariadb expose configFile"
+    );
+    let group = format!("services/{stype}");
+    let current = client.call(
+        &group,
+        "inspectService",
+        json!({"projectName":project,"serviceName":service}),
+    )?;
+    configuration_string(&current, "configFile")?;
+    let mut body = json!({"projectName":project,"serviceName":service,"configFile":config});
+    for key in ["image", "command"] {
+        body[key] = json!(configuration_string(&current, key)?);
+    }
+    if current.get("env").is_some_and(|value| !value.is_null()) {
+        body["env"] = json!(configuration_string(&current, "env")?);
+    }
+    client.call(&group, "updateAdvanced", body)?;
+    Ok(())
+}
+
+pub fn save_box_scripts(
+    client: &EasypanelClient,
+    project: &str,
+    service: &str,
+    build: &str,
+    start: &str,
+) -> Result<()> {
+    let current = client.call(
+        "services/box",
+        "inspectService",
+        json!({"projectName":project,"serviceName":service}),
+    )?;
+    let mut advanced = box_advanced(&current)?;
+    advanced["buildScript"] = json!(build);
+    advanced["startScript"] = json!(start);
+    client.call(
+        "services/box",
+        "updateAdvanced",
+        json!({"projectName":project,"serviceName":service,"advanced":advanced}),
+    )?;
     Ok(())
 }
 

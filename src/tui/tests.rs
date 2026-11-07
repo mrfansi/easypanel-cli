@@ -606,6 +606,78 @@ fn service_menu_groups_actions_and_respects_type() {
 }
 
 #[test]
+fn configuration_contract_tui_routes_only_real_file_or_script_editors() {
+    for kind in [
+        "app",
+        "compose",
+        "wordpress",
+        "box",
+        "mysql",
+        "mariadb",
+        "mongo",
+        "postgres",
+        "redis",
+    ] {
+        let mut app = App::new("s".into(), vec![]);
+        app.projects = vec!["p".into()];
+        app.all_services = vec![json!({"projectName":"p","name":"service","type":kind})];
+        app.screen = Screen::Projects;
+        app.services_table.select(Some(1));
+        let menu = app.build_menu();
+        assert_eq!(
+            menu.iter()
+                .any(|item| item.label == "Config file (Advanced)"),
+            matches!(kind, "mysql" | "mariadb")
+        );
+        assert_eq!(
+            menu.iter().any(|item| item.label == "Advanced scripts"),
+            kind == "box"
+        );
+        app.start_config_edit();
+        assert_eq!(
+            app.edit_config.is_some(),
+            matches!(kind, "mysql" | "mariadb" | "box")
+        );
+    }
+}
+
+#[test]
+fn configuration_contract_tui_inspection_form_submit_keeps_empty_script_and_raw_lf() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    reply_tx
+        .send(Resp::Fetched {
+            view: View::ConfigFile,
+            project: "p".into(),
+            service: "box".into(),
+            stype: Some("box".into()),
+            data: json!({"advanced":{"buildScript":"old\n","startScript":"exec keep\n"},
+            "sourceEnv":{"content":"SECRET=keep\n"}}),
+        })
+        .unwrap();
+    let mut form = fetch_configuration_form(&tx, &reply_rx, "p", "box", "box").unwrap();
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        Req::Fetch {
+            view: View::ConfigFile,
+            ..
+        }
+    ));
+    assert_eq!(form.by_label("Build script"), "old\n");
+    assert_eq!(form.by_label("Start script"), "exec keep\n");
+    set_f_val(&mut form, "Build script", "");
+    set_f_val(&mut form, "Start script", "\nexec exact  \n");
+    let mut app = App::new("s".into(), vec![]);
+    app.form = Some(form);
+    app.submit_form(&tx);
+    assert!(
+        matches!(rx.try_recv().unwrap(), Req::BoxScriptsSave { build_script, start_script, .. }
+        if build_script.is_empty() && start_script == "\nexec exact  \n")
+    );
+    assert!(rx.try_recv().is_err(), "saving scripts must not deploy");
+}
+
+#[test]
 fn menu_arrows_open_drill_and_go_back() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new("s".into(), vec![]);
@@ -4727,9 +4799,18 @@ fn a_menu_does_not_offer_what_the_service_type_cannot_have() {
         !build.contains(&"Source & build".to_string()),
         "redis has no source: {build:?}"
     );
+    // Redis has updateAdvanced for image/command/env, but no configFile field.
+    for item in app.build_menu() {
+        (item.run)(&mut app, &tx);
+        assert!(
+            app.edit_config.is_none(),
+            "redis menu must not open a file or script editor"
+        );
+    }
+    app.start_config_edit();
     assert!(
-        build.contains(&"Config file (Advanced)".to_string()),
-        "but it does have the advanced config: {build:?}"
+        app.edit_config.is_none(),
+        "direct entry must reject unsupported configuration too"
     );
 
     // The app service keeps all of them.

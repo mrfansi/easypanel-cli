@@ -724,20 +724,30 @@ fn event_loop(
             }
         }
 
-        // Edit the Config File (Advanced db) in $EDITOR, then save via updateAdvanced.
         if let Some((project, service, stype)) = app.edit_config.take() {
-            match edit_config_in_editor(&w.user, &w.resp, terminal, &project, &service, &stype) {
-                Ok(Some(config)) => {
-                    let _ = w.user.send(Req::ConfigFileSave {
-                        project,
-                        service,
-                        stype,
-                        config,
-                    });
-                    app.status = "Saving config file...".into();
+            match fetch_configuration_form(&w.user, &w.resp, &project, &service, &stype) {
+                Ok(mut form) if crate::lifecycle::has_config_file(&stype) => {
+                    match edit_text_in_editor(
+                        terminal,
+                        &format!("easypanel-{project}-{service}.conf"),
+                        &form.by_label("Config file"),
+                    ) {
+                        Ok(Some(content)) => {
+                            form.fields[0].value = content;
+                            match crate::form::configuration_request(&form) {
+                                Ok(request) => {
+                                    let _ = w.user.send(request);
+                                    app.status = "Saving config file...".into();
+                                }
+                                Err(error) => app.status = format!("Error: {error}"),
+                            }
+                        }
+                        Ok(None) => app.status = "Config file unchanged".into(),
+                        Err(error) => app.status = format!("Error: {error}"),
+                    }
                 }
-                Ok(None) => app.status = "Config file unchanged".into(),
-                Err(e) => app.status = format!("Error: {e}"),
+                Ok(form) => app.form = Some(form),
+                Err(error) => app.status = format!("Error: {error}"),
             }
         }
 
@@ -975,16 +985,18 @@ fn edit_env_in_editor(
     edit_text_in_editor(terminal, &name, &current)
 }
 
-/// Fetch a service's Config File (Advanced), open it in `$EDITOR`, return it if
-/// changed. Like edit_env_in_editor but loads `configFile`.
-fn edit_config_in_editor(
+/// Inspect before opening either the file editor or the structured script form.
+fn fetch_configuration_form(
     req: &Sender<Req>,
     resp: &Receiver<Resp>,
-    terminal: &mut ratatui::DefaultTerminal,
     project: &str,
     service: &str,
     stype: &str,
-) -> Result<Option<String>> {
+) -> Result<crate::form::Form> {
+    anyhow::ensure!(
+        crate::lifecycle::configuration_label(stype).is_some(),
+        "unsupported service configuration type: {stype}"
+    );
     req.send(Req::Fetch {
         view: View::ConfigFile,
         project: project.to_string(),
@@ -1002,26 +1014,19 @@ fn edit_config_in_editor(
                 stype: fetched_type,
                 data,
             }) if p == project && s == service && fetched_type.as_deref() == Some(stype) => {
-                break data
-                    .get("configFile")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
+                break data;
             }
             Ok(Resp::Err(e)) => return Err(anyhow::anyhow!(e)),
             Ok(_) => {}
             Err(_) if Instant::now() > deadline => {
-                return Err(anyhow::anyhow!("timed out fetching config file"))
+                return Err(anyhow::anyhow!("timed out fetching service configuration"))
             }
             Err(_) => {}
         }
     };
 
-    edit_text_in_editor(
-        terminal,
-        &format!("easypanel-{project}-{service}.conf"),
-        &current,
-    )
+    crate::form::configuration_form(project.into(), service.into(), stype.into(), &current)
+        .map_err(anyhow::Error::msg)
 }
 
 /// Fetch the mount again before opening it: the viewer's row can be stale.
