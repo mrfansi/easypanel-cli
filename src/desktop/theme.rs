@@ -5,67 +5,87 @@ use std::{
 };
 
 pub(super) fn install_fonts(ctx: &egui::Context) {
-    static FALLBACK: LazyLock<Option<Arc<egui::FontData>>> = LazyLock::new(|| {
+    static FALLBACKS: LazyLock<Vec<Arc<egui::FontData>>> = LazyLock::new(|| {
         #[cfg(target_os = "macos")]
         let paths = [
             "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/System/Library/Fonts/AppleSDGothicNeo.ttc",
             "/System/Library/Fonts/STHeiti Light.ttc",
         ];
         // Debian/Ubuntu fonts-noto-cjk; other distributions may not install this path.
         #[cfg(target_os = "linux")]
         let paths = ["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"];
         #[cfg(target_os = "windows")]
-        let paths = std::env::var_os("WINDIR").map(|root| {
-            std::path::PathBuf::from(root)
-                .join("Fonts")
-                .join("msyh.ttc")
+        let paths = std::env::var_os("WINDIR").into_iter().flat_map(|root| {
+            let fonts = std::path::PathBuf::from(root).join("Fonts");
+            ["msyh.ttc", "malgun.ttf", "YuGothR.ttc"].map(|name| fonts.join(name))
         });
         #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         let paths: [&str; 0] = [];
-        load_cjk_font(paths)
+        load_cjk_fonts(paths)
     });
-    ctx.set_fonts(fonts_with_fallback(FALLBACK.clone()));
+    ctx.set_fonts(fonts_with_fallback(&FALLBACKS));
 }
 
-fn load_cjk_font(paths: impl IntoIterator<Item = impl AsRef<Path>>) -> Option<Arc<egui::FontData>> {
+fn load_cjk_fonts(paths: impl IntoIterator<Item = impl AsRef<Path>>) -> Vec<Arc<egui::FontData>> {
     use read_fonts::{FileRef, TableProvider as _};
 
+    let mut fallbacks = Vec::new();
+    let mut covered = [false; 3];
     for path in paths {
         let Ok(bytes) = std::fs::read(path) else {
             continue;
         };
-        let index = FileRef::new(&bytes).ok().and_then(|file| {
-            file.fonts().enumerate().find_map(|(index, face)| {
-                let face = face.ok()?;
-                let cmap = face.cmap().ok()?;
-                let (_, _, subtable) = cmap.best_subtable()?;
-                // Reject a readable file/face that cannot supply actual CJK glyphs.
-                "中文"
-                    .chars()
-                    .all(|c| subtable.map_codepoint(c).is_some_and(|id| id.to_u32() != 0))
-                    .then_some(index as u32)
-            })
-        });
-        let Some(index) = index else {
+        let bytes: egui::epaint::text::Blob = Arc::new(bytes);
+        let Ok(file) = FileRef::new(bytes.as_ref().as_ref()) else {
             continue;
         };
-        let mut data = egui::FontData::from_owned(bytes);
-        data.index = index;
-        return Some(Arc::new(data));
+        for (index, face) in file.fonts().enumerate() {
+            let Ok(face) = face else { continue };
+            let Ok(cmap) = face.cmap() else { continue };
+            let Some((_, _, subtable)) = cmap.best_subtable() else {
+                continue;
+            };
+            // A collection can need different faces for Han, Kana and Hangul.
+            let mut contributes = false;
+            for (supported, sample) in covered.iter_mut().zip(["中文", "かなカナ", "한국어한글"])
+            {
+                if !*supported
+                    && sample
+                        .chars()
+                        .all(|c| subtable.map_codepoint(c).is_some_and(|id| id.to_u32() != 0))
+                {
+                    *supported = true;
+                    contributes = true;
+                }
+            }
+            if contributes {
+                fallbacks.push(Arc::new(egui::FontData::from_blob(
+                    Arc::clone(&bytes),
+                    index as u32,
+                )));
+            }
+            if covered.iter().all(|supported| *supported) {
+                return fallbacks;
+            }
+        }
     }
-    None
+    fallbacks
 }
 
-fn fonts_with_fallback(fallback: Option<Arc<egui::FontData>>) -> egui::FontDefinitions {
+fn fonts_with_fallback(fallbacks: &[Arc<egui::FontData>]) -> egui::FontDefinitions {
     let mut definitions = egui::FontDefinitions::default();
-    if let Some(fallback) = fallback {
-        definitions.font_data.insert("system-cjk".into(), fallback);
+    for (index, fallback) in fallbacks.iter().enumerate() {
+        let name = format!("system-cjk-{index}");
+        definitions
+            .font_data
+            .insert(name.clone(), Arc::clone(fallback));
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             definitions
                 .families
                 .entry(family)
                 .or_default()
-                .push("system-cjk".into());
+                .push(name.clone());
         }
     }
     // shortcut: without an installed OS CJK font, retain bundled fonts; add discovery when more paths are needed.
@@ -351,9 +371,9 @@ mod tests {
         let latin = directory.path().join("latin.ttf");
         let bundled = FontDefinitions::default();
         std::fs::write(&latin, bundled.font_data["Hack"].bytes()).unwrap();
-        let fallback = load_cjk_font([missing, invalid, latin]);
-        assert!(fallback.is_none());
-        let definitions = fonts_with_fallback(fallback);
+        let fallbacks = load_cjk_fonts([missing, invalid, latin]);
+        assert!(fallbacks.is_empty());
+        let definitions = fonts_with_fallback(&fallbacks);
         assert_eq!(definitions, bundled);
         let mut fonts = egui::epaint::text::Fonts::new(Default::default(), definitions);
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
@@ -370,7 +390,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut baseline =
             egui::epaint::text::Fonts::new(Default::default(), FontDefinitions::default());
-        let mut shared = None;
+        let mut shared = Vec::new();
         install_fonts(&ctx);
         let mut output =
             ctx.run_ui(Default::default(), |ui| {
@@ -380,17 +400,20 @@ mod tests {
                 for family in [FontFamily::Proportional, FontFamily::Monospace] {
                     assert!(installed.families[&family].starts_with(&bundled.families[&family]));
                 }
-                let available = installed.font_data.contains_key("system-cjk");
+                let available = installed.font_data.contains_key("system-cjk-0");
                 #[cfg(target_os = "macos")]
                 assert!(available, "macOS system CJK font must be exercised on this host");
                 if !available {
                     eprintln!("CJK rendering NOT VERIFIED: no supported OS CJK font installed");
                     return;
                 }
-                shared = Some(installed.font_data["system-cjk"].clone());
+                shared = installed.font_data.iter()
+                    .filter(|(name, _)| name.starts_with("system-cjk-"))
+                    .map(|(name, data)| (name.clone(), Arc::clone(data)))
+                    .collect();
                 for family in [FontFamily::Proportional, FontFamily::Monospace] {
                     let id = FontId::new(13.0, family);
-                    assert!(fonts.has_glyphs(&id, "中中文 ASCII é"));
+                    assert!(fonts.has_glyphs(&id, "生产环境 漢字 日本語 かなカナ 한국어 한글 ASCII é"));
                     assert_combining_cluster_renders(fonts, id.clone());
                     let mut before = baseline.with_pixels_per_point(1.0);
                     assert_eq!(fonts.glyph_width(&id, 'M'), before.glyph_width(&id, 'M'));
@@ -400,12 +423,16 @@ mod tests {
                     let original =
                         before.layout_no_wrap("ASCII e\u{301}".into(), id.clone(), Color32::WHITE);
                     assert_eq!(ascii.rect, original.rect);
-                    let middle = fonts.layout_no_wrap("中".into(), id.clone(), Color32::WHITE);
-                    let writing = fonts.layout_no_wrap("文".into(), id, Color32::WHITE);
-                    assert_ne!(
-                        middle.rows[0].visuals.mesh, writing.rows[0].visuals.mesh,
-                        "distinct CJK characters must not share the tofu bitmap"
-                    );
+                    for (first, second) in [("中", "文"), ("か", "な"), ("한", "글")] {
+                        let first = fonts.layout_no_wrap(first.into(), id.clone(), Color32::WHITE);
+                        let second = fonts.layout_no_wrap(second.into(), id.clone(), Color32::WHITE);
+                        assert!(!first.rows[0].visuals.mesh.is_empty());
+                        assert!(!second.rows[0].visuals.mesh.is_empty());
+                        assert_ne!(
+                            first.rows[0].visuals.mesh, second.rows[0].visuals.mesh,
+                            "distinct Han, Kana and Hangul characters must not share the tofu bitmap"
+                        );
+                    }
                 }
             });
             });
@@ -416,11 +443,8 @@ mod tests {
         apply(&second, Mode::Dark);
         let mut output = second.run_ui(Default::default(), |ui| {
             ui.fonts_mut(|fonts| {
-                if let Some(shared) = &shared {
-                    assert!(Arc::ptr_eq(
-                        shared,
-                        &fonts.definitions().font_data["system-cjk"]
-                    ));
+                for (name, shared) in &shared {
+                    assert!(Arc::ptr_eq(shared, &fonts.definitions().font_data[name]));
                 }
             });
         });
