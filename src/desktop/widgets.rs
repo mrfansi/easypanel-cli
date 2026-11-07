@@ -8,7 +8,34 @@ pub(super) fn form_fields_sized(ui: &mut egui::Ui, form: &mut Form, editor_heigh
         ui.label(RichText::new(note).color(ui.visuals().weak_text_color()));
         ui.add_space(8.0);
     }
-    for index in form.visible_here() {
+    let visible = form.visible_here();
+    let editor_count = visible
+        .iter()
+        .filter(|&&index| matches!(form.fields[index].kind, FieldKind::Editor))
+        .count();
+    for (position, &index) in visible.iter().enumerate() {
+        let remaining = if editor_count > 1 && matches!(form.fields[index].kind, FieldKind::Editor)
+        {
+            visible[position + 1..]
+                .iter()
+                .filter(|&&index| matches!(form.fields[index].kind, FieldKind::Editor))
+                .fold((1, 0.0), |(count, height), &index| {
+                    let label =
+                        egui::WidgetText::from(RichText::new(form.fields[index].label).strong())
+                            .into_galley(
+                                ui,
+                                Some(egui::TextWrapMode::Wrap),
+                                ui.available_width(),
+                                egui::TextStyle::Body,
+                            );
+                    (
+                        count + 1,
+                        height + label.size().y + ui.spacing().item_spacing.y,
+                    )
+                })
+        } else {
+            (1, 0.0)
+        };
         let field = &mut form.fields[index];
         ui.push_id(index, |ui| {
             let label = ui.label(RichText::new(field.label).strong());
@@ -39,9 +66,14 @@ pub(super) fn form_fields_sized(ui: &mut egui::Ui, form: &mut Form, editor_heigh
                         egui::TextStyle::Small,
                     );
                     // Reserve both widget gaps: scroll→help and help→the trailing field spacer.
-                    let height = editor_height.min(
-                        ui.available_height() - footer.size().y - 2.0 * ui.spacing().item_spacing.y - 8.0,
-                    ).max(24.0);
+                    let overhead = footer.size().y + 2.0 * ui.spacing().item_spacing.y + 8.0;
+                    let height = if editor_count > 1 {
+                        editor_height.min((ui.available_height()
+                            - overhead * remaining.0 as f32 - remaining.1) / remaining.0 as f32)
+                    } else {
+                        editor_height.min(ui.available_height()
+                            - footer.size().y - 2.0 * ui.spacing().item_spacing.y - 8.0)
+                    }.max(24.0);
                     egui::ScrollArea::vertical()
                         .id_salt(id.with("editor-scroll"))
                         .max_height(height)
@@ -339,6 +371,136 @@ pub(super) fn confirm(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn box_configuration_contract_two_editors_render_and_second_accepts_exact_input() {
+        fn frame(
+            ctx: &egui::Context,
+            form: &mut Form,
+            height: f32,
+            events: Vec<egui::Event>,
+        ) -> (egui::FullOutput, egui::Rect) {
+            let mut used = egui::Rect::NOTHING;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 680.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        let pane = egui::Rect::from_min_size(
+                            ui.cursor().min,
+                            egui::vec2(ui.available_width(), height),
+                        );
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(pane), |ui| {
+                            ui.set_clip_rect(pane);
+                            ui.horizontal(|ui| {
+                                let _ = ui.button("Save changes");
+                                let _ = ui.button("Discard");
+                            });
+                            let available = ui.available_height();
+                            form_fields_sized(ui, form, available);
+                            used = ui.min_rect();
+                        });
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            (output, used)
+        }
+        for height in [660.0, 340.0] {
+            let ctx = egui::Context::default();
+            let mut form = crate::form::configuration_form("p".into(), "box".into(), "box".into(),
+                &serde_json::json!({"advanced":{"buildScript":"build-original\n","startScript":"start-original\n"}})).unwrap();
+            let (output, used) = frame(&ctx, &mut form, height, Vec::new());
+            assert!(
+                used.bottom() <= height + 8.0,
+                "editors must fit the document above its dock: {used:?}"
+            );
+            let editor = |value: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::epaint::Shape::Text(text) if text.galley.text() == value => {
+                            Some((text.pos, shape.clip_rect))
+                        }
+                        _ => None,
+                    })
+                    .expect("both editor contents must actually render")
+            };
+            let (_, first_clip) = editor("build-original\n");
+            let (second_text, second_clip) = editor("start-original\n");
+            assert!(first_clip.height() >= 24.0 && second_clip.height() >= 24.0);
+            assert!(first_clip.bottom() <= second_clip.top());
+            for clip in [first_clip, second_clip] {
+                assert!(
+                    clip.top() >= 8.0 && clip.bottom() <= height + 8.0,
+                    "actual editor viewport must fit the document pane: {clip:?}"
+                );
+            }
+            for label in ["Save changes", "Discard"] {
+                let (rect, clip) = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::epaint::Shape::Text(text) if text.galley.text() == label => Some((
+                            text.galley.rect.translate(text.pos.to_vec2()),
+                            shape.clip_rect,
+                        )),
+                        _ => None,
+                    })
+                    .expect("document actions must actually render");
+                assert!(
+                    clip.contains_rect(rect) && rect.bottom() <= height + 8.0,
+                    "{label} must remain reachable above the dock"
+                );
+            }
+            let pos = second_text + egui::vec2(4.0, 4.0);
+            for pressed in [true, false] {
+                frame(
+                    &ctx,
+                    &mut form,
+                    height,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            let exact = "\nexec second  \n";
+            frame(
+                &ctx,
+                &mut form,
+                height,
+                vec![
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..egui::Modifiers::NONE
+                        },
+                    },
+                    egui::Event::Text(exact.into()),
+                ],
+            );
+            assert_eq!(form.by_label("Build script"), "build-original\n");
+            assert_eq!(form.by_label("Start script").as_bytes(), exact.as_bytes());
+        }
+    }
+
     #[test]
     fn sorting_preserves_resource_indices_and_orders_mixed_values_consistently() {
         let rows = vec![

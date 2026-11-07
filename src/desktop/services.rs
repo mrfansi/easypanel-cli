@@ -209,7 +209,8 @@ impl State {
         };
         match section {
             "environment" => "Environment",
-            "configuration" => "Config file",
+            "configuration" => crate::lifecycle::configuration_label(&target.service_type)
+                .unwrap_or("Configuration"),
             "source" => "Source",
             "build" => "Build",
             "resources" => "Resources",
@@ -1724,7 +1725,11 @@ fn inventory(
                                 ("Domains", "domains"),
                                 ("Redirects", "redirects"),
                                 ("Basic authentication", "auth"),
-                                ("Config file", "configuration"),
+                                (
+                                    crate::lifecycle::configuration_label(&id.2)
+                                        .unwrap_or("Configuration"),
+                                    "configuration",
+                                ),
                                 ("Backups", "backups"),
                             ] {
                                 let applicable = match section {
@@ -1736,7 +1741,9 @@ fn inventory(
                                     "domains" | "redirects" | "auth" => {
                                         crate::lifecycle::is_web(&id.2)
                                     }
-                                    "configuration" => crate::lifecycle::has_config_file(&id.2),
+                                    "configuration" => {
+                                        crate::lifecycle::configuration_label(&id.2).is_some()
+                                    }
                                     _ => true,
                                 };
                                 if applicable && ui.button(label).clicked() {
@@ -1889,8 +1896,8 @@ fn service_section(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_
     if crate::lifecycle::has_resource_limits(kind) {
         sections.push(("resources", "Resources"));
     }
-    if crate::lifecycle::has_config_file(kind) {
-        sections.push(("configuration", "Config file"));
+    if let Some(label) = crate::lifecycle::configuration_label(kind) {
+        sections.push(("configuration", label));
     }
     if crate::lifecycle::has_mounts_and_ports(kind) {
         sections.extend([("ports", "Ports"), ("mounts", "Mounts")]);
@@ -2474,15 +2481,13 @@ fn begin_edit(state: &mut State, cx: &PageContext<'_>, intent: Intent) {
             };
             Form::new(FormKind::ProjectCreate,"Environment",vec![Field::editor("Environment",content)]).with_note("Values may contain secrets. Save replaces the complete environment; deploy or restart to apply.")
         }
-        Intent::Configuration => Form::new(
-            FormKind::ProjectCreate,
-            "Database / advanced configuration",
-            vec![Field::editor(
-                "Config file",
-                d.get("configFile").and_then(Value::as_str).unwrap_or(""),
-            )],
-        )
-        .with_note("Restart after saving to apply. Image, command and environment are preserved."),
+        Intent::Configuration => match form::configuration_form(p, s, k, &d) {
+            Ok(form) => form,
+            Err(error) => {
+                state.error = Some(error);
+                return;
+            }
+        },
         Intent::Source => Form::new(
             FormKind::SourceEdit {
                 project: p,
@@ -2626,7 +2631,7 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
     let mut save = false;
     let mut discard = false;
     let mut test = false;
-    let mut import = false;
+    let mut import = None;
     let action_label = match edit.intent {
         Intent::Connection(None) => "Add connection",
         Intent::ProjectCreate => "Create project",
@@ -2660,7 +2665,20 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
                 if ui.add_enabled(edit.dirty()||matches!(edit.intent,Intent::Connection(None)|Intent::ProjectCreate|Intent::ServiceCreate|Intent::Port|Intent::Mount(None)|Intent::Redirect|Intent::Domain(None)),button).clicked(){save=true;}
             }
             if ui.button("Discard").clicked(){if edit.dirty(){edit.discard=true;}else{discard=true;}}
-            if edit.form.visible_here().iter().any(|&i|matches!(edit.form.fields[i].kind,FieldKind::Editor))&&ui.add_enabled(!cx.busy("import") && !cx.busy("native-picker") && state.pending_picker.is_none(),egui::Button::new("Import text file…")).clicked(){import=true;}
+            let box_scripts = matches!(edit.intent, Intent::Configuration)
+                && crate::lifecycle::has_scripts(&cx.target.service_type);
+            for index in edit.form.visible_here().into_iter()
+                .filter(|&i| matches!(edit.form.fields[i].kind, FieldKind::Editor))
+                .take(if box_scripts { 2 } else { 1 }) {
+                let label = edit.form.fields[index].label;
+                let button = if box_scripts {
+                    if label == "Build script" { "Import build script…" } else { "Import start script…" }
+                } else { "Import text file…" };
+                if ui.add_enabled(!cx.busy("import") && !cx.busy("native-picker")
+                    && state.pending_picker.is_none(), egui::Button::new(button)).clicked() {
+                    import = Some(label);
+                }
+            }
             if matches!(edit.intent,Intent::Connection(_))&&ui.add_enabled(!cx.busy("connection-test"),egui::Button::new("Test connection")).clicked(){test=true;}
             if edit.dirty() {
                 let label = if !cx.target.service.is_empty() {
@@ -2714,32 +2732,29 @@ fn editor(ui: &mut egui::Ui, state: &mut State, cx: &mut PageContext<'_>) {
             });
         }
     });
-    if import && state.pending_picker.is_none() && !cx.busy("native-picker") && !cx.busy("import") {
-        if let Some(label) = edit.form.visible_here().into_iter().find_map(|i| {
-            matches!(edit.form.fields[i].kind, FieldKind::Editor)
-                .then_some(edit.form.fields[i].label)
-        }) {
-            let before = edit
-                .form
-                .fields
-                .iter()
-                .find(|f| f.label == label)
-                .map(|f| f.value.clone())
-                .unwrap_or_default();
-            state.pending_picker = Some(PickerIntent::Import((
-                edit.generation,
-                label,
-                edit.revision,
-                before,
-            )));
-            cx.background("native-picker", "Choose text file to import", move || {
-                Ok(Payload::ChosenPath(
-                    rfd::FileDialog::new()
-                        .set_title("Import text into editor")
-                        .pick_file(),
-                ))
-            });
-        }
+    if let Some(label) = import.filter(|_| {
+        state.pending_picker.is_none() && !cx.busy("native-picker") && !cx.busy("import")
+    }) {
+        let before = edit
+            .form
+            .fields
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.value.clone())
+            .unwrap_or_default();
+        state.pending_picker = Some(PickerIntent::Import((
+            edit.generation,
+            label,
+            edit.revision,
+            before,
+        )));
+        cx.background("native-picker", "Choose text file to import", move || {
+            Ok(Payload::ChosenPath(
+                rfd::FileDialog::new()
+                    .set_title("Import text into editor")
+                    .pick_file(),
+            ))
+        });
     }
     if test {
         match connection_draft(edit) {
@@ -2895,12 +2910,7 @@ fn submission(edit: &Editor, cx: &PageContext<'_>) -> Result<Req, String> {
                 }
             }
         }
-        Intent::Configuration => Req::ConfigFileSave {
-            project,
-            service,
-            stype,
-            config: f.by_label("Config file"),
-        },
+        Intent::Configuration => form::configuration_request(f)?,
         Intent::Source => {
             let (op, body, auto_deploy) = form::source_body(f)?;
             Req::ConfigSave {
@@ -4291,6 +4301,196 @@ mod tests {
         }
     }
     #[test]
+    fn box_configuration_contract_inspect_editor_submit_preserves_scripts() {
+        use std::io::{BufRead, Read, Write};
+        for (field, replacement) in [("Build script", ""), ("Start script", "\nexec exact  \n")] {
+            let server = httpmock::MockServer::start();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let fixture = std::thread::spawn(move || {
+                let mut stored = json!({"advanced":{"buildScript":"old build\n",
+                    "startScript":"exec run\n","opaque":{"keep":true}},
+                    "env":{"content":"RUNTIME=keep\n"},
+                    "sourceEnv":{"content":"SECRET=keep\n"}});
+                let mut calls = Vec::new();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while calls.len() < 4 {
+                    let (mut stream, _) = match listener.accept() {
+                        Ok(value) => value,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "Box fixture timed out");
+                            std::thread::sleep(Duration::from_millis(5));
+                            continue;
+                        }
+                        Err(error) => panic!("{error}"),
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let mut reader = std::io::BufReader::new(&mut stream);
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let path = line.split_whitespace().nth(1).unwrap().to_string();
+                    let mut length = 0;
+                    loop {
+                        line.clear();
+                        assert!(reader.read_line(&mut line).unwrap() > 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some((name, value)) = line.split_once(':') {
+                            if name.eq_ignore_ascii_case("content-length") {
+                                length = value.trim().parse().unwrap();
+                            }
+                        }
+                    }
+                    let mut bytes = vec![0; length];
+                    reader.read_exact(&mut bytes).unwrap();
+                    drop(reader);
+                    let body = serde_json::from_slice::<Value>(&bytes).unwrap()["json"].clone();
+                    assert_eq!(body["projectName"], "project");
+                    assert_eq!(body["serviceName"], "box");
+                    let operation = path.strip_prefix("/api/rpc/services/box/").unwrap();
+                    let response = match operation {
+                        "inspectService" => stored.clone(),
+                        "updateAdvanced" => {
+                            assert_eq!(
+                                body.as_object().unwrap().len(),
+                                3,
+                                "no fake top-level configFile/image/command/env"
+                            );
+                            let advanced = &body["advanced"];
+                            assert!(advanced.is_object());
+                            assert!(
+                                advanced["buildScript"].is_string()
+                                    && advanced["startScript"].is_string()
+                            );
+                            assert_eq!(advanced["opaque"], json!({"keep":true}));
+                            stored["advanced"] = advanced.clone();
+                            Value::Null
+                        }
+                        _ => panic!("unexpected operation: {operation}"),
+                    };
+                    calls.push(operation.to_string());
+                    let payload = json!({"json":response}).to_string();
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", payload.len(), payload).unwrap();
+                }
+                (stored, calls)
+            });
+            let client = crate::client::EasypanelClient::new(&url, "fixture");
+            let mut h = LifecycleHarness::new(&server, "box");
+            h.target.service_type = "box".into();
+            h.state.detail = Some(
+                client
+                    .call(
+                        "services/box",
+                        "inspectService",
+                        json!({"projectName":"project","serviceName":"box"}),
+                    )
+                    .unwrap(),
+            );
+            h.context(|state, cx| begin_edit(state, cx, Intent::Configuration));
+            let form = &mut h.state.editor.as_mut().expect("Box scripts editor").form;
+            assert_eq!(form.by_label("Build script"), "old build\n");
+            assert_eq!(form.by_label("Start script"), "exec run\n");
+            set(form, field, replacement);
+            let mut request = None;
+            h.context(|state, cx| {
+                request = Some(submission(state.editor.as_ref().unwrap(), cx).unwrap())
+            });
+            let emit: crate::worker::Emit = std::sync::Arc::new(|_| {});
+            assert!(matches!(
+                crate::worker::handle_req(&client, request.unwrap(), &emit),
+                Resp::Done(_, _)
+            ));
+            let readback = client
+                .call(
+                    "services/box",
+                    "inspectService",
+                    json!({"projectName":"project","serviceName":"box"}),
+                )
+                .unwrap();
+            assert_eq!(
+                readback["advanced"]["buildScript"],
+                if field == "Build script" {
+                    replacement
+                } else {
+                    "old build\n"
+                }
+            );
+            assert_eq!(
+                readback["advanced"]["startScript"],
+                if field == "Start script" {
+                    replacement
+                } else {
+                    "exec run\n"
+                }
+            );
+            assert_eq!(readback["sourceEnv"], json!({"content":"SECRET=keep\n"}));
+            assert_eq!(readback["env"], json!({"content":"RUNTIME=keep\n"}));
+            let (stored, calls) = fixture.join().unwrap();
+            assert_eq!(stored, readback);
+            assert_eq!(
+                calls,
+                [
+                    "inspectService",
+                    "inspectService",
+                    "updateAdvanced",
+                    "inspectService"
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn box_configuration_contract_malformed_editor_never_opens_and_discard_does_not_save() {
+        for current in [
+            json!(null),
+            json!({"advanced":null}),
+            json!({"advanced":{"buildScript":32}}),
+            json!({"advanced":{"startScript":[]}}),
+        ] {
+            let server = httpmock::MockServer::start();
+            let mut h = LifecycleHarness::new(&server, "box");
+            h.target.service_type = "box".into();
+            h.state.detail = Some(current);
+            h.context(|state, cx| begin_edit(state, cx, Intent::Configuration));
+            assert!(h.state.editor.is_none());
+            assert!(h.state.error.is_some());
+        }
+        let server = httpmock::MockServer::start();
+        let save = server.mock(|when, then| {
+            when.path("/api/rpc/services/box/updateAdvanced");
+            then.status(500);
+        });
+        let mut h = LifecycleHarness::new(&server, "box");
+        h.target.service_type = "box".into();
+        let current = json!({"advanced":{"buildScript":"build\n","startScript":"start\n"}});
+        h.state.detail = Some(current.clone());
+        h.context(|state, cx| begin_edit(state, cx, Intent::Configuration));
+        let output = h.frame(Vec::new());
+        assert!(LifecycleHarness::text(&output, "Import build script…").is_some());
+        assert!(LifecycleHarness::text(&output, "Import start script…").is_some());
+        let edit = h.state.editor.as_mut().unwrap();
+        assert!(edit.apply_import(
+            edit.generation,
+            "Start script",
+            edit.revision,
+            "start\n",
+            "\nexec imported  \n".into()
+        ));
+        assert_eq!(edit.form.by_label("Build script"), "build\n");
+        assert_eq!(edit.form.by_label("Start script"), "\nexec imported  \n");
+        set(&mut edit.form, "Build script", "");
+        h.click("Discard");
+        h.click("Discard changes");
+        assert!(h.state.editor.is_none());
+        assert_eq!(h.state.detail.as_ref().unwrap(), &current);
+        save.assert_hits(0);
+    }
+
+    #[test]
     fn dirty_service_lifecycle_entry_preserves_draft_and_saved_request_bytes() {
         use super::super::backend::Backend;
         for (intent, field, kind) in [
@@ -4324,7 +4524,11 @@ mod tests {
                 let mut state = State::default();
                 state.edit(
                     Form::new(
-                        FormKind::ProjectCreate,
+                        FormKind::ConfigurationEdit {
+                            project: "project".into(),
+                            service: "service".into(),
+                            stype: kind.into(),
+                        },
                         "Configuration",
                         vec![Field::editor(field, "original")],
                     ),
