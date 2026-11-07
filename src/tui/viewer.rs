@@ -16,7 +16,7 @@ use crate::output::field;
 
 use super::app::Screen;
 use super::table::row_marker;
-use super::worker::View;
+use crate::worker::View;
 
 /// Everything the full-screen viewer is currently showing.
 ///
@@ -244,5 +244,49 @@ pub(super) fn backups_lines(v: &Value) -> Vec<String> {
         out
     } else {
         rows
+    }
+}
+
+/// Render a shared structured fetch only at the terminal boundary.
+pub(super) fn fetched_lines(view: View, data: &Value) -> Vec<String> {
+    let lines = match view {
+        View::Logs => crate::logs::format(data),
+        View::ProjectEnv => text_lines(data, "/project/env"),
+        View::Env => match crate::operations::env_content(data) {
+            Ok(content) => content.lines().map(String::from).collect(),
+            Err(error) => vec![error.to_string()],
+        },
+        View::ConfigFile => text_lines(data, "/configFile"),
+        View::Ports => ports_lines(data),
+        View::Mounts => mounts_lines(data),
+        View::Redirects => redirects_lines(data),
+        View::Source => source_lines(data),
+        View::Backups => backups_lines(data),
+    };
+    if lines.is_empty() {
+        vec!["(empty)".into()]
+    } else {
+        lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn env_kind_contract_viewer_reads_content_without_json_or_silent_empty() {
+        assert_eq!(
+            fetched_lines(View::Env, &json!({"env":{"content":"A=1\r\nB=2\n"}})),
+            vec!["A=1", "B=2"]
+        );
+        assert_eq!(
+            fetched_lines(View::Env, &json!({"env":{"content":""}})),
+            vec!["(empty)"]
+        );
+        let lines = fetched_lines(View::Env, &json!({"env":{"content":["private-value"]}}));
+        assert!(lines[0].contains("must be a string"));
+        assert!(!lines[0].contains("private-value"));
     }
 }

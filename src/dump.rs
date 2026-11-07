@@ -41,7 +41,7 @@ pub fn valid_db_name(name: &str) -> bool {
 /// The object-key prefix every dump of one service shares: `{project}/{service}-`.
 ///
 /// ONE definition, because a dump is WRITTEN under this prefix and later FOUND by
-/// it (`commands::list_r2_dumps` signs a ListObjectsV2 for exactly this string).
+/// it (`operations::list_r2_dumps` signs a ListObjectsV2 for exactly this string).
 /// Had the two drifted, a dump would be filed where nothing looks for it.
 pub fn dump_prefix(project: &str, service: &str) -> String {
     format!("{project}/{service}-")
@@ -69,7 +69,7 @@ pub fn dump_key(project: &str, service: &str, ts: &str) -> String {
 pub struct DumpKey {
     pub project: String,
     pub service: String,
-    /// The stamp exactly as `dump_key` wrote it: `%Y%m%d-%H%M%S`.
+    /// The UTC stamp `%Y%m%d-%H%M%S`, excluding any unique transfer suffix.
     pub ts: String,
     /// The whole object key, which is what a restore is actually aimed at.
     pub key: String,
@@ -121,6 +121,12 @@ pub fn parse_dump_key(key: &str) -> Option<DumpKey> {
     // which may itself contain dashes (`mysql-r2` does).
     let mut parts = stem.rsplitn(3, '-');
     let time = parts.next()?;
+    // New transfers append a unique hexadecimal run ID; legacy keys have none.
+    let time = match time.split_once('_') {
+        Some((time, run)) if !run.is_empty() && run.bytes().all(|b| b.is_ascii_hexdigit()) => time,
+        Some(_) => return None,
+        None => time,
+    };
     let date = parts.next()?;
     let service = parts.next()?;
     let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
@@ -599,6 +605,20 @@ mod tests {
                 "a foreign key must be skipped: {foreign}"
             );
         }
+    }
+
+    #[test]
+    fn unique_transfer_keys_and_legacy_keys_keep_their_actual_time_and_origin() {
+        for stamp in ["20260905-101010", "20260905-101010_0123abcdef4567"] {
+            let key = dump_key("shop", "mysql-r2", stamp);
+            let parsed = parse_dump_key(&key).unwrap();
+            assert_eq!(parsed.origin(), "shop/mysql-r2");
+            assert_eq!(parsed.when(), "2026-09-05 10:10:10");
+            assert_eq!(parsed.ts, "20260905-101010");
+            assert_eq!(parsed.key, key);
+        }
+        assert!(parse_dump_key("shop/mysql-20260905-101010_.sql.gz").is_none());
+        assert!(parse_dump_key("shop/mysql-20260905-101010_not-a-run.sql.gz").is_none());
     }
 
     /// A `ListObjectsV2` answer, shaped like the real one.

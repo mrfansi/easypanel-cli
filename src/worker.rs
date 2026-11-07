@@ -20,7 +20,7 @@ use crate::output::field;
 // ---------- Worker (networking on a separate thread so the UI doesn't freeze) ----------
 
 #[derive(Clone, Copy, PartialEq)]
-pub(super) enum View {
+pub(crate) enum View {
     Logs,
     Env,
     Ports,
@@ -39,11 +39,11 @@ impl View {
     ///
     /// A collection gets a selected row and `x` to delete it. Logs, env and an
     /// action's output are prose: selecting a line there means nothing.
-    pub(super) fn is_collection(self) -> bool {
+    pub(crate) fn is_collection(self) -> bool {
         matches!(self, View::Ports | View::Mounts | View::Redirects)
     }
 
-    pub(super) fn title(self) -> &'static str {
+    pub(crate) fn title(self) -> &'static str {
         match self {
             View::Logs => "Logs",
             View::Env => "Env",
@@ -58,7 +58,7 @@ impl View {
     }
 }
 
-pub(super) enum Req {
+pub(crate) enum Req {
     Stats,
     Nodes,
     Projects,
@@ -168,7 +168,7 @@ pub(super) enum Req {
         project: String,
         service: String,
         stype: String,
-        level: super::dbms::Level,
+        level: crate::dbms::Level,
         /// Empty at the `Databases` level.
         database: String,
         /// Empty above the `Rows` level.
@@ -250,11 +250,8 @@ pub(super) enum Req {
     /// the ServerConfig; the worker is bound to one host. For a SAME-host copy
     /// they are simply this host's own, which needs no special case.
     ///
-    /// `run` is what makes this two-step, exactly as the CLI is: `false` plans
-    /// and answers [`Resp::CopyDbPlan`] so the plan can be shown and confirmed,
-    /// `true` plans AGAIN and then copies. The second plan is not waste — it is
-    /// the same "read immediately before acting" order `db copy` uses, and it is
-    /// what stops a confirmation from acting on a panel that has since changed.
+    /// Preview resolves the facts; Confirmed carries the operator-reviewed facts
+    /// unchanged into execution, where operations revalidates them before writes.
     CopyDb {
         target: EasypanelClient,
         /// The target's configured name — for the status line, not the call.
@@ -263,10 +260,7 @@ pub(super) enum Req {
         target_service: String,
         project: String,
         service: String,
-        /// Empty with `all` set means every non-system database the source holds.
-        databases: Vec<String>,
-        all: bool,
-        run: bool,
+        stage: CopyDbStage,
     },
     /// All services across projects in a single call.
     AllServices,
@@ -377,7 +371,15 @@ pub(super) enum Req {
         extra: Value,
         /// The source is applied SEPARATELY after createService (updateSource*),
         /// because inline it triggers a 100-second deploy. (op, body, auto_deploy).
-        source: Option<super::form::SourceCall>,
+        source: Option<crate::form::SourceCall>,
+    },
+    /// Continue configuration of an already-created service; never creates it again.
+    ServiceSetup {
+        project: String,
+        service: String,
+        stype: String,
+        source: crate::form::SourceCall,
+        phase: ServiceSetupPhase,
     },
     /// Clone a service — config only, WITHOUT data — into `new_name` in the same
     /// project. A killer feature: EasyPanel has no clone endpoint; this is a
@@ -492,6 +494,12 @@ pub(super) enum Req {
         stype: String,
         config: String,
     },
+    BoxScriptsSave {
+        project: String,
+        service: String,
+        build_script: String,
+        start_script: String,
+    },
     /// A Cloudflare request. Cloudflare is a bounded context outside EasyPanel, so
     /// its work rides the SAME worker lanes but is dispatched apart: the worker
     /// builds a `CloudflareClient` from the token carried IN the request (resolved
@@ -501,7 +509,7 @@ pub(super) enum Req {
 
 /// A Cloudflare worker request. The token travels in every variant — the worker is
 /// stateless about CF config and builds a fresh client per request. Never logged.
-pub(super) enum CfReq {
+pub(crate) enum CfReq {
     Analytics {
         token: String,
         account_id: String,
@@ -709,7 +717,34 @@ pub(super) enum CfReq {
     },
 }
 
-pub(super) enum Resp {
+pub(crate) enum CopyDbStage {
+    Preview { databases: Vec<String>, all: bool },
+    Confirmed(Box<crate::operations::CopyPlan>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ServiceSetupPhase {
+    Source,
+    AutoDeploy,
+}
+
+pub(crate) enum Resp {
+    /// The resource exists even when subsequent configuration needs repair.
+    ServiceCreated {
+        project: String,
+        service: String,
+        stype: String,
+        notes: Vec<String>,
+        pending: Option<ServiceSetupPhase>,
+    },
+    Fetched {
+        view: View,
+        project: String,
+        service: String,
+        /// Global port/mount APIs have no service-type scope.
+        stype: Option<String>,
+        data: Value,
+    },
     Stats(Value),
     /// The system-stats fetch FAILED. Kept apart from `Resp::Err` so the Dashboard
     /// can say "couldn't load" instead of drawing 0.0% gauges — numbers that read
@@ -777,7 +812,7 @@ pub(super) enum Resp {
     Dbms {
         project: String,
         service: String,
-        level: super::dbms::Level,
+        level: crate::dbms::Level,
         database: String,
         table: String,
         columns: Vec<String>,
@@ -810,19 +845,15 @@ pub(super) enum Resp {
     /// A copy that has been PLANNED but not run: what `plan_copy` resolved, ready
     /// to be shown and confirmed.
     ///
-    /// The plan travels as rendered lines rather than as a `CopyPlan`, because
-    /// this is what the confirmation displays and the shape of it belongs next to
-    /// the words. Everything needed to actually run is carried alongside — the
-    /// target server by NAME only, since the App must never hold a token.
+    /// Nonsecret typed facts stay intact through confirmation. Frontends format
+    /// their own review; the App never receives storage credentials or tokens.
     CopyDbPlan {
         target_name: String,
         target_project: String,
         target_service: String,
         project: String,
         service: String,
-        databases: Vec<String>,
-        /// The pre-flight, one line each: engine, databases, both images, storage.
-        lines: Vec<String>,
+        plan: Box<crate::operations::CopyPlan>,
     },
     /// The restorable backups found on ANOTHER host. `hidden` counts the ones
     /// left out because they sit on that host's local disk and cannot be read
@@ -937,7 +968,7 @@ pub(super) enum Resp {
 }
 
 /// A Cloudflare worker reply.
-pub(super) enum CfResp {
+pub(crate) enum CfResp {
     Analytics(AnalyticsSummary),
     Zones(Vec<Zone>),
     /// The records for `zone_id` — the id is echoed back so a stale reply for a
@@ -1003,7 +1034,7 @@ pub(super) enum CfResp {
 }
 
 /// The data that needs refreshing after a mutation.
-pub(super) enum Refresh {
+pub(crate) enum Refresh {
     Projects,
     Domains,
     None,
@@ -1017,19 +1048,23 @@ pub(super) enum Refresh {
 /// when the work is actually over. The alternative — inferring it from the status
 /// text ending in "..." — was what the UI used to do, and it could not tell a
 /// finished request from an abandoned message.
-pub(super) fn spawn_worker(
+pub(crate) fn spawn_worker(
     client: EasypanelClient,
     resp_tx: Sender<Resp>,
     busy: Option<Arc<AtomicUsize>>,
 ) -> Sender<Req> {
     let (req_tx, req_rx) = mpsc::channel::<Req>();
 
+    let progress_tx = resp_tx.clone();
+    let emit: Emit = Arc::new(move |resp| {
+        let _ = progress_tx.send(resp);
+    });
     thread::spawn(move || {
         while let Ok(req) = req_rx.recv() {
             if let Some(b) = &busy {
                 b.fetch_add(1, Ordering::Relaxed);
             }
-            let resp = handle_req(&client, req, &resp_tx);
+            let resp = handle_req(&client, req, &emit);
             // Cleared BEFORE the reply is posted, so by the time the UI handles the
             // response the lane already reads idle — otherwise the spinner would
             // survive one extra frame past the answer.
@@ -1049,19 +1084,19 @@ pub(super) fn spawn_worker(
 ///
 /// getSystemStats/getMonitorTableData can each take ~2.5 seconds. With a single
 /// lane, metric polling would block a user action (e.g. opening a tab) for that long.
-pub(super) struct Workers {
-    pub(super) user: Sender<Req>,
-    pub(super) poll: Sender<Req>,
-    pub(super) resp: Receiver<Resp>,
+pub(crate) struct Workers {
+    pub(crate) user: Sender<Req>,
+    pub(crate) poll: Sender<Req>,
+    pub(crate) resp: Receiver<Resp>,
     /// For the Hosts screen fan-out: each host gets its own thread, so its result
     /// doesn't go through the user/poll lane bound to a single client.
-    pub(super) resp_tx: Sender<Resp>,
+    pub(crate) resp_tx: Sender<Resp>,
     /// How many user-initiated requests are in flight. Shared with the App, which
     /// uses it to decide whether anything is actually happening.
-    pub(super) busy: Arc<AtomicUsize>,
+    pub(crate) busy: Arc<AtomicUsize>,
 }
 
-pub(super) fn spawn_workers(client: EasypanelClient) -> Workers {
+pub(crate) fn spawn_workers(client: EasypanelClient) -> Workers {
     let (resp_tx, resp) = mpsc::channel::<Resp>();
     let busy = Arc::new(AtomicUsize::new(0));
     // Only the user lane is counted. The poll lane refetches metrics every two
@@ -1078,7 +1113,9 @@ pub(super) fn spawn_workers(client: EasypanelClient) -> Workers {
     }
 }
 
-pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Resp>) -> Resp {
+pub(crate) type Emit = Arc<dyn Fn(Resp) + Send + Sync>;
+
+pub(crate) fn handle_req(client: &EasypanelClient, req: Req, emit: &Emit) -> Resp {
     match req {
         Req::Stats => match client.call("metrics", "getSystemStats", json!({})) {
             Ok(v) => Resp::Stats(v),
@@ -1205,7 +1242,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             targets,
             action,
             force,
-        } => bulk_action(client, resp_tx, targets, &action, force),
+        } => bulk_action(client, emit, targets, &action, force),
         Req::BulkResource { targets, resources } => bulk_resource(client, targets, resources),
         Req::DiffServices { a, b } => diff_services(client, a, b),
         Req::DiffAcrossHosts {
@@ -1292,7 +1329,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             });
             match client.call("services/app", "updateDeploy", body) {
                 Ok(_) => Resp::Done(
-                    format!("Deploy settings saved for {project}/{service} — press d to apply"),
+                    format!("Deploy settings saved for {project}/{service} — deploy to apply"),
                     Refresh::Projects,
                 ),
                 Err(e) => Resp::Err(e.to_string()),
@@ -1335,7 +1372,13 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 // the viewer sat there showing the old path while the server had
                 // the new one.
                 Ok(_) => match fetch_view(client, View::Mounts, &project, &service, "") {
-                    Ok(lines) => Resp::Viewer(format!("Mounts · {project}/{service}"), lines),
+                    Ok(data) => Resp::Fetched {
+                        view: View::Mounts,
+                        project,
+                        service,
+                        stype: None,
+                        data,
+                    },
                     Err(e) => Resp::Err(e.to_string()),
                 },
                 Err(e) => Resp::Err(e.to_string()),
@@ -1517,7 +1560,12 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                     return Resp::Err(crate::backup::missing_database_message(&service, &database));
                 }
             }
-            let body = crate::backup::restore_body(&project, &service, &database, &provider, &path);
+            let body = match crate::backup::restore_body(
+                &project, &service, &database, &provider, &path,
+            ) {
+                Ok(body) => body,
+                Err(message) => return Resp::Err(message),
+            };
             match client.call("databaseBackups", "restoreDatabaseBackup", body) {
                 // The restore recycles the container, so the service comes back a
                 // few seconds later — refreshing keeps the table honest about it.
@@ -1532,7 +1580,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             project,
             service,
             databases,
-        } => match crate::commands::dump_to_r2(
+        } => match crate::operations::dump_to_r2(
             client,
             &project,
             &service,
@@ -1542,7 +1590,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             |p| {
                 // The phase word comes from `dump_phase` ("dumping — 319.7 MB
                 // written"), so the prefix must not say it again.
-                let _ = resp_tx.send(Resp::Progress(format!("{project}/{service}: {p}")));
+                emit(Resp::Progress(format!("{project}/{service}: {p}")));
             },
         ) {
             Ok(d) => Resp::Done(
@@ -1566,10 +1614,10 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             // of ANOTHER service reachable from here at all; the narrow one stays
             // this service's own truthful history.
             let keys = if all_services {
-                crate::commands::list_all_r2_dumps(client, None)
+                crate::operations::list_all_r2_dumps(client, None)
                     .map(|d| d.into_iter().map(|d| d.key).collect())
             } else {
-                crate::commands::list_r2_dumps(client, &project, &service, None)
+                crate::operations::list_r2_dumps(client, &project, &service, None)
             };
             match keys {
                 Ok(keys) => Resp::R2Dumps {
@@ -1585,7 +1633,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             project,
             service,
             path,
-        } => match crate::commands::download_r2_dump(
+        } => match crate::operations::download_r2_dump(
             client,
             &project,
             &service,
@@ -1593,9 +1641,9 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             None,
             None,
             |b, t| {
-                let _ = resp_tx.send(Resp::Progress(format!(
+                emit(Resp::Progress(format!(
                     "Downloading {path} — {}",
-                    crate::commands::download_progress(b, t)
+                    crate::operations::download_progress(b, t)
                 )));
             },
         ) {
@@ -1613,21 +1661,23 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             project,
             service,
             path,
-        } => match crate::commands::restore_from_r2(client, &project, &service, &path, None, |p| {
-            // The phase word comes from `restore_phase` ("importing — 2.9 GB
-            // to read"), so the prefix must not say it again.
-            let _ = resp_tx.send(Resp::Progress(format!("{project}/{service}: {p}")));
-        }) {
-            // Refresh::None, like DumpR2: a restore imports rows INTO a database, it
-            // doesn't change the service table (names, status, metrics), so reloading
-            // every service on completion is a wasted round-trip — needless churn on a
-            // big host.
-            Ok(()) => Resp::Done(
-                format!("Restored {path} into {project}/{service}"),
-                Refresh::None,
-            ),
-            Err(e) => Resp::Err(e.to_string()),
-        },
+        } => {
+            match crate::operations::restore_from_r2(client, &project, &service, &path, None, |p| {
+                // The phase word comes from `restore_phase` ("importing — 2.9 GB
+                // to read"), so the prefix must not say it again.
+                emit(Resp::Progress(format!("{project}/{service}: {p}")));
+            }) {
+                // Refresh::None, like DumpR2: a restore imports rows INTO a database, it
+                // doesn't change the service table (names, status, metrics), so reloading
+                // every service on completion is a wasted round-trip — needless churn on a
+                // big host.
+                Ok(()) => Resp::Done(
+                    format!("Restored {path} into {project}/{service}"),
+                    Refresh::None,
+                ),
+                Err(e) => Resp::Err(e.to_string()),
+            }
+        }
         Req::CopyDb {
             target,
             target_name,
@@ -1635,45 +1685,42 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             target_service,
             project,
             service,
-            databases,
-            all,
-            run,
+            stage,
         } => {
             let dst_client = target;
-            let src = crate::commands::CopyTarget {
+            let src = crate::operations::CopyTarget {
                 client,
                 project: &project,
                 service: &service,
             };
-            let dst = crate::commands::CopyTarget {
+            let dst = crate::operations::CopyTarget {
                 client: &dst_client,
                 project: &target_project,
                 service: &target_service,
             };
-            // The plan runs FIRST and on BOTH stages, exactly as the CLI does. Its
-            // failure is an engine's own named reason ("The target … is 'redis': it
-            // holds keys, not schemas …"), so it is passed through verbatim rather
-            // than wrapped in a "copy failed" that would bury it.
-            let plan = match crate::commands::plan_copy(&src, &dst, &databases, all, None) {
-                Ok(p) => p,
-                Err(e) => return Resp::Err(format!("{e:#}")),
+            let confirmed = match stage {
+                CopyDbStage::Preview { databases, all } => {
+                    let plan = match crate::operations::plan_copy(&src, &dst, &databases, all, None)
+                    {
+                        Ok(plan) => plan,
+                        Err(error) => return Resp::Err(format!("{error:#}")),
+                    };
+                    return Resp::CopyDbPlan {
+                        plan: Box::new(plan),
+                        target_name,
+                        target_project,
+                        target_service,
+                        project,
+                        service,
+                    };
+                }
+                CopyDbStage::Confirmed(plan) => plan,
             };
-            if !run {
-                return Resp::CopyDbPlan {
-                    lines: copy_plan_lines(&plan),
-                    databases: plan.databases,
-                    target_name,
-                    target_project,
-                    target_service,
-                    project,
-                    service,
-                };
-            }
             // Same closure convention as DumpR2: the phase words the two legs emit
             // are already distinct ("uploading" vs "downloading"), so nothing is
             // prefixed onto them.
-            match crate::commands::copy_database(&src, &dst, &plan.databases, None, |p| {
-                let _ = resp_tx.send(Resp::Progress(format!("{project}/{service}: {p}")));
+            match crate::operations::copy_database(&src, &dst, &confirmed, None, |p| {
+                emit(Resp::Progress(format!("{project}/{service}: {p}")));
             }) {
                 // Refresh::None, like RestoreR2: rows land INSIDE a database and
                 // change nothing the service table shows.
@@ -1748,7 +1795,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 // Refresh::None: limits don't show in the table; just store the
                 // config, deploy applies it (same as ports).
                 Ok(_) => Resp::Done(
-                    format!("Resource {project}/{service} saved — deploy (d) to apply"),
+                    format!("Resource {project}/{service} saved — deploy to apply"),
                     Refresh::None,
                 ),
                 Err(e) => Resp::Err(e.to_string()),
@@ -1781,7 +1828,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             json!({ "projectName": project, "serviceName": service, "basicAuth": basic_auth }),
         ) {
             Ok(_) => Resp::Done(
-                format!("Basic auth {project}/{service} saved — deploy (d) to apply"),
+                format!("Basic auth {project}/{service} saved — deploy to apply"),
                 Refresh::None,
             ),
             Err(e) => Resp::Err(e.to_string()),
@@ -1886,13 +1933,16 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             project,
             service,
             stype,
-        } => {
-            let title = format!("{} · {}/{}", view.title(), project, service);
-            match fetch_view(client, view, &project, &service, &stype) {
-                Ok(lines) => Resp::Viewer(title, lines),
-                Err(e) => Resp::Err(e.to_string()),
-            }
-        }
+        } => match fetch_view(client, view, &project, &service, &stype) {
+            Ok(data) => Resp::Fetched {
+                view,
+                project,
+                service,
+                stype: Some(stype),
+                data,
+            },
+            Err(e) => Resp::Err(e.to_string()),
+        },
         Req::ProjectCreate(name) => {
             match client.call("projects", "createProject", json!({ "name": name })) {
                 Ok(_) => Resp::Done(format!("Project '{name}' created"), Refresh::Projects),
@@ -1913,45 +1963,38 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             source,
         } => {
             let grp = format!("services/{stype}");
-            let ps = json!({ "projectName": project, "serviceName": service });
             let mut input = extra;
             input["projectName"] = json!(project);
             input["serviceName"] = json!(service);
-            // 1) Create the service. Without an inline source this is fast (~0.2
-            //    seconds) and triggers no deploy, so the service shows up in the
-            //    table right away.
+            // Inline source triggers a deploy. Creation and configuration remain separate.
             match client.call(&grp, "createService", input) {
-                Ok(_) => {
-                    // 2) Apply the source separately (updateSource* + autoDeploy).
-                    //    This only stores the config, without deploying.
-                    if let Some((op, mut body, auto)) = source {
-                        body["projectName"] = json!(project);
-                        body["serviceName"] = json!(service);
-                        if let Err(e) = client.call(&grp, op, body) {
-                            return Resp::Err(format!(
-                                "Service '{service}' created, but its source failed: {e}"
-                            ));
-                        }
-                        if let Some(on) = auto {
-                            let ep = if on {
-                                "enableGithubDeploy"
-                            } else {
-                                "disableGithubDeploy"
-                            };
-                            let _ = client.call(&grp, ep, ps.clone());
-                        }
-                    }
-                    // Deliberately NOT deploying: let it appear in the table first,
-                    // then the user presses `d`. Deploying on create is what used
-                    // to cause the error.
-                    Resp::Done(
-                        format!("Service '{service}' created — press d to deploy"),
-                        Refresh::Projects,
-                    )
-                }
-                Err(e) => Resp::Err(e.to_string()),
+                Ok(_) => match source {
+                    Some(source) => service_setup(
+                        client,
+                        project,
+                        service,
+                        stype,
+                        source,
+                        ServiceSetupPhase::Source,
+                    ),
+                    None => Resp::ServiceCreated {
+                        project,
+                        service,
+                        stype,
+                        notes: Vec::new(),
+                        pending: None,
+                    },
+                },
+                Err(error) => Resp::Err(error.to_string()),
             }
         }
+        Req::ServiceSetup {
+            project,
+            service,
+            stype,
+            source,
+            phase,
+        } => service_setup(client, project, service, stype, source, phase),
         Req::CloneService {
             project,
             service,
@@ -2102,7 +2145,13 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 // "deleted row still showing" class of bug that has recurred in this
                 // project).
                 Ok(_) => match fetch_view(client, View::Ports, &project, &service, "") {
-                    Ok(lines) => Resp::Viewer(format!("Ports · {project}/{service}"), lines),
+                    Ok(data) => Resp::Fetched {
+                        view: View::Ports,
+                        project,
+                        service,
+                        stype: None,
+                        data,
+                    },
                     Err(e) => Resp::Err(e.to_string()),
                 },
                 Err(e) => Resp::Err(e.to_string()),
@@ -2118,7 +2167,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             json!({ "projectName": project, "serviceName": service, "values": values }),
         ) {
             Ok(_) => Resp::Done(
-                format!("Mount added to {project}/{service} — press d to deploy"),
+                format!("Mount added to {project}/{service} — deploy when ready"),
                 Refresh::None,
             ),
             Err(e) => Resp::Err(e.to_string()),
@@ -2134,7 +2183,13 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
         ) {
             // Reload the mount list into the viewer (same pattern as port delete).
             Ok(_) => match fetch_view(client, View::Mounts, &project, &service, "") {
-                Ok(lines) => Resp::Viewer(format!("Mounts · {project}/{service}"), lines),
+                Ok(data) => Resp::Fetched {
+                    view: View::Mounts,
+                    project,
+                    service,
+                    stype: None,
+                    data,
+                },
                 Err(e) => Resp::Err(e.to_string()),
             },
             Err(e) => Resp::Err(e.to_string()),
@@ -2149,7 +2204,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             list
         }) {
             Ok(_) => Resp::Done(
-                format!("Redirect added to {project}/{service} — deploy (d) to apply"),
+                format!("Redirect added to {project}/{service} — deploy to apply"),
                 Refresh::None,
             ),
             Err(e) => Resp::Err(e.to_string()),
@@ -2168,7 +2223,13 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             }) {
                 // Reload the viewer (same pattern as port/mount delete).
                 Ok(_) => match fetch_view(client, View::Redirects, &project, &service, &stype) {
-                    Ok(lines) => Resp::Viewer(format!("Redirects · {project}/{service}"), lines),
+                    Ok(data) => Resp::Fetched {
+                        view: View::Redirects,
+                        project,
+                        service,
+                        stype: Some(stype),
+                        data,
+                    },
                     Err(e) => Resp::Err(e.to_string()),
                 },
                 Err(e) => Resp::Err(e.to_string()),
@@ -2191,7 +2252,7 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             service,
             stype,
             env,
-        } => match crate::commands::save_env(client, &project, &service, &stype, &env) {
+        } => match crate::operations::save_env(client, &project, &service, &stype, &env) {
             Ok(()) => Resp::Done(format!("Env {project}/{service} saved"), Refresh::None),
             Err(e) => Resp::Err(e.to_string()),
         },
@@ -2200,12 +2261,24 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             service,
             stype,
         } => {
+            if stype != "app" {
+                return Resp::Err(
+                    "Environment file paths are supported only for app services".into(),
+                );
+            }
             let grp = format!("services/{stype}");
             let ps = json!({ "projectName": project, "serviceName": service });
             match client.call(&grp, "inspectService", ps) {
                 Ok(cur) => {
-                    let env = cur.get("env").and_then(Value::as_str).unwrap_or("");
-                    let active = cur.get("dotEnvPath").and_then(Value::as_str).is_some();
+                    let env = match crate::operations::env_content(&cur) {
+                        Ok(env) => env,
+                        Err(error) => return Resp::Err(error.to_string()),
+                    };
+                    let active = match cur.get("dotEnvPath") {
+                        None | Some(Value::Null) => false,
+                        Some(Value::String(path)) if !path.is_empty() => true,
+                        _ => return Resp::Err("service dotEnvPath has an invalid value".into()),
+                    };
                     // Flip: on → turn off (dot None), off → turn on at ".env".
                     let dot = if active { None } else { Some(".env") };
                     match client.call(&grp, "updateEnv", env_body(&project, &service, env, dot)) {
@@ -2229,32 +2302,32 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
             stype,
             config,
         } => {
-            let grp = format!("services/{stype}");
-            let ps = json!({ "projectName": project, "serviceName": service });
-            // updateAdvanced replaces the whole Advanced block; image & command MUST
-            // be strings (verified: null/omit is rejected). Read what's there, keep
-            // it, replace only configFile. env is included if present so it isn't lost.
-            match client.call(&grp, "inspectService", ps) {
-                Ok(cur) => {
-                    let mut body = json!({
-                        "projectName": project,
-                        "serviceName": service,
-                        "image": cur.get("image").and_then(Value::as_str).unwrap_or(""),
-                        "command": cur.get("command").and_then(Value::as_str).unwrap_or(""),
-                        "configFile": config,
-                    });
-                    if let Some(env) = cur.get("env").and_then(Value::as_str) {
-                        body["env"] = json!(env);
-                    }
-                    match client.call(&grp, "updateAdvanced", body) {
-                        Ok(_) => Resp::Done(
-                            format!("Config file {project}/{service} saved"),
-                            Refresh::None,
-                        ),
-                        Err(e) => Resp::Err(e.to_string()),
-                    }
-                }
-                Err(e) => Resp::Err(e.to_string()),
+            match crate::operations::save_config_file(client, &project, &service, &stype, &config) {
+                Ok(()) => Resp::Done(
+                    format!("Config file {project}/{service} saved"),
+                    Refresh::None,
+                ),
+                Err(error) => Resp::Err(error.to_string()),
+            }
+        }
+        Req::BoxScriptsSave {
+            project,
+            service,
+            build_script,
+            start_script,
+        } => {
+            match crate::operations::save_box_scripts(
+                client,
+                &project,
+                &service,
+                &build_script,
+                &start_script,
+            ) {
+                Ok(()) => Resp::Done(
+                    format!("Advanced scripts {project}/{service} saved — scripts not run"),
+                    Refresh::None,
+                ),
+                Err(error) => Resp::Err(error.to_string()),
             }
         }
         Req::Action {
@@ -2286,9 +2359,9 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 // An immediate rejection (bad config, 400, service can't deploy) used
                 // to be swallowed by `let _ =` — the UI said "started" while the
                 // server rejected it instantly. Now the thread reports the failure
-                // via resp_tx so it reaches the status line. A build that actually
+                // via the shared sink so either frontend sees it. A build that actually
                 // runs is still not awaited (can be minutes, exceeds proxy limits).
-                let tx = resp_tx.clone();
+                let tx = Arc::clone(emit);
                 let (p, s) = (project.clone(), service.clone());
                 std::thread::spawn(move || {
                     if let Err(e) = c.call(&grp, "deployService", input) {
@@ -2302,12 +2375,12 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                         // reported the deploy as started, the Status column tracks
                         // it live, and the Actions tab carries the outcome.
                         if !crate::client::gave_up_waiting(&e) {
-                            let _ = tx.send(Resp::Err(format!("Deploy {p}/{s} failed: {e}")));
+                            tx(Resp::Err(format!("Deploy {p}/{s} failed: {e}")));
                         }
                     }
                 });
                 return Resp::Done(
-                    format!("Deploy {project}/{service} started — watch it in Logs (Enter)"),
+                    format!("Deploy {project}/{service} started — watch it in Logs"),
                     Refresh::None,
                 );
             }
@@ -2340,25 +2413,29 @@ pub(super) fn handle_req(client: &EasypanelClient, req: Req, resp_tx: &Sender<Re
                 Err(e) => Resp::Err(e.to_string()),
             }
         }
-        Req::Cf(cf) => Resp::Cf(handle_cf(cf)),
+        Req::Cf(cf) => handle_cf(cf, &CloudflareClient::new),
     }
 }
 
 /// Dispatch a Cloudflare request. Builds a fresh client from the token in the
 /// request (never from EasyPanel state), so the worker stays stateless about CF
 /// config. The token is used only to authenticate the call and is never logged.
-fn handle_cf(req: CfReq) -> CfResp {
+pub(crate) fn handle_cf(req: CfReq, make_client: &dyn Fn(&str) -> CloudflareClient) -> Resp {
+    Resp::Cf(cf_response(req, make_client))
+}
+
+fn cf_response(req: CfReq, make_client: &dyn Fn(&str) -> CloudflareClient) -> CfResp {
     match req {
         CfReq::Analytics {
             token,
             account_id,
             days,
-        } => match CloudflareClient::new(&token).account_analytics(&account_id, days) {
+        } => match make_client(&token).account_analytics(&account_id, days) {
             Ok(summary) => CfResp::Analytics(summary),
             Err(e) => CfResp::Err(e.to_string()),
         },
         CfReq::Zones { token, account_id } => {
-            match CloudflareClient::new(&token).list_zones(account_id.as_deref()) {
+            match make_client(&token).list_zones(account_id.as_deref()) {
                 Ok(zones) => CfResp::Zones(zones),
                 Err(e) => CfResp::Err(e.to_string()),
             }
@@ -2367,12 +2444,12 @@ fn handle_cf(req: CfReq) -> CfResp {
             token,
             zone_id,
             filter,
-        } => match CloudflareClient::new(&token).list_records(&zone_id, &filter) {
+        } => match make_client(&token).list_records(&zone_id, &filter) {
             Ok(records) => CfResp::Records { zone_id, records },
             Err(e) => CfResp::Err(e.to_string()),
         },
         CfReq::WebAnalyticsSites { token, account_id } => {
-            match CloudflareClient::new(&token).list_web_analytics_sites(&account_id) {
+            match make_client(&token).list_web_analytics_sites(&account_id) {
                 Ok(sites) => CfResp::WebAnalyticsSites(sites),
                 Err(e) => CfResp::WebAnalyticsErr(e.to_string()),
             }
@@ -2381,12 +2458,12 @@ fn handle_cf(req: CfReq) -> CfResp {
             token,
             name,
             account_id,
-        } => match CloudflareClient::new(&token).create_zone(&name, &account_id) {
+        } => match make_client(&token).create_zone(&name, &account_id) {
             Ok(z) => CfResp::Done(format!("Zone '{}' created", z.name)),
             Err(e) => CfResp::Err(e.to_string()),
         },
         CfReq::DeleteZone { token, zone_id } => {
-            match CloudflareClient::new(&token).delete_zone(&zone_id) {
+            match make_client(&token).delete_zone(&zone_id) {
                 Ok(()) => CfResp::Done("Zone deleted".into()),
                 Err(e) => CfResp::Err(e.to_string()),
             }
@@ -2395,7 +2472,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             token,
             zone_id,
             body,
-        } => match CloudflareClient::new(&token).create_record(&zone_id, &body) {
+        } => match make_client(&token).create_record(&zone_id, &body) {
             Ok(r) => CfResp::Done(format!("Record '{}' created", r.name)),
             Err(e) => CfResp::Err(e.to_string()),
         },
@@ -2404,12 +2481,12 @@ fn handle_cf(req: CfReq) -> CfResp {
             zone_id,
             id,
             body,
-        } => match CloudflareClient::new(&token).patch_record(&zone_id, &id, &body) {
+        } => match make_client(&token).patch_record(&zone_id, &id, &body) {
             Ok(r) => CfResp::Done(format!("Record '{}' updated", r.name)),
             Err(e) => CfResp::Err(e.to_string()),
         },
         CfReq::DeleteRecord { token, zone_id, id } => {
-            match CloudflareClient::new(&token).delete_record(&zone_id, &id) {
+            match make_client(&token).delete_record(&zone_id, &id) {
                 Ok(()) => CfResp::Done("Record deleted".into()),
                 Err(e) => CfResp::Err(e.to_string()),
             }
@@ -2420,7 +2497,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             ids,
             body,
         } => {
-            let client = CloudflareClient::new(&token);
+            let client = make_client(&token);
             let (mut ok, mut failed) = (0usize, Vec::new());
             for chunk in ids.chunks(DNS_BATCH_LIMIT) {
                 match client.batch_patch_records(&zone_id, chunk, &body) {
@@ -2438,7 +2515,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             zone_id,
             ids,
         } => {
-            let client = CloudflareClient::new(&token);
+            let client = make_client(&token);
             let (mut ok, mut failed) = (0usize, Vec::new());
             for chunk in ids.chunks(DNS_BATCH_LIMIT) {
                 match client.batch_delete_records(&zone_id, chunk) {
@@ -2452,13 +2529,13 @@ fn handle_cf(req: CfReq) -> CfResp {
             CfResp::BulkDone { ok, failed }
         }
         CfReq::R2Buckets { token, account_id } => {
-            match CloudflareClient::new(&token).list_r2_buckets(&account_id) {
+            match make_client(&token).list_r2_buckets(&account_id) {
                 Ok(buckets) => CfResp::R2Buckets(buckets),
                 Err(e) => CfResp::Err(e.to_string()),
             }
         }
         CfReq::Tunnels { token, account_id } => {
-            match CloudflareClient::new(&token).list_tunnels(&account_id) {
+            match make_client(&token).list_tunnels(&account_id) {
                 Ok(tunnels) => CfResp::Tunnels(tunnels),
                 Err(e) => CfResp::Err(e.to_string()),
             }
@@ -2467,7 +2544,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             token,
             account_id,
             name,
-        } => match CloudflareClient::new(&token).create_tunnel(&account_id, &name) {
+        } => match make_client(&token).create_tunnel(&account_id, &name) {
             Ok(tunnel) => CfResp::Done(format!("Tunnel '{}' created", tunnel.name)),
             Err(e) => CfResp::Err(e.to_string()),
         },
@@ -2476,7 +2553,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             account_id,
             tunnel_id,
             name,
-        } => match CloudflareClient::new(&token).delete_tunnel(&account_id, &tunnel_id) {
+        } => match make_client(&token).delete_tunnel(&account_id, &tunnel_id) {
             Ok(()) => CfResp::Done(format!("Tunnel '{name}' deleted")),
             Err(e) => CfResp::Err(e.to_string()),
         },
@@ -2485,7 +2562,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             account_id,
             tunnel_id,
             name,
-        } => match CloudflareClient::new(&token).get_tunnel_token(&account_id, &tunnel_id) {
+        } => match make_client(&token).get_tunnel_token(&account_id, &tunnel_id) {
             Ok(tunnel_token) => CfResp::Viewer {
                 title: format!("Tunnel install · {name}"),
                 lines: vec![
@@ -2509,7 +2586,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             token,
             account_id,
             tunnel_id,
-        } => match CloudflareClient::new(&token).get_tunnel_config(&account_id, &tunnel_id) {
+        } => match make_client(&token).get_tunnel_config(&account_id, &tunnel_id) {
             Ok(config) => CfResp::TunnelConfig {
                 tunnel_id,
                 config: Box::new(config),
@@ -2529,7 +2606,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             proxied,
         } => {
             let rule = TunnelIngressRule::route(&hostname, &service, &path, origin_request);
-            let client = CloudflareClient::new(&token);
+            let client = make_client(&token);
             match client.add_tunnel_route(&account_id, &tunnel_id, rule) {
                 Ok(_) => {
                     let mut msg = format!("Tunnel route '{}' added", hostname);
@@ -2569,7 +2646,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             zone,
             proxied,
         } => {
-            let client = CloudflareClient::new(&token);
+            let client = make_client(&token);
             match client.edit_tunnel_route(
                 &account_id,
                 &tunnel_id,
@@ -2615,7 +2692,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             delete_dns,
             zone,
         } => {
-            let client = CloudflareClient::new(&token);
+            let client = make_client(&token);
             match client.delete_tunnel_route(
                 &account_id,
                 &tunnel_id,
@@ -2646,7 +2723,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             }
         }
         CfReq::Workers { token, account_id } => {
-            match CloudflareClient::new(&token).list_worker_scripts(&account_id) {
+            match make_client(&token).list_worker_scripts(&account_id) {
                 Ok(workers) => CfResp::Workers(workers),
                 Err(e) => CfResp::Err(e.to_string()),
             }
@@ -2655,7 +2732,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             token,
             account_id,
             name,
-        } => match CloudflareClient::new(&token).list_worker_deployments(&account_id, &name) {
+        } => match make_client(&token).list_worker_deployments(&account_id, &name) {
             Ok(deployments) => CfResp::WorkerDeployments {
                 worker: name,
                 deployments,
@@ -2666,7 +2743,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             token,
             account_id,
             name,
-        } => match CloudflareClient::new(&token).get_worker_settings_bundle(&account_id, &name) {
+        } => match make_client(&token).get_worker_settings_bundle(&account_id, &name) {
             Ok(settings) => CfResp::WorkerSettings {
                 worker: name,
                 settings: Box::new(settings),
@@ -2686,7 +2763,7 @@ fn handle_cf(req: CfReq) -> CfResp {
                     .and_then(|n| n.to_str())
                     .unwrap_or("worker.js")
                     .to_string();
-                match CloudflareClient::new(&token).put_worker_script_content(
+                match make_client(&token).put_worker_script_content(
                     &account_id,
                     &name,
                     &filename,
@@ -2711,7 +2788,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             account_id,
             name,
             force,
-        } => match CloudflareClient::new(&token).delete_worker_script(&account_id, &name, force) {
+        } => match make_client(&token).delete_worker_script(&account_id, &name, force) {
             Ok(()) => CfResp::Done(format!("Worker '{name}' deleted")),
             Err(e) => CfResp::Err(e.to_string()),
         },
@@ -2719,7 +2796,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             token,
             account_id,
             name,
-        } => match CloudflareClient::new(&token).create_r2_bucket(&account_id, &name) {
+        } => match make_client(&token).create_r2_bucket(&account_id, &name) {
             Ok(b) => CfResp::Done(format!("Bucket '{}' created", b.name)),
             Err(e) => CfResp::Err(e.to_string()),
         },
@@ -2727,7 +2804,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             token,
             account_id,
             name,
-        } => match CloudflareClient::new(&token).delete_r2_bucket(&account_id, &name) {
+        } => match make_client(&token).delete_r2_bucket(&account_id, &name) {
             Ok(()) => CfResp::Done(format!("Bucket '{name}' deleted")),
             Err(e) => CfResp::Err(e.to_string()),
         },
@@ -2736,7 +2813,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             account_id,
             bucket,
             prefix,
-        } => match CloudflareClient::new(&token).list_r2_level(&account_id, &bucket, &prefix) {
+        } => match make_client(&token).list_r2_level(&account_id, &bucket, &prefix) {
             Ok(level) => CfResp::R2Objects {
                 bucket,
                 prefix,
@@ -2763,7 +2840,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             Ok(_) => match std::fs::read(&path) {
                 Ok(bytes) => {
                     let key = upload_key(&prefix, &path);
-                    match CloudflareClient::new(&token).put_object(
+                    match make_client(&token).put_object(
                         &account_id,
                         &bucket,
                         &key,
@@ -2799,7 +2876,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             } else {
                 match std::fs::File::create(&dest) {
                     Ok(mut f) => {
-                        match CloudflareClient::new(&token).download_object(
+                        match make_client(&token).download_object(
                             &account_id,
                             &bucket,
                             &key,
@@ -2829,7 +2906,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             keys,
             dir,
         } => {
-            let client = CloudflareClient::new(&token);
+            let client = make_client(&token);
             let (mut ok, mut failed) = (0usize, Vec::new());
             for key in keys {
                 let dest = std::path::Path::new(&dir).join(object_basename(&key));
@@ -2868,7 +2945,7 @@ fn handle_cf(req: CfReq) -> CfResp {
             bucket,
             keys,
         } => {
-            let client = CloudflareClient::new(&token);
+            let client = make_client(&token);
             let (mut ok, mut failed) = (0usize, Vec::new());
             for key in keys {
                 match client.delete_object(&account_id, &bucket, &key) {
@@ -2990,6 +3067,26 @@ fn backup_now(
     provider: &str,
     path: &str,
 ) -> Resp {
+    // Desktop documents can request backups concurrently; keep temporary schedule ownership unambiguous.
+    static BACKUP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = match BACKUP_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(_) => return Resp::Err("Backup preparation lock failed".into()),
+    };
+    let ps = json!({ "projectName": project, "serviceName": service });
+    let before = match client.call("databaseBackups", "listDatabaseBackups", ps.clone()) {
+        Ok(value) => value,
+        Err(e) => return Resp::Err(format!("Backup could not be prepared: {e}")),
+    };
+    if !before.as_array().is_some_and(|items| {
+        items.iter().all(|item| {
+            item.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(crate::backup::is_named)
+        })
+    }) {
+        return Resp::Err("Backup schedule list has invalid IDs; nothing created".into());
+    }
     let body = crate::backup::schedule_body(
         project,
         service,
@@ -3000,30 +3097,29 @@ fn backup_now(
         path,
     );
     if let Err(e) = client.call("databaseBackups", "createDatabaseBackup", body) {
-        return Resp::Err(format!("Backup could not be prepared: {e}"));
+        return Resp::Err(format!("Backup schedule creation failed or stopped reporting: {e}; inspect Database backups before retrying"));
     }
-    let ps = json!({ "projectName": project, "serviceName": service });
-    let id = match client.call("databaseBackups", "listDatabaseBackups", ps) {
-        Ok(v) => v
-            .as_array()
-            .and_then(|a| {
-                a.iter()
-                    .rev()
-                    .find(|b| field(b, "/databaseName") == database)
-            })
-            .map(|b| field(b, "/id")),
-        Err(e) => return Resp::Err(format!("Backup could not be prepared: {e}")),
+    let after = match client.call("databaseBackups", "listDatabaseBackups", ps) {
+        Ok(value) => value,
+        Err(e) => return Resp::Err(format!("Backup schedule was created but could not be identified: {e}; inspect Database backups before retrying")),
     };
-    let Some(id) = id.filter(|i| !i.is_empty()) else {
-        return Resp::Err("Backup was prepared but could not be found again".into());
+    let id = match created_backup_id(&before, &after, database) {
+        Ok(id) => id,
+        Err(error) => return Resp::Err(error),
     };
 
     let ran = client.call("databaseBackups", "runDatabaseBackup", json!({ "id": id }));
-    let _ = client.call(
+    let cleaned = client.call(
         "databaseBackups",
         "deleteDatabaseBackup",
         json!({ "id": id }),
     );
+    if let Err(error) = cleaned {
+        return Resp::Err(match ran {
+            Ok(_) => format!("Backup of {database} started, but temporary schedule {id} could not be deleted: {error}"),
+            Err(run) => format!("Backup of {database} refused: {run}; temporary schedule {id} could not be deleted: {error}"),
+        });
+    }
     match ran {
         // The panel writes the file asynchronously, so the outcome lands in the
         // Actions tab rather than here — saying "done" would be a guess.
@@ -3090,7 +3186,7 @@ fn fetch_inspect(
 /// storage gets a row, mirroring the `source image` / `target image` pair above.
 /// Both ends provably point at the same bucket — `plan_copy` refuses the copy
 /// otherwise (`dump::store_refusal`) — so ONE storage row is the honest shape.
-pub(super) fn copy_plan_lines(plan: &crate::commands::CopyPlan) -> Vec<String> {
+pub(crate) fn copy_plan_lines(plan: &crate::operations::CopyPlan) -> Vec<String> {
     // The scheme is the same on every S3 endpoint and costs 8 of the columns the
     // account id needs.
     let host = plan
@@ -3121,13 +3217,13 @@ fn dbms_step(
     project: String,
     service: String,
     stype: String,
-    level: super::dbms::Level,
+    level: crate::dbms::Level,
     database: String,
     table: String,
     query: String,
 ) -> Resp {
-    use super::dbms::Level;
     use crate::dbms;
+    use crate::dbms::Level;
 
     let Some(engine) = dbms::Engine::from_service_type(&stype) else {
         return Resp::DbmsFailed {
@@ -3169,7 +3265,7 @@ fn dbms_step(
             }
         }
     };
-    if let Some(message) = dbms::failure(&capture.output, capture.exit_code) {
+    if let Some(message) = dbms::failure(&capture) {
         return Resp::DbmsFailed { message };
     }
 
@@ -3210,9 +3306,67 @@ fn diff_services(
     )
 }
 
+// Both initial creation and retry use the same phase transitions. The request
+// retains the original payload; a completed phase is never replayed on retry.
+fn service_setup(
+    client: &EasypanelClient,
+    project: String,
+    service: String,
+    stype: String,
+    (op, mut body, auto_deploy): crate::form::SourceCall,
+    phase: ServiceSetupPhase,
+) -> Resp {
+    let group = format!("services/{stype}");
+    if phase == ServiceSetupPhase::Source {
+        body["projectName"] = json!(project);
+        body["serviceName"] = json!(service);
+        if let Err(error) = client.call(&group, op, body) {
+            return Resp::ServiceCreated {
+                project, service, stype, pending: Some(ServiceSetupPhase::Source),
+                notes: vec![format!("Source setup failed: {error}. Repair the existing service's Source settings; do not create it again.")],
+            };
+        }
+    }
+    if let Some(enabled) = auto_deploy {
+        let operation = if enabled {
+            "enableGithubDeploy"
+        } else {
+            "disableGithubDeploy"
+        };
+        if let Err(error) = client.call(
+            &group,
+            operation,
+            json!({"projectName":project,"serviceName":service}),
+        ) {
+            return Resp::ServiceCreated {
+                notes: vec![auto_deploy_error(&service, &error.to_string())],
+                project,
+                service,
+                stype,
+                pending: Some(ServiceSetupPhase::AutoDeploy),
+            };
+        }
+    } else if phase == ServiceSetupPhase::AutoDeploy {
+        return Resp::ServiceCreated {
+            project,
+            service,
+            stype,
+            pending: Some(ServiceSetupPhase::AutoDeploy),
+            notes: vec!["No GitHub auto-deploy setting was provided for this retry".into()],
+        };
+    }
+    Resp::ServiceCreated {
+        project,
+        service,
+        stype,
+        notes: Vec::new(),
+        pending: None,
+    }
+}
+
 fn bulk_action(
     client: &EasypanelClient,
-    resp_tx: &Sender<Resp>,
+    emit: &Emit,
     targets: Vec<(String, String, String)>,
     action: &str,
     force: bool,
@@ -3224,31 +3378,33 @@ fn bulk_action(
     }
 
     if action == "deploy" {
-        for (project, service, stype) in &targets {
-            let c = client.clone();
-            let tx = resp_tx.clone();
-            let (grp, p, s) = (
-                format!("services/{stype}"),
-                project.clone(),
-                service.clone(),
-            );
-            let input = json!({ "projectName": p, "serviceName": s, "forceRebuild": force });
-            let (pe, se) = (p.clone(), s.clone());
+        let (mut ok, mut failed) = (Vec::new(), Vec::new());
+        for (project, service, stype) in targets {
+            let name = format!("{project}/{service}");
+            if crate::lifecycle::ops(&stype, action).is_none() {
+                failed.push((name, crate::lifecycle::unavailable(&stype, action)));
+                continue;
+            }
+            let client = client.clone();
+            let emit = Arc::clone(emit);
+            let group = format!("services/{stype}");
+            let input =
+                json!({ "projectName": project, "serviceName": service, "forceRebuild": force });
+            let error_name = name.clone();
             thread::spawn(move || {
-                if let Err(e) = c.call(&grp, "deployService", input) {
-                    if !crate::client::gave_up_waiting(&e) {
-                        let _ = tx.send(Resp::Err(format!("Deploy {pe}/{se} failed: {e}")));
+                if let Err(error) = client.call(&group, "deployService", input) {
+                    if !crate::client::gave_up_waiting(&error) {
+                        emit(Resp::Err(format!("Deploy {error_name} failed: {error}")));
                     }
                 }
             });
+            ok.push(name);
         }
-        return Resp::Done(
-            format!(
-                "Deploy started for {} services — watch the Status column",
-                targets.len()
-            ),
-            Refresh::None,
-        );
+        return Resp::BulkDone {
+            action: action.to_string(),
+            ok,
+            failed,
+        };
     }
 
     let mut ok = Vec::new();
@@ -3416,63 +3572,39 @@ fn log_search(client: &EasypanelClient, query: &str) -> Resp {
     )
 }
 
-pub(super) fn fetch_view(
+pub(crate) fn fetch_view(
     client: &EasypanelClient,
     view: View,
     project: &str,
     service: &str,
     stype: &str,
-) -> Result<Vec<String>> {
-    use super::viewer as lines;
+) -> Result<Value> {
     let ps = json!({ "projectName": project, "serviceName": service });
-    // Fetch here, format there. Every arm is now one call and one formatter, so
-    // what a view SAYS can be exercised without an HTTP server.
-    let svc =
-        |c: &EasypanelClient| c.call(&format!("services/{stype}"), "inspectService", ps.clone());
-    let out = match view {
-        View::Logs => {
-            let v = client.call(
-                "logs",
-                "queryServiceLogs",
-                json!({ "projectName": project, "serviceName": service, "limit": 200 }),
-            )?;
-            crate::logs::format(&v)
+    match view {
+        View::Logs => client.call(
+            "logs",
+            "queryServiceLogs",
+            json!({ "projectName": project, "serviceName": service, "limit": 200 }),
+        ),
+        View::ProjectEnv => client.call(
+            "projects",
+            "inspectProject",
+            json!({ "projectName": project }),
+        ),
+        View::Ports => client.call("ports", "listPorts", ps),
+        View::Mounts => client.call("mounts", "listMounts", ps),
+        View::Backups => client.call("databaseBackups", "listDatabaseBackups", ps),
+        View::Env | View::ConfigFile | View::Redirects | View::Source => {
+            client.call(&format!("services/{stype}"), "inspectService", ps)
         }
-        // `inspectProject` carries it under `project.env` — verified live, along
-        // with the reason it once looked absent: the key does not exist at all
-        // until the env has been set for the first time.
-        View::ProjectEnv => {
-            let v = client.call(
-                "projects",
-                "inspectProject",
-                json!({ "projectName": project }),
-            )?;
-            lines::text_lines(&v, "/project/env")
-        }
-        View::Env => lines::text_lines(&svc(client)?, "/env"),
-        // configFile (Advanced) is returned as-is for editing in $EDITOR (see
-        // edit_config_in_editor).
-        View::ConfigFile => lines::text_lines(&svc(client)?, "/configFile"),
-        View::Ports => lines::ports_lines(&client.call("ports", "listPorts", ps)?),
-        View::Mounts => lines::mounts_lines(&client.call("mounts", "listMounts", ps)?),
-        View::Redirects => lines::redirects_lines(&svc(client)?),
-        View::Source => lines::source_lines(&svc(client)?),
-        View::Backups => {
-            lines::backups_lines(&client.call("databaseBackups", "listDatabaseBackups", ps)?)
-        }
-    };
-    Ok(if out.is_empty() {
-        vec!["(empty)".to_string()]
-    } else {
-        out
-    })
+    }
 }
 
 /// The list of GitHub repos as "owner/repo" for a dropdown.
 ///
 /// GitHub may not be connected on a given host, and that's no reason to fail the
 /// form: an empty list makes "Repo" a plain text input.
-pub(super) fn github_repos(client: &EasypanelClient) -> Vec<String> {
+pub(crate) fn github_repos(client: &EasypanelClient) -> Vec<String> {
     let Ok(v) = client.call("github", "searchRepos", Value::Null) else {
         return Vec::new();
     };
@@ -3495,7 +3627,7 @@ pub(super) fn github_repos(client: &EasypanelClient) -> Vec<String> {
 /// updateEnv body. `dot` = the `.env` file path (`dotEnvPath`): Some to write env
 /// as a file, None for no file. The server rejects a null/empty dotEnvPath (min 1
 /// char), so "no file" means the field is omitted entirely.
-pub(super) fn env_body(project: &str, service: &str, env: &str, dot: Option<&str>) -> Value {
+pub(crate) fn env_body(project: &str, service: &str, env: &str, dot: Option<&str>) -> Value {
     let mut body = json!({ "projectName": project, "serviceName": service, "env": env });
     if let Some(path) = dot {
         body["dotEnvPath"] = json!(path);
@@ -3553,7 +3685,7 @@ fn clone_service(
         // had to act on was the one thing thrown away.
         Ok(notes) => {
             let msg = format!(
-                "'{service}' cloned into '{target}/{new_name}' — press d to deploy (data NOT included)"
+                "'{service}' cloned into '{target}/{new_name}' — deploy when ready (data NOT included)"
             );
             if notes.is_empty() {
                 Resp::Done(msg, Refresh::Projects)
@@ -3572,7 +3704,7 @@ fn clone_service(
 /// Turn the map `{ "{project}_{service}": {actual, desired} }` from
 /// getDockerTaskStats into `swarm_name -> (actual, desired)`. Entries missing
 /// either number are ignored.
-pub(super) fn parse_task_stats(v: &Value) -> HashMap<String, (i64, i64)> {
+pub(crate) fn parse_task_stats(v: &Value) -> HashMap<String, (i64, i64)> {
     v.as_object()
         .map(|o| {
             o.iter()
@@ -3591,7 +3723,7 @@ pub(super) fn parse_task_stats(v: &Value) -> HashMap<String, (i64, i64)> {
 }
 
 /// Service name+type from inspectProject, for the Service dropdown in the domain form.
-pub(super) fn parse_services(v: &Value) -> Vec<(String, String)> {
+pub(crate) fn parse_services(v: &Value) -> Vec<(String, String)> {
     v.get("services")
         .and_then(Value::as_array)
         .map(|a| {
@@ -3624,10 +3756,597 @@ pub(super) fn parse_services(v: &Value) -> Vec<(String, String)> {
 ///
 /// Anything unrecognized is returned as-is: a long server message is still more
 /// useful than "failed", and dropping it is a bug this project has had before.
-pub(super) fn auto_deploy_error(service: &str, raw: &str) -> String {
+pub(crate) fn auto_deploy_error(service: &str, raw: &str) -> String {
     if raw.contains("404") && raw.contains("/hooks") {
         format!("Auto deploy {service}: no webhook access to that repo — usually because it's a third-party repo")
     } else {
         format!("Auto deploy {service} failed: {raw}")
+    }
+}
+
+fn created_backup_id(before: &Value, after: &Value, database: &str) -> Result<String, String> {
+    let prior = before.as_array().ok_or("Backup list is not an array")?;
+    let current = after.as_array().ok_or("Backup list is not an array")?;
+    let mut candidates = current.iter().filter(|item| {
+        item.get("databaseName").and_then(Value::as_str) == Some(database)
+            && item.get("id").and_then(Value::as_str).is_some_and(|id| {
+                !id.is_empty()
+                    && !prior
+                        .iter()
+                        .any(|old| old.get("id").and_then(Value::as_str) == Some(id))
+            })
+    });
+    let item = candidates.next().filter(|_| candidates.next().is_none()).ok_or(
+        "Backup schedule was created but cannot be uniquely identified; inspect Database backups before retrying",
+    )?;
+    Ok(item["id"].as_str().unwrap().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use httpmock::prelude::*;
+
+    #[test]
+    fn configuration_contract_unsupported_file_request_never_contacts_server() {
+        let server = MockServer::start();
+        let network = server.mock(|_, then| {
+            then.status(500);
+        });
+        let emit: Emit = Arc::new(|_| {});
+        for stype in [
+            "box",
+            "mongo",
+            "postgres",
+            "redis",
+            "app",
+            "wordpress",
+            "compose",
+            "unknown",
+        ] {
+            let response = handle_req(
+                &EasypanelClient::new(&server.base_url(), "fixture"),
+                Req::ConfigFileSave {
+                    project: "p".into(),
+                    service: "s".into(),
+                    stype: stype.into(),
+                    config: "exact\n".into(),
+                },
+                &emit,
+            );
+            assert!(
+                matches!(response, Resp::Err(error) if error.contains("unsupported config file"))
+            );
+        }
+        network.assert_hits(0);
+    }
+
+    #[test]
+    fn configuration_contract_mysql_mariadb_preserve_defaults_env_and_raw_file() {
+        for kind in ["mysql", "mariadb"] {
+            for image in [json!("db:exact"), Value::Null] {
+                let server = MockServer::start();
+                server.mock(|when, then| {
+                    when.path(format!("/api/rpc/services/{kind}/inspectService"));
+                    then.status(200).json_body(json!({"json":{
+                        "image":image,"command":null,"env":"TZ=UTC\n","configFile":"old"}}));
+                });
+                let raw = "\n[mysqld]\nserver-id=23\nreplicate-do-db=exact\n";
+                let save = server.mock(|when, then| {
+                    when.path(format!("/api/rpc/services/{kind}/updateAdvanced"))
+                        .json_body(json!({"json":{"projectName":"p","serviceName":"s",
+                            "image":image.as_str().unwrap_or(""),"command":"",
+                            "env":"TZ=UTC\n","configFile":raw}}));
+                    then.status(200).json_body(json!({"json":null}));
+                });
+                let emit: Emit = Arc::new(|_| {});
+                assert!(matches!(
+                    handle_req(
+                        &EasypanelClient::new(&server.base_url(), "fixture"),
+                        Req::ConfigFileSave {
+                            project: "p".into(),
+                            service: "s".into(),
+                            stype: kind.into(),
+                            config: raw.into()
+                        },
+                        &emit
+                    ),
+                    Resp::Done(_, _)
+                ));
+                save.assert_hits(1);
+            }
+        }
+    }
+
+    #[test]
+    fn configuration_contract_malformed_inspection_refuses_write() {
+        for (kind, current) in [
+            ("box", json!({"advanced":[] })),
+            ("box", json!({"advanced":{"buildScript":false}})),
+            ("box", json!({"advanced":{"startScript":null}})),
+            ("box", json!(null)),
+            ("mysql", json!({"image":false})),
+            ("mysql", json!({"configFile":42})),
+            ("mariadb", json!({"env":{"content":"not db env"}})),
+        ] {
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.path(format!("/api/rpc/services/{kind}/inspectService"));
+                then.status(200).json_body(json!({"json":current}));
+            });
+            let write = server.mock(|when, then| {
+                when.path(format!("/api/rpc/services/{kind}/updateAdvanced"));
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let emit: Emit = Arc::new(|_| {});
+            let request = if kind == "box" {
+                Req::BoxScriptsSave {
+                    project: "p".into(),
+                    service: "s".into(),
+                    build_script: "".into(),
+                    start_script: "run\n".into(),
+                }
+            } else {
+                Req::ConfigFileSave {
+                    project: "p".into(),
+                    service: "s".into(),
+                    stype: kind.into(),
+                    config: "".into(),
+                }
+            };
+            assert!(matches!(
+                handle_req(
+                    &EasypanelClient::new(&server.base_url(), "fixture"),
+                    request,
+                    &emit
+                ),
+                Resp::Err(_)
+            ));
+            write.assert_hits(0);
+        }
+    }
+
+    #[test]
+    fn env_kind_contract_file_toggle_rejects_non_apps_before_network() {
+        let client = EasypanelClient::new("http://127.0.0.1:1", "test-only");
+        let emit: Emit = Arc::new(|_| {});
+        for kind in ["wordpress", "box", "compose", "mysql"] {
+            let response = handle_req(
+                &client,
+                Req::EnvFileToggle {
+                    project: "p".into(),
+                    service: "site".into(),
+                    stype: kind.into(),
+                },
+                &emit,
+            );
+            assert!(matches!(response, Resp::Err(error) if error.contains("only for app")));
+        }
+    }
+
+    #[test]
+    fn env_kind_contract_file_toggle_preserves_observed_content_and_refuses_invalid_env() {
+        for env in [json!({"content":"A=1\r\n\n"}), json!({"content":false})] {
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.path("/api/rpc/services/app/inspectService");
+                then.status(200)
+                    .json_body(json!({"json":{"env":env,"dotEnvPath":".env"}}));
+            });
+            let save = server.mock(|when, then| {
+                when.path("/api/rpc/services/app/updateEnv").json_body(
+                    json!({"json":{"projectName":"p","serviceName":"site","env":"A=1\r\n\n"}}),
+                );
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let emit: Emit = Arc::new(|_| {});
+            let response = handle_req(
+                &EasypanelClient::new(&server.base_url(), "test-only"),
+                Req::EnvFileToggle {
+                    project: "p".into(),
+                    service: "site".into(),
+                    stype: "app".into(),
+                },
+                &emit,
+            );
+            if env["content"].is_string() {
+                assert!(matches!(response, Resp::Done(_, Refresh::None)));
+                save.assert_hits(1);
+            } else {
+                assert!(matches!(response, Resp::Err(error) if error.contains("env.content")));
+                save.assert_hits(0);
+            }
+        }
+    }
+
+    #[test]
+    fn fetch_and_delete_refresh_preserve_raw_collection_and_target() {
+        let server = MockServer::start();
+        let ports =
+            json!([{ "published": 8443, "target": 443, "protocol": "tcp", "futureOption": true }]);
+        let list = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/ports/listPorts")
+                .json_body(json!({"json":{"projectName":"project","serviceName":"web"}}));
+            then.status(200).json_body(json!({"json":ports}));
+        });
+        let delete = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/ports/deletePort")
+                .json_body(json!({"json":{"projectName":"project","serviceName":"web","index":0}}));
+            then.status(200).json_body(json!({"json":null}));
+        });
+        let client = EasypanelClient::new(&server.base_url(), "test-only");
+        let emit: Emit = Arc::new(|_| {});
+        for request in [
+            Req::Fetch {
+                view: View::Ports,
+                project: "project".into(),
+                service: "web".into(),
+                stype: "app".into(),
+            },
+            Req::PortDelete {
+                project: "project".into(),
+                service: "web".into(),
+                index: 0,
+            },
+        ] {
+            match handle_req(&client, request, &emit) {
+                Resp::Fetched {
+                    view: View::Ports,
+                    project,
+                    service,
+                    data,
+                    ..
+                } => {
+                    assert_eq!((project.as_str(), service.as_str()), ("project", "web"));
+                    assert_eq!(data, ports);
+                }
+                _ => panic!("collection must remain a structured fetch"),
+            }
+        }
+        list.assert_hits(2);
+        delete.assert_hits(1);
+    }
+
+    #[test]
+    fn confirmed_creation_keeps_its_target_when_source_or_autodeploy_setup_fails() {
+        for (source_status, auto_status) in [(400, 200), (200, 400), (200, 200)] {
+            let server = MockServer::start();
+            let create = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/services/app/createService")
+                    .json_body(json!({"json":{"projectName":"project","serviceName":"web"}}));
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let source = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/services/app/updateSourceGithub");
+                then.status(source_status)
+                    .json_body(json!({"json":{"message":"Source refused"}}));
+            });
+            let auto = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/services/app/enableGithubDeploy");
+                then.status(auto_status)
+                    .json_body(json!({"json":{"message":"Webhook refused"}}));
+            });
+            let deploy = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/services/app/deployService");
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let emit: Emit = Arc::new(|_| {});
+            match handle_req(
+                &EasypanelClient::new(&server.base_url(), "test-only"),
+                Req::ServiceCreate {
+                    project: "project".into(),
+                    service: "web".into(),
+                    stype: "app".into(),
+                    extra: json!({}),
+                    source: Some((
+                        "updateSourceGithub",
+                        json!({"owner":"owner","repo":"repository","ref":"main"}),
+                        Some(true),
+                    )),
+                },
+                &emit,
+            ) {
+                Resp::ServiceCreated {
+                    project,
+                    service,
+                    stype,
+                    notes,
+                    pending,
+                } => {
+                    assert_eq!(
+                        (project.as_str(), service.as_str(), stype.as_str()),
+                        ("project", "web", "app")
+                    );
+                    assert_eq!(notes.is_empty(), source_status == 200 && auto_status == 200);
+                    assert_eq!(
+                        pending,
+                        if source_status != 200 {
+                            Some(ServiceSetupPhase::Source)
+                        } else if auto_status != 200 {
+                            Some(ServiceSetupPhase::AutoDeploy)
+                        } else {
+                            None
+                        }
+                    );
+                    if source_status != 200 {
+                        assert!(notes[0].contains("Source refused"));
+                    } else if auto_status != 200 {
+                        assert!(notes[0].contains("Webhook refused"));
+                    }
+                }
+                _ => panic!("a confirmed resource must never look like a failed create"),
+            }
+            create.assert_hits(1);
+            source.assert_hits(1);
+            auto.assert_hits(usize::from(source_status == 200));
+            deploy.assert_hits(0);
+        }
+    }
+
+    #[test]
+    fn service_setup_retries_only_the_unfinished_phase_and_never_creates() {
+        for phase in [ServiceSetupPhase::Source, ServiceSetupPhase::AutoDeploy] {
+            let server = MockServer::start();
+            let create = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/services/app/createService");
+                then.status(500)
+                    .json_body(json!({"json":{"message":"must not create again"}}));
+            });
+            let source = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/services/app/updateSourceGithub");
+                then.status(200).json_body(json!({"json":null}));
+            });
+            let auto = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/rpc/services/app/disableGithubDeploy");
+                then.status(if phase == ServiceSetupPhase::Source {
+                    400
+                } else {
+                    200
+                })
+                .json_body(json!({"json":{"message":"Webhook unavailable"}}));
+            });
+            let emit: Emit = Arc::new(|_| {});
+            let result = handle_req(
+                &EasypanelClient::new(&server.base_url(), "test-only"),
+                Req::ServiceSetup {
+                    project: "project".into(),
+                    service: "web".into(),
+                    stype: "app".into(),
+                    phase,
+                    source: (
+                        "updateSourceGithub",
+                        json!({"owner":"owner","repo":"repository","ref":"main"}),
+                        Some(false),
+                    ),
+                },
+                &emit,
+            );
+            match result {
+                Resp::ServiceCreated { pending, notes, .. } => {
+                    if phase == ServiceSetupPhase::Source {
+                        assert_eq!(pending, Some(ServiceSetupPhase::AutoDeploy));
+                        assert!(notes[0].contains("Webhook unavailable"));
+                    } else {
+                        assert_eq!(pending, None);
+                        assert!(notes.is_empty());
+                    }
+                }
+                _ => panic!("setup retry must retain its existing-service outcome"),
+            }
+            create.assert_hits(0);
+            source.assert_hits(usize::from(phase == ServiceSetupPhase::Source));
+            auto.assert_hits(1);
+        }
+    }
+
+    #[test]
+    fn bulk_deploy_dispatches_buildable_targets_and_reports_every_unsupported_target() {
+        let server = MockServer::start();
+        let app = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/deployService");
+            then.status(400)
+                .json_body(json!({"json":{"message":"app refusal"}}));
+        });
+        let compose = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/compose/deployService");
+            then.status(400)
+                .json_body(json!({"json":{"message":"compose refusal"}}));
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let emit: Emit = Arc::new(move |response| {
+            let _ = tx.send(response);
+        });
+        let targets = [
+            ("web", "app"),
+            ("stack", "compose"),
+            ("db", "mysql"),
+            ("site", "wordpress"),
+            ("shell", "box"),
+        ]
+        .into_iter()
+        .map(|(service, kind)| ("project".into(), service.into(), kind.into()))
+        .collect();
+        let result = bulk_action(
+            &EasypanelClient::new(&server.base_url(), "test-only"),
+            &emit,
+            targets,
+            "deploy",
+            true,
+        );
+        match result {
+            Resp::BulkDone { action, ok, failed } => {
+                assert_eq!(action, "deploy");
+                assert_eq!(ok, ["project/web", "project/stack"]);
+                assert_eq!(failed.len(), 3);
+                for (name, reason) in failed {
+                    assert!(name.starts_with("project/") && !reason.is_empty());
+                }
+            }
+            _ => panic!("bulk dispatch must account for supported and unsupported targets"),
+        }
+        for _ in 0..2 {
+            assert!(matches!(
+                rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+                Resp::Err(_)
+            ));
+        }
+        assert!(rx.try_recv().is_err());
+        app.assert_hits(1);
+        compose.assert_hits(1);
+    }
+
+    #[test]
+    fn dispatched_deploy_keeps_the_sink_for_late_refusals() {
+        let server = MockServer::start();
+        let deploy = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/rpc/services/app/deployService");
+            then.status(400)
+                .json_body(json!({"json":{"message":"Invalid build configuration"}}));
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let emit: Emit = Arc::new(move |response| {
+            let _ = tx.send(response);
+        });
+        let response = handle_req(
+            &EasypanelClient::new(&server.base_url(), "test-only"),
+            Req::Action {
+                project: "project".into(),
+                service: "web".into(),
+                stype: "app".into(),
+                action: "deploy".into(),
+                force: false,
+            },
+            &emit,
+        );
+        assert!(matches!(response, Resp::Done(_, Refresh::None)));
+        drop(emit);
+        assert!(
+            matches!(rx.recv_timeout(Duration::from_secs(3)).unwrap(),Resp::Err(error)
+            if error.contains("Invalid build configuration") && error.contains("project/web"))
+        );
+        deploy.assert_hits(1);
+    }
+
+    #[test]
+    fn backup_now_attempts_cleanup_after_refusal_and_reports_both_failures() {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let responses = [
+                ("listDatabaseBackups", 200, json!([])),
+                ("createDatabaseBackup", 200, Value::Null),
+                (
+                    "listDatabaseBackups",
+                    200,
+                    json!([{"id":"owned-schedule","databaseName":"shop"}]),
+                ),
+                (
+                    "runDatabaseBackup",
+                    400,
+                    json!({"message":"Engine refused backup"}),
+                ),
+                (
+                    "deleteDatabaseBackup",
+                    500,
+                    json!({"message":"Cleanup unavailable"}),
+                ),
+            ];
+            for (operation, status, response) in responses {
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && std::time::Instant::now() < deadline =>
+                        {
+                            thread::sleep(Duration::from_millis(5))
+                        }
+                        Err(error) => panic!("waiting for {operation}: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with(&format!("POST /api/rpc/databaseBackups/{operation} ")));
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    assert!(
+                        reader.read_line(&mut line).unwrap() > 0,
+                        "request headers ended early"
+                    );
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            length = value.trim().parse().unwrap();
+                        }
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                drop(reader);
+                if operation == "runDatabaseBackup" || operation == "deleteDatabaseBackup" {
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&body).unwrap(),
+                        json!({"json":{"id":"owned-schedule"}})
+                    );
+                }
+                let body = json!({"json":response}).to_string();
+                write!(stream,"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            }
+        });
+        let result = backup_now(
+            &EasypanelClient::new(&url, "test-only"),
+            "project",
+            "db",
+            "shop",
+            "provider",
+            "backups",
+        );
+        assert!(
+            matches!(result,Resp::Err(message) if message.contains("Engine refused backup")
+            && message.contains("Cleanup unavailable") && message.contains("owned-schedule"))
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn temporary_backup_identity_never_selects_a_preexisting_or_ambiguous_schedule() {
+        let before = json!([{"id":"existing","databaseName":"app"}]);
+        assert!(created_backup_id(&before, &before, "app").is_err());
+        let after = json!([
+            {"id":"created","databaseName":"app"},
+            {"id":"existing","databaseName":"app"},
+            {"id":"other","databaseName":"other"}
+        ]);
+        assert_eq!(
+            created_backup_id(&before, &after, "app").unwrap(),
+            "created"
+        );
+        let ambiguous = json!([
+            {"id":"created","databaseName":"app"},
+            {"id":"external","databaseName":"app"}
+        ]);
+        assert!(created_backup_id(&before, &ambiguous, "app").is_err());
     }
 }

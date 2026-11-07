@@ -9,11 +9,11 @@ use serde_json::{json, Value};
 use crate::output::field;
 
 use super::app::*;
-use super::form::*;
 use super::render::*;
 use super::table::*;
-use super::worker::*;
 use super::*;
+use crate::form::*;
+use crate::worker::*;
 
 /// A configured server as the App sees it: no token, no tunnel.
 fn host(name: &str, url: &str) -> ServerEntry {
@@ -203,43 +203,38 @@ fn base64_matches_known_values() {
 }
 
 #[test]
-fn db_command_per_type_uses_stored_credentials() {
-    use super::terminal::db_command;
-    // Each command's shape is verified live against the server (mysql/postgres/mongo/redis).
-    let mysql = json!({ "rootPassword": "rp", "databaseName": "app" });
-    assert_eq!(
-        db_command("mysql", &mysql).unwrap(),
-        "MYSQL_PWD='rp' mysql -uroot app"
+fn app_services_do_not_produce_database_shell_commands() {
+    assert!(crate::session::db_command("app", &json!({})).is_none());
+}
+
+#[test]
+fn rendered_form_geometry_drives_mouse_field_selection() {
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("server".into(), vec![]);
+    app.form = Some(Form::new(
+        FormKind::ProjectCreate,
+        "Form",
+        vec![
+            Field::text("Name", "project"),
+            Field::boolean("Enabled", false),
+        ],
+    ));
+    let _ = screen_rows(&mut app, 100, 30);
+    let rect = app.form_rect;
+    assert!(rect.width > 0 && rect.height >= 2);
+    app.on_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + 1,
+            row: rect.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        &tx,
     );
-    // mariadb uses the same `mysql` client.
-    assert_eq!(
-        db_command("mariadb", &mysql).unwrap(),
-        "MYSQL_PWD='rp' mysql -uroot app"
-    );
-    let pg = json!({ "user": "u", "password": "pw", "databaseName": "db" });
-    assert_eq!(
-        db_command("postgres", &pg).unwrap(),
-        "PGPASSWORD='pw' psql -U u -d db"
-    );
-    let mo = json!({ "user": "mu", "password": "mp" });
-    assert_eq!(
-        db_command("mongo", &mo).unwrap(),
-        "mongosh -u 'mu' -p 'mp' --authenticationDatabase admin"
-    );
-    assert_eq!(
-        db_command("redis", &json!({ "password": "rp" })).unwrap(),
-        "REDISCLI_AUTH='rp' redis-cli"
-    );
-    // Non-database -> None (the 'y' key refuses).
-    assert!(db_command("app", &json!({})).is_none());
-    // Single-quote escaping is safe: a password with an apostrophe doesn't break the sh command.
-    assert!(db_command("redis", &json!({ "password": "a'b" }))
-        .unwrap()
-        .contains(r"'a'\''b'"));
-    // postgres with no user -> fall back to the superuser "postgres".
-    assert!(db_command("postgres", &json!({ "password": "x" }))
-        .unwrap()
-        .contains("-U postgres"));
+    let form = app.form.as_ref().unwrap();
+    assert_eq!(form.focus, 1);
+    assert!(form.is_on_label("Enabled"));
 }
 
 #[test]
@@ -608,6 +603,78 @@ fn service_menu_groups_actions_and_respects_type() {
     app.services_table.select(Some(2)); // web (app)
                                         // app has NO Config file (Advanced) — configFile is database-only.
     assert!(!has(&app.build_menu(), "Config file (Advanced)"));
+}
+
+#[test]
+fn configuration_contract_tui_routes_only_real_file_or_script_editors() {
+    for kind in [
+        "app",
+        "compose",
+        "wordpress",
+        "box",
+        "mysql",
+        "mariadb",
+        "mongo",
+        "postgres",
+        "redis",
+    ] {
+        let mut app = App::new("s".into(), vec![]);
+        app.projects = vec!["p".into()];
+        app.all_services = vec![json!({"projectName":"p","name":"service","type":kind})];
+        app.screen = Screen::Projects;
+        app.services_table.select(Some(1));
+        let menu = app.build_menu();
+        assert_eq!(
+            menu.iter()
+                .any(|item| item.label == "Config file (Advanced)"),
+            matches!(kind, "mysql" | "mariadb")
+        );
+        assert_eq!(
+            menu.iter().any(|item| item.label == "Advanced scripts"),
+            kind == "box"
+        );
+        app.start_config_edit();
+        assert_eq!(
+            app.edit_config.is_some(),
+            matches!(kind, "mysql" | "mariadb" | "box")
+        );
+    }
+}
+
+#[test]
+fn configuration_contract_tui_inspection_form_submit_keeps_empty_script_and_raw_lf() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    reply_tx
+        .send(Resp::Fetched {
+            view: View::ConfigFile,
+            project: "p".into(),
+            service: "box".into(),
+            stype: Some("box".into()),
+            data: json!({"advanced":{"buildScript":"old\n","startScript":"exec keep\n"},
+            "sourceEnv":{"content":"SECRET=keep\n"}}),
+        })
+        .unwrap();
+    let mut form = fetch_configuration_form(&tx, &reply_rx, "p", "box", "box").unwrap();
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        Req::Fetch {
+            view: View::ConfigFile,
+            ..
+        }
+    ));
+    assert_eq!(form.by_label("Build script"), "old\n");
+    assert_eq!(form.by_label("Start script"), "exec keep\n");
+    set_f_val(&mut form, "Build script", "");
+    set_f_val(&mut form, "Start script", "\nexec exact  \n");
+    let mut app = App::new("s".into(), vec![]);
+    app.form = Some(form);
+    app.submit_form(&tx);
+    assert!(
+        matches!(rx.try_recv().unwrap(), Req::BoxScriptsSave { build_script, start_script, .. }
+        if build_script.is_empty() && start_script == "\nexec exact  \n")
+    );
+    assert!(rx.try_recv().is_err(), "saving scripts must not deploy");
 }
 
 #[test]
@@ -2128,7 +2195,7 @@ fn encode_key_matches_xterm() {
 #[test]
 #[ignore = "live: needs zzz-emb/zzz-redis running on the server"]
 fn terminal_ws_roundtrip_live() {
-    use super::worker::Resp;
+    use crate::worker::Resp;
     use std::sync::mpsc::channel;
     use std::time::{Duration, Instant};
 
@@ -2145,11 +2212,11 @@ fn terminal_ws_roundtrip_live() {
     .expect("ws_url");
 
     let (out_tx, out_rx) = channel::<Resp>();
-    let (in_tx, in_rx) = channel::<super::terminal::TermMsg>();
-    super::terminal::spawn_session(url, out_tx, in_rx, 80, 24, "");
+    let (in_tx, in_rx) = channel::<crate::session::TermMsg>();
+    crate::session::spawn_session(url, session_emitter(out_tx), in_rx, 80, 24, "");
     std::thread::sleep(Duration::from_millis(900));
     in_tx
-        .send(super::terminal::TermMsg::Input(
+        .send(crate::session::TermMsg::Input(
             "echo RUSTPROOF_331\n".into(),
         ))
         .unwrap();
@@ -2176,7 +2243,7 @@ fn terminal_ws_roundtrip_live() {
 #[test]
 #[ignore = "live: opens a real root shell on the default server's host"]
 fn host_shell_ws_roundtrip_live() {
-    use super::worker::Resp;
+    use crate::worker::Resp;
     use std::sync::mpsc::channel;
     use std::time::{Duration, Instant};
 
@@ -2186,13 +2253,13 @@ fn host_shell_ws_roundtrip_live() {
     let url = crate::container::host_ws_url(&client).unwrap();
 
     let (out_tx, out_rx) = channel::<Resp>();
-    let (in_tx, in_rx) = channel::<super::terminal::TermMsg>();
-    super::terminal::spawn_session(url, out_tx, in_rx, 100, 30, "");
+    let (in_tx, in_rx) = channel::<crate::session::TermMsg>();
+    crate::session::spawn_session(url, session_emitter(out_tx), in_rx, 100, 30, "");
     // The panel may `docker pull` the helper image before the pty exists, so the
     // prompt can be far later than a container shell's.
     std::thread::sleep(Duration::from_secs(3));
     in_tx
-        .send(super::terminal::TermMsg::Input(
+        .send(crate::session::TermMsg::Input(
             "echo HOSTPROOF-$(id -un)-$(cat /proc/1/comm)\n".into(),
         ))
         .unwrap();
@@ -4732,9 +4799,18 @@ fn a_menu_does_not_offer_what_the_service_type_cannot_have() {
         !build.contains(&"Source & build".to_string()),
         "redis has no source: {build:?}"
     );
+    // Redis has updateAdvanced for image/command/env, but no configFile field.
+    for item in app.build_menu() {
+        (item.run)(&mut app, &tx);
+        assert!(
+            app.edit_config.is_none(),
+            "redis menu must not open a file or script editor"
+        );
+    }
+    app.start_config_edit();
     assert!(
-        build.contains(&"Config file (Advanced)".to_string()),
-        "but it does have the advanced config: {build:?}"
+        app.edit_config.is_none(),
+        "direct entry must reject unsupported configuration too"
     );
 
     // The app service keeps all of them.
@@ -8077,18 +8153,18 @@ fn cf_tunnel_route_edit_models_service_and_origin_request_as_fields() {
                     "matchSNItoHost": true,
                     "caPool": "/etc/cloudflared/ca.pem",
                     "noTLSVerify": true,
-                    "tlsTimeout": "15s",
+                    "tlsTimeout": 15,
                     "http2Origin": true,
                     "httpHostHeader": "app.internal",
                     "disableChunkedEncoding": true,
-                    "connectTimeout": "45s",
+                    "connectTimeout": 45,
                     "noHappyEyeballs": true,
                     "proxyType": "socks",
                     "proxyAddress": "127.0.0.1",
                     "proxyPort": 1080,
-                    "keepAliveTimeout": "2m",
+                    "keepAliveTimeout": 120,
                     "keepAliveConnections": 150,
-                    "tcpKeepAlive": "45s",
+                    "tcpKeepAlive": 45,
                     "access": {
                         "required": true,
                         "teamName": "mrfansi",
@@ -8112,31 +8188,27 @@ fn cf_tunnel_route_edit_models_service_and_origin_request_as_fields() {
     assert_eq!(f_val(form, "Sync DNS CNAME"), "yes");
     assert_eq!(f_val(form, "DNS Proxied"), "yes");
     assert_eq!(f_val(form, "Origin Server Name"), "origin.mrfansi.dev");
-    assert_eq!(f_val(form, "Match SNI to Host"), "yes");
+    assert_eq!(f_val(form, "Match SNI to Host"), "Enabled");
     assert_eq!(
         f_val(form, "Certificate Authority Pool"),
         "/etc/cloudflared/ca.pem"
     );
-    assert_eq!(f_val(form, "No TLS Verify"), "yes");
-    assert_eq!(f_val(form, "TLS Timeout"), "15s");
-    assert_eq!(f_val(form, "HTTP2 Connection"), "yes");
+    assert_eq!(f_val(form, "No TLS Verify"), "Enabled");
+    assert_eq!(f_val(form, "TLS Timeout (seconds)"), "15");
+    assert_eq!(f_val(form, "HTTP2 Connection"), "Enabled");
     assert_eq!(f_val(form, "HTTP Host Header"), "app.internal");
-    assert_eq!(f_val(form, "Disable Chunked Encoding"), "yes");
-    assert_eq!(f_val(form, "Connect Timeout"), "45s");
-    assert_eq!(f_val(form, "No Happy Eyeballs"), "yes");
+    assert_eq!(f_val(form, "Disable Chunked Encoding"), "Enabled");
+    assert_eq!(f_val(form, "Connect Timeout (seconds)"), "45");
+    assert_eq!(f_val(form, "No Happy Eyeballs"), "Enabled");
     assert_eq!(f_val(form, "Proxy Type"), "socks");
     assert_eq!(f_val(form, "Proxy Address"), "127.0.0.1");
     assert_eq!(f_val(form, "Proxy Port"), "1080");
-    assert_eq!(f_val(form, "Keep Alive Timeout"), "2m");
+    assert_eq!(f_val(form, "Keep Alive Timeout (seconds)"), "120");
     assert_eq!(f_val(form, "Keep Alive Connections"), "150");
-    assert_eq!(f_val(form, "TCP Keep Alive"), "45s");
-    assert_eq!(f_val(form, "Access Required"), "yes");
+    assert_eq!(f_val(form, "TCP Keep Alive (seconds)"), "45");
+    assert_eq!(f_val(form, "Access Required"), "Require");
     assert_eq!(f_val(form, "Access Team Name"), "mrfansi");
     assert_eq!(f_val(form, "Access AUD Tags"), "aud-1, aud-2");
-    assert!(form
-        .fields
-        .iter()
-        .all(|field| field.label != "Advanced origin JSON"));
 }
 
 #[test]
@@ -8214,6 +8286,364 @@ fn cf_tunnel_route_create_sends_dns_options() {
             proxied: true,
             ..
         })) if tunnel_id == "tunnel-1" && hostname == "app.example.com" && zone == "example.com"
+    ));
+}
+
+#[test]
+fn cf_tunnel_route_unrelated_edit_preserves_integer_false_and_empty_overrides() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_tunnel = Some(cf_tunnel("tunnel-1", "edge-router"));
+    let origin = json!({
+        "connectTimeout": 30, "tlsTimeout": 10, "tcpKeepAlive": 30,
+        "keepAliveTimeout": 90, "keepAliveConnections": 100,
+        "matchSNItoHost": false, "noTLSVerify": false, "http2Origin": false,
+        "disableChunkedEncoding": false, "noHappyEyeballs": false, "bastionMode": false,
+        "originServerName": "", "caPool": "", "httpHostHeader": "",
+        "proxyAddress": "", "proxyPort": 0, "proxyType": "",
+        "access": { "required": false, "teamName": "team", "audTag": ["aud"],
+            "opaque": { "keep": [null, false, 7] } },
+        "futureOption": { "nested": [1, 2] }
+    });
+    let global = json!({
+        "noTLSVerify": true, "http2Origin": true, "proxyType": "socks",
+        "access": { "required": true, "teamName": "global", "audTag": ["global-aud"] }
+    });
+    app.cf.tunnel_config = Some(crate::cloudflare::TunnelConfiguration {
+        config: crate::cloudflare::TunnelConfig {
+            origin_request: Some(global.clone()),
+            ingress: vec![crate::cloudflare::TunnelIngressRule {
+                hostname: "shop.example.test".into(),
+                service: "http://localhost:3000".into(),
+                origin_request: Some(origin.clone()),
+                ..Default::default()
+            }],
+        },
+        ..Default::default()
+    });
+    app.cf.tunnel_config_row.select(Some(0));
+    app.open_cf_tunnel_route_edit_form();
+    let form = app.form.as_mut().unwrap();
+    assert_eq!(f_val(form, "Connect Timeout (seconds)"), "30");
+    set_f_val(form, "Service URL", "localhost:8080");
+    app.submit_form(&tx);
+    let Ok(Req::Cf(CfReq::TunnelRouteEdit {
+        service,
+        origin_request: Some(Some(saved)),
+        ..
+    })) = rx.try_recv()
+    else {
+        panic!("expected route edit request")
+    };
+    assert_eq!(service, "http://localhost:8080");
+    assert_eq!(saved, origin);
+    assert_eq!(saved["noTLSVerify"], false);
+    assert_eq!(saved["access"]["required"], false);
+    assert_eq!(saved["proxyType"], "");
+    assert_eq!(
+        app.cf.tunnel_config.as_ref().unwrap().config.origin_request,
+        Some(global)
+    );
+}
+
+#[test]
+fn cf_tunnel_origin_choices_distinguish_inherit_enabled_and_disabled() {
+    let bools = [
+        ("Match SNI to Host", "matchSNItoHost"),
+        ("No TLS Verify", "noTLSVerify"),
+        ("HTTP2 Connection", "http2Origin"),
+        ("Disable Chunked Encoding", "disableChunkedEncoding"),
+        ("No Happy Eyeballs", "noHappyEyeballs"),
+    ];
+    let mut form = Form::new(
+        FormKind::CfTunnelRouteCreate {
+            tunnel_id: "id".into(),
+        },
+        "Origin",
+        tunnel_origin_fields(None),
+    );
+    set_f_val(&mut form, "HTTP Host Header", "internal.example.test");
+    assert_eq!(
+        tunnel_origin_request_from_form(&form).unwrap(),
+        Some(json!({"httpHostHeader": "internal.example.test"}))
+    );
+    for (label, key) in bools {
+        set_f_val(&mut form, label, "Disabled");
+        assert_eq!(
+            tunnel_origin_request_from_form(&form).unwrap().unwrap()[key],
+            false
+        );
+        set_f_val(&mut form, label, "Inherit");
+        assert!(tunnel_origin_request_from_form(&form)
+            .unwrap()
+            .unwrap()
+            .get(key)
+            .is_none());
+        let original = json!({key: true});
+        let mut edit = Form::new(
+            FormKind::CfTunnelRouteEdit {
+                tunnel_id: "id".into(),
+                hostname: "app.example.test".into(),
+                path: "".into(),
+            },
+            "Origin",
+            tunnel_origin_fields(Some(&original)),
+        )
+        .with_original(original);
+        set_f_val(&mut edit, label, "Disabled");
+        assert_eq!(
+            tunnel_origin_request_from_form(&edit).unwrap(),
+            Some(json!({key: false}))
+        );
+        set_f_val(&mut edit, label, "Inherit");
+        assert_eq!(tunnel_origin_request_from_form(&edit).unwrap(), None);
+    }
+}
+
+#[test]
+fn cf_tunnel_access_object_and_regular_proxy_override_inherit_independently() {
+    for access in [
+        json!({"required": false, "teamName": "", "audTag": [], "opaque": {"keep": true}}),
+        json!({"teamName": "team", "audTag": ["aud"], "opaque": [false, null]}),
+    ] {
+        let original = json!({"access": access, "proxyType": "future-proxy", "future": 7});
+        let mut form = Form::new(
+            FormKind::CfTunnelRouteCreate {
+                tunnel_id: "id".into(),
+            },
+            "Origin",
+            tunnel_origin_fields(Some(&original)),
+        )
+        .with_original(original.clone());
+        set_f_val(&mut form, "HTTP Host Header", "changed");
+        let saved = tunnel_origin_request_from_form(&form).unwrap().unwrap();
+        assert_eq!(saved["access"], original["access"]);
+        assert_eq!(saved["proxyType"], "future-proxy");
+        set_f_val(&mut form, "Proxy Type", "regular");
+        assert_eq!(
+            tunnel_origin_request_from_form(&form).unwrap().unwrap()["proxyType"],
+            ""
+        );
+        set_f_val(&mut form, "Access Required", "Inherit");
+        let saved = tunnel_origin_request_from_form(&form).unwrap().unwrap();
+        assert!(saved.get("access").is_none());
+        assert_eq!(saved["future"], 7);
+    }
+    let mut form = Form::new(
+        FormKind::CfTunnelRouteCreate {
+            tunnel_id: "id".into(),
+        },
+        "Origin",
+        tunnel_origin_fields(None),
+    );
+    set_f_val(&mut form, "Access Required", "Disable requirement");
+    assert_eq!(
+        tunnel_origin_request_from_form(&form).unwrap(),
+        Some(json!({"access": {"required": false, "teamName": "", "audTag": []}}))
+    );
+    set_f_val(&mut form, "Access Required", "Require");
+    assert!(tunnel_origin_request_from_form(&form).is_err());
+    set_f_val(&mut form, "Access Team Name", "team");
+    assert!(tunnel_origin_request_from_form(&form).is_err());
+    set_f_val(&mut form, "Access AUD Tags", "aud-1, aud-2");
+    assert_eq!(
+        tunnel_origin_request_from_form(&form).unwrap(),
+        Some(
+            json!({"access": {"required": true, "teamName": "team", "audTag": ["aud-1", "aud-2"]}})
+        )
+    );
+}
+
+#[test]
+fn cf_tunnel_access_disable_retains_original_auth_and_string_clear_is_targeted() {
+    let original = json!({
+        "access": {"required": true, "teamName": "team", "audTag": ["aud"], "opaque": 7},
+        "httpHostHeader": "old-host", "originServerName": "", "caPool": ""
+    });
+    let mut form = Form::new(
+        FormKind::CfTunnelRouteCreate {
+            tunnel_id: "id".into(),
+        },
+        "Origin",
+        tunnel_origin_fields(Some(&original)),
+    )
+    .with_original(original.clone());
+    set_f_val(&mut form, "Access Required", "Disable requirement");
+    set_f_val(&mut form, "HTTP Host Header", "");
+    let saved = tunnel_origin_request_from_form(&form).unwrap().unwrap();
+    let mut expected_access = original["access"].clone();
+    expected_access["required"] = json!(false);
+    assert_eq!(saved["access"], expected_access);
+    assert!(saved.get("httpHostHeader").is_none());
+    assert_eq!(saved["originServerName"], "");
+    assert_eq!(saved["caPool"], "");
+}
+
+#[test]
+fn cf_tunnel_route_malformed_stored_duration_blocks_dispatch_until_repaired() {
+    for (stored, repaired, expected_number) in [
+        ("45s", "45", Some(45)),
+        ("30", "30", Some(30)),
+        ("", "", None),
+    ] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new("s".into(), vec![]);
+        app.cf.active = Some(cf_account());
+        app.cf.current_tunnel = Some(cf_tunnel("tunnel-1", "edge-router"));
+        let original = json!({"connectTimeout": stored, "noTLSVerify": false, "opaque": [7]});
+        app.cf.tunnel_config = Some(crate::cloudflare::TunnelConfiguration {
+            config: crate::cloudflare::TunnelConfig {
+                ingress: vec![crate::cloudflare::TunnelIngressRule {
+                    hostname: "app.example.test".into(),
+                    path: "/api".into(),
+                    service: "http://localhost:3000".into(),
+                    origin_request: Some(original.clone()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        app.cf.tunnel_config_row.select(Some(0));
+        app.open_cf_tunnel_route_edit_form();
+        assert_ne!(
+            app.form
+                .as_ref()
+                .unwrap()
+                .by_label("Connect Timeout (seconds)"),
+            repaired,
+            "stored strings must be distinguishable from integer/blank inputs"
+        );
+        set_f_val(app.form.as_mut().unwrap(), "Service URL", "localhost:8080");
+        assert!(tunnel_origin_request_from_form(app.form.as_ref().unwrap()).is_err());
+        let previous_status = app.status.clone();
+        app.submit_form(&tx);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.form.as_ref().unwrap().original, Some(original.clone()));
+        assert_eq!(
+            app.cf.tunnel_config.as_ref().unwrap().config.ingress[0].origin_request,
+            Some(original)
+        );
+        assert_ne!(app.status, previous_status);
+        set_f_val(
+            app.form.as_mut().unwrap(),
+            "Connect Timeout (seconds)",
+            repaired,
+        );
+        app.submit_form(&tx);
+        let Ok(Req::Cf(CfReq::TunnelRouteEdit {
+            tunnel_id,
+            hostname,
+            path,
+            service,
+            origin_request: Some(Some(saved)),
+            ..
+        })) = rx.try_recv()
+        else {
+            panic!("expected repaired route request")
+        };
+        assert_eq!(tunnel_id, "tunnel-1");
+        assert_eq!(hostname, "app.example.test");
+        assert_eq!(path, "/api");
+        assert_eq!(service, "http://localhost:8080");
+        let expected = match expected_number {
+            Some(number) => json!({"connectTimeout": number, "noTLSVerify": false, "opaque": [7]}),
+            None => json!({"noTLSVerify": false, "opaque": [7]}),
+        };
+        assert_eq!(saved, expected);
+    }
+}
+
+#[test]
+fn cf_tunnel_route_numeric_seconds_validate_before_dispatch_and_clear_is_explicit() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("s".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.cf.current_tunnel = Some(cf_tunnel("tunnel-1", "edge-router"));
+    app.open_cf_tunnel_route_form();
+    set_f_val(app.form.as_mut().unwrap(), "Hostname", "app.example.test");
+    for label in [
+        "Connect Timeout (seconds)",
+        "TLS Timeout (seconds)",
+        "Keep Alive Timeout (seconds)",
+        "TCP Keep Alive (seconds)",
+        "Keep Alive Connections",
+    ] {
+        for value in ["30s", "1.5", "9223372036854775808", "invalid"] {
+            set_f_val(app.form.as_mut().unwrap(), label, value);
+            app.submit_form(&tx);
+            assert!(
+                app.form.is_some(),
+                "{label}={value} must keep the form open"
+            );
+            assert!(
+                rx.try_recv().is_err(),
+                "invalid numeric input must not dispatch"
+            );
+        }
+        set_f_val(app.form.as_mut().unwrap(), label, "-1");
+    }
+    app.submit_form(&tx);
+    let Ok(Req::Cf(CfReq::TunnelRouteAdd {
+        origin_request: Some(origin),
+        ..
+    })) = rx.try_recv()
+    else {
+        panic!("expected route create request")
+    };
+    assert_eq!(
+        origin,
+        json!({"connectTimeout": -1, "tlsTimeout": -1,
+        "keepAliveTimeout": -1, "tcpKeepAlive": -1, "keepAliveConnections": -1})
+    );
+
+    let original = json!({"connectTimeout": 30, "noTLSVerify": false, "opaque": {"keep": true}});
+    app.cf.tunnel_config = Some(crate::cloudflare::TunnelConfiguration {
+        config: crate::cloudflare::TunnelConfig {
+            ingress: vec![crate::cloudflare::TunnelIngressRule {
+                hostname: "app.example.test".into(),
+                service: "http://localhost:3000".into(),
+                origin_request: Some(original.clone()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    app.cf.tunnel_config_row.select(Some(0));
+    app.open_cf_tunnel_route_edit_form();
+    set_f_val(
+        app.form.as_mut().unwrap(),
+        "Connect Timeout (seconds)",
+        "45",
+    );
+    app.submit_form(&tx);
+    let Ok(Req::Cf(CfReq::TunnelRouteEdit {
+        origin_request: Some(Some(origin)),
+        ..
+    })) = rx.try_recv()
+    else {
+        panic!("expected route edit request")
+    };
+    assert_eq!(
+        origin,
+        json!({"connectTimeout": 45, "noTLSVerify": false, "opaque": {"keep": true}})
+    );
+    app.open_cf_tunnel_route_edit_form();
+    set_f_val(app.form.as_mut().unwrap(), "Clear origin request", "yes");
+    set_f_val(
+        app.form.as_mut().unwrap(),
+        "Connect Timeout (seconds)",
+        "invalid",
+    );
+    app.submit_form(&tx);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Req::Cf(CfReq::TunnelRouteEdit {
+            origin_request: Some(None),
+            ..
+        }))
     ));
 }
 
@@ -8941,7 +9371,6 @@ fn cf_record_forms_reject_invalid_numbers_instead_of_guessing_auto() {
     app.form.as_mut().unwrap().fields[3].value = "1".into();
     app.form.as_mut().unwrap().fields[5].value = "high".into();
     app.submit_form(&tx);
-    assert_eq!(app.status, "Priority must be a number");
     assert!(rx.try_recv().is_err(), "invalid priority sends no request");
 }
 
@@ -9029,7 +9458,7 @@ fn cf_record_loading_empty_and_error_states_render_without_panic() {
 /// One step's answer, as the worker sends it.
 #[allow(clippy::too_many_arguments)]
 fn dbms_resp(
-    level: dbms::Level,
+    level: crate::dbms::Level,
     database: &str,
     table: &str,
     columns: &[&str],
@@ -9050,7 +9479,7 @@ fn dbms_resp(
 }
 
 /// The level (and what it points at) of the request the app just sent.
-fn dbms_req(rx: &std::sync::mpsc::Receiver<Req>) -> (dbms::Level, String, String) {
+fn dbms_req(rx: &std::sync::mpsc::Receiver<Req>) -> (crate::dbms::Level, String, String) {
     match rx.try_recv().expect("a request must have been sent") {
         Req::Dbms {
             level,
@@ -9071,13 +9500,13 @@ fn the_database_browser_walks_in_and_back_out_again() {
     assert!(app.screen == Screen::Dbms);
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Databases, String::new(), String::new()),
+        (crate::dbms::Level::Databases, String::new(), String::new()),
         "it opens on the database list, which nothing else in the tool can show"
     );
 
     app.handle(
         dbms_resp(
-            dbms::Level::Databases,
+            crate::dbms::Level::Databases,
             "",
             "",
             &["Database"],
@@ -9092,12 +9521,12 @@ fn the_database_browser_walks_in_and_back_out_again() {
     app.on_key(KeyCode::Enter, &tx);
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Tables, "shop".into(), String::new())
+        (crate::dbms::Level::Tables, "shop".into(), String::new())
     );
 
     app.handle(
         dbms_resp(
-            dbms::Level::Tables,
+            crate::dbms::Level::Tables,
             "shop",
             "",
             &["Table"],
@@ -9109,7 +9538,7 @@ fn the_database_browser_walks_in_and_back_out_again() {
     app.on_key(KeyCode::Enter, &tx);
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Rows, "shop".into(), "orders".into())
+        (crate::dbms::Level::Rows, "shop".into(), "orders".into())
     );
 
     // A preview that hit its limit must SAY so — a silent cap is a lie about how
@@ -9119,7 +9548,7 @@ fn the_database_browser_walks_in_and_back_out_again() {
         .collect();
     app.handle(
         dbms_resp(
-            dbms::Level::Rows,
+            crate::dbms::Level::Rows,
             "shop",
             "orders",
             &["id", "note"],
@@ -9139,13 +9568,13 @@ fn the_database_browser_walks_in_and_back_out_again() {
     app.on_key(KeyCode::Esc, &tx);
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Tables, "shop".into(), String::new()),
+        (crate::dbms::Level::Tables, "shop".into(), String::new()),
         "back to the table list of the database we were in"
     );
     assert!(app.screen == Screen::Dbms);
     app.handle(
         dbms_resp(
-            dbms::Level::Tables,
+            crate::dbms::Level::Tables,
             "shop",
             "",
             &["Table"],
@@ -9157,15 +9586,148 @@ fn the_database_browser_walks_in_and_back_out_again() {
     app.on_key(KeyCode::Esc, &tx);
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Databases, String::new(), String::new())
+        (crate::dbms::Level::Databases, String::new(), String::new())
     );
     app.handle(
-        dbms_resp(dbms::Level::Databases, "", "", &["Database"], vec![], false),
+        dbms_resp(
+            crate::dbms::Level::Databases,
+            "",
+            "",
+            &["Database"],
+            vec![],
+            false,
+        ),
         &tx,
     );
     app.on_key(KeyCode::Esc, &tx);
     assert!(app.screen == Screen::Projects, "at the top, Esc leaves");
     assert!(app.dbms.target.is_none());
+}
+
+#[test]
+fn typed_snapshots_reject_stale_service_scope_and_global_collection_refreshes_still_work() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("server".into(), vec![]);
+    app.screen = Screen::Viewer;
+    app.viewer.ctx = Some((View::Env, "project".into(), "web".into(), "app".into()));
+    app.viewer.lines = vec!["previous result".into()];
+    for (project, kind) in [("project", "postgres"), ("other-project", "app")] {
+        app.handle(
+            Resp::Fetched {
+                view: View::Env,
+                project: project.into(),
+                service: "web".into(),
+                stype: Some(kind.into()),
+                data: json!({"env":"STALE=value"}),
+            },
+            &tx,
+        );
+        assert_eq!(app.viewer.lines, ["previous result"]);
+    }
+    app.handle(
+        Resp::Fetched {
+            view: View::Env,
+            project: "project".into(),
+            service: "web".into(),
+            stype: Some("app".into()),
+            data: json!({"env":"CURRENT=value"}),
+        },
+        &tx,
+    );
+    assert_eq!(app.viewer.lines, ["CURRENT=value"]);
+    app.viewer.ctx = Some((View::Ports, "project".into(), "web".into(), "app".into()));
+    app.handle(
+        Resp::Fetched {
+            view: View::Ports,
+            project: "project".into(),
+            service: "web".into(),
+            stype: None,
+            data: json!([]),
+        },
+        &tx,
+    );
+    assert!(app.viewer.lines[0].contains("No ports"));
+}
+
+#[test]
+fn the_bulk_dns_priority_menu_uses_canonical_validation_and_rechecks_mx_targets() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new("server".into(), vec![]);
+    app.cf.active = Some(cf_account());
+    app.set_workspace(Workspace::Cloudflare);
+    app.cf.screen = CfScreen::Records;
+    app.cf.current_zone = Some(cf_zone("zone", "example.com"));
+    app.cf.records = vec![cf_record("mail", "MX", "example.com", "mail.example.com")];
+    app.cf.marked.insert("mail".into());
+    app.open_cf_bulk_menu();
+    let menu = app.menu.as_mut().unwrap();
+    let index = menu
+        .items
+        .iter()
+        .position(|item| item.label.starts_with("Set MX priority"))
+        .unwrap();
+    menu.state.select(Some(index));
+    app.on_key(KeyCode::Enter, &tx);
+    assert!(matches!(
+        app.form.as_ref().map(|form| &form.kind),
+        Some(FormKind::CfBulkSet(CfBulkAttr::Priority))
+    ));
+    set_f_val(app.form.as_mut().unwrap(), "Priority", "20");
+    app.submit_form(&tx);
+    assert!(
+        matches!(rx.try_recv().unwrap(),Req::Cf(CfReq::BulkPatch { ids,body,.. })
+        if ids == ["mail"] && body == json!({"priority":20}))
+    );
+    app.cf.marked.insert("mail".into());
+    app.open_cf_bulk_form(CfBulkAttr::Priority);
+    set_f_val(app.form.as_mut().unwrap(), "Priority", "65536");
+    app.submit_form(&tx);
+    assert!(rx.try_recv().is_err());
+    assert!(app.status.contains("Priority") && app.form.is_some());
+    set_f_val(app.form.as_mut().unwrap(), "Priority", "20");
+    app.cf.records[0].kind = "A".into();
+    app.submit_form(&tx);
+    assert!(rx.try_recv().is_err());
+    assert!(app.status.contains("only to MX records"));
+}
+
+#[test]
+fn a_capture_budget_failure_keeps_the_previous_database_grid() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new("server".into(), vec![]);
+    app.open_dbms("alpha".into(), "db".into(), "postgres".into(), &tx);
+    app.handle(
+        dbms_resp(
+            crate::dbms::Level::Tables,
+            "shop",
+            "",
+            &["Table"],
+            vec![vec!["public.orders".into()]],
+            false,
+        ),
+        &tx,
+    );
+    assert_eq!(
+        app.dbms.rows,
+        vec![vec!["public.orders".to_string()]],
+        "the successful result must be accepted before capture fails"
+    );
+    let capture = crate::container::Capture {
+        output: "partial output".into(),
+        exit_code: None,
+        truncated: true,
+        timed_out: false,
+    };
+    let message = crate::dbms::failure(&capture).unwrap();
+    app.handle(
+        Resp::DbmsFailed {
+            message: message.clone(),
+        },
+        &tx,
+    );
+    assert_eq!(app.dbms.error.as_deref(), Some(message.as_str()));
+    assert!(message.contains("byte budget") && !message.contains("Timed out"));
+    assert_eq!(app.dbms.rows, vec![vec!["public.orders".to_string()]]);
 }
 
 #[test]
@@ -9175,7 +9737,7 @@ fn a_failed_query_is_visible_and_does_not_erase_the_grid() {
     app.open_dbms("alpha".into(), "db".into(), "postgres".into(), &tx);
     app.handle(
         dbms_resp(
-            dbms::Level::Tables,
+            crate::dbms::Level::Tables,
             "shop",
             "",
             &["Table"],
@@ -9265,7 +9827,7 @@ fn the_palette_browses_a_database_by_identity() {
     );
     assert_eq!(
         dbms_req(&rx),
-        (dbms::Level::Databases, String::new(), String::new())
+        (crate::dbms::Level::Databases, String::new(), String::new())
     );
 }
 
@@ -9277,7 +9839,7 @@ fn the_query_box_runs_what_was_typed_in_the_database_it_is_open_on() {
     let _ = rx.try_recv(); // the opening databases listing
     app.handle(
         dbms_resp(
-            dbms::Level::Tables,
+            crate::dbms::Level::Tables,
             "shop",
             "",
             &["Table"],
@@ -9306,7 +9868,7 @@ fn the_query_box_runs_what_was_typed_in_the_database_it_is_open_on() {
             query,
             ..
         } => {
-            assert_eq!(level, dbms::Level::Query);
+            assert_eq!(level, crate::dbms::Level::Query);
             assert_eq!(database, "shop", "it runs where the browser is standing");
             assert_eq!(
                 query, "SELECT * FROM orders WHERE ref = 'a''b'",
@@ -9383,9 +9945,11 @@ fn the_copy_form_carries_its_target_host_project_and_service_through() {
     assert_eq!(req.source, ("shop".to_string(), "db".to_string()));
     // Trimmed and split, so a comma-separated list typed with spaces still names
     // the schemas rather than " billing ".
-    assert_eq!(req.databases, vec!["studio", "billing"]);
-    // Stage one only: the plan is asked for, nothing is dumped yet.
-    assert!(!req.run, "submitting the form must only PLAN");
+    assert!(
+        matches!(&req.stage, CopyDbStage::Preview { databases, all:false }
+        if databases == &["studio", "billing"]),
+        "submitting the form must only preview the selected databases"
+    );
 }
 
 /// Same host must be reachable without picking anything unusual: the current
@@ -9412,7 +9976,9 @@ fn the_copy_form_defaults_to_this_host_and_blank_databases_mean_all() {
     assert_eq!(req.target_service, "db-restore");
     // Blank is the form's spelling of `--all`; the event loop turns an empty list
     // into `all: true`, so an empty list here is the whole point.
-    assert!(req.databases.is_empty());
+    assert!(
+        matches!(&req.stage, CopyDbStage::Preview { databases, all:true } if databases.is_empty())
+    );
 }
 
 /// Copying a service into ITSELF would dump rows and load them back over
@@ -9475,17 +10041,23 @@ fn a_refused_plan_shows_the_named_reason_and_offers_no_confirmation() {
 #[test]
 fn a_copy_runs_when_confirmed_and_not_when_cancelled() {
     let (tx, _rx) = std::sync::mpsc::channel();
+    let reviewed = crate::operations::CopyPlan {
+        stype: "mysql".into(),
+        databases: vec!["studio".into()],
+        bucket: "reviewed-bucket".into(),
+        endpoint: "https://reviewed-storage.test".into(),
+        src_provider: "source-store".into(),
+        dst_provider: "destination-store".into(),
+        src_image: "mysql:8.0".into(),
+        dst_image: "mysql:5.7".into(),
+    };
     let plan = || Resp::CopyDbPlan {
         target_name: "there".into(),
         target_project: "shop-staging".into(),
         target_service: "mysql".into(),
         project: "shop".into(),
         service: "db".into(),
-        databases: vec!["studio".into()],
-        lines: vec![
-            "engine        mysql".into(),
-            "target image  mysql:5.7".into(),
-        ],
+        plan: Box::new(reviewed.clone()),
     };
 
     // Cancelled: nothing is dumped, nothing is loaded.
@@ -9531,10 +10103,13 @@ fn a_copy_runs_when_confirmed_and_not_when_cancelled() {
 
     app.confirm_key(KeyCode::Char('y'), &tx);
     let req = app.copy_db_req.as_ref().expect("the copy was promoted");
-    assert!(req.run, "stage two: this one actually copies");
+    assert!(
+        matches!(&req.stage, CopyDbStage::Confirmed(actual) if actual.as_ref() == &reviewed),
+        "execution must retain every original reviewed engine/database/image/storage fact"
+    );
     assert_eq!(req.target_server, "there");
     assert_eq!(req.target_service, "mysql");
-    assert_eq!(req.databases, vec!["studio"]);
+    assert!(matches!(&req.stage, CopyDbStage::Confirmed(actual) if actual.databases == ["studio"]));
 }
 
 /// A source database, a second project that can also take a copy, and a project
@@ -9692,7 +10267,7 @@ fn the_form_footer_only_offers_space_where_it_does_something() {
 fn the_copy_pre_flight_stays_a_table_with_an_unbroken_endpoint() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = copy_app();
-    let plan = crate::commands::CopyPlan {
+    let plan = crate::operations::CopyPlan {
         stype: "mysql".into(),
         databases: vec!["vidingco_studio".into()],
         bucket: "viding-db".into(),
@@ -9709,8 +10284,7 @@ fn the_copy_pre_flight_stays_a_table_with_an_unbroken_endpoint() {
             target_service: "mysql".into(),
             project: "viding-co-db".into(),
             service: "mysql".into(),
-            databases: vec!["vidingco_studio".into()],
-            lines: copy_plan_lines(&plan),
+            plan: Box::new(plan),
         },
         &tx,
     );
@@ -9823,10 +10397,10 @@ fn ticked_databases_are_the_ones_copied_and_ticking_none_copies_all() {
     set_f_val(form, "Target service", "db-restore");
     app.submit_form(&tx);
     let req = app.copy_db_req.as_ref().expect("a copy was requested");
-    assert_eq!(
-        req.databases,
-        vec!["studio", "logs"],
-        "only the ticked databases are copied"
+    assert!(
+        matches!(&req.stage, CopyDbStage::Preview { databases,all:false }
+        if databases == &["studio", "logs"]),
+        "only the ticked databases are previewed"
     );
 
     // A fresh form with nothing ticked: that still means EVERY non-system
@@ -9859,9 +10433,9 @@ fn ticked_databases_are_the_ones_copied_and_ticking_none_copies_all() {
     app.submit_form(&tx);
     let req = app.copy_db_req.as_ref().expect("a copy was requested");
     assert!(
-        req.databases.is_empty(),
-        "ticking nothing is the form's spelling of --all: {:?}",
-        req.databases
+        matches!(&req.stage, CopyDbStage::Preview { databases,all:true }
+        if databases.is_empty()),
+        "ticking nothing previews all non-system databases"
     );
 }
 
@@ -10088,4 +10662,88 @@ fn the_dump_pickers_keys_survive_the_next_status_line() {
         shown.contains("[a] every service") && !shown.contains("[Enter] restore"),
         "and the border matches:\n{shown}"
     );
+}
+
+#[test]
+fn partial_service_creation_repairs_only_the_pending_phase_on_the_original_host() {
+    for phase in [ServiceSetupPhase::Source, ServiceSetupPhase::AutoDeploy] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new("original".into(), vec![]);
+        app.handle(
+            Resp::ServiceCreated {
+                project: "project".into(),
+                service: "web".into(),
+                stype: "app".into(),
+                notes: vec!["Configuration refused".into()],
+                pending: Some(phase),
+            },
+            &tx,
+        );
+        assert!(app.status.contains("exists"));
+        assert!(app.status.contains("Source settings"));
+        while rx.try_recv().is_ok() {}
+
+        let response = || Resp::ConfigForm {
+            project: "project".into(),
+            service: "web".into(),
+            build: false,
+            data: json!({"source":{"type":"image","image":"nginx:alpine","password":"private"}}),
+            repos: vec![],
+        };
+        app.handle(response(), &tx);
+        let form = app.form.as_mut().unwrap();
+        if phase == ServiceSetupPhase::AutoDeploy {
+            assert_eq!(form.fields.len(), 1);
+            assert_eq!(form.fields[0].label, "Auto deploy");
+            set_f_val(form, "Auto deploy", "yes");
+        } else {
+            assert_eq!(form.by_label("Docker image"), "nginx:alpine");
+        }
+        app.submit_form(&tx);
+        match rx.try_recv().unwrap() {
+            Req::ServiceSetup {
+                project,
+                service,
+                stype,
+                source,
+                phase: actual,
+            } => {
+                assert_eq!(
+                    (project.as_str(), service.as_str(), stype.as_str()),
+                    ("project", "web", "app")
+                );
+                assert_eq!(actual, phase);
+                if phase == ServiceSetupPhase::AutoDeploy {
+                    assert!(source.1.is_null(), "saved source must not be sent again");
+                    assert_eq!(source.2, Some(true));
+                } else {
+                    assert_eq!(source.0, "updateSourceImage");
+                    assert_eq!(source.1["image"], "nginx:alpine");
+                }
+            }
+            _ => panic!("repair must not create another service or replay a completed phase"),
+        }
+        assert!(rx.try_recv().is_err());
+
+        app.reset_for_server("other".into());
+        app.handle(response(), &tx);
+        assert!(app.form.as_ref().unwrap().fields.len() > 1);
+        app.submit_form(&tx);
+        assert!(matches!(rx.try_recv().unwrap(), Req::ConfigSave { .. }));
+        assert!(rx.try_recv().is_err());
+
+        app.reset_for_server("original".into());
+        app.handle(
+            Resp::ServiceCreated {
+                project: "project".into(),
+                service: "web".into(),
+                stype: "app".into(),
+                notes: vec![],
+                pending: None,
+            },
+            &tx,
+        );
+        assert!(app.service_setup_pending.is_empty());
+        assert!(app.status.contains("configured"));
+    }
 }

@@ -6,17 +6,7 @@
 
 use ratatui::widgets::TableState;
 
-/// Which step of the walk is on screen.
-///
-/// `Query` is not a deeper level: it is a result that replaces the grid, and Esc
-/// from it goes back to the level it was run from.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Level {
-    Databases,
-    Tables,
-    Rows,
-    Query,
-}
+use crate::dbms::Level;
 
 /// The database browser's state: what it is pointed at, what came back, and
 /// what is wrong with it.

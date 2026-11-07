@@ -10,13 +10,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Optional native desktop app for Linux x86_64, macOS Apple Silicon/Intel and
-  Windows x86_64. Its mouse-first workspace reuses saved connections and supports
-  server editing, project/service search, reported state, service details/logs and
-  start/stop/restart with confirmation for disruptive actions. CLI/TUI workflows
-  remain available separately; this does not claim full TUI feature parity.
+  Windows x86_64, with an IDE-style resource explorer, persistent target-bound
+  documents, typed configuration editors, command palette and resizable
+  task/log/terminal utilities. Replaces the limited connection/service/log
+  workspace with existing CLI/TUI workflows: project/service configuration and
+  lifecycle/bulk actions; live logs and container/database/privileged host
+  terminals; database browsing/query results, backup schedules/history/restores,
+  dumps/downloads/copies, configuration clone/migrate/diff/export; host monitoring,
+  routing, certificates, notifications, actions, uptime and maintenance; independent
+  Cloudflare accounts, analytics, DNS, Tunnels, R2 and Workers. Scope follows the
+  existing product, not every vendor API; CLI/TUI entry points remain available.
+- Native file choosers and OS clipboard integration; SSH connection editing and
+  testing; profile-scoped sibling Cloudflare/uptime files beside `--config`.
 - Desktop build CI and separate release archives, including an ad-hoc-signed,
   non-notarized macOS `.app`. Manual release runs remain artifacts-only; publishing
   requires the complete CLI and desktop artifact sets.
+
+### Fixed
+
+- Share forms, validation, operations and session transport across CLI/TUI/desktop
+  without routing graphical workflows through the terminal renderer.
+- Clear obsolete desktop connection validation errors after a corrected draft is
+  accepted for testing or saving, without replacing API/SSH operation feedback.
+- Correct service-kind environment editing and readback across native, TUI and
+  CLI, preserving file settings and exact content without hiding malformed
+  inspection responses.
+- Edit Box build/start scripts through their canonical nested Advanced settings,
+  with explicit script-file imports; restrict config-file editing to MySQL/MariaDB.
+  Preserve untouched scripts, environment and additional settings.
+- Reconcile desktop selections against refreshed inventory and typed, exact
+  successful service/project deletions, including inactive documents and
+  completions after the originating tab closes. Keep deleted documents
+  target-bound with explicit inventory/recreation recovery; preserve failed
+  targets, unsaved drafts, prior results and running work.
+- Invalidate affected bulk/resource and transfer reviews without silently
+  changing captured targets. Explicit service recovery also refreshes inventory,
+  so a recreated target can receive a newly reviewed action.
+- Render CJK user text using validated system-font fallbacks while preserving
+  bundled UI and terminal fonts.
+- Block reconnecting a known-deleted service context and pause its log follow
+  without discarding output, live session input or Disconnect. Explicitly
+  recovered resources open new session documents instead of retargeting old ones.
+- Preserve Cloudflare Tunnel origin overrides in shared TUI/desktop route forms:
+  integer-second durations, explicit false versus inheritance, empty-string proxy
+  overrides and nested Access/unknown options survive unrelated edits. Reject
+  malformed numeric settings before submission; clearing all overrides is explicit.
+- Recover partial service creation through desktop/TUI Source settings, retrying
+  only the unfinished source or auto-deploy stage without creating the service again.
+- Keep service, host and Cloudflare editors/reviews within the document viewport
+  with persistent actions and scrollable fields; retain drafts during inventory
+  recovery and let Escape dismiss open dropdowns before closing editors.
+- Reserve useful terminal output space in the default utility dock and keep
+  Cloudflare breadcrumbs aligned with the active section. Avoid recursively
+  locking focus state when opening a terminal.
+- Preserve full terminal scrollback when paging beyond one viewport or resizing
+  the dock, using the upstream VT parser's corrected visible-row iterator.
+- Launch native file choosers outside UI callbacks without blocking the desktop;
+  cancellation does not report a completed save or transfer. Preserve requested
+  content/target snapshots and reject stale editor or target results.
+- Reveal the active tab and its close button on activation, reopening or resize,
+  without continually overriding manual tab-strip scrolling.
+- Keep comparison partners and recorded backup sources/files in document identity,
+  so opening a different comparison or restore does not reuse an unrelated context.
+- Emphasize **Save changes** for unsaved service configuration and block Deploy,
+  Start and Restart until edits are resolved; compact headers and responsive
+  inventory tables leave more room for configuration.
+- Group data tasks into Database, Backups & data transfer and Configuration;
+  add query focus/split resizing and keep prepared transfer reviews separate
+  from editable inputs.
+- Show DNS TTL, proxy and priority facts in tables/reviews with validated edits
+  and operation-scoped feedback.
+- Return a successfully deleted Worker to the script list without retaining its
+  cached settings/deployments; reject late Worker metadata and errors from an
+  older selection or credential scope without resetting another active Worker.
+- Keep host breadcrumbs current, show snapshot age and task feedback, and use
+  concrete action labels. Make utility resizing visible and keyboard focus
+  consistent across documents and docked terminals.
+- Use per-run identifiers for new dump object keys and dump/restore temporary
+  files, retaining historical dump-key parsing. Local dump downloads refuse existing
+  paths and remove partial files on transfer failure.
+- Resolve source/destination engine, database and storage facts before desktop
+  restores/copies; show destructive scope and require typed confirmation.
+  Recheck the confirmed facts before execution. Failed or timed-out transfers
+  can leave partial writes; no rollback is promised.
+- Clone/migrate database configuration with string-valued Advanced defaults when
+  inspected command/image fields are absent, preserving explicit commands and
+  environment/config files. Reject malformed Advanced fields before creation.
+- Preserve WordPress/box object environments and Compose inline/Git sources when
+  cloning or migrating configuration. Use Compose's source endpoints, never a
+  nonexistent Advanced endpoint; refuse unsupported configuration before creation
+  rather than silently losing it or reporting a complete migration.
 
 ### Security
 
@@ -24,6 +107,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rustls-webpki` 0.103.16, `webpki-roots` 1.0.10) and memory-safety fixes
   (`lru` 0.18.2, `event-listener` 5.4.2, `tokio` 1.53.3); replace yanked
   `async-executor` and `chacha20` releases with 1.14.1 and 0.10.2.
+- Serialize read/modify/write transactions for server, Cloudflare and uptime
+  stores with OS file locks and atomic replacement; create Unix temporary files
+  privately before writing credentials and retain corrupt-file write guards.
+- Redact nested known credential fields and file-mount contents in project
+  exports without altering configuration-transfer payloads. Opaque scripts and
+  inline commands still need a human secret review before sharing.
+- Remove presigned storage URLs from dump-download HTTP errors.
 
 ## [0.98.23] — 2026-09-27
 

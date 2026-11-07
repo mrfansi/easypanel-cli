@@ -18,7 +18,7 @@ use crate::output::field;
 
 use super::app::{App, CfProduct, CfScreen, Screen, Workspace, CF_PRODUCTS, TABS, TAB_SCREENS};
 use super::table::Line2;
-use super::worker::{Req, View};
+use crate::worker::{Req, View};
 use ratatui::crossterm::event::KeyCode;
 
 /// A menu item's action: the function run when the item is chosen.
@@ -476,13 +476,13 @@ impl App {
                 a.on_key(KeyCode::Char('L'), r)
             }));
         }
-        // Config File (Advanced) = updateAdvanced. The databases have it (that's
-        // where a MySQL replication config lives) and so does `box`, which used to
-        // be left out even though the panel offers it there.
-        if crate::lifecycle::has_config_file(&stype) {
-            v.push(MenuItem::new("Config file (Advanced)", |a, _| {
-                a.start_config_edit()
-            }));
+        if let Some(label) = crate::lifecycle::configuration_label(&stype) {
+            let label = if stype == "box" {
+                label
+            } else {
+                "Config file (Advanced)"
+            };
+            v.push(MenuItem::new(label, |a, _| a.start_config_edit()));
         }
         v
     }

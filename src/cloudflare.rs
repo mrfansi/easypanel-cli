@@ -2,6 +2,7 @@
 //! accounts' zones and DNS records. Nothing here touches the EasyPanel domain; the two
 //! share only the TUI event loop and the config directory (separate files).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
@@ -979,6 +980,13 @@ pub fn encode_object_key(key: &str) -> String {
     out
 }
 
+fn validate_rest_object_key(key: &str) -> Result<()> {
+    if key.split('/').any(|part| matches!(part, "." | "..")) {
+        anyhow::bail!("R2 REST object keys containing '.' or '..' path components cannot be addressed safely; no request was sent");
+    }
+    Ok(())
+}
+
 /// The last path segment of an object key (the whole key when it has no `/`) — used as the
 /// default local filename on download. Pure.
 pub fn object_basename(key: &str) -> &str {
@@ -1849,24 +1857,36 @@ const BASE: &str = "https://api.cloudflare.com/client/v4";
 /// EasypanelClient — different API, auth, and base URL.
 pub struct CloudflareClient {
     http: reqwest::blocking::Client,
+    base: Cow<'static, str>,
     token: String,
 }
 
 impl CloudflareClient {
     pub fn new(token: &str) -> Self {
+        Self::with_base_url(token, Cow::Borrowed(BASE))
+    }
+
+    pub(crate) fn with_base_url(token: &str, base: impl Into<Cow<'static, str>>) -> Self {
         Self {
             http: reqwest::blocking::Client::builder()
                 .user_agent("easypanel-cli")
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("reqwest client"),
             token: token.to_string(),
+            base: base.into(),
         }
+    }
+
+    pub(crate) fn base_url(&self) -> &str {
+        &self.base
     }
 
     fn get(&self, path: &str, query: &[(String, String)]) -> Result<String> {
         Ok(self
             .http
-            .get(format!("{BASE}{path}"))
+            .get(format!("{}{path}", self.base_url()))
             .bearer_auth(&self.token)
             .query(query)
             .send()?
@@ -1942,7 +1962,7 @@ impl CloudflareClient {
     fn send(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<String> {
         let mut req = self
             .http
-            .request(method, format!("{BASE}{path}"))
+            .request(method, format!("{}{path}", self.base_url()))
             .bearer_auth(&self.token);
         if let Some(b) = body {
             req = req.json(b);
@@ -1953,7 +1973,7 @@ impl CloudflareClient {
     fn graphql(&self, body: &Value) -> Result<String> {
         Ok(self
             .http
-            .post(format!("{BASE}/graphql"))
+            .post(format!("{}/graphql", self.base_url()))
             .bearer_auth(&self.token)
             .json(body)
             .send()?
@@ -2341,10 +2361,14 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
         name: &str,
         out: &mut dyn std::io::Write,
     ) -> Result<u64> {
-        let url = format!("{BASE}/accounts/{account_id}/workers/scripts/{name}/content/v2");
+        let url = format!(
+            "{}/accounts/{account_id}/workers/scripts/{name}/content/v2",
+            self.base
+        );
         let mut resp = self
             .http
             .get(url)
+            .timeout(std::time::Duration::from_secs(30 * 60))
             .bearer_auth(&self.token)
             .send()
             .map_err(|e| workers_hint(e.into()))?;
@@ -2382,10 +2406,12 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
         let body = self
             .http
             .put(format!(
-                "{BASE}/accounts/{account_id}/workers/scripts/{name}/content"
+                "{}/accounts/{account_id}/workers/scripts/{name}/content",
+                self.base
             ))
             .bearer_auth(&self.token)
             .multipart(form)
+            .timeout(std::time::Duration::from_secs(30 * 60))
             .send()
             .and_then(|r| r.text())
             .map_err(|e| workers_hint(e.into()))?;
@@ -2396,7 +2422,8 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
         let body = self
             .http
             .delete(format!(
-                "{BASE}/accounts/{account_id}/workers/scripts/{name}"
+                "{}/accounts/{account_id}/workers/scripts/{name}",
+                self.base
             ))
             .bearer_auth(&self.token)
             .query(&[("force", force)])
@@ -2472,13 +2499,16 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
         bytes: Vec<u8>,
         content_type: Option<&str>,
     ) -> Result<()> {
+        validate_rest_object_key(key)?;
         let url = format!(
-            "{BASE}/accounts/{account_id}/r2/buckets/{bucket}/objects/{}",
+            "{}/accounts/{account_id}/r2/buckets/{bucket}/objects/{}",
+            self.base,
             encode_object_key(key)
         );
         let body = self
             .http
             .put(url)
+            .timeout(std::time::Duration::from_secs(30 * 60))
             .bearer_auth(&self.token)
             .header(
                 reqwest::header::CONTENT_TYPE,
@@ -2503,14 +2533,17 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
         key: &str,
         out: &mut dyn std::io::Write,
     ) -> Result<u64> {
+        validate_rest_object_key(key)?;
         let url = format!(
-            "{BASE}/accounts/{account_id}/r2/buckets/{bucket}/objects/{}",
+            "{}/accounts/{account_id}/r2/buckets/{bucket}/objects/{}",
+            self.base,
             encode_object_key(key)
         );
         let mut resp = self
             .http
             .get(url)
             .bearer_auth(&self.token)
+            .timeout(std::time::Duration::from_secs(30 * 60))
             .send()
             .map_err(|e| r2_hint(e.into()))?;
         if resp.status().is_success() {
@@ -2526,8 +2559,10 @@ query AccountAnalytics($accountTag: string, $filter: filter) {
 
     /// Delete one object key. `DELETE …/objects/{key}`; success is the standard envelope.
     pub fn delete_object(&self, account_id: &str, bucket: &str, key: &str) -> Result<()> {
+        validate_rest_object_key(key)?;
         let url = format!(
-            "{BASE}/accounts/{account_id}/r2/buckets/{bucket}/objects/{}",
+            "{}/accounts/{account_id}/r2/buckets/{bucket}/objects/{}",
+            self.base,
             encode_object_key(key)
         );
         let body = self
@@ -2560,6 +2595,144 @@ fn parse_r2_level(body: &str) -> Result<R2Level> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::prelude::*;
+
+    #[test]
+    fn private_transport_sends_auth_and_follows_zone_pagination() {
+        let server = MockServer::start();
+        let first = server.mock(|when, then| {
+            when.method(GET).path("/client/v4/zones").header("authorization", "Bearer fixture-token")
+                .query_param("page", "1").query_param("account.id", "account-one");
+            then.status(200).json_body(json!({"success":true,"result":[{"id":"first","name":"one.example","status":"active"}],"result_info":{"total_pages":2}}));
+        });
+        let second = server.mock(|when, then| {
+            when.method(GET).path("/client/v4/zones").header("authorization", "Bearer fixture-token")
+                .query_param("page", "2").query_param("account.id", "account-one");
+            then.status(200).json_body(json!({"success":true,"result":[{"id":"second","name":"two.example","status":"pending"}],"result_info":{"total_pages":2}}));
+        });
+        let client = CloudflareClient::with_base_url(
+            "fixture-token",
+            format!("{}/client/v4", server.base_url()),
+        );
+        let zones = client.list_zones(Some("account-one")).unwrap();
+        assert_eq!(
+            zones.iter().map(|z| z.id.as_str()).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        first.assert();
+        second.assert();
+        assert!(matches!(
+            CloudflareClient::new("fixture-token").base,
+            Cow::Borrowed(BASE)
+        ));
+    }
+
+    #[test]
+    fn private_transport_streams_encoded_object_bytes_and_preserves_permission_errors() {
+        let server = MockServer::start();
+        let object = server.mock(|when, then| {
+            when.method(GET).path("/client/v4/accounts/account-one/r2/buckets/assets/objects/folder/file%20name.txt")
+                .header("authorization", "Bearer fixture-token");
+            then.status(200).body("downloaded bytes");
+        });
+        let denied = server.mock(|when, then| {
+            when.method(GET).path("/client/v4/accounts/account-one/workers/scripts");
+            then.status(403).json_body(json!({"success":false,"errors":[{"code":10000,"message":"Authentication error"}],"result":null}));
+        });
+        let client = CloudflareClient::with_base_url(
+            "fixture-token",
+            format!("{}/client/v4", server.base_url()),
+        );
+        let mut bytes = Vec::new();
+        assert_eq!(
+            client
+                .download_object("account-one", "assets", "folder/file name.txt", &mut bytes)
+                .unwrap(),
+            16
+        );
+        assert_eq!(bytes, b"downloaded bytes");
+        let error = client
+            .list_worker_scripts("account-one")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Authentication error"));
+        assert!(error.contains("Workers"));
+        object.assert();
+        denied.assert();
+    }
+
+    #[test]
+    fn unsafe_object_dot_components_never_dispatch_a_request() {
+        let server = MockServer::start();
+        let any_request = server.mock(|_, then| {
+            then.status(200)
+                .json_body(json!({"success":true,"result":{}}));
+        });
+        let client = CloudflareClient::with_base_url(
+            "fixture-token",
+            format!("{}/client/v4", server.base_url()),
+        );
+        for key in ["a/../victim", "./victim", "a/.", "a/..", "..", "."] {
+            assert!(client
+                .put_object("account", "bucket", key, b"new bytes".to_vec(), None)
+                .unwrap_err()
+                .to_string()
+                .contains("no request"));
+            let mut out = Vec::new();
+            assert!(client
+                .download_object("account", "bucket", key, &mut out)
+                .unwrap_err()
+                .to_string()
+                .contains("no request"));
+            assert!(out.is_empty());
+            assert!(client
+                .delete_object("account", "bucket", key)
+                .unwrap_err()
+                .to_string()
+                .contains("no request"));
+        }
+        any_request.assert_hits(0);
+    }
+
+    #[test]
+    fn ordinary_dots_unicode_and_literal_percent_segments_remain_opaque() {
+        let server = MockServer::start();
+        let path = "/client/v4/accounts/account/r2/buckets/bucket/objects/a/.../%252e%252e/caf%C3%A9%20file.txt";
+        let put = server.mock(|when, then| {
+            when.method(PUT)
+                .path(path)
+                .header("authorization", "Bearer fixture-token")
+                .body("new bytes");
+            then.status(200)
+                .json_body(json!({"success":true,"result":{}}));
+        });
+        let get = server.mock(|when, then| {
+            when.method(GET).path(path);
+            then.status(200).body("original bytes");
+        });
+        let delete = server.mock(|when, then| {
+            when.method(DELETE).path(path);
+            then.status(200)
+                .json_body(json!({"success":true,"result":{}}));
+        });
+        let client = CloudflareClient::with_base_url(
+            "fixture-token",
+            format!("{}/client/v4", server.base_url()),
+        );
+        let key = "a/.../%2e%2e/café file.txt";
+        client
+            .put_object("account", "bucket", key, b"new bytes".to_vec(), None)
+            .unwrap();
+        let mut out = Vec::new();
+        client
+            .download_object("account", "bucket", key, &mut out)
+            .unwrap();
+        assert_eq!(out, b"original bytes");
+        client.delete_object("account", "bucket", key).unwrap();
+        put.assert();
+        get.assert();
+        delete.assert();
+    }
 
     #[test]
     fn zone_health_classifies_the_status_string() {

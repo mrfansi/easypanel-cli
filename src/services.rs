@@ -101,7 +101,23 @@ fn present(s: &str) -> Option<String> {
 
 /// Compare the two env blocks by key. Values never appear in the output.
 fn diff_env(a: &Value, b: &Value, out: &mut Vec<Difference>) {
-    let (ea, eb) = (env_map(a), env_map(b));
+    let (ea, eb) = match (env_map(a), env_map(b)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (a, b) => {
+            out.push(Difference {
+                what: "env (uncomparable)".into(),
+                left: Some(
+                    a.err()
+                        .map_or_else(|| "readable".into(), |error| error.to_string()),
+                ),
+                right: Some(
+                    b.err()
+                        .map_or_else(|| "readable".into(), |error| error.to_string()),
+                ),
+            });
+            return;
+        }
+    };
     let mut keys: Vec<&String> = ea.keys().chain(eb.keys()).collect();
     keys.sort();
     keys.dedup();
@@ -132,17 +148,15 @@ fn diff_env(a: &Value, b: &Value, out: &mut Vec<Difference>) {
 
 /// Env text ("KEY=value" lines) as a map, so comparison is by key and
 /// order-independent. A line with no `=` is a key with an empty value.
-fn env_map(v: &Value) -> BTreeMap<String, String> {
-    v.get("env")
-        .and_then(Value::as_str)
-        .unwrap_or("")
+fn env_map(v: &Value) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(crate::operations::env_content(v)?
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
         .map(|l| match l.split_once('=') {
             Some((k, val)) => (k.trim().to_string(), val.to_string()),
             None => (l.trim().to_string(), String::new()),
         })
-        .collect()
+        .collect())
 }
 
 /// Collections (domains, mounts, ports) are compared by COUNT, not contents.
@@ -320,11 +334,11 @@ pub fn project_diff_lines(d: &ProjectDiff, a: &str, b: &str) -> Vec<String> {
 /// Two things it deliberately drops, so the file is safe to commit and stable to
 /// diff:
 ///
-/// - **Every secret.** Env is reduced to its KEYS (never a value — an env is the
-///   densest pile of secrets a service has), the deploy `token` is gone, and any
-///   secret-named field in `source` (a registry `password`) is masked. The same
-///   rule the on-screen views enforce; a config file that leaks a token into git
-///   is worse than no export.
+/// - **Credentials and file contents.** Env is reduced to its KEYS, exact
+///   `token` fields are omitted, secret-named fields are masked recursively, and
+///   file-mount contents are masked while their paths/configuration survive.
+///   Opaque commands/build scripts are configuration, so review them before
+///   committing: a secret embedded in arbitrary script text cannot be detected.
 /// - **Volatile, environment-specific noise** — the last commit hash, the
 ///   deployment URL, the primary-domain cuid. They change on every deploy and
 ///   would make a diff scream about things that are not configuration.
@@ -338,55 +352,63 @@ pub fn export_project(project: &str, services: &[Value]) -> Value {
 }
 
 fn export_service(s: &Value) -> Value {
-    let mut env_keys: Vec<String> = env_map(s).into_keys().collect();
-    env_keys.sort();
+    let (env_keys, env_error) = match env_map(s) {
+        Ok(env) => (env.into_keys().collect::<Vec<_>>(), None),
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    };
     let domains: Vec<String> = s
         .get("domains")
         .and_then(Value::as_array)
         .map(|a| a.iter().map(crate::domains::domain_source).collect())
         .unwrap_or_default();
-    serde_json::json!({
+    let mut exported = serde_json::json!({
         "name": field(s, "/name"),
         "type": field(s, "/type"),
         "enabled": s.get("enabled").and_then(Value::as_bool).unwrap_or(true),
-        "source": s.get("source").map(redact_source),
-        "build": s.get("build").cloned().unwrap_or(Value::Null),
-        "deploy": s.get("deploy").cloned().unwrap_or(Value::Null),
-        "resources": s.get("resources").cloned().unwrap_or(Value::Null),
+        "source": s.get("source").map(redact_export_value),
+        "build": s.get("build").map(redact_export_value).unwrap_or(Value::Null),
+        "deploy": s.get("deploy").map(redact_export_value).unwrap_or(Value::Null),
+        "resources": s.get("resources").map(redact_export_value).unwrap_or(Value::Null),
         "env": env_keys,
         "domains": domains,
-        "mounts": s.get("mounts").cloned().unwrap_or_else(|| serde_json::json!([])),
-        "ports": s.get("ports").cloned().unwrap_or_else(|| serde_json::json!([])),
-    })
+        "mounts": s.get("mounts").map(redact_export_value).unwrap_or_else(|| serde_json::json!([])),
+        "ports": s.get("ports").map(redact_export_value).unwrap_or_else(|| serde_json::json!([])),
+    });
+    if let Some(error) = env_error {
+        exported["envError"] = Value::String(error);
+    }
+    exported
 }
 
-/// The `source` object with any secret-named field masked (a private registry
-/// keeps a `password` here). Matched by NAME so a secret field a future EasyPanel
-/// adds arrives masked rather than leaked — the same reason the Source view does.
-fn redact_source(source: &Value) -> Value {
-    let Some(obj) = source.as_object() else {
-        return source.clone();
-    };
-    let mut out = serde_json::Map::new();
-    for (k, v) in obj {
-        // The deploy token is never config; drop it entirely.
-        if k == "token" {
-            continue;
+/// Export-only redaction; cloning/migration must retain their operational inputs.
+fn redact_export_value(value: &Value) -> Value {
+    match value {
+        Value::Object(obj) => {
+            let file_mount = obj.get("type").and_then(Value::as_str) == Some("file");
+            let mut out = serde_json::Map::new();
+            for (key, value) in obj {
+                if key.eq_ignore_ascii_case("token") {
+                    continue;
+                }
+                let redacted = if is_secret_key(key) || (file_mount && key == "content") {
+                    Value::String("••••••••".into())
+                } else {
+                    redact_export_value(value)
+                };
+                out.insert(key.clone(), redacted);
+            }
+            Value::Object(out)
         }
-        if is_secret_key(k) {
-            out.insert(k.clone(), Value::String("••••••••".into()));
-        } else {
-            out.insert(k.clone(), v.clone());
-        }
+        Value::Array(values) => Value::Array(values.iter().map(redact_export_value).collect()),
+        _ => value.clone(),
     }
-    Value::Object(out)
 }
 
 /// Does this field name a credential? A local copy of the on-screen rule (which
 /// lives in the TUI module and is not reachable from here); a three-word check is
 /// cheaper to duplicate than to hoist, and both point at the same list.
 fn is_secret_key(key: &str) -> bool {
-    let k = key.to_ascii_lowercase();
+    let k = key.to_ascii_lowercase().replace(['_', '-'], "");
     [
         "password",
         "token",
@@ -414,6 +436,32 @@ mod tests {
             "domains": [{}, {}], "mounts": [], "ports": [],
             "token": "secret-deploy-token"
         })
+    }
+
+    #[test]
+    fn env_kind_contract_compares_and_exports_object_content_without_secrets() {
+        let left = json!({"env":{"content":"# comment\r\nA=private-left\r\nB=keep\n"}});
+        let right = json!({"env":"B=keep\nA=private-right\n"});
+        let differences = diff(&left, &right);
+        assert_eq!(differences.len(), 1);
+        assert_eq!(differences[0].what, "env A");
+        let exported = export_project("p", &[left]);
+        assert_eq!(exported["services"][0]["env"], json!(["A", "B"]));
+        for output in [format!("{differences:?}"), exported.to_string()] {
+            assert!(!output.contains("private-"));
+        }
+        assert!(diff(&json!({"env":{"content":""}}), &json!({"env":""})).is_empty());
+    }
+
+    #[test]
+    fn env_kind_contract_reports_unknown_shapes_as_uncomparable_not_empty() {
+        let malformed = json!({"env":{"content":{"secret":"private-value"}}});
+        let differences = diff(&malformed, &malformed);
+        assert_eq!(differences.len(), 1);
+        assert_eq!(differences[0].what, "env (uncomparable)");
+        let exported = export_project("p", &[malformed]);
+        assert!(exported["services"][0]["envError"].is_string());
+        assert!(!format!("{differences:?}{exported}").contains("private-value"));
     }
 
     #[test]
@@ -536,6 +584,63 @@ mod tests {
         assert!(svc["source"].get("token").is_none());
         assert_eq!(svc["name"], json!("api"));
         assert_eq!(svc["deploy"]["replicas"], json!(2));
+    }
+
+    #[test]
+    fn export_redacts_nested_credentials_and_file_mounts_without_mutating_transfer_inputs() {
+        let service = json!({
+            "name": "api", "type": "app",
+            "source": {
+                "type": "image", "image": "ghcr.io/acme/api:latest",
+                "registry": {"password": "nested-registry-password", "username": "bot"},
+                "connections": [{"api_key": "nested-api-key", "host": "registry.test"}]
+            },
+            "build": {"type": "dockerfile", "options": {
+                "token": "build-token", "private_key": "build-private-key", "target": "release"
+            }},
+            "deploy": {"token": "deploy-token", "replicas": 3,
+                "hooks": [{"password": "hook-password", "command": "echo ready"}]},
+            "resources": {"memoryLimit": 512, "extra": {"clientSecret": "resource-secret"}},
+            "mounts": [
+                {"type": "file", "mountPath": "/app/.env", "content": "PRIVATE=mount-secret"},
+                {"type": "volume", "name": "data", "mountPath": "/data"}
+            ],
+            "ports": [{"published": 8080, "target": 80}],
+            "env": "APP_KEY=env-secret"
+        });
+        let original = service.clone();
+        let export = export_project("shop", std::slice::from_ref(&service));
+        let serialized = serde_json::to_string(&export).unwrap();
+        for secret in [
+            "nested-registry-password",
+            "nested-api-key",
+            "build-token",
+            "build-private-key",
+            "deploy-token",
+            "hook-password",
+            "resource-secret",
+            "mount-secret",
+            "env-secret",
+        ] {
+            assert!(!serialized.contains(secret), "export leaked {secret}");
+        }
+        let exported = &export["services"][0];
+        assert!(exported["deploy"].get("token").is_none());
+        assert!(exported["build"]["options"].get("token").is_none());
+        assert_eq!(exported["source"]["registry"]["username"], "bot");
+        assert_eq!(
+            exported["source"]["connections"][0]["host"],
+            "registry.test"
+        );
+        assert_eq!(exported["build"]["options"]["target"], "release");
+        assert_eq!(exported["deploy"]["replicas"], 3);
+        assert_eq!(exported["deploy"]["hooks"][0]["command"], "echo ready");
+        assert_eq!(exported["resources"]["memoryLimit"], 512);
+        assert_eq!(exported["mounts"][0]["content"], "••••••••");
+        assert_eq!(exported["mounts"][0]["mountPath"], "/app/.env");
+        assert_eq!(exported["mounts"][1], original["mounts"][1]);
+        assert_eq!(exported["ports"], original["ports"]);
+        assert_eq!(service, original);
     }
 
     #[test]

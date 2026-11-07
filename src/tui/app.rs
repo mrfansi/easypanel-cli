@@ -8,12 +8,11 @@ use ratatui::widgets::{ListState, TableState};
 use serde_json::{json, Value};
 
 use crate::cloudflare::{
-    apply_patch, filter_buckets, filter_records, filter_tunnel_config_rows, filter_tunnels,
+    filter_buckets, filter_records, filter_tunnel_config_rows, filter_tunnels,
     filter_worker_deployments, filter_worker_settings_rows, filter_workers, filter_zones,
-    proxyable, record_body, valid_record_type, AnalyticsSummary, CloudflareAccount,
-    CloudflareTunnel, R2Bucket, R2Object, Record, RecordFilter, RecordPatch, TunnelConfigRow,
-    TunnelConfiguration, TunnelIngressRule, WebAnalyticsSite, WorkerDeployment, WorkerScript,
-    WorkerSettingsBundle, WorkerSettingsRow, WorkerUploadMode, Zone,
+    proxyable, AnalyticsSummary, CloudflareAccount, CloudflareTunnel, R2Bucket, R2Object, Record,
+    RecordFilter, TunnelConfigRow, TunnelConfiguration, TunnelIngressRule, WebAnalyticsSite,
+    WorkerDeployment, WorkerScript, WorkerSettingsBundle, WorkerSettingsRow, Zone,
 };
 use crate::commands;
 use crate::output::field;
@@ -21,12 +20,13 @@ use crate::tunnel::SshTunnel;
 
 use super::actions::{Menu, MenuItem, Palette};
 use super::backup_ui::BackupUi;
-use super::form::*;
+use super::chooser::Chooser;
 use super::render::cap;
 use super::table::*;
 use super::terminal::TermSel;
-use super::worker::{CfReq, CfResp, Refresh, Req, Resp, View};
 use super::LOG_BUFFER;
+use crate::form::*;
+use crate::worker::{CfReq, CfResp, CopyDbStage, Refresh, Req, Resp, ServiceSetupPhase, View};
 
 // ---------- State ----------
 
@@ -377,340 +377,6 @@ pub(super) fn parent_prefix(prefix: &str) -> String {
     }
 }
 
-/// Build the patch an edit form describes. `content` is always sent (the field is
-/// prefilled from the record); `proxied` only for proxyable types, `priority` only
-/// for MX — the same gating `record_body` applies on create.
-pub(super) fn cf_record_patch(
-    kind: &str,
-    content: &str,
-    ttl: &str,
-    proxied: bool,
-    priority: &str,
-) -> RecordPatch {
-    RecordPatch {
-        content: (!content.is_empty()).then(|| content.to_string()),
-        ttl: ttl.trim().parse().ok(),
-        proxied: proxyable(kind).then_some(proxied),
-        priority: if kind.eq_ignore_ascii_case("MX") {
-            priority.trim().parse().ok()
-        } else {
-            None
-        },
-    }
-}
-
-const TUNNEL_SERVICE_TYPES: &[&str] = &[
-    "http",
-    "https",
-    "unix",
-    "unix+tls",
-    "tcp",
-    "ssh",
-    "rdp",
-    "smb",
-    "http_status",
-    "bastion",
-    "hello_world",
-];
-
-fn tunnel_service_parts(service: &str) -> (&'static str, String) {
-    for service_type in TUNNEL_SERVICE_TYPES {
-        let prefix = format!("{service_type}://");
-        if let Some(rest) = service.strip_prefix(&prefix) {
-            return (service_type, rest.to_string());
-        }
-    }
-    if let Some(rest) = service.strip_prefix("http_status:") {
-        return ("http_status", rest.to_string());
-    }
-    match service {
-        "bastion" => ("bastion", String::new()),
-        "hello_world" => ("hello_world", String::new()),
-        _ => ("http", service.trim().to_string()),
-    }
-}
-
-fn tunnel_service_from_form(form: &Form) -> String {
-    let service_type = form.by_label("Service Type");
-    let value = form.by_label("Service URL").trim().to_string();
-    match service_type.as_str() {
-        "http_status" => format!("http_status:{value}"),
-        "bastion" | "hello_world" => service_type.clone(),
-        "unix" | "unix+tls" => format!("{service_type}:{value}"),
-        _ => format!("{service_type}://{value}"),
-    }
-}
-
-fn tunnel_service_requires_value(service_type: &str) -> bool {
-    !matches!(service_type, "bastion" | "hello_world")
-}
-
-fn tunnel_service_fields(service: &str) -> Vec<Field> {
-    let (service_type, service_url) = tunnel_service_parts(service);
-    vec![
-        Field::choice("Service Type", TUNNEL_SERVICE_TYPES, service_type),
-        Field::text("Service URL", &service_url).when(
-            "Service Type",
-            "http,https,unix,unix+tls,tcp,ssh,rdp,smb,http_status",
-        ),
-    ]
-}
-
-fn origin_object(origin: Option<&Value>) -> serde_json::Map<String, Value> {
-    origin
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn origin_bool(origin: Option<&Value>, key: &str) -> bool {
-    origin
-        .and_then(|v| v.get(key))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn origin_text(origin: Option<&Value>, key: &str) -> String {
-    origin
-        .and_then(|v| v.get(key))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn origin_u64_text(origin: Option<&Value>, key: &str) -> String {
-    origin
-        .and_then(|v| v.get(key))
-        .and_then(Value::as_u64)
-        .map(|v| v.to_string())
-        .unwrap_or_default()
-}
-
-fn origin_access(origin: Option<&Value>) -> Option<&serde_json::Map<String, Value>> {
-    origin
-        .and_then(|v| v.get("access"))
-        .and_then(Value::as_object)
-}
-
-fn origin_access_required(origin: Option<&Value>) -> bool {
-    origin_access(origin)
-        .and_then(|v| v.get("required"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn origin_access_team(origin: Option<&Value>) -> String {
-    origin_access(origin)
-        .and_then(|v| v.get("teamName"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn origin_access_aud(origin: Option<&Value>) -> String {
-    origin_access(origin)
-        .and_then(|v| v.get("audTag"))
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default()
-}
-
-fn tunnel_origin_fields(origin: Option<&Value>) -> Vec<Field> {
-    let proxy_type = match origin_text(origin, "proxyType").as_str() {
-        "socks" => "socks",
-        _ => "regular",
-    };
-    vec![
-        Field::text(
-            "Origin Server Name",
-            &origin_text(origin, "originServerName"),
-        ),
-        Field::boolean("Match SNI to Host", origin_bool(origin, "matchSNItoHost")),
-        Field::text("Certificate Authority Pool", &origin_text(origin, "caPool")),
-        Field::boolean("No TLS Verify", origin_bool(origin, "noTLSVerify")),
-        Field::text("TLS Timeout", &origin_text(origin, "tlsTimeout")),
-        Field::boolean("HTTP2 Connection", origin_bool(origin, "http2Origin")),
-        Field::text("HTTP Host Header", &origin_text(origin, "httpHostHeader")),
-        Field::boolean(
-            "Disable Chunked Encoding",
-            origin_bool(origin, "disableChunkedEncoding"),
-        ),
-        Field::text("Connect Timeout", &origin_text(origin, "connectTimeout")),
-        Field::boolean("No Happy Eyeballs", origin_bool(origin, "noHappyEyeballs")),
-        Field::choice("Proxy Type", &["regular", "socks"], proxy_type),
-        Field::text("Proxy Address", &origin_text(origin, "proxyAddress")),
-        Field::text("Proxy Port", &origin_u64_text(origin, "proxyPort")),
-        Field::text(
-            "Keep Alive Timeout",
-            &origin_text(origin, "keepAliveTimeout"),
-        ),
-        Field::text(
-            "Keep Alive Connections",
-            &origin_u64_text(origin, "keepAliveConnections"),
-        ),
-        Field::text("TCP Keep Alive", &origin_text(origin, "tcpKeepAlive")),
-        Field::boolean("Access Required", origin_access_required(origin)),
-        Field::text("Access Team Name", &origin_access_team(origin)).when("Access Required", "yes"),
-        Field::text("Access AUD Tags", &origin_access_aud(origin)).when("Access Required", "yes"),
-    ]
-}
-
-fn set_origin_string(object: &mut serde_json::Map<String, Value>, key: &str, value: String) {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        object.remove(key);
-    } else {
-        object.insert(key.into(), Value::String(trimmed.to_string()));
-    }
-}
-
-fn set_origin_bool(object: &mut serde_json::Map<String, Value>, key: &str, on: bool) {
-    if on {
-        object.insert(key.into(), Value::Bool(true));
-    } else {
-        object.remove(key);
-    }
-}
-
-fn set_origin_u64(
-    object: &mut serde_json::Map<String, Value>,
-    key: &str,
-    label: &str,
-    value: String,
-) -> anyhow::Result<()> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        object.remove(key);
-        return Ok(());
-    }
-    let parsed: u64 = trimmed
-        .parse()
-        .map_err(|_| anyhow::anyhow!("{label} must be a positive number"))?;
-    object.insert(key.into(), Value::Number(parsed.into()));
-    Ok(())
-}
-
-fn tunnel_origin_request_from_form(form: &Form) -> anyhow::Result<Option<Value>> {
-    let mut object = origin_object(form.original.as_ref());
-    set_origin_string(
-        &mut object,
-        "originServerName",
-        form.by_label("Origin Server Name"),
-    );
-    set_origin_bool(
-        &mut object,
-        "matchSNItoHost",
-        form.by_label("Match SNI to Host") == "yes",
-    );
-    set_origin_string(
-        &mut object,
-        "caPool",
-        form.by_label("Certificate Authority Pool"),
-    );
-    set_origin_bool(
-        &mut object,
-        "noTLSVerify",
-        form.by_label("No TLS Verify") == "yes",
-    );
-    set_origin_string(&mut object, "tlsTimeout", form.by_label("TLS Timeout"));
-    set_origin_bool(
-        &mut object,
-        "http2Origin",
-        form.by_label("HTTP2 Connection") == "yes",
-    );
-    set_origin_string(
-        &mut object,
-        "httpHostHeader",
-        form.by_label("HTTP Host Header"),
-    );
-    set_origin_bool(
-        &mut object,
-        "disableChunkedEncoding",
-        form.by_label("Disable Chunked Encoding") == "yes",
-    );
-    set_origin_string(
-        &mut object,
-        "connectTimeout",
-        form.by_label("Connect Timeout"),
-    );
-    set_origin_bool(
-        &mut object,
-        "noHappyEyeballs",
-        form.by_label("No Happy Eyeballs") == "yes",
-    );
-    let proxy_type = match form.by_label("Proxy Type").as_str() {
-        "regular" => String::new(),
-        value => value.to_string(),
-    };
-    set_origin_string(&mut object, "proxyType", proxy_type);
-    set_origin_string(&mut object, "proxyAddress", form.by_label("Proxy Address"));
-    set_origin_u64(
-        &mut object,
-        "proxyPort",
-        "Proxy Port",
-        form.by_label("Proxy Port"),
-    )?;
-    set_origin_string(
-        &mut object,
-        "keepAliveTimeout",
-        form.by_label("Keep Alive Timeout"),
-    );
-    set_origin_u64(
-        &mut object,
-        "keepAliveConnections",
-        "Keep Alive Connections",
-        form.by_label("Keep Alive Connections"),
-    )?;
-    set_origin_string(&mut object, "tcpKeepAlive", form.by_label("TCP Keep Alive"));
-
-    if form.by_label("Access Required") == "yes" {
-        let team_name = form.by_label("Access Team Name").trim().to_string();
-        let aud_tags = form
-            .by_label("Access AUD Tags")
-            .split(',')
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        if team_name.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Access Team Name is required when Access is enabled"
-            ));
-        }
-        if aud_tags.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Access AUD Tags is required when Access is enabled"
-            ));
-        }
-        let mut access = object
-            .get("access")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        access.insert("required".into(), Value::Bool(true));
-        access.insert("teamName".into(), Value::String(team_name));
-        access.insert(
-            "audTag".into(),
-            Value::Array(aud_tags.into_iter().map(Value::String).collect()),
-        );
-        object.insert("access".into(), Value::Object(access));
-    } else {
-        object.remove("access");
-    }
-
-    if object.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(Value::Object(object)))
-    }
-}
-
 /// A Cloudflare account-list change: executed in event_loop, which holds the
 /// CloudflareConfig. Same shape as ServerAction — the App never writes the file.
 pub(super) enum CfAction {
@@ -778,8 +444,8 @@ pub(super) struct MigrateReq {
 /// A database copy waiting for its target token, which only event_loop can look
 /// up. Same rule as `MigrateReq`: the App holds a server NAME, never a token.
 ///
-/// Used for BOTH stages — `run: false` asks for the plan, `run: true` (set when
-/// the plan is confirmed) asks for the copy. The target may be THIS host, so
+/// Preview resolves facts; confirmation promotes the exact typed snapshot.
+/// The target may be THIS host, so
 /// unlike a migration `target_server` is not required to differ from the current
 /// one.
 pub(super) struct CopyDbReq {
@@ -788,9 +454,7 @@ pub(super) struct CopyDbReq {
     pub(super) target_service: String,
     /// The source, as (project, service).
     pub(super) source: (String, String),
-    /// Empty means every non-system database the source holds.
-    pub(super) databases: Vec<String>,
-    pub(super) run: bool,
+    pub(super) stage: CopyDbStage,
 }
 
 /// Does this status line report a failure?
@@ -812,206 +476,6 @@ pub(super) fn status_is_error(status: &str) -> bool {
 pub(super) enum WatchAction {
     Put(crate::uptime::Check),
     Remove(String),
-}
-
-pub(super) enum ServerAction {
-    Save {
-        /// The name it is stored under today. `Some` only when the edit form
-        /// changed it, which makes the save a rename as well.
-        rename_from: Option<String>,
-        name: String,
-        url: String,
-        /// None = keep the stored token (an edit form left blank).
-        token: Option<String>,
-        /// The SSH hop; None = connect directly. Its `secret` is None when the
-        /// form left it blank, which on an edit means "keep the stored one".
-        ssh: Option<SshTunnel>,
-    },
-    Remove(String),
-}
-
-/// A configured server as the UI knows it — no token and no SSH secret, which
-/// the App never holds. The URL and tunnel are kept so the edit form can be
-/// prefilled with the current values, not left blank like the add form.
-#[derive(Clone)]
-pub(super) struct ServerEntry {
-    pub(super) name: String,
-    pub(super) url: String,
-    /// Always with `secret: None`.
-    pub(super) ssh: Option<SshTunnel>,
-}
-
-impl ServerEntry {
-    /// The address as a person reads it: a tunnelled panel's URL alone
-    /// (`http://localhost:3000`) would name every tunnelled host the same.
-    pub(super) fn display_url(&self) -> String {
-        match &self.ssh {
-            Some(t) => format!("{} via ssh {}", self.url, t.describe()),
-            None => self.url.clone(),
-        }
-    }
-}
-
-impl From<crate::config::Server> for ServerEntry {
-    fn from(s: crate::config::Server) -> Self {
-        Self {
-            name: s.name,
-            url: s.url,
-            ssh: s.ssh.map(|t| SshTunnel { secret: None, ..t }),
-        }
-    }
-}
-
-// The server form's labels: `submit_form` and the Ctrl-T test read by label.
-pub(super) const SRV_CONNECTION: &str = "Connection";
-pub(super) const SRV_SSH_HOST: &str = "SSH host";
-pub(super) const SRV_SSH_PORT: &str = "SSH port";
-pub(super) const SRV_SSH_USER: &str = "SSH user";
-pub(super) const SRV_SSH_AUTH: &str = "Login method";
-pub(super) const SRV_SSH_KEY: &str = "Key path";
-pub(super) const SRV_SSH_PASSPHRASE: &str = "Key passphrase";
-pub(super) const SRV_SSH_PASSWORD: &str = "SSH password";
-pub(super) const SRV_SSH_TIMEOUT: &str = "SSH timeout (s)";
-
-/// The add (`entry` None) or edit server form. Name, URL and token keep indexes
-/// 0-2; the tunnel fields appear only when Connection is `ssh`, and each login
-/// method shows only its own fields.
-pub(super) fn server_form(entry: Option<&ServerEntry>) -> Form {
-    let t = entry.and_then(|e| e.ssh.clone());
-    let tunnel = t.clone().unwrap_or_default();
-    let (kind, title, token) = match entry {
-        None => (
-            FormKind::ServerAdd,
-            " Add server ".to_string(),
-            Field::secret("Token"),
-        ),
-        Some(e) => (
-            FormKind::ServerEdit {
-                name: e.name.clone(),
-            },
-            format!(" Edit server: {} ", e.name),
-            // The token is deliberately not re-filled: there's no need to put
-            // it back on screen. Empty = keep the stored token.
-            Field::secret("Token (empty = unchanged)"),
-        ),
-    };
-    let ssh = |f: Field| f.when(SRV_CONNECTION, "ssh");
-    let note = match entry {
-        None => {
-            "SSH: the URL is then the panel as seen from the SSH host, e.g. \
-                 http://localhost:3000. Ctrl-T tests the tunnel."
-        }
-        Some(_) => {
-            "SSH: the URL is the panel as seen from the SSH host. A blank \
-                    passphrase or password keeps the stored one. Ctrl-T tests the tunnel."
-        }
-    };
-    Form::new(
-        kind,
-        title,
-        vec![
-            // Editable: a server's name is the label the whole UI identifies it
-            // by — the title bar, the confirmations and its colour — so a typo in
-            // it was permanent, and the only way out was to delete the server and
-            // lose its token with it.
-            Field::text("Name", entry.map(|e| e.name.as_str()).unwrap_or("")),
-            Field::text("URL", entry.map(|e| e.url.as_str()).unwrap_or("https://")),
-            token,
-            Field::choice(
-                SRV_CONNECTION,
-                &["direct", "ssh"],
-                if t.is_some() { "ssh" } else { "direct" },
-            ),
-            ssh(Field::text(SRV_SSH_HOST, &tunnel.host)),
-            ssh(Field::text(
-                SRV_SSH_PORT,
-                &tunnel.port.unwrap_or(22).to_string(),
-            )),
-            ssh(Field::text(
-                SRV_SSH_USER,
-                tunnel.user.as_deref().unwrap_or(""),
-            )),
-            ssh(Field::choice(
-                SRV_SSH_AUTH,
-                &crate::tunnel::SshAuth::NAMES,
-                tunnel.auth.as_str(),
-            )),
-            ssh(Field::text(
-                SRV_SSH_KEY,
-                tunnel.key_path.as_deref().unwrap_or("~/.ssh/id_ed25519"),
-            ))
-            .when(SRV_SSH_AUTH, "key"),
-            ssh(Field::secret(SRV_SSH_PASSPHRASE)).when(SRV_SSH_AUTH, "key"),
-            ssh(Field::secret(SRV_SSH_PASSWORD)).when(SRV_SSH_AUTH, "password"),
-            ssh(Field::text(
-                SRV_SSH_TIMEOUT,
-                &tunnel
-                    .timeout
-                    .unwrap_or(crate::tunnel::DEFAULT_TIMEOUT)
-                    .to_string(),
-            )),
-        ],
-    )
-    .with_note(note)
-}
-
-/// Is this the add/edit server form with the tunnel switched on?
-pub(super) fn server_form_uses_ssh(form: &Form) -> bool {
-    matches!(form.kind, FormKind::ServerAdd | FormKind::ServerEdit { .. })
-        && form.by_label(SRV_CONNECTION) == "ssh"
-}
-
-/// The tunnel the server form describes (None = direct), checked but for the
-/// secret, which a blank edit field keeps from the stored server.
-pub(super) fn tunnel_from_form(form: &Form, url: &str) -> Result<Option<SshTunnel>, String> {
-    use crate::tunnel::SshAuth;
-    if !server_form_uses_ssh(form) {
-        return Ok(None);
-    }
-    let opt = |label| Some(form.by_label(label)).filter(|v| !v.is_empty());
-    let port = match opt(SRV_SSH_PORT) {
-        None => None,
-        Some(p) => Some(
-            p.parse::<u16>()
-                .map_err(|_| "SSH port must be 1-65535".to_string())?,
-        ),
-    };
-    let timeout = match opt(SRV_SSH_TIMEOUT) {
-        None => None,
-        Some(t) => Some(
-            t.parse::<u64>()
-                .map_err(|_| "SSH timeout must be a number of seconds".to_string())?,
-        ),
-    };
-    let auth = SshAuth::parse(&form.by_label(SRV_SSH_AUTH)).unwrap_or_default();
-    let tunnel = SshTunnel {
-        host: form.by_label(SRV_SSH_HOST),
-        // 22 is what the field starts at; storing it would override the
-        // alias's own `Port` in ~/.ssh/config.
-        port: port.filter(|p| *p != 22),
-        user: opt(SRV_SSH_USER),
-        auth,
-        key_path: (auth == SshAuth::Key).then(|| opt(SRV_SSH_KEY)).flatten(),
-        secret: match auth {
-            SshAuth::Agent => None,
-            SshAuth::Key => opt(SRV_SSH_PASSPHRASE),
-            SshAuth::Password => opt(SRV_SSH_PASSWORD),
-        },
-        timeout: timeout.filter(|t| *t != crate::tunnel::DEFAULT_TIMEOUT),
-    };
-    crate::tunnel::validate(&tunnel, url).map_err(|e| e.to_string())?;
-    Ok(Some(tunnel))
-}
-
-/// The URL the server form means: a tunnel left on the add form's `https://`
-/// placeholder means EasyPanel's own port on the SSH host.
-pub(super) fn server_form_url(form: &Form) -> String {
-    let url = form.val(1);
-    let url = url.trim_end_matches('/');
-    if server_form_uses_ssh(form) && matches!(url, "" | "https:" | "https://" | "http://") {
-        return crate::tunnel::DEFAULT_REMOTE_URL.to_string();
-    }
-    url.to_string()
 }
 
 /// A tunnel to test, as the server form describes it right now.
@@ -1057,19 +521,23 @@ pub(super) struct App {
     pub(super) switch_to: Option<String>,
     pub(super) picker: Option<ListState>,
     pub(super) form: Option<Form>,
+    pub(super) form_rect: Rect,
     pub(super) chooser: Option<Chooser>,
     pub(super) server_action: Option<ServerAction>,
     /// Set by the migrate form; event_loop resolves the destination token and
     /// hands the work to the worker.
     pub(super) migrate_req: Option<MigrateReq>,
     /// A database copy waiting for the event loop to resolve the target host's
-    /// token. Carries both stages — see `CopyDbReq::run`.
+    /// token. Carries either preview input or the confirmed nonsecret plan.
     pub(super) copy_db_req: Option<CopyDbReq>,
     /// A planned copy the confirmation is about to act on. Separate from
     /// `copy_db_req`, which the event loop TAKES: this one waits for
     /// `confirm_key` to promote it, so a copy cannot reach the worker without
     /// passing through the confirmation.
     pub(super) copy_pending: Option<CopyDbReq>,
+    /// Only identity and unfinished phase survive a create; source secrets do not.
+    pub(super) service_setup_pending:
+        HashMap<(String, String, String), (String, ServiceSetupPhase)>,
     /// A cross-host compare waiting for the event loop to resolve the target
     /// host's token (which only the ServerConfig holds).
     pub(super) diff_across_req: Option<DiffAcrossReq>,
@@ -1087,8 +555,7 @@ pub(super) struct App {
     pub(super) edit_env: Option<(String, String, String)>,
     /// The project whose shared env is about to be opened in $EDITOR.
     pub(super) edit_project_env: Option<String>,
-    /// (project, service, stype) — awaiting a Config File (Advanced db) edit in
-    /// $EDITOR; its contents come from inspectService and are saved via updateAdvanced.
+    /// (project, service, stype) — awaiting a configuration inspection.
     pub(super) edit_config: Option<(String, String, String)>,
     /// (project, service, index) awaiting a file mount's $EDITOR open; the event
     /// loop owns the terminal and fetches fresh values before editing.
@@ -1284,11 +751,13 @@ impl App {
             switch_to: None,
             picker: None,
             form: None,
+            form_rect: Rect::default(),
             chooser: None,
             server_action: None,
             migrate_req: None,
             copy_db_req: None,
             copy_pending: None,
+            service_setup_pending: HashMap::new(),
             diff_across_req: None,
             diff_project_across_req: None,
             restore_from_req: None,
@@ -1458,15 +927,14 @@ impl App {
         }
     }
 
-    /// Edit the selected database service's Config File (Advanced) in $EDITOR.
-    /// event_loop fetches its contents, opens the editor, then saves.
+    /// File configuration uses $EDITOR; Box scripts use the shared two-field form.
     pub(super) fn start_config_edit(&mut self) {
         match self.selected_row() {
-            Some((p, s, t)) if crate::lifecycle::is_database(&t) => {
+            Some((p, s, t)) if crate::lifecycle::configuration_label(&t).is_some() => {
                 self.edit_config = Some((p, s, t));
             }
             Some((_, _, t)) => {
-                self.status = format!("Config file is only for database services (this is {t})");
+                self.status = format!("No file or script configuration API for {t}");
             }
             None => self.status = "Select a service first".into(),
         }
@@ -1523,22 +991,22 @@ impl App {
             ..Default::default()
         };
         self.screen = Screen::Dbms;
-        self.dbms_fetch(super::dbms::Level::Databases, req);
+        self.dbms_fetch(crate::dbms::Level::Databases, req);
     }
 
     /// Ask the worker for one step of the browser. The level decides which
     /// command is built; `database`/`table` come from where the walk has got to.
-    pub(super) fn dbms_fetch(&mut self, level: super::dbms::Level, req: &Sender<Req>) {
+    pub(super) fn dbms_fetch(&mut self, level: crate::dbms::Level, req: &Sender<Req>) {
         let Some((project, service, stype)) = self.dbms.target.clone() else {
             return;
         };
         self.dbms.loading = true;
         self.dbms.error = None;
         self.status = match level {
-            super::dbms::Level::Databases => "Reading databases...".into(),
-            super::dbms::Level::Tables => format!("Reading tables in {}...", self.dbms.database),
-            super::dbms::Level::Rows => format!("Reading rows of {}...", self.dbms.table),
-            super::dbms::Level::Query => "Running the query...".to_string(),
+            crate::dbms::Level::Databases => "Reading databases...".into(),
+            crate::dbms::Level::Tables => format!("Reading tables in {}...", self.dbms.database),
+            crate::dbms::Level::Rows => format!("Reading rows of {}...", self.dbms.table),
+            crate::dbms::Level::Query => "Running the query...".to_string(),
         };
         let _ = req.send(Req::Dbms {
             project,
@@ -3253,6 +2721,9 @@ impl App {
             MenuItem::new(format!("Set TTL on {n}"), |app, _| {
                 app.open_cf_bulk_form(CfBulkAttr::Ttl)
             }),
+            MenuItem::new(format!("Set MX priority on {n}"), |app, _| {
+                app.open_cf_bulk_form(CfBulkAttr::Priority)
+            }),
             MenuItem::new(format!("Delete {n} marked"), |app, _| {
                 app.ask_cf_bulk_delete()
             }),
@@ -3260,13 +2731,31 @@ impl App {
         self.open_menu(items);
     }
 
-    /// The form for a bulk attribute set (content / proxied / ttl).
+    fn cf_priority_targets_are_mx(&self, ids: &[String]) -> bool {
+        !ids.is_empty()
+            && ids.iter().all(|id| {
+                self.cf
+                    .records
+                    .iter()
+                    .any(|record| record.id == *id && record.kind.eq_ignore_ascii_case("MX"))
+            })
+    }
+
+    /// The form for a bulk attribute set (content / proxied / ttl / MX priority).
     pub(super) fn open_cf_bulk_form(&mut self, attr: CfBulkAttr) {
+        if matches!(attr, CfBulkAttr::Priority)
+            && !self.cf_priority_targets_are_mx(&self.cf_record_targets())
+        {
+            self.status =
+                "Priority applies only to MX records — select only MX records first".into();
+            return;
+        }
         let n = self.cf_bulk_count();
         let field = match attr {
             CfBulkAttr::Content => Field::text("Content", ""),
             CfBulkAttr::Proxied => Field::boolean("Proxied", false),
             CfBulkAttr::Ttl => Field::text("TTL", "1"),
+            CfBulkAttr::Priority => Field::text("Priority", "0"),
         };
         self.form = Some(Form::new(
             FormKind::CfBulkSet(attr),
@@ -3402,6 +2891,11 @@ impl App {
                 data,
                 repos,
             } => {
+                let pending = self.service_setup_pending.get(&(
+                    self.server_name.clone(),
+                    project.clone(),
+                    service.clone(),
+                ));
                 let title = format!(
                     "{} · {project}/{service}",
                     if build { "Build" } else { "Source" }
@@ -3414,11 +2908,25 @@ impl App {
                     )
                     .with_original(data.get("build").cloned().unwrap_or(Value::Null))
                 } else {
-                    Form::new(
-                        FormKind::SourceEdit { project, service },
-                        title,
-                        source_fields(data.get("source"), repos),
-                    )
+                    let fields = if matches!(pending, Some((_, ServiceSetupPhase::AutoDeploy))) {
+                        vec![Field::boolean(
+                            "Auto deploy",
+                            data.pointer("/source/autoDeploy")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                        )]
+                    } else {
+                        source_fields(data.get("source"), repos)
+                    };
+                    let mut form =
+                        Form::new(FormKind::SourceEdit { project, service }, title, fields);
+                    form.note = pending.map(|(_, phase)| match phase {
+                        ServiceSetupPhase::Source =>
+                            "This service already exists. Saving retries its source setup, not creation.".into(),
+                        ServiceSetupPhase::AutoDeploy =>
+                            "Source is already saved. Select the desired auto-deploy setting; saving retries only that step.".into(),
+                    });
+                    form
                 };
                 self.form = Some(form);
                 self.load_form_branches(req);
@@ -3699,8 +3207,7 @@ impl App {
                 target_service,
                 project,
                 service,
-                databases,
-                lines,
+                plan,
             } => {
                 let dest = format!("{target_name}/{target_project}/{target_service}");
                 let label = format!(
@@ -3708,8 +3215,8 @@ impl App {
                      Each of those databases on the target is DROPPED and recreated \
                      from this dump — anything in it the dump does not contain is \
                      gone and cannot be recovered.",
-                    databases.len(),
-                    lines.join("\n"),
+                    plan.databases.len(),
+                    crate::worker::copy_plan_lines(&plan).join("\n"),
                 );
                 // Held here rather than in the Confirm, so a copy cannot reach the
                 // worker without passing through `confirm_key`.
@@ -3718,8 +3225,7 @@ impl App {
                     target_project,
                     target_service,
                     source: (project, service),
-                    databases,
-                    run: true,
+                    stage: CopyDbStage::Confirmed(plan),
                 });
                 self.confirm = Some(Confirm {
                     action: "copy-db".into(),
@@ -3744,6 +3250,37 @@ impl App {
             // the status line is one line and these sentences are longer than any
             // terminal: the clone note explaining WHY a config file was held back
             // was being cut off exactly where the reason began.
+            Resp::ServiceCreated {
+                project,
+                service,
+                stype,
+                notes,
+                pending,
+            } => {
+                let key = (self.server_name.clone(), project.clone(), service.clone());
+                let repaired = self.service_setup_pending.remove(&key).is_some();
+                let msg = if let Some(phase) = pending {
+                    self.service_setup_pending.insert(key, (stype, phase));
+                    format!("Service '{project}/{service}' exists — finish its Source settings")
+                } else {
+                    format!(
+                        "Service '{project}/{service}' {} — press d to deploy",
+                        if repaired { "configured" } else { "created" }
+                    )
+                };
+                if notes.is_empty() {
+                    self.handle(Resp::Done(msg, Refresh::Projects), req);
+                } else {
+                    self.handle(
+                        Resp::Notes {
+                            msg,
+                            notes,
+                            refresh: Refresh::Projects,
+                        },
+                        req,
+                    );
+                }
+            }
             Resp::Notes {
                 msg,
                 notes,
@@ -3774,14 +3311,23 @@ impl App {
                 self.select_all_services = false;
                 let _ = req.send(Req::AllServices);
                 if failed.is_empty() {
-                    self.status = format!("{} done on {} services", cap(&action), ok.len());
+                    self.status = if action == "deploy" {
+                        format!("Deploy dispatched for {} services — follow progress in Actions or Logs", ok.len())
+                    } else {
+                        format!("{} done on {} services", cap(&action), ok.len())
+                    };
                     return;
                 }
                 let mut lines = vec![
                     format!(
-                        "{}: {} succeeded, {} FAILED",
+                        "{}: {} {}, {} FAILED",
                         cap(&action),
                         ok.len(),
+                        if action == "deploy" {
+                            "dispatched"
+                        } else {
+                            "succeeded"
+                        },
                         failed.len()
                     ),
                     String::new(),
@@ -3889,6 +3435,31 @@ impl App {
                     ),
                     (n, None) => format!("⚠ {n} of {} not healthy", self.watch.len()),
                 };
+            }
+            Resp::Fetched {
+                view,
+                project,
+                service,
+                stype,
+                data,
+            } => {
+                let Some((expected_view, expected_project, expected_service, expected_type)) =
+                    &self.viewer.ctx
+                else {
+                    return;
+                };
+                if view != *expected_view
+                    || project != *expected_project
+                    || service != *expected_service
+                    || stype
+                        .as_deref()
+                        .is_some_and(|kind| kind != expected_type.as_str())
+                {
+                    return;
+                }
+                let lines = super::viewer::fetched_lines(view, &data);
+                self.show_viewer(format!("{} · {project}/{service}", view.title()), lines);
+                self.status = "Ready".into();
             }
             Resp::Viewer(title, lines) => {
                 self.show_viewer(title, lines);
@@ -4562,7 +4133,7 @@ impl App {
         // near end needs guarding — holding the key stops at the newest line
         // instead of wrapping past it.
         let at = p.screen().scrollback() as isize;
-        p.set_scrollback((at + delta).max(0) as usize);
+        p.screen_mut().set_scrollback((at + delta).max(0) as usize);
     }
 
     /// Clicks, drags and the wheel inside the terminal pane.
@@ -6260,126 +5831,83 @@ impl App {
 
         // Minimal validation here; the server rejects the rest.
         match &form.kind {
-            FormKind::ServerAdd | FormKind::ServerEdit { .. } => {
-                // Add: token required. Edit: an empty token = keep the old one, so
-                // changing just the URL doesn't force retyping the token.
-                let url = server_form_url(form);
-                let (name, token) = match &form.kind {
-                    FormKind::ServerAdd => (form.val(0), Some(form.val(2))),
-                    FormKind::ServerEdit { .. } => (
-                        form.val(0),
-                        match form.val(2) {
-                            t if t.is_empty() => None,
-                            t => Some(t),
-                        },
-                    ),
-                    _ => unreachable!(),
-                };
-                if name.is_empty() || url.is_empty() {
-                    self.status = "Name and URL are required".into();
+            FormKind::ServerAdd | FormKind::ServerEdit { .. } => match server_form_action(form) {
+                Ok(action) => self.server_action = Some(action),
+                Err(message) => {
+                    self.status = message;
                     return;
                 }
-                if token.as_deref() == Some("") {
-                    self.status = "Token is required".into();
-                    return;
-                }
-                if !commands::valid_name(&name) {
-                    self.status = "Server name may only contain a-z, 0-9, - and _".into();
-                    return;
-                }
-                let ssh = match tunnel_from_form(form, &url) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        self.status = format!("Error: {e}");
-                        return;
-                    }
-                };
-                // An edit may leave it blank to keep the stored one; an add has
-                // nothing stored to fall back on.
-                if matches!(form.kind, FormKind::ServerAdd)
-                    && ssh.as_ref().is_some_and(|t| {
-                        t.auth == crate::tunnel::SshAuth::Password && t.secret.is_none()
-                    })
-                {
-                    self.status = "Error: SSH password is required".into();
-                    return;
-                }
-                self.server_action = Some(ServerAction::Save {
-                    rename_from: match &form.kind {
-                        FormKind::ServerEdit { name: old } if *old != name => Some(old.clone()),
-                        _ => None,
-                    },
-                    name,
-                    url,
-                    token,
-                    ssh,
-                });
-            }
+            },
             FormKind::ProjectCreate => {
                 let name = form.val(0);
-                if !commands::valid_name(&name) {
+                if !crate::operations::valid_name(&name) {
                     self.status = "Project name may only contain a-z, 0-9, - and _".into();
                     return;
                 }
                 let _ = req.send(Req::ProjectCreate(name));
             }
             FormKind::ServiceCreate => {
-                let (project, service, stype) = (form.val(0), form.val(1), form.val(2));
-                if !commands::valid_name(&service) || project.is_empty() {
-                    self.status = "Service names may only contain a-z, 0-9, - and _".into();
+                let prepared = match service_create_request(form) {
+                    Ok(prepared) => prepared,
+                    Err(message) => {
+                        self.status = message;
+                        return;
+                    }
+                };
+                self.status = format!("Creating '{}'...", form.val(1));
+                let _ = req.send(prepared);
+                self.form = None;
+                return;
+            }
+            FormKind::ConfigurationEdit { .. } => match crate::form::configuration_request(form) {
+                Ok(request) => {
+                    let _ = req.send(request);
+                }
+                Err(error) => {
+                    self.status = error;
                     return;
                 }
-                // The source is applied separately (see create_source): inline it
-                // triggers a deploy. build/env/domains are safe inline — fast, no deploy.
-                let source = match create_source(form) {
-                    Ok(s) => s,
+            },
+            FormKind::SourceEdit { project, service } => {
+                let pending = self
+                    .service_setup_pending
+                    .get(&(self.server_name.clone(), project.clone(), service.clone()))
+                    .cloned();
+                let source = if matches!(pending, Some((_, ServiceSetupPhase::AutoDeploy))) {
+                    Ok((
+                        "updateSourceGithub",
+                        Value::Null,
+                        Some(form.is_on_label("Auto deploy")),
+                    ))
+                } else {
+                    source_body(form)
+                };
+                match source {
+                    Ok((op, body, auto_deploy)) => {
+                        let request = match pending {
+                            Some((stype, phase)) => Req::ServiceSetup {
+                                project: project.clone(),
+                                service: service.clone(),
+                                stype,
+                                source: (op, body, auto_deploy),
+                                phase,
+                            },
+                            None => Req::ConfigSave {
+                                project: project.clone(),
+                                service: service.clone(),
+                                op,
+                                body,
+                                auto_deploy,
+                            },
+                        };
+                        let _ = req.send(request);
+                    }
                     Err(msg) => {
                         self.status = msg;
                         return;
                     }
-                };
-                let mut extra = service_extra(form);
-                if let Some(build) = create_build(form) {
-                    extra["build"] = build;
                 }
-                if let Some(env) = create_env(form) {
-                    extra["env"] = json!(env);
-                    // "Create .env file" -> write env as a file at this path.
-                    if form.is_on_label("Create .env file") {
-                        let path = form.by_label(".env file path");
-                        extra["dotEnvPath"] =
-                            json!(if path.is_empty() { ".env".into() } else { path });
-                    }
-                }
-                if let Some(domains) = create_domains(form) {
-                    extra["domains"] = domains;
-                }
-                self.status = format!("Creating '{service}'...");
-                let _ = req.send(Req::ServiceCreate {
-                    project,
-                    service,
-                    stype,
-                    extra,
-                    source,
-                });
-                self.form = None;
-                return;
             }
-            FormKind::SourceEdit { project, service } => match source_body(form) {
-                Ok((op, body, auto_deploy)) => {
-                    let _ = req.send(Req::ConfigSave {
-                        project: project.clone(),
-                        service: service.clone(),
-                        op,
-                        body,
-                        auto_deploy,
-                    });
-                }
-                Err(msg) => {
-                    self.status = msg;
-                    return;
-                }
-            },
             FormKind::BuildEdit { project, service } => match build_body(form) {
                 Ok(body) => {
                     let _ = req.send(Req::ConfigSave {
@@ -6429,39 +5957,15 @@ impl App {
                     return;
                 }
             },
-            FormKind::CloneService {
-                project,
-                service,
-                stype,
-            } => {
-                let new_name = form.by_label("New name");
-                let new_name = new_name.trim();
-                let target = form.by_label("Project");
-                let target = if target.is_empty() {
-                    project.clone()
-                } else {
-                    target
-                };
-                if new_name.is_empty() {
-                    self.status = "Enter the new service name first".into();
+            FormKind::CloneService { .. } => match clone_service_request(form) {
+                Ok(action) => {
+                    let _ = req.send(action);
+                }
+                Err(message) => {
+                    self.status = message;
                     return;
                 }
-                // The name may match as long as the project differs; identical
-                // (project+name) = a collision.
-                if target == *project && new_name == service {
-                    self.status =
-                        "Use a different project, or a different name — they can't be identical"
-                            .into();
-                    return;
-                }
-                let _ = req.send(Req::CloneService {
-                    project: project.clone(),
-                    service: service.clone(),
-                    stype: stype.clone(),
-                    target,
-                    new_name: new_name.to_string(),
-                });
-            }
+            },
             FormKind::DiffAcross {
                 project,
                 service,
@@ -6495,17 +5999,13 @@ impl App {
                 service,
                 stype,
             } => {
-                let target_server = form.by_label("To server");
-                let target_project = form.by_label("Target project");
-                let target_project = target_project.trim();
-                if target_server.is_empty() {
-                    self.status = "Choose the destination server first".into();
-                    return;
-                }
-                if target_project.is_empty() {
-                    self.status = "Enter the target project name first".into();
-                    return;
-                }
+                let (target_server, target_project) = match migration_target(form) {
+                    Ok(target) => target,
+                    Err(message) => {
+                        self.status = message;
+                        return;
+                    }
+                };
                 // Empty service = the whole project, which is the same operation
                 // over every service it holds.
                 let services = if service.is_empty() {
@@ -6515,7 +6015,7 @@ impl App {
                 };
                 self.migrate_req = Some(MigrateReq {
                     target_server,
-                    target_project: target_project.to_string(),
+                    target_project,
                     services,
                 });
             }
@@ -6523,21 +6023,11 @@ impl App {
                 let target_server = form.by_label("To server");
                 let target_project = form.by_label("Target project").trim().to_string();
                 let target_service = form.by_label("Target service").trim().to_string();
-                if target_server.is_empty() {
-                    self.status = "Choose the target server first".into();
-                    return;
-                }
-                if target_project.is_empty() || target_service.is_empty() {
-                    self.status = "Name the target project and service first".into();
-                    return;
-                }
-                // Copying a service into itself would dump and then load the same
-                // rows back over themselves — pointless, and it reads as a mistake.
-                if target_server == self.server_name
-                    && target_project == *project
-                    && target_service == *service
-                {
-                    self.status = "That is the source itself — name a different service".into();
+                if let Err(message) = validate_copy_target(
+                    (&self.server_name, project, service),
+                    (&target_server, &target_project, &target_service),
+                ) {
+                    self.status = message;
                     return;
                 }
                 let databases: Vec<String> = form
@@ -6553,8 +6043,10 @@ impl App {
                     target_project,
                     target_service,
                     source: (project.clone(), service.clone()),
-                    databases,
-                    run: false,
+                    stage: CopyDbStage::Preview {
+                        all: databases.is_empty(),
+                        databases,
+                    },
                 });
                 self.status = "Checking both ends...".into();
             }
@@ -6681,7 +6173,7 @@ impl App {
                 // Remembered before the request so reopening the box (after an
                 // error, most of all) starts from what was typed, not a blank.
                 self.dbms.last_query = query;
-                self.dbms_fetch(super::dbms::Level::Query, req);
+                self.dbms_fetch(crate::dbms::Level::Query, req);
                 return;
             }
             FormKind::PortCreate { project, service } => match port_body(form) {
@@ -6740,27 +6232,12 @@ impl App {
                 return;
             }
             FormKind::CfAccountAdd | FormKind::CfAccountEdit { .. } => {
-                let (name, token, account_id) = (
-                    form.val(0).trim().to_string(),
-                    form.val(1).trim().to_string(),
-                    form.val(2).trim().to_string(),
-                );
-                if name.is_empty() || token.is_empty() {
-                    self.status = "Name and API token are required".into();
-                    return;
-                }
-                if !commands::valid_name(&name) {
-                    self.status =
-                        "Cloudflare account names may only contain a-z, 0-9, - and _".into();
-                    return;
-                }
-                // Resolved by event_loop, which alone holds the CloudflareConfig —
-                // same rule as a server-list change (see ServerAction).
-                let account = crate::cloudflare::CloudflareAccount {
-                    name,
-                    api_token: token,
-                    account_id: (!account_id.is_empty()).then_some(account_id),
-                    default: false,
+                let account = match cloudflare_account_from_form(form) {
+                    Ok(account) => account,
+                    Err(message) => {
+                        self.status = message;
+                        return;
+                    }
                 };
                 self.cf_action = Some(match &form.kind {
                     FormKind::CfAccountEdit { name } => CfAction::Save {
@@ -6770,448 +6247,53 @@ impl App {
                     _ => CfAction::Add(account),
                 });
             }
-            FormKind::CfRecordCreate => {
-                let kind = form.val(0).trim().to_string();
-                if !valid_record_type(&kind) {
-                    self.status = format!("Unsupported record type '{kind}'");
-                    return;
-                }
-                let (name, content) = (
-                    form.val(1).trim().to_string(),
-                    form.val(2).trim().to_string(),
-                );
-                if name.is_empty() || content.is_empty() {
-                    self.status = "Name and content are required".into();
-                    return;
-                }
-                let ttl_text = form.val(3);
-                let ttl = match ttl_text.trim().parse() {
-                    Ok(ttl) => ttl,
-                    Err(_) => {
-                        self.status = "TTL must be a number (use 1 for automatic)".into();
-                        return;
-                    }
-                };
-                let proxied = form.val(4) == "yes";
-                let priority_text = form.val(5);
-                let priority = if priority_text.trim().is_empty() {
-                    None
-                } else {
-                    match priority_text.trim().parse() {
-                        Ok(p) => Some(p),
-                        Err(_) => {
-                            self.status = "Priority must be a number".into();
-                            return;
-                        }
-                    }
-                };
-                let body = record_body(&kind, &name, &content, ttl, proxied, priority);
-                let (Some(token), Some(zone)) = (self.cf_token(), self.cf.current_zone.clone())
-                else {
-                    self.status = "No active zone".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::CreateRecord {
-                    token,
-                    zone_id: zone.id,
-                    body,
-                }));
-            }
-            FormKind::CfRecordEdit { id, kind } => {
-                let (id, kind) = (id.clone(), kind.clone());
-                if form.by_label("Content").trim().is_empty() {
-                    self.status = "Content is required".into();
-                    return;
-                }
-                if form.by_label("TTL").trim().parse::<u32>().is_err() {
-                    self.status = "TTL must be a number (use 1 for automatic)".into();
-                    return;
-                }
-                let priority_text = form.by_label("Priority");
-                if !priority_text.trim().is_empty() && priority_text.trim().parse::<u16>().is_err()
-                {
-                    self.status = "Priority must be a number".into();
-                    return;
-                }
-                let patch = cf_record_patch(
-                    &kind,
-                    &form.by_label("Content"),
-                    &form.by_label("TTL"),
-                    form.by_label("Proxied") == "yes",
-                    &form.by_label("Priority"),
-                );
-                if patch.is_empty() {
-                    self.status = "Nothing to change".into();
-                    return;
-                }
-                let (Some(token), Some(zone)) = (self.cf_token(), self.cf.current_zone.clone())
-                else {
-                    self.status = "No active zone".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::PatchRecord {
-                    token,
-                    zone_id: zone.id,
-                    id,
-                    body: apply_patch(&patch),
-                }));
-            }
-            FormKind::CfZoneCreate => {
-                let name = form.val(0).trim().to_string();
-                if name.is_empty() {
-                    self.status = "Zone name is required".into();
-                    return;
-                }
-                let (Some(token), Some(account_id)) = (
-                    self.cf_token(),
-                    self.cf.active.as_ref().and_then(|a| a.account_id.clone()),
-                ) else {
-                    self.status = "This account has no account-id — cannot create a zone".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::CreateZone {
-                    token,
-                    name,
-                    account_id,
-                }));
-            }
-            FormKind::CfZoneDelete { zone_id, name } => {
-                let (zone_id, name) = (zone_id.clone(), name.clone());
-                if form.val(0) != name {
-                    self.status = "Name did not match — nothing deleted".into();
-                    return;
-                }
-                let Some(token) = self.cf_token() else {
-                    self.status = "No active account".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::DeleteZone { token, zone_id }));
-            }
-            FormKind::CfBulkSet(attr) => {
-                let body = match attr {
-                    CfBulkAttr::Content => {
-                        let content = form.by_label("Content").trim().to_string();
-                        if content.is_empty() {
-                            self.status = "Content is required".into();
-                            return;
-                        }
-                        json!({ "content": content })
-                    }
-                    CfBulkAttr::Proxied => {
-                        json!({ "proxied": form.by_label("Proxied") == "yes" })
-                    }
-                    CfBulkAttr::Ttl => match form.by_label("TTL").trim().parse::<u32>() {
-                        Ok(ttl) => json!({ "ttl": ttl }),
-                        Err(_) => {
-                            self.status = "TTL must be a number (use 1 for automatic)".into();
-                            return;
-                        }
-                    },
-                };
+            FormKind::CfRecordCreate
+            | FormKind::CfRecordEdit { .. }
+            | FormKind::CfZoneCreate
+            | FormKind::CfZoneDelete { .. }
+            | FormKind::CfBulkSet(_)
+            | FormKind::CfBucketCreate
+            | FormKind::CfBucketDelete { .. }
+            | FormKind::CfWorkerDeploy
+            | FormKind::CfWorkerDelete { .. }
+            | FormKind::CfTunnelCreate
+            | FormKind::CfTunnelDelete { .. }
+            | FormKind::CfTunnelRouteCreate { .. }
+            | FormKind::CfTunnelRouteEdit { .. }
+            | FormKind::CfTunnelRouteDelete { .. }
+            | FormKind::R2Upload
+            | FormKind::R2Download { .. } => {
+                let token = self.cf_token();
+                let account_id = self.cf_account_id();
                 let ids = self.cf_record_targets();
-                if ids.is_empty() {
-                    self.status = "Nothing marked any more — cancelled".into();
-                    return;
-                }
-                let (Some(token), Some(zone)) = (self.cf_token(), self.cf.current_zone.clone())
-                else {
-                    self.status = "No active zone".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::BulkPatch {
-                    token,
-                    zone_id: zone.id,
-                    ids,
-                    body,
-                }));
-                self.cf.marked.clear();
-                self.cf.select_all = false;
-            }
-            FormKind::CfBucketCreate => {
-                let name = form.val(0).trim().to_string();
-                if name.is_empty() {
-                    self.status = "Bucket name is required".into();
-                    return;
-                }
-                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
-                else {
-                    self.status = "This account has no account-id — R2 is account-scoped".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::CreateR2Bucket {
-                    token,
-                    account_id,
-                    name,
-                }));
-            }
-            FormKind::CfBucketDelete { name } => {
-                let name = name.clone();
-                if form.val(0) != name {
-                    self.status = "Name did not match — nothing deleted".into();
-                    return;
-                }
-                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
-                else {
-                    self.status = "No active account".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::DeleteR2Bucket {
-                    token,
-                    account_id,
-                    name,
-                }));
-            }
-            FormKind::CfWorkerDeploy => {
-                let name = form.by_label("Worker name").trim().to_string();
-                let path = crate::output::expand_tilde(
-                    form.by_label("Local file").trim(),
-                    std::env::var("HOME").ok().as_deref(),
-                );
-                if name.is_empty() || path.is_empty() {
-                    self.status = "Worker name and local file are required".into();
-                    return;
-                }
-                let mode = match form.by_label("Mode").as_str() {
-                    "service-worker" => WorkerUploadMode::ServiceWorker,
-                    _ => WorkerUploadMode::Module,
-                };
-                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
-                else {
-                    self.status = "No active account".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::WorkerDeploy {
-                    token,
-                    account_id,
-                    name,
-                    path,
-                    mode,
-                }));
-            }
-            FormKind::CfWorkerDelete { name } => {
-                let name = name.clone();
-                if form.val(0) != name {
-                    self.status = "Name did not match — nothing deleted".into();
-                    return;
-                }
-                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
-                else {
-                    self.status = "No active account".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::WorkerDelete {
-                    token,
-                    account_id,
-                    name,
-                    force: false,
-                }));
-            }
-            FormKind::CfTunnelCreate => {
-                let name = form.by_label("Tunnel name").trim().to_string();
-                if name.is_empty() {
-                    self.status = "Tunnel name is required".into();
-                    return;
-                }
-                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
-                else {
+                if matches!(form.kind, FormKind::CfBulkSet(CfBulkAttr::Priority))
+                    && !self.cf_priority_targets_are_mx(&ids)
+                {
                     self.status =
-                        "This account has no account-id — Tunnels are account-scoped".into();
+                        "Priority applies only to MX records — select only MX records first".into();
                     return;
+                }
+                let cx = CloudflareFormContext {
+                    token: token.as_deref(),
+                    account_id: account_id.as_deref(),
+                    zone_id: self.cf.current_zone.as_ref().map(|zone| zone.id.as_str()),
+                    bucket: self.cf.current_bucket.as_deref(),
+                    prefix: &self.cf.current_prefix,
+                    record_ids: &ids,
                 };
-                let _ = req.send(Req::Cf(CfReq::TunnelCreate {
-                    token,
-                    account_id,
-                    name,
-                }));
-            }
-            FormKind::CfTunnelDelete { tunnel_id, name } => {
-                if form.val(0) != name.as_str() {
-                    self.status = "Tunnel name did not match — nothing deleted".into();
-                    return;
-                }
-                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
-                else {
-                    self.status = "No active account".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::TunnelDelete {
-                    token,
-                    account_id,
-                    tunnel_id: tunnel_id.clone(),
-                    name: name.clone(),
-                }));
-            }
-            FormKind::CfTunnelRouteCreate { tunnel_id } => {
-                let (hostname, service_type, service_url, path) = (
-                    form.by_label("Hostname").trim().to_string(),
-                    form.by_label("Service Type"),
-                    form.by_label("Service URL").trim().to_string(),
-                    form.by_label("Path").trim().to_string(),
-                );
-                if hostname.is_empty() {
-                    self.status = "Hostname is required".into();
-                    return;
-                }
-                if tunnel_service_requires_value(&service_type) && service_url.is_empty() {
-                    self.status = "Service URL is required for this service type".into();
-                    return;
-                }
-                let service = tunnel_service_from_form(form);
-                let origin_request = match tunnel_origin_request_from_form(form) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        self.status = e.to_string();
+                match cloudflare_form_request(form, &cx) {
+                    Ok(action) => {
+                        let _ = req.send(Req::Cf(action));
+                    }
+                    Err(message) => {
+                        self.status = message;
                         return;
                     }
-                };
-                let dns = form.by_label("Sync DNS CNAME") == "yes";
-                let zone = (!form.by_label("DNS Zone").trim().is_empty())
-                    .then(|| form.by_label("DNS Zone").trim().to_string());
-                let proxied = form.by_label("DNS Proxied") == "yes";
-                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
-                else {
-                    self.status = "No active account".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::TunnelRouteAdd {
-                    token,
-                    account_id,
-                    tunnel_id: tunnel_id.clone(),
-                    hostname,
-                    service,
-                    path,
-                    origin_request,
-                    dns,
-                    zone,
-                    proxied,
-                }));
-            }
-            FormKind::CfTunnelRouteEdit {
-                tunnel_id,
-                hostname,
-                path,
-            } => {
-                let service_type = form.by_label("Service Type");
-                let service_url = form.by_label("Service URL").trim().to_string();
-                if tunnel_service_requires_value(&service_type) && service_url.is_empty() {
-                    self.status = "Service URL is required for this service type".into();
-                    return;
                 }
-                let service = tunnel_service_from_form(form);
-                let clear = form.by_label("Clear origin request") == "yes";
-                let origin_request = if clear {
-                    Some(None)
-                } else {
-                    match tunnel_origin_request_from_form(form) {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            self.status = e.to_string();
-                            return;
-                        }
-                    }
-                };
-                let dns = form.by_label("Sync DNS CNAME") == "yes";
-                let zone = (!form.by_label("DNS Zone").trim().is_empty())
-                    .then(|| form.by_label("DNS Zone").trim().to_string());
-                let proxied = form.by_label("DNS Proxied") == "yes";
-                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
-                else {
-                    self.status = "No active account".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::TunnelRouteEdit {
-                    token,
-                    account_id,
-                    tunnel_id: tunnel_id.clone(),
-                    hostname: hostname.clone(),
-                    path: path.clone(),
-                    service,
-                    origin_request,
-                    dns,
-                    zone,
-                    proxied,
-                }));
-            }
-            FormKind::CfTunnelRouteDelete {
-                tunnel_id,
-                hostname,
-                path,
-            } => {
-                if form.val(0) != hostname.as_str() {
-                    self.status = "Hostname did not match — nothing deleted".into();
-                    return;
+                if matches!(form.kind, FormKind::CfBulkSet(_)) {
+                    self.cf.marked.clear();
+                    self.cf.select_all = false;
                 }
-                let (Some(token), Some(account_id)) = (self.cf_token(), self.cf_account_id())
-                else {
-                    self.status = "No active account".into();
-                    return;
-                };
-                let delete_dns = form.by_label("Delete DNS CNAME") == "yes";
-                let zone = (!form.by_label("DNS Zone").trim().is_empty())
-                    .then(|| form.by_label("DNS Zone").trim().to_string());
-                let _ = req.send(Req::Cf(CfReq::TunnelRouteDelete {
-                    token,
-                    account_id,
-                    tunnel_id: tunnel_id.clone(),
-                    hostname: hostname.clone(),
-                    path: path.clone(),
-                    delete_dns,
-                    zone,
-                }));
-            }
-            FormKind::R2Upload => {
-                // A path typed into the form is raw text — expand a leading `~` the way a
-                // shell would, so `~/dump.gz` finds the home directory, not a `~` folder.
-                let path = crate::output::expand_tilde(
-                    form.val(0).trim(),
-                    std::env::var("HOME").ok().as_deref(),
-                );
-                if path.is_empty() {
-                    self.status = "Give a local file path".into();
-                    return;
-                }
-                let (Some(token), Some(account_id), Some(bucket)) = (
-                    self.cf_token(),
-                    self.cf_account_id(),
-                    self.cf.current_bucket.clone(),
-                ) else {
-                    self.status = "No bucket open".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::R2Put {
-                    token,
-                    account_id,
-                    bucket,
-                    prefix: self.cf.current_prefix.clone(),
-                    path,
-                }));
-            }
-            FormKind::R2Download { key } => {
-                let key = key.clone();
-                // Same `~` expansion as the upload path — a raw form string, not a shell arg.
-                let dest = crate::output::expand_tilde(
-                    form.val(0).trim(),
-                    std::env::var("HOME").ok().as_deref(),
-                );
-                if dest.is_empty() {
-                    self.status = "Give a path to save to".into();
-                    return;
-                }
-                let (Some(token), Some(account_id), Some(bucket)) = (
-                    self.cf_token(),
-                    self.cf_account_id(),
-                    self.cf.current_bucket.clone(),
-                ) else {
-                    self.status = "No bucket open".into();
-                    return;
-                };
-                let _ = req.send(Req::Cf(CfReq::R2Get {
-                    token,
-                    account_id,
-                    bucket,
-                    key,
-                    dest,
-                }));
             }
             FormKind::DomainCreate | FormKind::DomainEdit { .. } => match domain_body(form) {
                 Ok(body) => {
@@ -7261,67 +6343,7 @@ impl App {
         let project = self
             .selected_project()
             .unwrap_or_else(|| self.projects[0].clone());
-        // The database fields follow Kind, like the panel dialog. All optional:
-        // empty means the server creates them (a random password, a database named
-        // after the project, the latest official image) — exactly like the panel.
-        let mut fields = vec![
-            Field::choice_owned("Project", self.projects.clone(), &project),
-            Field::text("Name", ""),
-            Field::choice("Kind", SERVICE_TYPES, "app"),
-            Field::text("Database", "").when("Kind", "mysql,mariadb,postgres"),
-            Field::text("User", "").when("Kind", "mysql,mariadb,postgres,mongo"),
-            Field::secret("Password").when("Kind", "mysql,mariadb,postgres,mongo,redis"),
-            Field::secret("Root password").when("Kind", "mysql,mariadb"),
-            Field::text("Image", "").when("Kind", "mysql,mariadb,postgres,mongo,redis"),
-        ];
-        // The source fields carry their own condition (Source=github/git/image);
-        // .when() adds a condition rather than replacing it, so both apply: shown
-        // only when service type = app AND the source type matches.
-        //
-        // The repo list follows via Resp::Repos: waiting for it here would freeze
-        // the TUI until searchRepos finishes.
-        // The wizard follows the EasyPanel dashboard flow: Basics → Source → Build.
-        // The source & build fields are app-only (`.when("Kind","app")`), so a
-        // database service stays a single step. `.step()` puts them on their own
-        // pages; submit values are still read across steps.
-        fields.extend(
-            source_fields(None, Vec::new())
-                .into_iter()
-                .map(|f| f.when("Kind", "app").step(1)),
-        );
-        fields.extend(build_fields(None).into_iter().map(|f| {
-            f.when("Kind", "app")
-                .when("Source", "github,git,dockerfile")
-                .step(2)
-        }));
-        // Continuing the dashboard flow: Environment then Domains. Both are accepted
-        // inline by createService (`env` string, `domains` array; only `host`
-        // required). The domain labels are prefixed with "Domain " so "Path" doesn't
-        // collide with the source's "Path" — by_label() uses find().
-        fields.push(Field::editor("Environment", "").when("Kind", "app").step(3));
-        // "Create env file" in the dashboard: write env as a .env file at that path
-        // (API: dotEnvPath). The path only shows when its toggle is on.
-        fields.push(
-            Field::boolean("Create .env file", false)
-                .when("Kind", "app")
-                .step(3),
-        );
-        fields.push(
-            Field::text(".env file path", ".env")
-                .when("Kind", "app")
-                .when("Create .env file", "yes")
-                .step(3),
-        );
-        fields.extend(
-            [
-                Field::text("Domain host", ""),
-                Field::text("Domain port", "3000"),
-                Field::boolean("Domain HTTPS", true),
-                Field::text("Domain path", "/"),
-            ]
-            .map(|f| f.when("Kind", "app").step(4)),
-        );
-        self.form = Some(Form::new(FormKind::ServiceCreate, " New service ", fields));
+        self.form = Some(service_create_form(&self.projects, &project));
         let _ = req.send(Req::Repos);
     }
 
