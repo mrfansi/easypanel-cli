@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Correct service-kind environment editing and readback across native, TUI and
   CLI, preserving file settings and exact content without hiding malformed
   inspection responses.
+- Edit Box build/start scripts through their canonical nested Advanced settings,
+  with explicit script-file imports; restrict config-file editing to MySQL/MariaDB.
+  Preserve untouched scripts, environment and additional settings.
 - Reconcile desktop selections against refreshed inventory and typed, exact
   successful service/project deletions, including inactive documents and
   completions after the originating tab closes. Keep deleted documents
